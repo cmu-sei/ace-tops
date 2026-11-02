@@ -37,10 +37,12 @@ thiserror.workspace = true
 x509-parser.workspace = true
 
 rcgen = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rsa = { workspace = true, optional = true }
 
 [features]
 # Certificates and signers for tests (`polar_signing::testing`).
-testing = ["dep:rcgen"]
+testing = ["dep:rcgen", "dep:rand", "dep:rsa"]
 
 [dev-dependencies]
 # The crate's own tests use its testing module.

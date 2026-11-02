@@ -164,6 +164,7 @@ impl Actor for GitServerSupervisor {
                 client.as_actor_ref().clone(),
             )));
         }
+        let signed = crate::signed::SignedRepos::from_specs(&file.repos)?;
         let app = router(ServerState {
             store,
             authorizer: acl.clone(),
@@ -171,6 +172,7 @@ impl Actor for GitServerSupervisor {
             runner: GitRunner::default(),
             notifier: Arc::new(Tee(notifiers)),
             max_body: MAX_BODY,
+            signed: Arc::new(signed),
         });
 
         let tls = server_config(

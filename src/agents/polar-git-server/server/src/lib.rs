@@ -34,6 +34,7 @@ pub mod http;
 pub mod notify;
 pub mod pktline;
 pub mod settings;
+pub mod signed;
 pub mod store;
 pub mod supervisor;
 pub mod tls;

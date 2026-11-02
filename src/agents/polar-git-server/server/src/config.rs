@@ -52,6 +52,20 @@ pub struct RepoSpec {
     /// A directory committed as the first commit when the repository is empty. A relative path is
     /// resolved against the server's seed root.
     pub seed: Option<PathBuf>,
+    /// Who must have signed every commit pushed to this repository: a deployment repository is what is deployed, and write access
+    /// alone must not be enough to change it (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server").
+    #[serde(default)]
+    pub signed_by: Option<SignedBy>,
+}
+
+/// The signer a repository's commits must have.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignedBy {
+    /// A file holding the certificate of the CA they chain to, in PEM.
+    pub ca: PathBuf,
+    /// The common name of the signer's certificate.
+    pub signer: String,
 }
 
 impl ServerFile {
@@ -165,12 +179,14 @@ mod tests {
                     readers: vec![],
                     writers: vec![],
                     seed: Some(seed.path().to_path_buf()),
+                    signed_by: None,
                 },
                 RepoSpec {
                     name: "bare".into(),
                     readers: vec![],
                     writers: vec![],
                     seed: None,
+                    signed_by: None,
                 },
             ],
         };

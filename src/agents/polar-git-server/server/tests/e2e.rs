@@ -27,8 +27,10 @@ use polar_git_server::access::{RepoAcl, RuntimeAcl, StaticAcl};
 use polar_git_server::git::GitRunner;
 use polar_git_server::http::{ServerState, router};
 use polar_git_server::notify::{PushLog, Recorder, RepoChanged, Tee};
+use polar_git_server::signed::{CommitPolicy, SignedRepos};
 use polar_git_server::store::RepoStore;
 use polar_git_server::tls::{serve_tls, server_config};
+use polar_signing::testing::{CommitSigner, commit_signer};
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, SanType,
 };
@@ -39,6 +41,8 @@ use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
 
 const REPO: &str = "polar-schedules";
+/// A repository whose every commit must be signed.
+const SIGNED_REPO: &str = "deploy-test";
 /// The name the cluster gives the server, which its certificate carries.
 const CLUSTER_NAME: &str = "polar-git-server.polar.svc.cluster.local";
 
@@ -102,6 +106,17 @@ struct Harness {
     stop: Arc<Notify>,
 }
 
+/// The pipeline's certificate, and another's under its own CA. An RSA key is slow to make, so each is made once.
+fn pipeline() -> &'static CommitSigner {
+    static SIGNER: std::sync::OnceLock<CommitSigner> = std::sync::OnceLock::new();
+    SIGNER.get_or_init(|| commit_signer("pipeline"))
+}
+
+fn stranger() -> &'static CommitSigner {
+    static SIGNER: std::sync::OnceLock<CommitSigner> = std::sync::OnceLock::new();
+    SIGNER.get_or_init(|| commit_signer("pipeline"))
+}
+
 impl Harness {
     async fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -126,16 +141,33 @@ impl Harness {
         std::fs::create_dir_all(&seed).unwrap();
         std::fs::write(seed.join("credentials.dhall"), "{ seeded = True }").unwrap();
         store.seed(REPO, &seed).await.unwrap();
+        store.create(SIGNED_REPO).await.unwrap();
+        let signed = SignedRepos::new(
+            [(
+                SIGNED_REPO.to_string(),
+                CommitPolicy::new(&pipeline().ca_pem, "pipeline").unwrap(),
+            )]
+            .into(),
+        );
 
         let acl = StaticAcl {
             admins: ["root".to_string()].into(),
-            repos: [(
-                REPO.to_string(),
-                RepoAcl {
-                    readers: ["polar-scheduler-observer".to_string()].into(),
-                    writers: ["alice".to_string()].into(),
-                },
-            )]
+            repos: [
+                (
+                    REPO.to_string(),
+                    RepoAcl {
+                        readers: ["polar-scheduler-observer".to_string()].into(),
+                        writers: ["alice".to_string()].into(),
+                    },
+                ),
+                (
+                    SIGNED_REPO.to_string(),
+                    RepoAcl {
+                        readers: ["flux".to_string()].into(),
+                        writers: ["alice".to_string()].into(),
+                    },
+                ),
+            ]
             .into(),
         };
         let notes = Arc::new(Recorder::default());
@@ -152,6 +184,7 @@ impl Harness {
                 notes.clone(),
             ])),
             max_body: 64 * 1024 * 1024,
+            signed: Arc::new(signed),
         });
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -529,4 +562,206 @@ async fn accepted_pushes_are_recorded_and_refused_ones_are_not() {
     assert_eq!(lines[0]["pusher"], "alice");
     assert_eq!(lines[0]["repo"], REPO);
     assert_eq!(lines[0]["ref"], "refs/heads/main");
+}
+
+// docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": a deployment repository takes only what the pipeline signed.
+
+/// A checkout with nothing in it, pointed at the signed repository, and a client that may write to it.
+async fn signed_checkout(h: &Harness) -> (PathBuf, (PathBuf, PathBuf)) {
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let repo = h.dir.path().join("signed-checkout");
+    std::fs::create_dir_all(&repo).unwrap();
+    let url = format!("https://127.0.0.1:{}/{SIGNED_REPO}.git", h.port);
+    for args in [vec!["init", "-q"], vec!["remote", "add", "origin", &url]] {
+        let (ok, t) = h.git(&repo, None, &args).await;
+        assert!(ok, "{t}");
+    }
+    (repo, creds)
+}
+
+/// A commit of `file`, on `parent`, signed by `signer` or by no one. Says its id.
+async fn make_commit(
+    h: &Harness,
+    repo: &Path,
+    file: &str,
+    parent: Option<&str>,
+    signer: Option<&CommitSigner>,
+) -> String {
+    std::fs::write(repo.join(file), file).unwrap();
+    let (ok, t) = h.git(repo, None, &["add", "--all"]).await;
+    assert!(ok, "{t}");
+    let (ok, tree) = h.git(repo, None, &["write-tree"]).await;
+    assert!(ok, "{tree}");
+    let tree = tree.trim().to_string();
+    let mut args = vec!["commit-tree", tree.as_str(), "-m", "chore(deploy): a layer"];
+    if let Some(parent) = parent {
+        args.extend(["-p", parent]);
+    }
+    let (ok, commit) = h.git(repo, None, &args).await;
+    assert!(ok, "{commit}");
+    let commit = commit.trim().to_string();
+    let Some(signer) = signer else {
+        return commit;
+    };
+    let (ok, raw) = h.git(repo, None, &["cat-file", "commit", &commit]).await;
+    assert!(ok, "{raw}");
+    let file = h.dir.path().join(format!("{commit}.raw"));
+    std::fs::write(&file, signer.sign(raw.as_bytes())).unwrap();
+    let (ok, signed) = h
+        .git(
+            repo,
+            None,
+            &["hash-object", "-t", "commit", "-w", file.to_str().unwrap()],
+        )
+        .await;
+    assert!(ok, "{signed}");
+    signed.trim().to_string()
+}
+
+async fn push(
+    h: &Harness,
+    repo: &Path,
+    creds: &(PathBuf, PathBuf),
+    commit: &str,
+) -> (bool, String) {
+    h.git(
+        repo,
+        Some(creds),
+        &["push", "origin", &format!("{commit}:refs/heads/main")],
+    )
+    .await
+}
+
+/// What the server holds of the signed repository's `main`, and whether a commit reached its objects. Nothing of a refused push stays, and no
+/// quarantine is left beside the repository.
+async fn holds(h: &Harness, commit: &str) -> (Option<String>, bool) {
+    let bare = h.dir.path().join(format!("repos/{SIGNED_REPO}.git"));
+    let leftovers: Vec<_> = std::fs::read_dir(&bare)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("polar-quarantine")
+        })
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    let (ok, head) = h
+        .git(
+            &bare,
+            None,
+            &["rev-parse", "--verify", "-q", "refs/heads/main"],
+        )
+        .await;
+    let (stored, _) = h.git(&bare, None, &["cat-file", "-e", commit]).await;
+    (ok.then(|| head.trim().to_string()), stored)
+}
+
+#[tokio::test]
+async fn a_commit_the_pipeline_signed_is_taken_and_announced() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let first = make_commit(&h, &repo, "a.yaml", None, Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &creds, &first).await;
+    assert!(ok, "{text}");
+    assert_eq!(holds(&h, &first).await, (Some(first.clone()), true));
+    assert_eq!(h.changes().len(), 1);
+
+    let second = make_commit(&h, &repo, "b.yaml", Some(&first), Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &creds, &second).await;
+    assert!(ok, "{text}");
+    assert_eq!(holds(&h, &second).await, (Some(second.clone()), true));
+}
+
+#[tokio::test]
+async fn an_unsigned_commit_is_refused_from_someone_who_may_write_and_nothing_stays() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let commit = make_commit(&h, &repo, "a.yaml", None, None).await;
+    let (ok, text) = push(&h, &repo, &creds, &commit).await;
+    assert!(!ok, "{text}");
+    assert_eq!(holds(&h, &commit).await, (None, false));
+    assert!(h.changes().is_empty());
+}
+
+/// A signed head does not vouch for what is under it.
+#[tokio::test]
+async fn an_unsigned_commit_under_a_signed_one_is_refused() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let unsigned = make_commit(&h, &repo, "a.yaml", None, None).await;
+    let head = make_commit(&h, &repo, "b.yaml", Some(&unsigned), Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &creds, &head).await;
+    assert!(!ok, "{text}");
+    assert_eq!(holds(&h, &head).await, (None, false));
+}
+
+#[tokio::test]
+async fn a_commit_signed_under_another_ca_is_refused() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let commit = make_commit(&h, &repo, "a.yaml", None, Some(stranger())).await;
+    let (ok, text) = push(&h, &repo, &creds, &commit).await;
+    assert!(!ok, "{text}");
+    assert_eq!(holds(&h, &commit).await, (None, false));
+}
+
+/// A commit already on the server gets no pass: the head of a ref is judged even when the push brings no objects, so a branch from before the
+/// rule cannot be made what is deployed.
+#[tokio::test]
+async fn a_ref_cannot_be_pointed_at_an_unsigned_commit_already_on_the_server() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let unsigned = make_commit(&h, &repo, "a.yaml", None, None).await;
+    let bare = h.dir.path().join(format!("repos/{SIGNED_REPO}.git"));
+    let (ok, text) = h
+        .git(
+            &repo,
+            None,
+            &[
+                "push",
+                bare.to_str().unwrap(),
+                &format!("{unsigned}:refs/heads/old"),
+            ],
+        )
+        .await;
+    assert!(ok, "{text}");
+    let (ok, text) = push(&h, &repo, &creds, &unsigned).await;
+    assert!(!ok, "{text}");
+    let (ok, _) = h
+        .git(
+            &bare,
+            None,
+            &["rev-parse", "--verify", "-q", "refs/heads/main"],
+        )
+        .await;
+    assert!(!ok, "main was moved");
+}
+
+#[tokio::test]
+async fn deleting_the_deployed_branch_is_refused() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let commit = make_commit(&h, &repo, "a.yaml", None, Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &creds, &commit).await;
+    assert!(ok, "{text}");
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", ":refs/heads/main"])
+        .await;
+    assert!(!ok, "{text}");
+    assert_eq!(holds(&h, &commit).await.0, Some(commit));
+}
+
+/// Nothing changes for any other repository.
+#[tokio::test]
+async fn an_ordinary_repository_still_takes_an_unsigned_commit() {
+    let h = Harness::start().await;
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "ordinary").await;
+    assert!(ok, "{text}");
+    h.commit(&repo, "new.dhall", "1").await;
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+        .await;
+    assert!(ok, "{text}");
 }

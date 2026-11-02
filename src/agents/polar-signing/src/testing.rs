@@ -213,3 +213,132 @@ pub fn escrow_certificate_for(
     let subject = SubjectPublicKeyInfo::from_pem(public_key_pem).unwrap();
     params.signed_by(&subject, &issuer.issuer).unwrap().pem()
 }
+
+/// A `pipeline` certificate with the RSA key `deploy-repo.nu` gives one, and what it needs to sign a commit as `gpgsm` does.
+pub struct CommitSigner {
+    /// The CA it chains to, to pin.
+    pub ca_pem: String,
+    certificate: Vec<u8>,
+    key: ring::signature::RsaKeyPair,
+}
+
+/// A signer whose certificate has the common name `name`, under a CA of its own. Generating an RSA key is slow: keep it for the whole test run.
+pub fn commit_signer(name: &str) -> CommitSigner {
+    use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
+    let ca = root(&format!("{name}-ca"));
+    let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+    let public = rcgen::SubjectPublicKeyInfo::from_der(
+        key.to_public_key().to_public_key_der().unwrap().as_bytes(),
+    )
+    .unwrap();
+    let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.distinguished_name.push(DnType::CommonName, name);
+    params.not_before = date_time_ymd(2026, 1, 1);
+    params.not_after = date_time_ymd(2100, 1, 1);
+    let certificate = params
+        .signed_by(&public, &ca.issuer)
+        .unwrap()
+        .der()
+        .to_vec();
+    CommitSigner {
+        ca_pem: ca.pem,
+        certificate,
+        key: ring::signature::RsaKeyPair::from_pkcs8(key.to_pkcs8_der().unwrap().as_bytes())
+            .unwrap(),
+    }
+}
+
+impl CommitSigner {
+    /// `commit`, as `git cat-file commit` gives an unsigned one, with a `gpgsig` header holding a detached CMS signature of it.
+    pub fn sign(&self, commit: &[u8]) -> Vec<u8> {
+        use base64::Engine as _;
+        use sha2::{Digest as _, Sha256};
+        fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+            let mut out = vec![tag];
+            if value.len() < 0x80 {
+                out.push(value.len() as u8);
+            } else {
+                let bytes: Vec<u8> = value
+                    .len()
+                    .to_be_bytes()
+                    .into_iter()
+                    .skip_while(|b| *b == 0)
+                    .collect();
+                out.push(0x80 | bytes.len() as u8);
+                out.extend(bytes);
+            }
+            out.extend_from_slice(value);
+            out
+        }
+        const DATA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01];
+        const SIGNED_DATA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02];
+        const CONTENT_TYPE: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x03];
+        const DIGEST: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x04];
+        const SHA256_ALGORITHM: &[u8] = &[
+            0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+            0x00,
+        ];
+        const RSA_ALGORITHM: &[u8] = &[
+            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+            0x00,
+        ];
+        let attribute =
+            |oid: &[u8], value: Vec<u8>| tlv(0x30, &[tlv(0x06, oid), tlv(0x31, &value)].concat());
+        let attributes = [
+            attribute(CONTENT_TYPE, tlv(0x06, DATA)),
+            attribute(DIGEST, tlv(0x04, &Sha256::digest(commit)[..])),
+        ]
+        .concat();
+        let mut signature = vec![0; self.key.public().modulus_len()];
+        self.key
+            .sign(
+                &ring::signature::RSA_PKCS1_SHA256,
+                &ring::rand::SystemRandom::new(),
+                &tlv(0x31, &attributes),
+                &mut signature,
+            )
+            .unwrap();
+        let parsed = crate::cert::parse(&self.certificate).unwrap();
+        let signer = tlv(
+            0x30,
+            &[
+                tlv(0x02, &[1]),
+                tlv(
+                    0x30,
+                    &[
+                        parsed.issuer().as_raw().to_vec(),
+                        tlv(0x02, parsed.tbs_certificate.raw_serial()),
+                    ]
+                    .concat(),
+                ),
+                SHA256_ALGORITHM.to_vec(),
+                tlv(0xa0, &attributes),
+                RSA_ALGORITHM.to_vec(),
+                tlv(0x04, &signature),
+            ]
+            .concat(),
+        );
+        let signed = tlv(
+            0x30,
+            &[
+                tlv(0x02, &[1]),
+                tlv(0x31, SHA256_ALGORITHM),
+                tlv(0x30, &tlv(0x06, DATA)),
+                tlv(0xa0, &self.certificate),
+                tlv(0x31, &signer),
+            ]
+            .concat(),
+        );
+        let info = tlv(0x30, &[tlv(0x06, SIGNED_DATA), tlv(0xa0, &signed)].concat());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(info);
+        let mut header = b"gpgsig -----BEGIN SIGNED MESSAGE-----\n".to_vec();
+        for line in encoded.as_bytes().chunks(64) {
+            header.push(b' ');
+            header.extend_from_slice(line);
+            header.push(b'\n');
+        }
+        header.extend_from_slice(b" -----END SIGNED MESSAGE-----\n");
+        let headers_end = commit.windows(2).position(|w| w == b"\n\n").unwrap() + 1;
+        [&commit[..headers_end], &header, &commit[headers_end..]].concat()
+    }
+}

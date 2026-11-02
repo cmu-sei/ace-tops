@@ -53,6 +53,23 @@ fn a_commit_the_pipeline_signed_is_believed() {
     assert!(!signer.serial.is_empty());
 }
 
+/// What the git server's tests sign with is believed as what `gpgsm` writes is, so what they prove about a push stands for a real one.
+#[test]
+fn the_test_signer_is_believed_as_gpgsm_is() {
+    let commit = b"tree 2f8d81dbd934f72cdade7bb2f0c373eb1e037c1a\nauthor a <a@b> 1793659810 -0500\ncommitter a <a@b> 1793659810 -0500\n\nchore: a commit\n";
+    let signer = testing::commit_signer("pipeline");
+    let signed = signer.sign(commit);
+    let trust = Trust::from_pem(&[signer.ca_pem.clone()]).unwrap();
+    verify_commit(&signed, &trust, "pipeline", SIGNED_AT).unwrap();
+    let mut changed = signed.clone();
+    let at = changed.len() - 2;
+    changed[at] ^= 1;
+    assert!(matches!(
+        verify_commit(&changed, &trust, "pipeline", SIGNED_AT),
+        Err(CommitError::DigestMismatch)
+    ));
+}
+
 #[test]
 fn a_changed_message_is_refused() {
     let mut changed = COMMIT.to_vec();

@@ -57,6 +57,8 @@ pub struct ServerState {
     pub notifier: Arc<dyn Notifier>,
     /// The largest request body, compressed or not.
     pub max_body: usize,
+    /// The repositories whose every commit must be signed, and by whom.
+    pub signed: Arc<crate::signed::SignedRepos>,
 }
 
 pub fn router(state: ServerState) -> Router {
@@ -227,7 +229,7 @@ async fn receive_pack(
     };
 
     // The commands precede the pack: decide before git sees anything.
-    let (updates, _) = match parse_ref_updates(&body) {
+    let (updates, pack_at) = match parse_ref_updates(&body) {
         Ok(parsed) => parsed,
         Err(e) => return refuse(StatusCode::BAD_REQUEST, &e.to_string()),
     };
@@ -238,6 +240,19 @@ async fn receive_pack(
         &updates,
     ) {
         info!(who = %who.0, repo, %why, "push denied");
+        return refuse(StatusCode::FORBIDDEN, &why);
+    }
+    if let Some(policy) = state.signed.policy_of(repo)
+        && let Err(why) = crate::signed::check_push(
+            &path,
+            policy,
+            &updates,
+            &body[pack_at..],
+            crate::signed::wall_clock(),
+        )
+        .await
+    {
+        warn!(who = %who.0, repo, %why, "push refused: not signed as this repository requires");
         return refuse(StatusCode::FORBIDDEN, &why);
     }
 
