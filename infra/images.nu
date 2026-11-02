@@ -187,8 +187,9 @@ export def system_of [arch: string] {
 
 # Where a published image lives: `<from>/polar-<image>:<tag>-<arch>`. Public registries such as Docker Hub give an account one
 # level of names, so the image name carries the `polar-` prefix and the architecture is in the tag. `import` and `publish` agree on this.
+# `tag`, a release's version, names what a release publishes; an image built elsewhere (Neo4j) is published under its own version only.
 export def published_ref [from: string, row: record, arch: string, tag: string = ""] {
-    let t = if ($tag | is-empty) { $row.tag } else { $tag }
+    let t = if ($tag | is-empty) or ($row.kind? == "external") { $row.tag } else { $tag }
     $"($from | str trim --right --char '/')/polar-($row.image):($t)-(arch_of $arch)"
 }
 
