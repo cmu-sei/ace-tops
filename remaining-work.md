@@ -35,11 +35,13 @@ Each step is taken in bites, each reported before the next.
 
 1. **Retire the `local` and `local-minimal` targets; topology becomes a setting on the target.** Below, under infra.
 2. **Runtime attestation, slices A and B.** Its diagrams first, as the review of its plan; `docs/architecture/runtime-attestation.md`, "The plan". Below.
-3. **The sequence diagrams.** Below, under docs.
-4. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
-5. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
-6. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 5.
-7. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
+3. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
+   Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
+4. **The sequence diagrams.** Below, under docs.
+5. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
+6. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
+7. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 6.
+8. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
 
 ## Runtime attestation
 
@@ -577,7 +579,7 @@ Each step is taken in bites, each reported before the next.
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
 - [ ] **PROTOCOL HANDLERS: AGENTS' I/O IN INFRASTRUCTURE** (decided by the maintainer, 2026-11-02; `docs/architecture/protocol-handlers.md`).
   Generalized HTTP and git handlers in the builder's infrastructure, on behalf of the domain actor, which registers a callback. The handler
-  attaches the credential; a callback never sees it. Nothing built; its place in the order of work is open.
+  attaches the credential; a callback never sees it. Nothing built. The HTTP handler is step 3 of the order of work (the maintainer, 2026-11-02).
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent

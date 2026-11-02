@@ -107,10 +107,13 @@ It is one address space, so it does not change what remains in `runtime-attestat
 The interface is the seam if a handler ever has to move out of the process: the request is already a plain, explicit message.
 Private keys are already out of the process, in the custody daemon (`key-custody.md`); tokens are not.
 
+## When (the maintainer, 2026-11-02)
+
+The HTTP handler comes after runtime attestation's slices A and B and before the sequence diagrams, the Dynamic settings and the GitLab
+and OpenAPI migrations, so those agents move onto it once and not twice (`remaining-work.md`, "The order of work").
+
 ## Open
 
-- Where this falls in the order of work (`remaining-work.md`). The GitLab and OpenAPI agents' migration either starts on handlers or
-  moves onto them later.
 - The handler's interface for paged and streamed responses, and what a callback's budget is.
 - Whether the Kubernetes API (`Capability::KubeApiRead`, the workload's own service account token) and the OCI resolver's registries
   are handlers too.
