@@ -712,6 +712,10 @@ just registry-host-up                                  # a registry on this mach
 nu infra/images.nu import --from docker.io/<account>   # amd64 or arm64, from `uname -m`; --arch to choose
 ```
 
+Every release is published under its version as well as `latest`: `--tag 3.0.0` imports that release, so a later
+`latest` cannot change what you run. 3.0.0 changes the broker's protocol, so import every image of one release
+together; a 2.x client and a 3.0 broker refuse each other.
+
 It reads `<from>/polar-<image>:<tag>-<arch>` (for example `polar-cassini:latest-arm64`), writes each as `<image>:<tag>` in your
 registry (`POLAR_REGISTRY`, default `localhost:5000`), copies the third-party images from their own registries (`--skip-mirrors` to
 leave those), and records the digests. Name images to import only those (`nu infra/images.nu import cassini --from …`). Add
@@ -795,6 +799,11 @@ Kustomization that applies Neo4j first, so Flux does not scale it back up halfwa
 in a temporary pod with Neo4j's own image and user, then scales Neo4j up again and resumes the Kustomization, even when the
 load fails. The users and the password are left as they were: they are in the `system` database, which a dump of `neo4j`
 does not touch. Neo4j is unavailable while it runs.
+
+It replaces the whole `neo4j` database, every agent's part of the graph included, and what it loads was written around
+the agents, so nothing records which agent wrote it; a dump made by an older release also brings back what that release
+wrote wrong. For Jira's data, prefer the observer's own first pull (`QUERY_DATE`, or unset for everything): it pulls
+oldest first and resumes from the graph's newest issue after any restart. Keep a dump for restoring a whole graph.
 
 ### Accessing the deployment
 
