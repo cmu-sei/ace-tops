@@ -281,13 +281,26 @@ export def topology_problem [placement: any, chosen: any]: nothing -> any {
     }
 }
 
-# Why a deployed cluster cannot go from topology `from` to `to`: a volume bound to a node (local-path's are) keeps its pod on that
-# node, and the new layout would not schedule it there, so the pod stays Pending and every layer after it waits. `bound` names such
-# volumes. Null when nothing has to move, or nothing is in the way.
-export def topology_change_problem [from: any, to: string, bound: list<string>]: nothing -> any {
-    if $from == null or $from == $to or ($bound | is-empty) { return null }
+# The pools the workloads on a cluster are placed by, from their pod templates (`objects`, Deployments and StatefulSets): null when
+# nothing is deployed, and empty when something is and places by no pool.
+export def pools_deployed [objects: list]: nothing -> any {
+    if ($objects | is-empty) { return null }
+    $objects
+    | each {|o| $o.spec?.template?.spec?.nodeSelector? | default {} | get -o $POOL_KEY }
+    | compact
+    | uniq
+}
+
+# Why this cluster cannot be deployed in the layout `declared` (`placement_in_force`), named `to`: a volume bound to a node (local-path's
+# are) keeps its pod on that node, and a layout placing it elsewhere leaves it Pending, with every layer after it waiting. `deployed`
+# is `pools_deployed`; `bound` names such volumes. Null when nothing has to move, or nothing is in the way.
+export def topology_change_problem [deployed: any, declared: any, to: string, bound: list<string>]: nothing -> any {
+    if $deployed == null or ($bound | is-empty) { return null }
+    let next = ($declared.pools? | default [])
+    if ($deployed | sort) == ($next | sort) { return null }
     let some = ($bound | first 3 | str join ", ")
-    $"this cluster is deployed in the topology '($from)', and its volumes are bound to nodes \(($some), ($bound | length) in all\), so it cannot change to '($to)' in place: their pods would stay Pending. Choose a topology on a fresh cluster."
+    let now = if ($deployed | is-empty) { "no pools" } else { $"the pools ($deployed | str join ', ')" }
+    $"this cluster is deployed on ($now), and its volumes are bound to nodes \(($some), ($bound | length) in all\), so it cannot move to the topology '($to)' in place: their pods would stay Pending. Give --topology the layout it is deployed in, or start from a fresh cluster."
 }
 
 # The pools a topology places by that no node carries: a pod of one would stay Pending. `nodes` is `[{ name, pool }]`.

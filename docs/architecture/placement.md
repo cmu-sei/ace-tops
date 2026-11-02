@@ -91,7 +91,8 @@ there: placement is the target's to declare.
    refuses escrow without custody). A target that declares no placement places nothing and refuses nothing. Before anything
    is deployed, `up.nu`'s preflight refuses a topology whose pool no node carries (`pools_without_nodes`), and says so when a
    cluster's nodes carry pools the topology in force does not use. A deployed cluster whose volumes are bound to nodes cannot
-   change topology (`topology_change_problem`): tried on `u7c`, 2026-11-02, from `separated` to `single`, cert-issuer's volume
+   change layout (`topology_change_problem`, which reads what is deployed from the workloads' selectors, since this machine's own
+   record can be another cluster's, or gone): tried on `u7c`, 2026-11-02, from `separated` to `single`, cert-issuer's volume
    stayed on the tainted `core` node, its new pod stayed Pending, and every Flux layer after it waited, while pods already running
    were untouched. A topology is chosen on a fresh cluster.
 5. *Neo4j, the one hand chart placed.* Its pool, `writers`, is in its `values.dhall`; `render.nu` hands the chart the

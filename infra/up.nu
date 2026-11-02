@@ -78,7 +78,7 @@ use runtime.nu [container_runtime]
 use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
 use agent-pods.nu [delete_stale_namespaces]
 use preflight.nu [kubernetes_problem, openssl_problem, uncommitted_problem]
-use rules.nu [POOL_KEY, pools_without_nodes, topology_change_problem, topology_problem]
+use rules.nu [POOL_KEY, placement_in_force, pools_deployed, pools_without_nodes, topology_change_problem, topology_problem]
 use cluster-registry.nu
 use registry.nu [node_registry]
 use apply.nu [any_pod_ready, changed_configmaps, changed_lines, config_users, gate_after, job_verdict, jobs_in, stale_images, stale_pod_images, stale_pod_report, workload_needs_restart]
@@ -336,6 +336,7 @@ def build_waits [config: record] {
 def check_topology_fits [target: string] {
     let declared = (^$nu.current-exe infra/resolve.nu placement --target $target | from json)
     let name = (^$nu.current-exe infra/resolve.nu topology --target $target | str trim)
+    check_not_stranded $name $declared
     let nodes = (^kubectl get nodes -o json | from json | get items | each {|n|
         { name: $n.metadata.name, pool: ($n.metadata.labels | get -o $POOL_KEY) }
     })
@@ -350,7 +351,7 @@ def check_topology_fits [target: string] {
     if ($name | is-not-empty) { ok $"topology ($name)" }
 }
 
-def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool] {
+def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, topology: string] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
     }
@@ -371,6 +372,10 @@ def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool] {
     let too_old = (kubernetes_problem $git_version)
     if $too_old != null { fail $too_old }
     ok $"Kubernetes ($git_version)"
+    # This machine's record of another cluster is not this one's. Only here, with the cluster known to answer: a cluster
+    # that does not answer has no CA to compare, and its record would look like another's.
+    discard_other_clusters_inputs $config.name
+    if ($topology | is-not-empty) { choose_topology $config.name $topology }
     check_topology_fits $config.name
     let ssl = (do { ^openssl version } | complete)
     let no_ext = (openssl_problem (if $ssl.exit_code == 0 { $ssl.stdout | str trim } else { "" }))
@@ -422,18 +427,22 @@ def choose_topology [target: string, topology: string] {
     let layouts = (open ($env.PWD | path join $"infra/targets/($target)/config.nuon") | get -o cluster.placement)
     let refused = (topology_problem $layouts $topology)
     if $refused != null { fail $refused }
+    check_not_stranded $topology (placement_in_force $layouts $topology)
     let path = (cluster_inputs_path $target)
-    let fingerprint = (cluster_fingerprint)
-    let held = (cluster-inputs read_inputs $path)
-    # In force on this cluster only if it has been deployed, which its CA and a file tied to it say.
-    let deployed_in = if $fingerprint != null and ($held | get -o cluster) == $fingerprint { (cluster-inputs topology_of $held) | default ($layouts.topology? | default null) } else { null }
-    let in_the_way = (do { ^kubectl get pv -o json } | complete | if $in.exit_code == 0 { $in.stdout | from json | get items } else { [] }
+    let chosen = (cluster-inputs with_topology (cluster-inputs read_inputs $path) $topology (cluster_fingerprint))
+    if $chosen.changed { $chosen.inputs | to nuon --indent 2 | save --force $path }
+}
+
+# Refuses a layout that would strand what is deployed: it asks the cluster what that is, since this machine's record can be another
+# cluster's, or gone.
+def check_not_stranded [name: string, declared: any] {
+    let objects = (^kubectl get deployments,statefulsets -A -o json | from json | get items
+        | where {|o| $o.metadata.namespace in [$POLAR "polar-graph"] })
+    let bound = (^kubectl get pv -o json | from json | get items
         | where {|v| ($v.spec.nodeAffinity? | default null) != null and ($v.spec.claimRef?.namespace? | default "" | str starts-with "polar") }
         | each {|v| $"($v.spec.claimRef.namespace)/($v.spec.claimRef.name)" })
-    let stuck = (topology_change_problem $deployed_in $topology $in_the_way)
+    let stuck = (topology_change_problem (pools_deployed $objects) $declared $name $bound)
     if $stuck != null { fail $stuck }
-    let chosen = (cluster-inputs with_topology $held $topology $fingerprint)
-    if $chosen.changed { $chosen.inputs | to nuon --indent 2 | save --force $path }
 }
 
 # What this machine kept of another cluster's inputs (its administrators) is not this cluster's: discard it before it is rendered.
@@ -929,7 +938,6 @@ def main [
     if ($import_tag | is-not-empty) and ($import_from | is-empty) {
         fail "--import-tag names a release to import: give --import-from too"
     }
-    if ($topology | is-not-empty) { choose_topology $target $topology }
     let plan = (build_plan $config $dev { in_cluster: $in_cluster, import_from: $import_from })
     let enabled = ($plan | where on)
     let waits = (build_waits $config)
@@ -949,7 +957,7 @@ def main [
         print ""
         print $"[($it.index + 1)/($total)] ($s.title)"
         match $s.id {
-            "preflight" => { step_preflight $config (needs_runtime $plan) $allow_dirty }
+            "preflight" => { step_preflight $config (needs_runtime $plan) $allow_dirty $topology }
             "registry" => { cluster-registry ensure $target | ignore }
             "images" => { $prepared = (step_images $target $in_cluster $dev $import_from $import_tag) }
             "render" => { step_render $target $prepared $config }

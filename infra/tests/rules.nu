@@ -121,17 +121,30 @@ def main [] {
         }
 
         # Seen on u7c, 2026-11-02: from `separated` to `single`, cert-issuer's volume stayed on the tainted core node and its
-        # new pod, with no toleration, stayed Pending, and every layer after it waited.
-        "a deployed cluster cannot change topology while its volumes are bound to nodes": {
+        # new pod, with no toleration, stayed Pending, and every layer after it waited. What is deployed is read from the cluster,
+        # since a machine's own record of it can be another cluster's, or gone.
+        "a deployed cluster cannot change layout while its volumes are bound to nodes": {
+            let pools = ["core" "observers" "writers"]
             let bound = ["polar/cert-issuer-data" "polar-graph/polar-db-data"]
-            let refused = (topology_change_problem "separated" "single" $bound)
-            assert ($refused | str contains "separated") $refused
-            assert ($refused | str contains "single") $refused
+            let refused = (topology_change_problem $pools null "single" $bound)
+            assert ($refused | str contains "core") $refused
             assert ($refused | str contains "polar/cert-issuer-data") $refused
-            # the same topology, or none in force yet, or volumes that can follow their pods: nothing to refuse
-            assert equal (topology_change_problem "separated" "separated" $bound) null
-            assert equal (topology_change_problem null "separated" $bound) null
-            assert equal (topology_change_problem "separated" "single" []) null
+            assert ($refused | str contains "--topology") $refused
+            let other_way = (topology_change_problem [] { pools: $pools } "separated" $bound)
+            assert ($other_way | str contains "no pools") $other_way
+            # the same layout, whatever the order; nothing deployed yet; or volumes that can follow their pods
+            assert equal (topology_change_problem $pools { pools: ["writers" "core" "observers"] } "separated" $bound) null
+            assert equal (topology_change_problem [] null "single" $bound) null
+            assert equal (topology_change_problem null { pools: $pools } "separated" $bound) null
+            assert equal (topology_change_problem $pools null "single" []) null
+        }
+
+        "the pools deployed are read from the workloads' selectors, and nothing deployed is not the same as no pools": {
+            let placed = {|pool| { spec: { template: { spec: { nodeSelector: { "polar.dev/pool": $pool } } } } } }
+            let plain = { spec: { template: { spec: {} } } }
+            assert equal (pools_deployed []) null
+            assert equal (pools_deployed [$plain]) []
+            assert equal (pools_deployed [(do $placed "writers") $plain (do $placed "core") (do $placed "core")] | sort) ["core" "writers"]
         }
 
         # nix-usernetes' contract: a pod with a pool's selector and toleration stays Pending unless a node carries that pool.
