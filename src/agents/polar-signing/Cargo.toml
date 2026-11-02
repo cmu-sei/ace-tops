@@ -27,6 +27,7 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
+ring.workspace = true
 cert-issuer-common = { version = "1.0.0", path = "../cert-issuer/common" }
 ed25519-dalek.workspace = true
 p256.workspace = true

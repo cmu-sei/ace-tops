@@ -43,6 +43,7 @@
 pub mod authority;
 pub mod canonical;
 mod cert;
+pub mod commit;
 pub mod document;
 pub mod sign;
 #[cfg(feature = "testing")]

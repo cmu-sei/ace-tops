@@ -123,12 +123,12 @@ brought up from `mirror.git`, which stays off the cluster, with Flux pointed at 
 **To settle before it is built:**
 
 1. *The signature is checked by no one after install* (item 4 of "Not settled"), which is true today and not only after the handoff: whoever can write to the repository can deploy anything. The
-   handoff needs `polar-git-server` to refuse a commit to `deploy-T` that the pipeline did not sign. The server's image has no `gpgsm`, so this is an x509 verifier in Rust.
-2. *Who makes the copy.* The maintainer's expectation is the configuration agent, which reads the bootstrap repository once. But `polar-scheduler-observer` runs on the low-trust `observers` pool and only reads
-   today. Writing what Polar deploys is safe in its hands only with item 1, since it could then copy signed commits and forge none. It would also need one client certificate from the
-   deployment PKI for that read.
-3. *How Flux is identified to Polar's git server.* The server trusts Polar's CA, and Polar's certificates are short-lived and renewed by `polar-init`, which Flux does not run. Today Flux holds a client
-   certificate from the deployment PKI in a Secret. Either the server trusts the deployment CA for this one reader, or Flux is given a Polar certificate and something renews it.
+   handoff needs `polar-git-server` to refuse a commit to `deploy-T` that the pipeline did not sign. The server's image has no `gpgsm`, so it uses a verifier in Rust: `polar_signing::commit::verify_commit`
+   (built 2026-11-02). It reads the BER `gpgsm` writes, and is tested against a real commit with every single-bit change of it refused.
+2. ~~Who makes the copy.~~ *Decided (the maintainer, 2026-11-02):* the configuration agent, which reads the bootstrap repository once with one client certificate from the deployment PKI, and whose
+   write access to `deploy-T` is withdrawn when the copy is done. It runs on the low-trust `observers` pool, so item 1 comes first: with it, the agent could copy signed commits and forge none.
+3. ~~How Flux is identified to Polar's git server.~~ *Decided (the maintainer, 2026-11-02):* for now, the server also trusts the deployment CA, for the identity `flux` alone, to read `deploy-T` alone. Flux
+   reads its credential only from a Secret, and nothing renews one. Moving Flux onto `polar-init` was considered, and then replacing Flux with a controller of Polar's own: `gitops-controller.md` (a proposal).
 4. *Who publishes later.* `pipeline` still signs the commit, but it pushes with a Polar identity now, since the server's mTLS is Polar's: the admin's certificate.
 5. *What a cluster on 3.0.0 does.* Its repository moves the same way, by a step of the next release's migration.
 

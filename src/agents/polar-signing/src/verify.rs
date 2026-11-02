@@ -38,7 +38,7 @@ use x509_parser::der_parser::oid::Oid;
 use x509_parser::time::ASN1Time;
 
 /// The longest chain accepted, the signer's certificate included, anchor excluded.
-const MAX_CHAIN: usize = 4;
+pub(crate) const MAX_CHAIN: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VerifyError {
@@ -87,6 +87,15 @@ pub struct Trust {
 }
 
 impl Trust {
+    /// Whether a pinned CA issued `cert`, at `now`.
+    pub(crate) fn anchors(&self, cert: &X509Certificate<'_>, now: i64) -> bool {
+        self.anchors.iter().any(|der| {
+            cert::parse(der)
+                .map(|anchor| issued_by(cert, &anchor, now).is_ok())
+                .unwrap_or(false)
+        })
+    }
+
     pub fn from_pem(anchors: &[String]) -> Result<Self, VerifyError> {
         let anchors = anchors
             .iter()
@@ -117,7 +126,7 @@ fn name_of(cert: &X509Certificate<'_>) -> String {
     cert.subject().to_string()
 }
 
-fn valid_at(cert: &X509Certificate<'_>, now: i64) -> Result<(), VerifyError> {
+pub(crate) fn valid_at(cert: &X509Certificate<'_>, now: i64) -> Result<(), VerifyError> {
     let at =
         ASN1Time::from_timestamp(now).map_err(|e| VerifyError::BadCertificate(e.to_string()))?;
     if cert.validity().is_valid_at(at) {
@@ -127,7 +136,7 @@ fn valid_at(cert: &X509Certificate<'_>, now: i64) -> Result<(), VerifyError> {
     }
 }
 
-fn issued_by(
+pub(crate) fn issued_by(
     cert: &X509Certificate<'_>,
     issuer: &X509Certificate<'_>,
     now: i64,
@@ -252,12 +261,7 @@ fn believed_leaf(
         issued_by(&pair[0], &pair[1], now)?;
     }
     let top = certs.last().expect("non-empty");
-    let anchored = trust.anchors.iter().any(|der| {
-        cert::parse(der)
-            .map(|anchor| issued_by(top, &anchor, now).is_ok())
-            .unwrap_or(false)
-    });
-    if !anchored {
+    if !trust.anchors(top, now) {
         return Err(VerifyError::UntrustedRoot);
     }
 
@@ -396,7 +400,7 @@ fn attribute(cert: &X509Certificate<'_>, arcs: &[u64]) -> Option<String> {
         .map(str::to_string)
 }
 
-fn signer_info(cert: &X509Certificate<'_>, pem: &str) -> SignerInfo {
+pub(crate) fn signer_info(cert: &X509Certificate<'_>, pem: &str) -> SignerInfo {
     use x509_parser::extensions::GeneralName;
     let identity = cert
         .subject_alternative_name()
