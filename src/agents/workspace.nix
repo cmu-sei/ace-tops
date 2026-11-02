@@ -215,6 +215,12 @@ let
       healthcheckDrv = healthcheck;
     };
 
+    attestation = import ./attestation/package.nix {
+      inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
+      crateArgs = individualCrateArgs;
+      healthcheckDrv = healthcheck;
+    };
+
     softState = import ./soft-state/package.nix {
       inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
       crateArgs = individualCrateArgs;

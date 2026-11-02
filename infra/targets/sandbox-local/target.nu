@@ -149,6 +149,8 @@ def main [] {
                 "polar-scheduler.yaml"
                 "oci-registry-resolver-resources.yaml"
                 "oci-registry-resolver.yaml"
+                "attestation-agent-resources.yaml"
+                "attestation-agent.yaml"
                 # The load harness's accounts and configuration only: infra/load-harness.nu makes its Jobs per run.
                 "harness-producer-resources.yaml"
                 "harness-sink-resources.yaml"

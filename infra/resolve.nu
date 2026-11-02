@@ -123,7 +123,7 @@ def all_workloads [target: string] {
 def service_vars [services: record, cluster: record] {
     $services
     | transpose name s
-    | reduce --fold { _registry: $cluster.registry } {|it, acc|
+    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ",") } {|it, acc|
         let ns = ($cluster.namespaces | get $it.s.namespace)
         let dns = $"($it.s.dns_name).($ns).svc.($cluster.domain)"
         let addr = $"($dns):($it.s.port)"
@@ -136,10 +136,10 @@ def service_vars [services: record, cluster: record] {
 # Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from) and {<service>.dns|port|addr}.
 # A placeholder left over is an error: it means a capability names a service that services.nuon does not have.
 def subst [text: string, vars: record, who: string] {
-    let start = ($text | str replace --all "{workload}" $who | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
+    let start = ($text | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
     let out = (
         $vars
-        | reject -o _registry
+        | reject -o _registry _namespaces
         | transpose name v
         | reduce --fold $start {|it, acc|
             $acc
@@ -399,6 +399,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     mut cert_dirs: list<any> = []
     mut sa_secret: any = null
     mut cluster_roles: list<any> = []
+    mut namespaced_roles: list<any> = []
     mut pvcs: list<any> = []
     mut init_env: list<any> = []
     mut ports: list<any> = []
@@ -473,6 +474,12 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         }
         for r in ($cap.resources.cluster_roles? | default []) {
             $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: $r.rules, from: $n })
+        }
+        # A Role in each of Polar's namespaces.
+        for r in ($cap.resources.namespaced_roles? | default []) {
+            for namespace in ($cluster.namespaces | values) {
+                $namespaced_roles = ($namespaced_roles | append { name: (subst $r.name $vars $name), namespace: $namespace, rules: $r.rules })
+            }
         }
     }
 
@@ -691,7 +698,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         custody: (if $custody { $CUSTODY | insert image (image_ref $images $cluster "polar-custody" $name) } else { null })
         placement: (placement_of $declared $pool)
         memory: (if $memory == null { null } else { { request: $memory.request, limit: $memory.limit } })
-        resources: { cluster_roles: ($cluster_roles | reject from), sa_token_secrets: (if $sa_secret == null { [] } else { [$sa_secret] }), pvcs: $pvcs, services: $exposed, config_maps: $egress.config_maps }
+        resources: { cluster_roles: ($cluster_roles | reject from), namespaced_roles: $namespaced_roles, sa_token_secrets: (if $sa_secret == null { [] } else { [$sa_secret] }), pvcs: $pvcs, services: $exposed, config_maps: $egress.config_maps }
         config_map: $config_map
         config_problems: $config_problems
         check_names: (check_names $spec)
@@ -1133,6 +1140,7 @@ def "main resources" [
         namespace: $r.namespace
         service_account: $r.service_account
         cluster_roles: $r.resources.cluster_roles
+        namespaced_roles: $r.resources.namespaced_roles
         sa_token_secrets: $r.resources.sa_token_secrets
         pvcs: $r.resources.pvcs
         services: $r.resources.services

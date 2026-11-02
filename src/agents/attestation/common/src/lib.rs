@@ -26,8 +26,13 @@
 //! be tested over every way a pod can differ from the genuine one, and so that nothing Kubernetes-specific is in it: the
 //! platform backend turns what it sees into these facts.
 
+pub mod protocol;
 pub mod verdict;
 
+pub use protocol::{
+    AGENT_NAME, Envelope, InstanceQuestion, REPLIES_FAMILY, REQUESTS_TOPIC, decode_question,
+    decode_verdict, encode_question, encode_verdict, replies_topic,
+};
 pub use verdict::{
     ContainerFacts, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts, digest_of,
     judge,

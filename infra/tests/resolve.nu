@@ -320,7 +320,7 @@ def main [] {
         # the open pool's (services) is given nothing. The mapping is the maintainer's (2026-10-28).
         "under the separated topology every workload is placed in its pool, and the open pool's in none": {
             let pools = {
-                core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server]
+                core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server attestation-agent]
                 observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer oci-registry-resolver]
                 writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor]
             }
@@ -388,6 +388,28 @@ def main [] {
                 let r = (do { ^nu $RESOLVER json cassini --target $t } | complete)
                 assert ($r.exit_code != 0) "the target set cassini's pool"
                 assert ($r.stderr | str contains "catalog") $r.stderr
+            }
+        }
+
+        # docs/architecture/runtime-attestation.md: the attestation agent reads pods and what owns them in Polar's namespaces,
+        # and nothing else: no ClusterRole, and a Role in each namespace it is told to watch.
+        "the attestation agent gets a read-only Role in each of Polar's namespaces, and no ClusterRole": {
+            let resources = (^nu $RESOLVER resources attestation-agent | from json)
+            assert equal $resources.cluster_roles []
+            let namespaces = ($resources.namespaced_roles | get namespace | sort)
+            assert equal $namespaces ["polar" "polar-auth" "polar-graph"]
+            for role in $resources.namespaced_roles {
+                let verbs = ($role.rules | get verbs | flatten | uniq | sort)
+                assert equal $verbs ["get" "list" "watch"] $role.namespace
+                let kinds = ($role.rules | get resources | flatten | sort)
+                assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
+            }
+            assert equal (env_value (resolve "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" | split row "," | sort) ["polar" "polar-auth" "polar-graph"]
+        }
+
+        "no other workload's capabilities give it a namespaced Role": {
+            for n in (^nu $RESOLVER names | from json | where {|n| $n != "attestation-agent" }) {
+                assert equal (^nu $RESOLVER resources $n | from json | get namespaced_roles) [] $n
             }
         }
 

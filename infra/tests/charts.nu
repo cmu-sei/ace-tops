@@ -222,6 +222,25 @@ def main [] {
             assert (((value_of $vars "POLAR_INIT_CERT_ISSUER_URL") | default "") == "")
         }
 
+        # docs/architecture/runtime-attestation.md: a namespaced Role and its binding are in that namespace, and the subject is the workload's account, where it lives.
+        "a namespaced role renders as a Role and a RoleBinding in its own namespace": {
+            let spec = {
+                name: "w", namespace: "polar", service_account: "w", cluster_roles: [], sa_token_secrets: [], config_maps: [], pvcs: [], services: []
+                namespaced_roles: [{ name: "w-read", namespace: "polar-graph", rules: [{ api_groups: [""], resources: ["pods"], verbs: ["get"] }] }]
+            }
+            let schema = ("(" + ($INFRA | path join "schema/resources-spec.dhall") + ").Spec")
+            let typed = ($spec | to json | ^json-to-dhall $schema)
+            let expr = ("let spec = " + $typed + "\nin " + ($INFRA | path join "schema/resources.dhall") + " spec")
+            let docs = ($expr | ^dhall-to-yaml --documents | split row "\n---\n" | each {|d| $d | from yaml } | compact)
+            let role = ($docs | where kind == "Role" | first)
+            let binding = ($docs | where kind == "RoleBinding" | first)
+            assert equal $role.metadata.namespace "polar-graph"
+            assert equal $binding.metadata.namespace "polar-graph"
+            assert equal $binding.roleRef { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "w-read" }
+            assert equal ($binding.subjects | first | get namespace) "polar"
+            assert equal ($docs | where kind == "ClusterRole") []
+        }
+
         # docs/architecture/placement.md: Neo4j is the writers' (the maintainer, 2026-10-28), placed only on a target that
         # declares the pool, with both the selector and the toleration; a target that lacks the pool refuses it.
         "Neo4j goes to the writers' node where the target declares the pool, and nowhere in particular otherwise": {

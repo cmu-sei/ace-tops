@@ -1,0 +1,39 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+# for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+# infra/config/workloads/attestation.nuon
+#
+# The attestation agent (docs/architecture/runtime-attestation.md): it sees the pods of Polar's namespaces and answers whether an instance is what
+# the deployment made. It is not in the core; it starts after it, and an asker issues without it until it is up.
+[
+  {
+    name: "attestation-agent"
+    kind: "agent"
+    # Beside the identities it guards; it holds a read view of every Polar pod, and `observers` is the low-trust side
+    # (the maintainer, 2026-11-02).
+    pool: "core"
+    image: "attestation-agent"
+    config: "document"
+    env: [
+      { name: "POLAR_ATTESTATION_NAMESPACES", value: "{polar-namespaces}" }
+    ]
+  }
+]

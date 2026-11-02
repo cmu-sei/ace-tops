@@ -32,6 +32,9 @@ let Rule =
 
 let ClusterRoleEntry = { name : Text, rules : List Rule }
 
+-- A Role in a namespace, bound there to the workload's account, wherever that account lives.
+let NamespacedRoleEntry = { name : Text, namespace : Text, rules : List Rule }
+
 -- A ConfigMap with one key: the document a workload's agent reads.
 let ConfigMapEntry = { name : Text, key : Text, content : Text }
 
@@ -49,10 +52,11 @@ let Spec =
       , namespace : Text
       , service_account : Text
       , cluster_roles : List ClusterRoleEntry
+      , namespaced_roles : List NamespacedRoleEntry
       , sa_token_secrets : List Text
       , config_maps : List ConfigMapEntry
       , pvcs : List PvcEntry
       , services : List ServiceEntry
       }
 
-in  { Spec, Rule, ClusterRoleEntry, ConfigMapEntry, PvcEntry, ServiceEntry, ServicePort }
+in  { Spec, Rule, ClusterRoleEntry, NamespacedRoleEntry, ConfigMapEntry, PvcEntry, ServiceEntry, ServicePort }

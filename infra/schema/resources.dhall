@@ -53,6 +53,44 @@ let render =
                 , verbs = r.verbs
                 }
 
+        let toRole =
+              λ(c : T.NamespacedRoleEntry) →
+                kubernetes.Resource.Role
+                  kubernetes.Role::{
+                  , apiVersion = "rbac.authorization.k8s.io/v1"
+                  , kind = "Role"
+                  , metadata = kubernetes.ObjectMeta::{
+                    , name = Some c.name
+                    , namespace = Some c.namespace
+                    }
+                  , rules = Some
+                      (Prelude.List.map T.Rule kubernetes.PolicyRule.Type toRule c.rules)
+                  }
+
+        let toRoleBinding =
+              λ(c : T.NamespacedRoleEntry) →
+                kubernetes.Resource.RoleBinding
+                  kubernetes.RoleBinding::{
+                  , apiVersion = "rbac.authorization.k8s.io/v1"
+                  , kind = "RoleBinding"
+                  , metadata = kubernetes.ObjectMeta::{
+                    , name = Some c.name
+                    , namespace = Some c.namespace
+                    }
+                  , roleRef = kubernetes.RoleRef::{
+                    , apiGroup = "rbac.authorization.k8s.io"
+                    , kind = "Role"
+                    , name = c.name
+                    }
+                  , subjects = Some
+                    [ kubernetes.Subject::{
+                      , kind = "ServiceAccount"
+                      , name = v.service_account
+                      , namespace = Some v.namespace
+                      }
+                    ]
+                  }
+
         let toClusterRole =
               λ(c : T.ClusterRoleEntry) →
                 kubernetes.Resource.ClusterRole
@@ -160,6 +198,8 @@ let render =
                   }
 
         in    Prelude.List.map T.ClusterRoleEntry kubernetes.Resource toClusterRole v.cluster_roles
+            # Prelude.List.map T.NamespacedRoleEntry kubernetes.Resource toRole v.namespaced_roles
+            # Prelude.List.map T.NamespacedRoleEntry kubernetes.Resource toRoleBinding v.namespaced_roles
             # Prelude.List.map T.ClusterRoleEntry kubernetes.Resource toBinding v.cluster_roles
             # Prelude.List.map Text kubernetes.Resource toTokenSecret v.sa_token_secrets
             # Prelude.List.map T.ConfigMapEntry kubernetes.Resource toConfigMap v.config_maps

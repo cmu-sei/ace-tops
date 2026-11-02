@@ -97,6 +97,7 @@
     }
     # The OCI registry resolver is not part of this cluster (2026-10-14). It is in the catalog, and the
     # `local` target still runs it.
+    attestation-agent: { issuer: "credentials-agent" }
     oci-registry-resolver: {
       issuer: "credentials-agent"
       env: [

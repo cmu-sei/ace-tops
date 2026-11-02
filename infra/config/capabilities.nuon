@@ -167,6 +167,31 @@
     }
   }
 
+  # What runs in Polar's own namespaces, and nothing else in the Kubernetes API: a Role in each of them, get, list and watch on pods and
+  # what owns them, with the workload's own ServiceAccount token. The attestation agent's (docs/architecture/runtime-attestation.md).
+  pod-read: {
+    pod: {
+      volumes: [ { name: "{workload}-sa-token", secret: "{workload}-sa-token" } ]
+      mounts: [ { name: "{workload}-sa-token", path: "/var/run/secrets/kubernetes.io/serviceaccount", read_only: false } ]
+    }
+    identity: {}
+    dependency: {}
+    init: {}
+    resources: {
+      sa_token_secret: "{workload}-sa-token"
+      namespaced_roles: [
+        {
+          name: "{workload}-read"
+          rules: [
+            { api_groups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] }
+            { api_groups: ["apps"], resources: ["replicasets", "deployments", "statefulsets"], verbs: ["get", "list", "watch"] }
+            { api_groups: ["batch"], resources: ["jobs"], verbs: ["get", "list", "watch"] }
+          ]
+        }
+      ]
+    }
+  }
+
   # State that must outlive the pod, on a persistent volume claim named for the workload and
   # mounted at /var/lib/<workload>. The claim is created alongside the workload (the storage
   # class and size are the cluster's, in cluster.nuon). It is not an emptyDir: the credentials

@@ -1,0 +1,356 @@
+/*
+   ACE Tool
+
+   Copyright 2026 Carnegie Mellon University.
+
+   NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+   FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+   EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+   PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+   MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+   TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+   Licensed under a MIT (SEI)-style license, please see license.txt or contact
+   permission@sei.cmu.edu for full terms.
+
+   [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+   distribution.  Please see Copyright notice for non-US Government use and distribution.
+
+   This Software includes and/or makes use of Third-Party Software each subject to its own license.
+
+   DM26-0670
+*/
+
+//! The attestation agent's supervisor, on the agent builder: health, the Cassini client and the shutdown handshake come from
+//! `AgentBuilder`. It keeps the holdings current from its watches and answers each question on its asker's own reply topic. The judgement
+//! is `attestation_common::judge`; what it reads about a pod is [`crate::holdings`].
+//!
+//! A question with no verified asker, or from an identity that names no workload, has no reply topic, and is dropped with a warning, as
+//! the state agent's are.
+
+use crate::holdings::{Change, Holdings, Kind, Watch};
+use crate::settings;
+use crate::watch::{self, Source, WatchActor, WatchArgs};
+use attestation_common::{
+    AGENT_NAME, Envelope, InstanceQuestion, REQUESTS_TOPIC, Verdict, WorkloadFacts,
+    decode_question, encode_verdict, judge, replies_topic,
+};
+use cassini_client::{OfflineBehavior, PublishRequest};
+use cassini_types::{ClientEvent, WireTraceCtx};
+use polar::cassini::{CassiniClient, TcpClient};
+use polar_agent_builder::{
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
+    InfrastructureSupervisorMessage, Subscription,
+};
+use ractor::concurrency::Duration;
+use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
+use std::sync::Arc;
+use tracing::{debug, error, info, warn};
+
+/// What it holds is nothing it must save, so this is the handshake's margin.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
+
+/// The answer to a question, from what it holds and what the signed record says of the identity. Until every watch has listed, a pod it
+/// does not hold may exist, so it cannot say.
+pub fn answer(
+    held: &Holdings,
+    record: impl Fn(&str) -> Option<WorkloadFacts>,
+    question: &InstanceQuestion,
+) -> Verdict {
+    if !held.ready() {
+        return Verdict::CannotSay;
+    }
+    judge(
+        record(&question.identity).as_ref(),
+        held.facts_of(&question.pod_uid).as_ref(),
+    )
+}
+
+/// Where the answer to a question from `published_by` goes: the reply topic of the workload its identity names.
+pub fn reply_topic_for(published_by: Option<&str>) -> Option<String> {
+    published_by
+        .and_then(cert_issuer_common::identity::workload_of)
+        .map(replies_topic)
+}
+
+pub enum AttestationMessage {
+    ClientEvent {
+        event: ClientEvent,
+    },
+    Question {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
+    Seen(Change),
+    PrepareShutdown,
+}
+
+pub struct AttestationSupervisor;
+
+pub struct AttestationState {
+    tcp_client: TcpClient,
+    healthcheck: HealthHandle,
+    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
+    held: Holdings,
+    shutting_down: bool,
+}
+
+#[async_trait]
+impl Actor for AttestationSupervisor {
+    type Msg = AttestationMessage;
+    type State = AttestationState;
+    type Arguments = Configured;
+
+    async fn pre_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        configured: Self::Arguments,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        let namespaces =
+            settings::namespaces(&**configured.config()).map_err(ActorProcessingErr::from)?;
+
+        let deliver_to = myself.clone();
+        let questions = Subscription::new(REQUESTS_TOPIC, move |incoming| {
+            if let Err(e) = deliver_to.cast(AttestationMessage::Question {
+                payload: incoming.payload,
+                published_by: incoming.published_by,
+            }) {
+                warn!("failed to hand a question to the supervisor: {e}");
+            }
+        });
+        let resources = AgentBuilder::new(myself.clone(), AGENT_NAME)
+            .with_subscription(questions)
+            .with_lifecycle_handler(|event| Some(AttestationMessage::ClientEvent { event }))
+            .into_configured(configured)
+            .build()
+            .await?;
+        resources
+            .infrastructure_events
+            .subscribe(myself.clone(), |event| match event {
+                InfrastructureEvent::PrepareShutdown => Some(AttestationMessage::PrepareShutdown),
+            });
+
+        let config = kube::Config::incluster()
+            .map_err(|e| ActorProcessingErr::from(format!("no Kubernetes API in this pod: {e}")))?;
+        let client = kube::Client::try_from(config)
+            .map_err(|e| ActorProcessingErr::from(format!("no Kubernetes client: {e}")))?;
+        for namespace in &namespaces {
+            for kind in Kind::ALL {
+                let watch = Watch {
+                    kind,
+                    namespace: namespace.clone(),
+                };
+                let client = client.clone();
+                let named = format!("{AGENT_NAME}.watch.{kind:?}.{namespace}");
+                let source: Source = Arc::new({
+                    let watch = watch.clone();
+                    move || watch::stream_of(&client, &watch)
+                });
+                let to = myself.clone();
+                let deliver: Arc<dyn Fn(Change) + Send + Sync> = Arc::new(move |change| {
+                    if let Err(e) = to.cast(AttestationMessage::Seen(change)) {
+                        debug!("a watch's change was not delivered: {e}");
+                    }
+                });
+                Actor::spawn_linked(
+                    Some(named),
+                    WatchActor,
+                    WatchArgs { source, deliver },
+                    myself.get_cell(),
+                )
+                .await?;
+            }
+        }
+
+        Ok(AttestationState {
+            tcp_client: resources.tcp_client,
+            healthcheck: resources.healthcheck,
+            infrastructure: resources.infrastructure,
+            held: Holdings::new(&namespaces),
+            shutting_down: false,
+        })
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        match message {
+            AttestationMessage::ClientEvent { event } => match event {
+                ClientEvent::Registered { .. } => {
+                    let _ = state.healthcheck.cassini_connected();
+                }
+                ClientEvent::TransportError { reason } => {
+                    warn!("Transport error occurred (non-fatal, awaiting reconnect): {reason}");
+                    let _ = state.healthcheck.cassini_disconnected();
+                }
+                _ => (),
+            },
+            AttestationMessage::Seen(change) => {
+                let was_ready = state.held.ready();
+                state.held.apply(change);
+                if state.held.ready() != was_ready {
+                    info!(ready = !was_ready, "what it holds of the cluster changed");
+                }
+            }
+            AttestationMessage::Question {
+                payload,
+                published_by,
+            } => {
+                let Some(topic) = reply_topic_for(published_by.as_deref()) else {
+                    warn!(
+                        requester = published_by.as_deref().unwrap_or("unverified"),
+                        "dropped a question with no asker to answer"
+                    );
+                    return Ok(());
+                };
+                let envelope = match decode_question(&payload) {
+                    Ok(envelope) => envelope,
+                    Err(why) => {
+                        warn!(
+                            requester = published_by.as_deref(),
+                            "dropped a question: {why}"
+                        );
+                        return Ok(());
+                    }
+                };
+                // The signed record is the next step of slice A: until it is held, no identity is named.
+                let verdict = answer(&state.held, |_| None, &envelope.payload);
+                match &verdict {
+                    Verdict::NotGenuine(why) => warn!(
+                        requester = published_by.as_deref(),
+                        identity = envelope.payload.identity,
+                        pod_uid = envelope.payload.pod_uid,
+                        "not genuine: {why:?}"
+                    ),
+                    other => debug!(
+                        identity = envelope.payload.identity,
+                        pod_uid = envelope.payload.pod_uid,
+                        "answered {other:?}"
+                    ),
+                }
+                let reply = Envelope {
+                    correlation_id: envelope.correlation_id,
+                    payload: verdict,
+                };
+                if let Err(e) = state.tcp_client.publish(PublishRequest {
+                    topic: topic.clone(),
+                    payload: encode_verdict(&reply),
+                    trace_ctx: WireTraceCtx::from_current_span(),
+                    offline_behavior: OfflineBehavior::default(),
+                    share_identity: true,
+                }) {
+                    warn!("could not answer on {topic}: {e:?}");
+                }
+            }
+            AttestationMessage::PrepareShutdown => {
+                info!("PrepareShutdown received");
+                state.shutting_down = true;
+                let _ = state
+                    .infrastructure
+                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_supervisor_evt(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        event: SupervisionEvent,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        match event {
+            SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
+            SupervisionEvent::ActorTerminated(actor, _, reason) => {
+                // The infrastructure is this supervisor's linked child from build(); its ending is the end of the shutdown handshake, or a
+                // failure. Either way exit non-zero, so the pod starts afresh.
+                if actor.get_id() == state.infrastructure.get_id() {
+                    info!("infrastructure is down, exiting");
+                    std::process::exit(1);
+                }
+                if !state.shutting_down {
+                    error!("{actor:?} stopped unexpectedly: {reason:?}");
+                    std::process::exit(1);
+                }
+            }
+            SupervisionEvent::ActorFailed(actor, reason) => {
+                error!("{actor:?} failed: {reason:?}");
+                if !state.shutting_down {
+                    std::process::exit(1);
+                }
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::holdings::{Change, Watch};
+    use attestation_common::{NotGenuine, OwnerKind};
+
+    fn question() -> InstanceQuestion {
+        InstanceQuestion {
+            identity: "the-app.polar.serviceaccount.cluster.local".into(),
+            pod_uid: "p1".into(),
+        }
+    }
+
+    fn listed_holdings() -> Holdings {
+        let mut held = Holdings::new(&["polar".to_string()]);
+        for kind in Kind::ALL {
+            held.apply(Change::Listed {
+                watch: Watch {
+                    kind,
+                    namespace: "polar".into(),
+                },
+            });
+        }
+        held
+    }
+
+    #[test]
+    fn before_every_watch_has_listed_it_cannot_say_even_for_a_pod_it_does_not_hold() {
+        let held = Holdings::new(&["polar".to_string()]);
+        assert_eq!(answer(&held, |_| None, &question()), Verdict::CannotSay);
+    }
+
+    #[test]
+    fn once_it_has_listed_a_pod_it_does_not_hold_does_not_exist() {
+        assert_eq!(
+            answer(&listed_holdings(), |_| None, &question()),
+            Verdict::NotGenuine(NotGenuine::NoSuchPod)
+        );
+    }
+
+    #[test]
+    fn the_record_is_asked_about_the_identity_the_question_names() {
+        let asked = std::cell::RefCell::new(String::new());
+        let record = |identity: &str| {
+            *asked.borrow_mut() = identity.to_string();
+            Some(WorkloadFacts {
+                owner_kind: OwnerKind::Deployment,
+                owner_name: "the-app".into(),
+                service_account: "the-app".into(),
+            })
+        };
+        answer(&listed_holdings(), record, &question());
+        assert_eq!(*asked.borrow(), question().identity);
+    }
+
+    #[test]
+    fn an_answer_goes_to_the_workload_the_broker_vouches_for() {
+        assert_eq!(
+            reply_topic_for(Some("credentials-agent.polar.serviceaccount.cluster.local"))
+                .as_deref(),
+            Some("attestation-instance-replies.credentials-agent")
+        );
+        assert_eq!(reply_topic_for(None), None);
+        assert_eq!(reply_topic_for(Some("not an identity")), None);
+    }
+}

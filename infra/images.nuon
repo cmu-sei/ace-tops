@@ -69,6 +69,7 @@
   {image: "git-observer",        tag: "latest", kind: "nix", attr: "polarPkgs.gitAgent.observerImage"}
   {image: "git-processor",       tag: "latest", kind: "nix", attr: "polarPkgs.gitAgent.processorImage"}
   {image: "git-controller",      tag: "latest", kind: "nix", attr: "polarPkgs.gitAgent.controllerImage"}
+  {image: "attestation-agent", tag: "latest", kind: "nix", attr: "polarPkgs.attestation.agentImage"}
   {image: "soft-state-observer", tag: "latest", kind: "nix", attr: "polarPkgs.softState.observerImage"}
   {image: "soft-state-processor", tag: "latest", kind: "nix", attr: "polarPkgs.softState.processorImage"}
   {image: "openapi-observer",    tag: "latest", kind: "nix", attr: "polarPkgs.webAgent.observerImage"}

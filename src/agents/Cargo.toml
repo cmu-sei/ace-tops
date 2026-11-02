@@ -86,6 +86,7 @@ members = [
     "build-processor",
     "cert-issuer/server","cert-issuer/client", "cert-issuer/common",
     "secret-harness",
+    "attestation/agent",
     "attestation/common",
     "soft-state/common",
     "soft-state/observe",

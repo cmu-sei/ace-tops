@@ -25,8 +25,9 @@
 //! (docs/architecture/runtime-attestation.md, "Slice A"): the genuine pod passes, and each difference, alone, does not.
 
 use attestation_common::{
-    ContainerFacts, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts, digest_of,
-    judge,
+    ContainerFacts, Envelope, InstanceQuestion, NotGenuine, Owner, OwnerKind, PodFacts, Verdict,
+    WorkloadFacts, decode_question, decode_verdict, digest_of, encode_question, encode_verdict,
+    judge, replies_topic,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -213,6 +214,38 @@ proptest! {
     }
 
     #[test]
+    fn a_question_survives_the_wire(id in "[ -~]{0,20}", identity in "[ -~]{0,40}", pod_uid in "[ -~]{0,40}") {
+        let envelope = Envelope {
+            correlation_id: id,
+            payload: InstanceQuestion { identity, pod_uid },
+        };
+        let back = decode_question(&encode_question(&envelope)).unwrap();
+        prop_assert_eq!(back.correlation_id, envelope.correlation_id);
+        prop_assert_eq!(back.payload, envelope.payload);
+    }
+
+    #[test]
+    fn a_verdict_survives_the_wire(id in "[ -~]{0,20}", found in "[ -~]{0,40}", expected in "[ -~]{0,40}") {
+        for verdict in [
+            Verdict::Genuine,
+            Verdict::CannotSay,
+            Verdict::NotGenuine(NotGenuine::AnotherOwner { expected: expected.clone(), found: found.clone() }),
+        ] {
+            let envelope = Envelope { correlation_id: id.clone(), payload: verdict };
+            let back = decode_verdict(&encode_verdict(&envelope)).unwrap();
+            prop_assert_eq!(back.correlation_id, envelope.correlation_id);
+            prop_assert_eq!(back.payload, envelope.payload);
+        }
+    }
+
+    #[test]
+    fn what_is_not_a_question_is_refused(junk in prop::collection::vec(any::<u8>(), 0..64)) {
+        // It may decode by chance only if it is valid; it must never panic.
+        let _ = decode_question(&junk);
+        let _ = decode_verdict(&junk);
+    }
+
+    #[test]
     fn a_digest_is_found_in_either_form(d in digest(), name in "[a-z]{1,8}") {
         let pinned = format!("registry:5000/{name}:latest@{d}");
         let running = format!("registry:5000/{name}@{d}");
@@ -227,6 +260,14 @@ proptest! {
         }));
         prop_assert_eq!(digest_of(&junk), None);
     }
+}
+
+#[test]
+fn each_asker_has_its_own_reply_topic() {
+    assert_eq!(
+        replies_topic("credentials-agent"),
+        "attestation-instance-replies.credentials-agent"
+    );
 }
 
 #[test]
