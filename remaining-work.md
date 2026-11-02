@@ -680,6 +680,7 @@ Each step is taken in bites, each reported before the next.
 - [ ] **RETIRE `local` AND `local-minimal`; TOPOLOGY ON THE TARGET** (the maintainer, 2026-11-02: "Learn what we can from them to
   improve `sandbox-local`. We'll recreate them later, if needed"; "it should be possible to deploy the same target on either a single
   node or to lay out a multi-node topology"; this replaces the two exemplars of `docs/architecture/placement.md`).
+  - *Migration:* `docs/operations/moving-to-sandbox-local.md`, tried in place on u7s. To carry in the next release's changelog.
   - *Decided:* every deployment goes through Flux and the signed deployment repository, on one node or many, so every cluster has
     the signed image lock. `local` goes now as well, though it is the only target deploying GitLab, OpenAPI and build-processor: they
     return as each joins the catalog (save their rendered charts first, for the migration's comparison). Brent stays on the `v3.0.0`
