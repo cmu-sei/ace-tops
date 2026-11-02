@@ -39,6 +39,20 @@ Where it came from: a side conversation of 2026-10-14 about a friend's design, a
 plaintext requests. The appeal is that the workload never holds the secret. The objection is that something rewrites a request
 behind the code's back, so the code does not say what really happens, and a Kubernetes proxy is not how Polar works.
 
+## What it does for the code (the maintainer, 2026-11-02)
+
+"I can test and validate so much of the code that makes up an agent this way, and writing domain logic reduces to writing domain
+logic." This is as much the reason for the design as the secret is.
+
+- *The I/O is tested once.* Retries, redirects, the egress proxy, rate limits, a refused credential and a dropped connection are the
+  handler's, tested against real servers in one place, and every agent inherits them. Today each agent carries its own version and
+  its own tests of it.
+- *Domain logic becomes a function.* A callback takes what the handler gives it and returns a value, so it can be tested with no server,
+  no actor system and no certificates, and it is a natural place for property tests: any response, any page, and the rule holds.
+- *What is left to test per agent is small:* its callbacks, and one run through the handler showing that they are wired up.
+- *A new agent is mostly its domain.* What the builder does for health, Cassini and shutdown it now does for the agent's I/O too, and
+  `polar_agent_tests!` can grow to check what an agent declares it uses.
+
 ## Decisions (the maintainer, 2026-11-02)
 
 - **Generalized I/O handlers, one for each protocol Polar speaks,** in the builder's infrastructure, working on behalf of the
