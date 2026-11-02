@@ -344,9 +344,12 @@ def main [] {
         }
 
         "the single topology places nothing, and it is the one the target deploys in by default": {
-            assert equal (^nu $RESOLVER topology --target sandbox-local | str trim) "single"
-            for n in (^nu $RESOLVER names --target sandbox-local | from json) {
-                assert equal (resolve_for sandbox-local $n).placement null $n
+            # A throwaway copy of the target, so this machine's own cluster-inputs.nuon, whatever it chose, is not read.
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                assert equal (^nu $RESOLVER topology --target $t | str trim) "single"
+                for n in (^nu $RESOLVER names --target $t | from json) {
+                    assert equal (resolve_for $t $n).placement null $n
+                }
             }
         }
 
@@ -396,7 +399,11 @@ def main [] {
                     let pool = (if $n == "cert-issuer" { "core" } else { "writers" })
                     assert equal $spec.nodeSelector { "polar.dev/pool": $pool } $n
                     assert equal $spec.tolerations [{ key: "polar.dev/pool", operator: "Equal", value: $pool, effect: "NoSchedule" }] $n
-                    let plain = (pod_of $n sandbox-local)
+                }
+            }
+            with_target (laid_out "single") {|t|
+                for n in [kube-consumer cert-issuer] {
+                    let plain = (pod_of $n $t)
                     assert equal ($plain.nodeSelector? | default null) null $n
                     assert equal ($plain.tolerations? | default null) null $n
                 }

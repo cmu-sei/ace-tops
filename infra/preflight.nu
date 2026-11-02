@@ -28,6 +28,14 @@
 # (docs/architecture/deployments.md); an older API server refuses the pods.
 const KUBERNETES_MIN = [1 36]
 
+# Why a target published as signed commits cannot be published from this working tree (`git status --porcelain`), or null when it
+# can. The publish refuses it too (infra/deploy-repo.nu), but only after the images are copied and the cluster is half made.
+export def uncommitted_problem [status: string, allow_dirty: bool]: nothing -> any {
+    if $allow_dirty or ($status | str trim | is-empty) { return null }
+    let files = ($status | lines | each {|l| $l | str substring 3.. } | first 5 | str join ", ")
+    $"the working tree has uncommitted changes \(($files)\), so the commit it would be published from does not say what was rendered; commit them, or pass --allow-dirty \(the provenance records it\)"
+}
+
 # Why the cluster's Kubernetes, `kubectl version`'s serverVersion.gitVersion ("v1.37.1", "v1.31.12-eks.1"), is too old
 # for Polar, or null when it is new enough. A version that cannot be read is a problem, not a pass.
 export def kubernetes_problem [git_version: string]: nothing -> any {

@@ -30,6 +30,18 @@ use ../preflight.nu *
 def main [] {
     let tests = [
         {
+            name: "uncommitted changes are found before anything is deployed, unless they are allowed"
+            body: {
+                assert equal (uncommitted_problem "" false) null
+                assert equal (uncommitted_problem "" true) null
+                assert equal (uncommitted_problem " M infra/up.nu\n" true) null
+                let p = (uncommitted_problem "?? notes.txt\n M infra/up.nu\n" false)
+                assert ($p | str contains "--allow-dirty") $p
+                assert ($p | str contains "notes.txt") $p
+                assert ($p | str contains "infra/up.nu") $p
+            }
+        }
+        {
             name: "Kubernetes 1.36 and later are enough, whatever a provider adds to the version"
             body: {
                 for v in ["v1.36.0" "v1.37.1" "v1.37.1-gke.1200" "v1.40.0+k3s1" "v2.0.0"] {

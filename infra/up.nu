@@ -77,7 +77,7 @@ use tools.nu
 use runtime.nu [container_runtime]
 use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
 use agent-pods.nu [delete_stale_namespaces]
-use preflight.nu [kubernetes_problem, openssl_problem]
+use preflight.nu [kubernetes_problem, openssl_problem, uncommitted_problem]
 use rules.nu [POOL_KEY, pools_without_nodes, topology_problem]
 use cluster-registry.nu
 use registry.nu [node_registry]
@@ -350,9 +350,13 @@ def check_topology_fits [target: string] {
     if ($name | is-not-empty) { ok $"topology ($name)" }
 }
 
-def step_preflight [config: record, runtime_needed: bool] {
+def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
+    }
+    if ($config.gitops? | default false) {
+        let dirty = (uncommitted_problem (^git status --porcelain) $allow_dirty)
+        if $dirty != null { fail $dirty }
     }
     if ($env.KUBECONFIG? | default "" | is-empty) {
         fail "KUBECONFIG is not set (point it at your cluster's kubeconfig, e.g. export KUBECONFIG=<path to kubeconfig>)"
@@ -936,7 +940,7 @@ def main [
         print ""
         print $"[($it.index + 1)/($total)] ($s.title)"
         match $s.id {
-            "preflight" => { step_preflight $config (needs_runtime $plan) }
+            "preflight" => { step_preflight $config (needs_runtime $plan) $allow_dirty }
             "registry" => { cluster-registry ensure $target | ignore }
             "images" => { $prepared = (step_images $target $in_cluster $dev $import_from $import_tag) }
             "render" => { step_render $target $prepared $config }
