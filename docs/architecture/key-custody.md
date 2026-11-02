@@ -879,8 +879,8 @@ the key once it is revoked.
 - *Found, and fixed, on the way:* a superseded session with no subscriptions was held at once and stopped
   (`complete_takeover`) before it had closed its connection: a stop is a signal, ahead of the queued
   `CloseConnection`. The old instance stayed connected with no session about one time in five. It is drained now.
-  Also found, not fixed: the control plane's `ListSessions` always answers `InternalError`, since the session manager
-  has no arm for `GetSessions` (`remaining-work.md`).
+  Also found then, and fixed since (`a2d459f5`, 2026-10-27): the control plane's `ListSessions` always answered
+  `InternalError`, because the session manager had no arm for `GetSessions`.
 - *Tests:* `tests/revocation.rs` (a session ended on revocation and another identity's not; a revoked certificate
   refused registration and admitted as a watcher; a watcher left to hear its own revocation; the identity's next
   certificate claiming what the revoked one's session held; a property over clusters of agents and watchers, any of

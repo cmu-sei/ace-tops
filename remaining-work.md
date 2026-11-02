@@ -158,7 +158,6 @@ Last updated: 2026-11-02.
   decision. Also noted: the broker now exports every span at the debug level to Jaeger (RUST_LOG unset gives the exporter a
   debug filter); watch Jaeger's load, and consider a default filter and a sampler.
 - [ ] (see "possibly obsolete") Broker: after the orderly shutdown completes the process waits about 5 s more before exiting, because shutting down the tracer provider times out (`Error shutting down tracer provider: Timeout(5s)`, seen on the cluster). It fits the 20 s budget, but it is dead time on every restart and the watchdog does not cover it (it is stopped when the broker finishes). Bound or skip the tracing flush
-- [ ] (see "possibly obsolete") Cassini-broker actor tests (were deferred pending TLS)
 - [ ] THE BROKER AS A USER OF SOFT STATE (agreed with the maintainer 2026-10-30). The broker's runtime budget
   controller (cassini-backpressure.md, "Runtime budget") exposes a typed snapshot and accepts a warm-start value
   (built in backpressure round 4). Next, after the StateActor and pulled health exist: the snapshot goes into the graph
@@ -284,13 +283,6 @@ Last updated: 2026-11-02.
   exactly `CUSTODIAN_WINDOW_SECS`: its `record` stamps `now_millis() - age` and `judge` is given a later
   `now_millis()`, so at the boundary any millisecond between them closes the window, and the property's "refused as
   window closed only past the window" fails. To do: give `record` and `judge` one `now`.
-- [ ] (see "possibly obsolete") **A flaky test: `authority_judge::tests::through_the_configuration_actor_a_refused_policy_leaves_the_one_in_force`.**
-  Seen 2026-10-27 and 2026-10-29 (about one full `cargo test -p credentials-agent-consumer` in three, then every full run on
-  glibc and musl, `eace0b00`, `1b00dfa1`; alone it passes) and 2026-10-30 in a full workspace run
-  (`credentials-agent/consume/src/authority_judge.rs:822`, the `.unwrap()` of `config.submit(..)`): the second `submit`
-  returns an error, the configuration handle's 5 s call timeout (`CALL_TIMEOUT`, `polar-agent-builder/src/configuration.rs:65`).
-  Fixed 2026-10-31 by `submit` waiting for its outcome with no timeout; the reads keep the 5 s (see "A read of the
-  configuration actor waits behind a judgement", under configuration).
 - [ ] polar-init and the workload may no longer need one UID (found 2026-10-28): `infra/resolve.nu`'s `CUSTODY` gives
   them one "since the escrow key's hand-off through the user keyring needs it", and that hand-off is gone since custody
   step 9. Whether anything else needs it (the custody socket's group, the shared volumes' files) is to read before the
@@ -306,12 +298,8 @@ Last updated: 2026-11-02.
 - [ ] Decision to revisit: how the credentials-agent observer serves HTTP. Today: axum, with handlers outside the actor tree, so the TCP client is re-pointed through `BrokerHandle` and the server task checks a `stopping` flag and calls `exit(1)` itself if it dies unasked. Options: (a) keep axum and add a gateway actor that owns the broker client and reply routers, handlers shrink to `ractor::call!` (respawn becomes a message; one mailbox hop; the gateway must not await replies inside `handle()` or it serializes requests); (b) drop axum for `hyper` with a listener actor and one supervised connection actor per connection (shutdown becomes `stop_children_and_wait`, nothing outside the tree), at the cost of owning body-size limits, slow-client timeouts, content-type checks and malformed-request behaviour on the Credentials Agent's public front door, each needing tests. Needs are small (four POST routes), so (b) is feasible, but it is security-sensitive code. Not done as part of the migration; decide once both halves run on the builder
 - [ ] Handler-level admin-action relay test in the observer (needs the `SignedAdminAction` struct)
 - [ ] Rename `polar-admin-grant`
-- [ ] (see "possibly obsolete") `polar-kernel-keyring` is used by nothing since custody step 9 (cargo reports it as an unused workspace
-  dependency). *Decided (the maintainer, 2026-10-28): kept in the tree.*
 - [ ] (see "possibly obsolete") Cedar override-policy layer and the gitops policy path (proof of authorship for repo policies still open)
 - [ ] (see "possibly obsolete") OCSP-style revocation-status topics (custom Cassini request/reply, ledger-backed)
-- [ ] (see "possibly obsolete") Investigate why the consumer pod died shortly after the first provision in the previous cluster (never got its logs)
-- [ ] (see "possibly obsolete") Remove the old blind path: GRANTS / REVOCATIONS / ACCOUNT_PROVISIONING subscriptions and their two supervisor tests
 
 ## Security hardening
 
@@ -407,8 +395,6 @@ Last updated: 2026-11-02.
     controller) follows. LATER, not path 1: I/O actors (HTTP, GraphQL, ...) that run requests prepared by the CryptoActor, and
     derived tokens (a result that is itself a secret, registered with an expiry). The runbook is
     `docs/operations/git-private-repository.md`.
-- [ ] (see "possibly obsolete") An initial schedule of repos for the git agent in the schedules repo; at least one repo needs a credential the git agent fetches from the credentials agent
-- [ ] (see "possibly obsolete") End to end: the git agent pulls a repo and a consumer is notified (git-processor or another)
 - [ ] **The git server does not watch its listener (found 2026-10-23).** Its supervisor runs `serve_tls` as a task and awaits it only at shutdown (`polar-git-server/server/src/supervisor.rs:188`, `:221`), so a listener that ends any other way (a panic) leaves a pod that looks healthy and serves nothing. Watch the task and begin the shutdown when it ends outside one, as cert-issuer's supervisor will (`docs/architecture/cert-issuer-isolation.md`, "1b in detail").
 - [ ] **The git server as an optional capability, what is left** (`PolarAgent::OPTIONAL`, `Configured::cassini_enabled`, the
   README in `src/agents/polar-git-server`, 2026-10-16): a push through the cluster's server being published as `RepoChanged`
@@ -428,7 +414,6 @@ Last updated: 2026-11-02.
 - [ ] Empty `GITLAB_TOKEN` fails validation in some paths; handle gracefully
 - [ ] `gitlab/observe/src/lib.rs`: `GitlabObserverState.tcp_client` is given and never read (the observers send through the
   client registered as `BROKER_CLIENT_NAME`). Removing it changes the state's constructor and its callers.
-- [ ] (see "possibly obsolete") git-repo-observer / git-repo-consumer need real GitLab credentials in `git.json`
 
 ## The graph and soft state, with health
 
@@ -475,7 +460,6 @@ Last updated: 2026-11-02.
 - [ ] **Rejuvenation not yet forced for jira-processor or kube-observer,** which use the same builder path with their own
   supervisor halves (verified on a real cluster for kube-consumer, 2026-10-06, by setting `POLAR_HEALTH_REJUVENATION_SECS` above the
   cert lifetime; `health-and-shutdown.md`).
-- [ ] (see "possibly obsolete") DESIGN PRINCIPLE for the health system (decided 2026-10-06, governs the health rework): there are two health checks with different jobs. The `HealthCheckActor`, a child of the infrastructure supervisor, is the authoritative, runtime-driven source of health and covers every situation we care about: it decides when an agent is unhealthy and ends it through the orderly shutdown path (`PrepareShutdown`, bounded drain), gracefully whenever that can reasonably be done, including after a health failure (certificate hard deadline, graph deadline), not only a clean stop. The Kubernetes liveness probe is only a dead-man's switch for the one case the actor cannot cover: the supervisor is unable to clean up and shut down, so the liveness file stops being updated and Kubernetes restarts the workload. In every other circumstance the actor decides, and the probe must not contradict it (an orderly rejuvenation must never look dead). Not a goal: special effort for agents that are not on the builder yet; behaviour changes reach them through the shared crate, and only breaking changes that must be fixed before the migration completes are addressed for them.
 
 ## The agent builder and its migration
 
@@ -570,10 +554,6 @@ Last updated: 2026-11-02.
     once it moves onto the builder.
   - polar-scheduler-observer and polar-scheduler-processor: Running on the cluster, 0 restarts (2026-10-14), and the checks of the
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
-  - (see "possibly obsolete") Decisions needed, from the first plan: the order above (and whether the observers-first rationale
-    holds for you); is the unfinished `Registered` fix to land with each migration (my assumption) or separately.
-  - (see "possibly obsolete") git-scheduler: migrated as it was 2026-10-12; whether it is retired for the git controller was
-    open, and its image row (and chart, if any) goes when the agent is retired.
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent
@@ -585,7 +565,6 @@ Last updated: 2026-11-02.
   agent tries again on a signed update".
 - [ ] Builder: graph controller as infrastructure via `.with_graph_write()` (builder owns the spawn, `GraphSignal` wiring and flush), builder-owned shutdown handshake boilerplate so a migrated agent cannot forget its half; then migrate kube-consumer, jira-processor and credentials-agent to it
   Since 2026-10-12 the graph start, stop and drain are shared in polar-agent-builder (`graph.rs`).
-- [ ] (see "possibly obsolete") Builder: split `graph-write` into two meanings. Today `.with_graph_write()` both (a) requires the deployment to provide the graph (Neo4j env, client certs, dependency), checked at startup, and (b) sets `expects_graph: true` in the health check (`polar-agent-builder/src/lib.rs:214`), which makes the pod unhealthy whenever the graph is down (`polar-health`: connected check and a graph-success deadline). The credentials-agent consumer needs (a) but must NOT have (b): its source of truth is the ledger on its volume, the graph is only a projection rebuilt from it, and its health must never depend on Neo4j (the old code said so; Neo4j rejected every client for two minutes on 2026-10-06 until the password was changed, which would have restart-looped it). So the consumer migration (2026-10-06) calls neither, and the catalog entry lists `graph-write` for the env and certs, which the builder tolerates because a deployment may provide more than the code declares. Cost: nothing checks that pairing at startup, so a catalog entry that forgets `graph-write` fails later, at runtime, in the projection. Fix: a best-effort variant (for example `.with_graph_projection()`, or `.with_graph_write()` plus an explicit `.graph_health(false)`) that requires the capability but leaves `expects_graph` false; use it in the consumer; test that it requires `graph-write` and leaves `expects_graph` false. Shared builder, so kube and jira must be re-verified. UPDATE 2026-10-09: settled without a new builder variant: the consumer declares the graph as a section of its own (`SECTIONS`) and requires no capability, the catalog entry `provides` `graph-write`, and a forgotten `provides` now fails the render and the start, because the section's required `GRAPH_*` variables are then unset (the `--check` on the rendered document says which). The remaining cost is only that the code does not name the pairing; the `.with_graph_projection()` idea is not needed unless that bothers you. Kube and jira were re-verified on the cluster in the same deploys
 - [ ] **cert-issuer's `conf/` describes a file it no longer reads (found 2026-10-23).** `src/agents/cert-issuer/server/conf/dev.dhall` and `cert-issuer.dhall` render the JSON configuration file cert-issuer read before it moved onto the builder (and were already out of date: one `issuer`, where it reads a list). Its settings are declared variables now (`settings.rs`; `cert-issuer --help`). Remove them, or replace them with a development configuration document for `--config`, once the move onto the builder and into the catalog is complete and validated by testing (the maintainer, 2026-10-23).
 - [ ] **Scaffolding a new agent** (ideas of 2026-10-07 and 2026-10-09; the first is the catalog-entry half of the second and should
   be built with it):
@@ -601,12 +580,6 @@ Last updated: 2026-11-02.
   `InitMountEntry` has no `read_only` (polar-init's CA mount is no longer read-only: add one if that matters); the catalog-bypassing
   workloads are their own item, under configuration.
 - [ ] `infra/layers/3-workloads/agents/openapi/deployment.dhall` (the OpenAPI web frontend): still referenced, or safe to remove?
-- [ ] (see "possibly obsolete") No agent exits gracefully: always non-zero so Jobs restart (audit every agent `main`; jira and kube are clean, the rest are not yet audited)
-- [ ] (see "possibly obsolete") Flaky test: `polar-agent-builder` `agent::tests::an_agent_started_after_polar_init_takes_the_marker_and_starts`
-  shares the static `MARKED_STARTED` with
-  `an_agent_started_without_polar_init_having_run_exits_one_and_is_not_started`. The unmarked test resets the flag
-  while the marked one runs, so under parallel load the marked test fails with "it was started". It failed once in a
-  full `cargo test --workspace` and passed three reruns. Give each test its own flag, or run the two serially.
 
 ## Configuration, signed configuration and polar-env
 
@@ -669,9 +642,7 @@ Last updated: 2026-11-02.
   `targets/local/config.nuon`'s `OCI_INSECURE_REGISTRIES` (the legacy `local` target) was left alone by the one registry setting
   (`infra/registry.nu`, 2026-10-19).
 - [ ] Evaluate an existing policy or constraint language for the config rules (decided not to build one): Rego with `regorus` (a Rust interpreter, 0.12, MIT, passes the OPA conformance suite apart from some builtins; a pre-1.0 API; about 1.9 MB with default features off), CEL (what Kubernetes `ValidatingAdmissionPolicy` uses), or CUE. Trigger to do it: the rules grow beyond a handful, rules need authors who are not us or a regulator to audit them, or we want admission-time enforcement in the cluster. Prerequisites: the agent exports its declared requirements as data, and the defaults have one home. Also considered and set aside: embedding Nushell in the agents (pre-1.0 engine, version coupling with the devshell, heavy, a shell in every startup path) and an in-pod Nushell preflight using `polar-nu-init` (still runtime, still duplicates the Rust check, cannot see the code's declarations)
-- [ ] (see "possibly obsolete") An initial schedule for the credentials agent, with the overrides, policies and secrets it will consume (secrets encrypted to its escrow public key; see the ConfigurationActor and "Credentials agent as the main consumer of scheduled overrides" items in this section)
 - [ ] (see "possibly obsolete") (Design note: `docs/architecture/configuration.md`.) Credentials agent as the main consumer of scheduled overrides, 2026-10-07 direction: secrets from the schedules repo encrypted to the credentials agent's public escrow key (the repo holds only ciphertext), policy from the repo applied to the decisions the credentials agent makes, and overrides authored by a privileged user. It starts on its environment alone and takes these when they arrive. Needs the ConfigurationActor and the scheduler integration first. Open design questions, to settle before building: how the receiver authenticates who published an override (a writable topic is not authorization; likely the publisher's identity checked against policy, which `polar-policy`/Cedar already wraps); monotonic versions so an old override cannot be replayed over a newer one; failing closed (refuse) until a policy has arrived; and for other agents, secrets as references and not ciphertext on a topic [SUPERSEDED 2026-10-14: ciphertext in a signed document addressed to the agent; see `signed-configuration.md`]
-- [ ] (see "possibly obsolete") Credentials agent HTTP front: a read-only endpoint returning the PUBLIC escrow key of agent X (`AgentEscrowKeyRequest`), authenticated by the caller's user certificate, so `polar-sign encrypt` can encrypt a secret field to its recipient (intended, 2026-10-11; not built; see `docs/architecture/signed-configuration.md`, "Secrets in a document")
 
 ## Infra and up.nu, images and release
 
@@ -747,12 +718,6 @@ Last updated: 2026-11-02.
 - [ ] `maxLayers = 20` in package.nix files to speed up containerd image loading
 - [ ] Slim `polar-init` (was blocked on nix-container-lib Shell selection)
 - [ ] `clusterrolebinding/kube-observer-read` printed `configured` on both applies even though `kubectl diff` is empty afterwards; confirm a later apply says `unchanged`
-- [ ] (see "possibly obsolete") Justfile: wrapper to provision further users signed with an existing admin cert (`admin-provision` is bootstrap-only)
-- [ ] (see "possibly obsolete") Scheduler default image names (`polar-scheduler-*` in `values.dhall`) differ from the local override (`scheduler-*`); a target rendering those agents without the override has no table row for them
-- [ ] (see "possibly obsolete") Real fresh-cluster `up.nu` run end to end (provision + claim path has only been exercised on the resume path); confirm wait selectors (`job-name=...`), `polar-neo4j` statefulset, `pgrep -f svc/<name>`; record the user's `nu --version`
-- [ ] (see "possibly obsolete") Fresh-cluster apply of `kube-observer-resources.yaml` on a cluster where the ServiceAccount and token Secret do not exist yet (this time they already did; `serviceaccounts.yaml` precedes it in `apply_order`)
-- [ ] (see "possibly obsolete") Dev ergonomics: failed Job pods accumulate (restartPolicy Never + large backoffLimit); a cleanup recipe or a `podFailurePolicy`/TTL decision, tied to the no-graceful-exit audit
-- [ ] (see "possibly obsolete") `nu infra/render.nu ace` and `sandbox` fail while loading their `target.nu` ("Data cannot be accessed with a cell path", `render.nu:38`); `local` and `local-minimal` render. Not caused by this work, not investigated (likely a target that needs an environment variable `local-minimal` does not)
 - [ ] (see "possibly obsolete") `build-orchestrator` Dhall config wiring (`cyclops-k8s.dhall`, `cyclops-podman.dhall`)
 
 ## The dev environment
@@ -804,7 +769,6 @@ Last updated: 2026-11-02.
 - [ ] Back up the bootstrap and user keys and `secret/cert-issuer-ca`; delete `~/.config/polar-admin.old`
 - [ ] Dependency updates (from the older backlog; the clippy half is the item above).
 - [ ] ace <-> Neo4j connectivity (parked; ace is running)
-- [ ] (see "possibly obsolete") scheduler-observer `config_tests` isolation (`serial_test`)
 
 ## Docs
 
@@ -816,10 +780,6 @@ Last updated: 2026-11-02.
   - README Keycloak walkthrough: confirm the HTTPS curl works against the port-forward
   - The empty `infra/secrets/` directory tree (from the first pipeline design) is unused; secrets are per target (`secrets.sops.yaml`, `secrets.nu`). Remove it
   - The architecture diagrams' comments still name `10.0.2.2` (left alone by the one registry setting, 2026-10-19).
-  - (see "possibly obsolete") Docs still say `git-observer.polar...`
-  - (see "possibly obsolete") `cert-issuer/server/src/main.rs` module comment says "v1 omits TLS"
-  - (see "possibly obsolete") `kube-observer` `main.rs` comment says it installs aws-lc-rs but the code installs ring; the comment is stale
-  - (see "possibly obsolete") How to treat `agent-task.json` / `Observer-Scheduler-Consumer.md` (you deleted them; the pull succeeded with them gone, so commit the deletion when ready).
 - [ ] Generate the environment documentation from each agent's `--scaffold` (every variable per capability, with type, default, doc and secrecy) instead of the hand-written lists in `INFRA.md` and `config-catalog-design.md`
 - [ ] **A guide to running an agent on its own** (asked by the maintainer, 2026-10-28; not urgent), beside the broker's:
   for example the Kubernetes flow without a cluster, an agent pointed at a standalone broker and messages pushed through
@@ -834,40 +794,16 @@ here was deleted; say the word and it goes.
 - **The Cassini follow-ups from the migration, item (6)** (broker): the policy half looks done, since the broker has hosted its policy and
   permissions actors from stage 5b (2026-10-22); the crypto half and the Jaeger filter may stand.
 - **The broker's 5 s tracer flush** (broker): the follow-ups of 2026-10-09 found the cause, a trace endpoint at Jaeger's UI port 16686; sending to the OTLP port 4318 closed it for the broker.
-- **Cassini-broker actor tests** (broker): "deferred pending TLS"; `cassini/broker/tests/` now holds over twenty files against a real broker.
 - **THE AUTHORITY MODEL, slices 9 and 10** (credentials): `authority-model.md` records slice 9's mutants and slice 10's findings, so both look done.
-- **A flaky test: `authority_judge::...`** (credentials): `submit` has waited with no timeout since 2026-10-31; the 5 s remains for reads only.
-- **`polar-kernel-keyring` is used by nothing** (credentials): decided 2026-10-28, kept in the tree, so nothing is left to do; drop the line?
 - **Cedar override-policy layer and the gitops policy path** (credentials): the signed `policy` section through `polar-schedules` looks like that path.
 - **OCSP-style revocation-status topics** (credentials): revocation reaches the broker and daemons through watcher sessions since custody step 5.
-- **Why the consumer pod died in the previous cluster** (credentials): that cluster and its logs are gone.
-- **Remove the old blind path** (credentials): the three raw topics were removed 2026-10-22; only a test's list still names them, to check they are refused.
 - **Arrival-time validators for policy invariants** (credentials): since slice 7 the credentials agent judges every `policy` and `groups` document.
 - **GAP, MUST BE ADDRESSED (2026-10-14)** (security): stage 5b and slice 8 built points (1) and (2); point (3), service-to-service calls, is what may stand.
 - **STEP 5 CHECKLIST and its open question** (git, under path 1): the author's flow is built and used; since stage 5b the broker's floor answers the question.
-- **An initial schedule of repos for the git agent; end to end** (git): `repositories` and a credential ran on a cluster 2026-10-15, and the processor wrote the graph.
-- **git-repo-observer / git-repo-consumer need real GitLab credentials in `git.json`** (agents): no `git.json` is left in the git agents or infra, `GitAgentConfig` was removed 2026-10-14, and credentials travel as a signed section.
-- **DESIGN PRINCIPLE for the health system** (health): a standing decision, not a task, now in `health-and-shutdown.md`; keep it here?
-- **Decisions needed from the first builder plan; git-scheduler** (builder): the order is overtaken, `Registered` is settled by the 2026-10-09 rule, and the git scheduler was replaced 2026-10-14 (no `git-scheduler` row in `infra/images.nuon`).
-- **Builder: split `graph-write`** (builder): settled without a new variant 2026-10-09; "not needed unless that bothers you".
-- **No agent exits gracefully** (builder): agents are Deployments restarting in place now (`deployments.md`), and the health actor's verdict ends them.
-- **The flaky fresh-start marker test** (builder): each test has its own slot in `MARKED_STARTED` since `88c2c784`.
-- **An initial schedule for the credentials agent** (configuration): the seed step has signed its first policy since 2026-10-12 (`infra/seeds/signed/policy.cedar` to `permanent/credentials-agent-policy.dhall`; `infra/seed.nu`, `infra/tests/seed.nu`, `infra/plan.nu`).
 - **Credentials agent as the main consumer of scheduled overrides** (configuration): its open questions are answered by signed configuration, and it is marked SUPERSEDED in part.
-- **Credentials agent HTTP front** (configuration): `POST /agent-escrow-key` is built, and `polar-sign` uses it (`polar-sign/src/fetch.rs`).
 - **The warm `up.nu` resume's 28 s** (infra): the charts and scaffolds have been cached since 2026-10-19, so the breakdown is old.
 - **The pull policy and moving tags** (infra): `Always` and the image lock answer most of it; what is listed may be all that is left.
 - **`service.version` from the digest** (infra): `INFRA.md`, "The version a binary reports", has traces carry the version as `service.version`.
-- **Justfile: wrapper to provision further users** (infra): `admin-provision` has taken a signer since 2026-10-12.
-- **Scheduler default image names** (infra): no `polar-scheduler-*` remains under `infra/layers`; the hand charts are deleted.
-- **Real fresh-cluster `up.nu` run** (infra): fresh runs are recorded since, on `u7s` and `u7c`, 2026-10-14 to 2026-10-27.
-- **Fresh-cluster apply of `kube-observer-resources.yaml`** (infra): the same fresh runs cover it.
-- **Failed Job pods accumulate** (infra): Deployments leave no Failed pods on an ending, and the Reaper has the rest (`pod-reaper.md`).
-- **`nu infra/render.nu ace` and `sandbox`** (infra): those targets are gone; `infra/targets` holds `local`, `local-minimal`, `sandbox-local`.
 - **`build-orchestrator` Dhall config wiring** (infra): the orchestrator was removed; it comes back only with the upstream merge.
 - **Workspace clippy cannot pass `-D warnings`** (dev): the lint findings were cleared 2026-10-23 and clippy is in the workflow (`just` recipe); `polar-router`'s `contains_key` is gone. Not re-run for this list.
 - **Cluster DNS (nix-usernetes)** (dev): the search domain went with `--dns-search=.` (2026-10-19) and external names with `53d6270` (2026-10-14); `ndots` is under the Flux item.
-- **scheduler-observer `config_tests` isolation** (dev): `config_tests` was removed with `config.rs` (2026-10-10).
-- **Docs still say `git-observer.polar...`** (docs): only the sentence saying so remains (`identity-and-bootstrap-update.md:155`).
-- **`cert-issuer/server/src/main.rs` "v1 omits TLS"; `kube-observer` `main.rs` comment** (docs): neither phrase is in those crates now.
-- **`agent-task.json` / `Observer-Scheduler-Consumer.md`** (docs): neither file is in the tree.
