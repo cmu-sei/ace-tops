@@ -32,6 +32,7 @@ order, and every artifact it makes. The diagrams are in `sequences/bootstrap/`:
 | [phase 1: before Flux](sequences/bootstrap/phase1-before-flux.svg) | `up.nu` up to installing Flux |
 | [phase 2: Flux](sequences/bootstrap/phase2-flux.svg) | Flux reconciling the layers |
 | [phase 3: after Flux](sequences/bootstrap/phase3-after-flux.svg) | the admin flow, the seed, the browser |
+| [handoff](sequences/bootstrap/phase4-handoff.svg) (designed) | the cluster's deployment moves to Polar's own git server |
 
 The sources are the `.mmd` files beside them (regenerate as in `sequences/assets/asset_regeneration.md`).
 
@@ -107,6 +108,29 @@ probe). The bootstrap-admin exchange itself is drawn in `sequences/general/admin
 | signed documents in `polar-schedules` | `polar-sign runtime` | the scheduler observer, then the agents | the in-cluster git server | `permanent/AGENT/SECTION.dhall`: runtime configuration, a separate repository from `deploy-T` and a separate trust path |
 | certificate store entries | `just user-cert-install` | the browser | the Librewolf profile | the CA and U's PKCS12 |
 | `cluster-inputs.nuon` (`POLAR_GIT_SERVER_ADMINS`) | `up.nu`, at the seed step | `render.nu`, then recorded in `provenance.json` | `targets/T/`, gitignored | what belongs to one cluster and exists only after it does; see below |
+
+## Handing off to Polar's git server
+
+Status, 2026-11-02: the shape, decided with the maintainer. Nothing here is built, and everything above is as it runs today. [The diagram](sequences/bootstrap/phase4-handoff.svg).
+
+*The maintainer:* the bootstrap repository is for the bootstrap. Once Polar is up, its contents are copied to Polar's own git server, Flux follows the copy, and the bootstrap
+server is removed. So at nominal a cluster hosts itself: one git server, one set of identities and policy, the deployment on the same audited path as everything else. Trust does not move with
+the hosting: commits still chain to the deployment CA, whose key stays on the operator's machine, so what Polar is made from can still be reasoned about without trusting Polar.
+
+*The cost, accepted:* Flux deploys the server it reads from, so a bad commit that stops that server blocks its own fix. Running pods keep running. The way back is a bootstrap server
+brought up from `mirror.git`, which stays off the cluster, with Flux pointed at it for the fix.
+
+**To settle before it is built:**
+
+1. *The signature is checked by no one after install* (item 4 of "Not settled"), which is true today and not only after the handoff: whoever can write to the repository can deploy anything. The
+   handoff needs `polar-git-server` to refuse a commit to `deploy-T` that the pipeline did not sign. The server's image has no `gpgsm`, so this is an x509 verifier in Rust.
+2. *Who makes the copy.* The maintainer's expectation is the configuration agent, which reads the bootstrap repository once. But `polar-scheduler-observer` runs on the low-trust `observers` pool and only reads
+   today. Writing what Polar deploys is safe in its hands only with item 1, since it could then copy signed commits and forge none. It would also need one client certificate from the
+   deployment PKI for that read.
+3. *How Flux is identified to Polar's git server.* The server trusts Polar's CA, and Polar's certificates are short-lived and renewed by `polar-init`, which Flux does not run. Today Flux holds a client
+   certificate from the deployment PKI in a Secret. Either the server trusts the deployment CA for this one reader, or Flux is given a Polar certificate and something renews it.
+4. *Who publishes later.* `pipeline` still signs the commit, but it pushes with a Polar identity now, since the server's mTLS is Polar's: the admin's certificate.
+5. *What a cluster on 3.0.0 does.* Its repository moves the same way, by a step of the next release's migration.
 
 ## What looks odd, and why
 

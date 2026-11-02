@@ -29,8 +29,8 @@ sequenceDiagram
     participant Att as Attestation agent
     participant API as Kubernetes API
     participant CI as cert-issuer
-    participant Sch as Scheduler observer
-    participant Repo as Deployment repository
+    participant Sch as Configuration agent
+    participant Repo as Deployment repository, on Polar's git server
 
     rect rgb(235, 219, 178)
     Note over Att,API: DESIGNED: read from what it already holds, not a call per question

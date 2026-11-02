@@ -33,14 +33,16 @@ Last updated: 2026-11-02.
 
 Each step is taken in bites, each reported before the next.
 
-1. **Runtime attestation, slices A and B.** Its diagrams first, as the review of its plan; `docs/architecture/runtime-attestation.md`, "The plan". Below.
-2. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
+1. **Runtime attestation, slice A: the agent answering from what it sees** (`docs/architecture/runtime-attestation.md`). In progress.
+2. **Handing a cluster's deployment off to Polar's own git server.** Below, under infra. The signed record of slice A travels this path.
+3. **Runtime attestation, the rest of slices A and B:** the signed record, the askers, then watching.
+4. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
    Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
-3. **The sequence diagrams.** Below, under docs.
-4. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
-5. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
-6. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 5.
-7. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
+5. **The sequence diagrams.** Below, under docs.
+6. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
+7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
+8. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 7.
+9. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
 
 ## Runtime attestation
 
@@ -579,7 +581,7 @@ Each step is taken in bites, each reported before the next.
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
 - [ ] **PROTOCOL HANDLERS: AGENTS' I/O IN INFRASTRUCTURE** (decided by the maintainer, 2026-11-02; `docs/architecture/protocol-handlers.md`).
   Generalized HTTP and git handlers in the builder's infrastructure, on behalf of the domain actor, which registers a callback. The handler
-  attaches the credential; a callback never sees it. Nothing built. The HTTP handler is step 2 of the order of work (the maintainer, 2026-11-02).
+  attaches the credential; a callback never sees it. Nothing built. The HTTP handler is step 4 of the order of work (the maintainer, 2026-11-02).
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent
@@ -677,6 +679,9 @@ Each step is taken in bites, each reported before the next.
 
 ## Infra and up.nu, images and release
 
+- [ ] **HANDING OFF TO POLAR'S GIT SERVER** (the maintainer, 2026-11-02: the bootstrap repository is for the bootstrap; Flux follows a copy on Polar's git server, and the bootstrap
+  server is removed). Its own step; `docs/architecture/cluster-bootstrap.md`, "Handing off to Polar's git server", with what is to settle first. Found on the way: no one verifies the deployment
+  commit's signature after install, today, so write access to the repository is deployment.
 - [ ] **Carry the move off `local-minimal` in the next release's changelog** (retired 2026-11-02, `bfadf828`; the maintainer: "We'll recreate them
   later, if needed"; topology is now a setting on the target, `docs/architecture/placement.md`). The migration is `docs/operations/moving-to-sandbox-local.md`, tried
   in place on u7s. Brent stays on the `v3.0.0` tag until then, without `--import-tag`, which v3.0.0 breaks on Neo4j (fixed by `67b5a4fa`). GitLab, OpenAPI and
