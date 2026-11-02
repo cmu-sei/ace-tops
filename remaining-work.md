@@ -575,6 +575,9 @@ Each step is taken in bites, each reported before the next.
     once it moves onto the builder.
   - polar-scheduler-observer and polar-scheduler-processor: Running on the cluster, 0 restarts (2026-10-14), and the checks of the
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
+- [ ] **PROTOCOL HANDLERS: AGENTS' I/O IN INFRASTRUCTURE** (decided by the maintainer, 2026-11-02; `docs/architecture/protocol-handlers.md`).
+  Generalized HTTP and git handlers in the builder's infrastructure, on behalf of the domain actor, which registers a callback. The handler
+  attaches the credential; a callback never sees it. Nothing built; its place in the order of work is open.
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent
