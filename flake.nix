@@ -262,6 +262,7 @@
           gitControllerImage   = polarPkgs.gitAgent.controllerImage;
 
           # ── The state agent ──────────────────────────────────────────────────
+          attestationAgentImage = polarPkgs.attestation.agentImage;
           softStateObserverImage = polarPkgs.softState.observerImage;
           softStateProcessorImage = polarPkgs.softState.processorImage;
 
