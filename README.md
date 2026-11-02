@@ -407,14 +407,15 @@ not running. The design is in [docs/architecture/signed-configuration.md](docs/a
 The steps above, for an Apple-silicon Mac running a minikube cluster in Docker Desktop, with the images that are published
 (nothing is built on your Mac). Each step points to the one above that says more.
 
-**What it needs.** Measured on a single-node cluster, before Flux was on the single-node path (2026-10-28): Polar itself used about 7 GB of
-memory and little CPU at rest, and about 9 GB of disk (6.6 GB of images, 1.9 GB of volumes). The dev container (step 3)
+**What it needs.** Measured on a single-node cluster (2026-11-02): Polar itself, Flux and the deployment git server used about 9 GB of
+memory at rest, and about 10 GB of disk (8.1 GB of images, 2.1 GB of volumes); a bring-up from published images took about 11
+minutes on a 32-core machine. The dev container (step 3)
 asks the cluster for 2 CPUs and 8 GiB of memory, which the cluster must be able to give it, and adds about 2.7 GB of image
 and a 20 GiB volume. So, for the cluster:
 
 | | Minimum | Recommended |
 |---|---|---|
-| Memory | 16 GiB | 20–24 GiB |
+| Memory | 18 GiB | 20–24 GiB |
 | CPUs | 4 | 6–8 (a bring-up is much busier than Polar at rest; this is an estimate) |
 | Disk | 40 GB | 60 GB or more |
 

@@ -99,6 +99,16 @@ there: placement is the target's to declare.
    target's declared pools, and `statefulset.dhall` renders the selector and toleration when `writers` is among them.
    The other hand charts are the open pool's and do not change.
 
+## Seen on the clusters (2026-11-02)
+
+From the 3.0.0 images, at `168e1e55`:
+- *`separated` on the five-node `u7c`:* every pod on the node of its pool, all six Flux layers ready, no restarts.
+- *`single`, the default, on a fresh single-node `u7s`:* no flag needed, 28 pods running, no restarts, about 11 minutes, about 9 GB of memory at
+  rest against about 6.5 GB for `local-minimal` measured the same way, so about 2 GB for Flux, the deployment git server and the resolver.
+- *`local-minimal` moved in place:* `docs/operations/moving-to-sandbox-local.md`.
+- *A change of layout on a deployed `u7c`:* with the refusal not yet in, `cert-issuer` stranded as described above; put back, the cluster recovered with
+  no restarts. Since then, with this machine's record of `u7c` gone and no flag, `up.nu` reads the pools from the cluster and refuses.
+
 ## Tests first
 
 - `infra/tests/rules.nu`: the placement rule (declared, not declared, a pool the target lacks).

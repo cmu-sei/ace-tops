@@ -33,21 +33,20 @@ Last updated: 2026-11-02.
 
 Each step is taken in bites, each reported before the next.
 
-1. **Retire the `local` and `local-minimal` targets; topology becomes a setting on the target.** Below, under infra.
-2. **Runtime attestation, slices A and B.** Its diagrams first, as the review of its plan; `docs/architecture/runtime-attestation.md`, "The plan". Below.
-3. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
+1. **Runtime attestation, slices A and B.** Its diagrams first, as the review of its plan; `docs/architecture/runtime-attestation.md`, "The plan". Below.
+2. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
    Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
-4. **The sequence diagrams.** Below, under docs.
-5. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
-6. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
-7. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 6.
-8. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
+3. **The sequence diagrams.** Below, under docs.
+4. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
+5. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
+6. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 5.
+7. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
 
 ## Runtime attestation
 
 - [ ] **Slices A and B** (the maintainer, 2026-11-02: "I want it done sooner than most of the work I asked you for"; the musl
   move, Scudo, the Cassini benchmarks and the custodian were its foundation). The plan is in `docs/architecture/runtime-attestation.md`,
-  its open questions now answered there. Slice A needs step 1 above: every target then has the signed image lock it checks against.
+  its open questions now answered there. Every target has the signed image lock it checks against, since `local` and `local-minimal` went (below).
 - [ ] **Slice C**, after the four agents migrate: the node sensor, the runtime challenges, the builder's seccomp and Landlock lock.
 
 ## The Cassini broker and client
@@ -579,7 +578,7 @@ Each step is taken in bites, each reported before the next.
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
 - [ ] **PROTOCOL HANDLERS: AGENTS' I/O IN INFRASTRUCTURE** (decided by the maintainer, 2026-11-02; `docs/architecture/protocol-handlers.md`).
   Generalized HTTP and git handlers in the builder's infrastructure, on behalf of the domain actor, which registers a callback. The handler
-  attaches the credential; a callback never sees it. Nothing built. The HTTP handler is step 3 of the order of work (the maintainer, 2026-11-02).
+  attaches the credential; a callback never sees it. Nothing built. The HTTP handler is step 2 of the order of work (the maintainer, 2026-11-02).
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent
@@ -677,20 +676,10 @@ Each step is taken in bites, each reported before the next.
 
 ## Infra and up.nu, images and release
 
-- [ ] **RETIRE `local` AND `local-minimal`; TOPOLOGY ON THE TARGET** (the maintainer, 2026-11-02: "Learn what we can from them to
-  improve `sandbox-local`. We'll recreate them later, if needed"; "it should be possible to deploy the same target on either a single
-  node or to lay out a multi-node topology"; this replaces the two exemplars of `docs/architecture/placement.md`).
-  - *Migration:* `docs/operations/moving-to-sandbox-local.md`, tried in place on u7s. To carry in the next release's changelog.
-  - *Decided:* every deployment goes through Flux and the signed deployment repository, on one node or many, so every cluster has
-    the signed image lock. `local` goes now as well, though it is the only target deploying GitLab, OpenAPI and build-processor: they
-    return as each joins the catalog (save their rendered charts first, for the migration's comparison). Brent stays on the `v3.0.0`
-    tag, whose README still names `local-minimal`; the migration to the new target ships with the next release.
-  - *Taken from them:* `oci-registry-resolver`, which only `local` enabled, and the example secrets files. To render what
-    `local` deployed (GitLab, OpenAPI, build-processor), for a migration's comparison: `nu infra/render.nu local --charts-into <dir>`
-    at `ad8712b5`. Still to measure: what Flux and the deployment git server cost on one node, since the README's 16 GiB minimum was
-    for `local-minimal`.
-  - *What names them:* the render determinism gate's and the load harness's defaults, `Justfile`, `bin/polar-dev`, `flake.nix`, `infra/tests`
-    (`resolve.nu` alone, 35 lines), the README's main path, and about twenty documents.
+- [ ] **Carry the move off `local-minimal` in the next release's changelog** (retired 2026-11-02, `bfadf828`; the maintainer: "We'll recreate them
+  later, if needed"; topology is now a setting on the target, `docs/architecture/placement.md`). The migration is `docs/operations/moving-to-sandbox-local.md`, tried
+  in place on u7s. Brent stays on the `v3.0.0` tag until then, without `--import-tag`, which v3.0.0 breaks on Neo4j (fixed by `67b5a4fa`). GitLab, OpenAPI and
+  build-processor have no target until each joins the catalog: to compare against what `local` deployed, `nu infra/render.nu local --charts-into <dir>` at `ad8712b5`.
 - [~] **`up.nu` must notice a state it is about to crash on, and either stop and say the way out or resolve it itself** (2026-10-14,
   after a fresh-cluster bring-up on a second workstation took five resume loops, each a different stale state that a check said was
   fine). Tests first, in `infra/tests/`, each rule broken on purpose. Kept as the model: the stale `~/.config/polar-admin` check named
