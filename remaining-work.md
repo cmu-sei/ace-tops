@@ -610,8 +610,7 @@ Design: `docs/architecture/config-catalog-design.md`. Pattern per agent: migrate
 
 - [ ] Fresh-cluster apply of `kube-observer-resources.yaml` on a cluster where the ServiceAccount and token Secret do not exist yet (this time they already did; `serviceaccounts.yaml` precedes it in `apply_order`)
 - [ ] `clusterrolebinding/kube-observer-read` printed `configured` on both applies even though `kubectl diff` is empty afterwards; confirm a later apply says `unchanged`
-- [ ] jira positive end-to-end test (observer publishes projects/groups/users/issues, processor receives them and writes the graph; confirm the processor's subscription log lines, not seen yet). Blocked on a live Jira: `daveman1010220.atlassian.net` answers 404 even on the unauthenticated `/rest/api/3/serverInfo`. Not being chased. If the site does not return, a small fake Jira in the cluster would test the publish path. UPDATE 2026-11-01: u7c (sandbox-local) reads Apache's Jira anonymously (`b1789556`); a site read with a credential gets it as a signed `credentials` section (polar-sign), no longer `jira_token` in the target secrets (docs/architecture/jira.md, "The credential")
-- [ ] jira observer follow-ups: the user picker is queried with `query=''` (literal quotes) and appears to ignore `startAt`, so pages may repeat (consider `/rest/api/3/users/search`); the processor handles one issue per message, so batching needs a wire-type change; fix the stale comment in the ActorTerminated arm of `observe/src/supervisor.rs` ("typically after exhausting its backoff...") next time the file is touched
+- [ ] jira-processor handles one issue per message; batching them needs a wire-type change (`JiraData`), not yet worth it at 50 issues a page.
 - [x] Rejuvenation handshake verified on a real cluster for kube-consumer (forced by setting `POLAR_HEALTH_REJUVENATION_SECS` above the cert lifetime: health check terminates, PrepareShutdown, unsubscribe, drain, graph flush, ProceedWithShutdown, infrastructure down, exit 1, Job restarts the pod). Client certs live 1 hour, and credentials-agent has been restarting about hourly for 4+ hours on its own. Not yet forced for jira-processor or kube-observer, which use the same builder path with their own supervisor halves
 - [ ] Env precedence: a target `workloads.<name>.env` entry whose name the catalog also derives (seen with `POLAR_HEALTH_TICK_SECS`) is rendered twice and the later, derived value won silently (kubectl warns `hides previous definition`). Decide the precedence (the target should win) and make `resolve.nu check` fail on duplicate env names within a resolved workload
 - [x] Pods could not resolve names outside the cluster (found 2026-10-14 while checking that the git agent can reach a private repository). CoreDNS forwarded to `slirp4netns`'s built-in DNS at `10.0.2.3`; a query sent to it from inside the node container got no reply, while the host's resolvers (the router, Mullvad's in-tunnel resolver, `1.1.1.1`) all answered from the same namespace. (Why `10.0.2.3` is dead is not being pursued, 2026-10-14.) Fixed so that the cluster follows the host's own resolver and sends nothing around the VPN's DNS handling: the host's `systemd-resolved` gets a second listener on `127.0.0.1:5300` (NixOS: `services.resolved.settings.Resolve.DNSStubListenerExtra`, committed in `/etc/nixos`), which the node reaches as `10.0.2.2:5300` (checked with a throwaway listener first), and CoreDNS forwards there (`nix-usernetes` `53d6270`). Seen on the running cluster by editing the Corefile in place: `git ls-remote https://github.com/octocat/Hello-World` from a pod returns a commit and CoreDNS logged no errors after. The node image rebuild from `nix-usernetes` and the same `resolved` setting on the other workstation are the maintainer's to do. `up.nu` now reports at the end whether a pod can reach the outside (`infra/egress.nu`, 13 tests, three mutants caught; a note, never a failure; a DNS failure prints where to look).
@@ -653,20 +652,28 @@ Design: `docs/architecture/config-catalog-design.md`. Pattern per agent: migrate
   scheduler. Affected: git `repositories` (`credential`, `refs`, `shallow_depth`, `max_depth`, `frequency_secs`) and
   git-observer `credentials` (`username`). It is the start of the typed Dhall templates generated from the declarations
   that runtime sections were meant to have (git-controller.md, "The `runtime` document type", not built).
-- [x] THE STATEACTOR RETRIES "NO SCHEMA YET" ITSELF (decided by the maintainer 2026-10-31; DONE `bfede9ef`:
-  `ask_until_available`, `POLAR_STATE_UNAVAILABLE_RETRY_SECS` 10 and `POLAR_STATE_UNAVAILABLE_LIMIT_SECS` 120, not yet
-  seen on a cluster): `Unavailable` is retried by
-  the StateActor at a short fixed interval (a declared variable) before the caller hears anything, so the domain's
-  backoff sees only real failures. Found on u7c: jira-observer's Jira backoff (to 15 minutes) delayed the first cursor
-  pull 14 minutes after the schema arrived (soft-state.md, "The rebuild, seen on a cluster").
-- [ ] DECIDED 2026-11-01 (the maintainer): the next release waits for multi-instance (protocol version 2, so a major
-  version, 3.0.0); the custody fix's decision is accepted (a polar-init retry reuses what its own sealed slot holds after
-  checking the certificate, never unseals; a failed custodian exits and its pod waits out the renewal rule); and "a retry
-  judged as a second request" is fixed in one general way on the issuance path (the renewal rule's admission keyed on the
-  request itself, the custodian re-asking with the same CSR), replacing the one-off voucher memory; queued after the
-  multi-instance build, which works in the same code. The cluster run waits too (the maintainer, 2026-11-01): one deploy
-  of every image, after the retry fix, sees multi-instance (two harness pods as two sessions, a clean end closing its
-  session, `pressure.nuon`) and the retry fix together, and replaces u7c's stuck jira pods.
+- [ ] ERROR PATHS TO EXERCISE ON PURPOSE (merged 2026-11-02): each is built and tested, and no run has triggered it, so
+  each is forced on u7c, in a few minutes, with what should be seen:
+  - **No schema yet** (soft-state.md, "Revised"; `ask_until_available`): scale soft-state-observer to 0, restart
+    jira-observer, scale it back. Expect `Unavailable` retried every `POLAR_STATE_UNAVAILABLE_RETRY_SECS` (10 s), and
+    the first issue pull at once after the schema arrives, not after Jira's backoff.
+  - **A broker restarted during issuance, again and again** (core-restarts.md, "3 in detail", "One answer to a
+    request"): restart Cassini several times while a pod is in polar-init. Expect issuance after each, never "too soon"
+    for the same request (`cert-issuer/server/tests/broker_restarts_test.rs` does twelve).
+  - **A retry after a lost reply** (deployments.md, "A retry is not a second request"): make polar-init's `Issue` reply
+    time out (a 504 through the observer) or a custodian's reply never come. Expect the retry, the same CSR, admitted
+    again within the renewal bound.
+  - **An abandoned escrow certificate** (key-custody.md, "An escrow certificate asked again, or abandoned"): end the
+    first pod of a new workload that encrypts right after its custodian is issued the escrow certificate, before it
+    stores the key. Expect `BeingIssued` for others inside the custodian's window, then the next pod issued over it, the
+    old one `Superseded` in the ledger.
+  - **A multi-instance token with no pod name** (authority-model.md, "Multi-instance workloads"; `NoPodName`): take
+    `instance_name_claim` out of cert-issuer's issuer, start a harness producer pod. Expect it refused, saying why,
+    before cert-issuer is asked.
+  - **A setting that cannot work, at start** (soft-state.md, "As built: pulled health"; `held::stay_up` and its
+    `TryAgain`): render jira-observer with the placeholder `JIRA_URL` and start it. Expect it held as `Configuration` and
+    up, no restart loop, `(:AgentHealth)` `unhealthy`; then a signed settings update with a working address starts its
+    observers and releases the hold. (The run-time half was seen 2026-11-01: jira.md, "Seen on a cluster".)
 - [ ] KEY ROTATION (direction decided by the maintainer 2026-11-01; `docs/architecture/key-rotation.md`): revocation records
   why (compromise vs an ordinary end), and only a compromise starts a rotation; a compromise is declared by the attestation
   agent or an administrator's signed command; rotation is a builder `RotationActor` over an agent's own declared encrypted
@@ -678,66 +685,21 @@ Design: `docs/architecture/config-catalog-design.md`. Pattern per agent: migrate
   part B; the credentials agent's signing half is designed separately before first real use.
 - [ ] MULTI-INSTANCE: WHAT LETS ONE CONSUME (later; `authority-model.md`, "Multi-instance workloads", "Later"): shared
   subscriptions (a "load balancer") and commands to one instance; the encryption model already fits them.
-- [~] MULTI-INSTANCE WORKLOADS (asked by Blitz 2026-10-31; DECIDED 2026-11-01, `docs/architecture/authority-model.md`,
-  "Multi-instance workloads"; BUILT 2026-11-01, `5886e43d` to `764cb62f`, "As built" there; not yet seen on a cluster).
-  Left: run `infra/load-plans/pressure.nuon` on a fresh cluster (every image redeployed together: protocol 2) and read
-  whether the budget grows past its floor; see two pods of the harness producer as two sessions, a clean end ending
-  its session at once, and concurrent first escrow issuances of a many with `encryption` (none has one yet); Blitz's
-  `build-job` workload; the decisions marked for review there. Rotation on a compromise is `key-rotation.md`'s. Blitz's build jobs publish provenance from each run, and per-build ServiceAccounts get no
-  topics while a shared one supersedes. Recommended instead of their family of identities: one exact workload marked
-  multi-instance in the catalog, supersession keyed by `(identity, instance_binding)` for it alone, the instance in the
-  certificate and beside `published_by`. Touches the broker's sessions and the credentials agent's ledger: after the
-  backpressure merge. A reply to Blitz was drafted for the maintainer.
-- [ ] FROM THE FIFTH SET (decided by the maintainer 2026-11-01; `docs/architecture/broker-baseline.md`, "The fifth set"):
-  - The stall rule ends a subscriber only when it makes NO PROGRESS (acknowledges nothing) for `T_stall`; a slow but
-    acknowledging subscriber is held back by its topic instead (its publishers go at its pace), never ended. DONE
-    2026-11-01, not measured on a cluster (cassini-backpressure.md, "The stall rule ends only a subscriber that makes
-    no progress": the budget still recovers, at the slow subscribers' pace rather than within `T_stall`).
-  - The broker's workload gets a memory limit in the catalog, 1 GiB, so the controller's ceiling is real (u7c had none:
-    a ceiling of about 27 GB). DONE 2026-11-01, not deployed (cassini-backpressure.md, "The broker's memory limit,
-    1 GiB"): request and limit 1 GiB; the ceiling was first the limit less the working memory (about 994 MiB); DECIDED by the maintainer the same day: half the limit (512 MiB), built.
-    To verify on u7c: that its nested rootless cgroup enforces and shows `memory.max`.
-  - The harness runs several publisher identities, so the controller is exercised (one publisher and one subscriber held
-    at most 145 MB, never the budget's 3/4); then the tunables are measured again.
-  - Profile where the new broker's CPU goes: 8-20% more per message saturated, up to 45% at set rates; -13% at 64 KiB.
-  - Study why latency at low rates improved: 64 KiB at 100/s has p50 0.54 ms against about 10 ms on S4m, which S4m has
-    carried since 2026-10-21. The maintainer: "astonishing ... on a case that wouldn't seem to have been about
-    back-pressure at all. We should study this to understand why."
-  - Two bugs: issuance stopped after the tenth broker restart in a row (cert-issuer's held offer to the credentials agent
-    never answered, until cert-issuer restarted); a pod whose custody slot was sealed by a failed first attempt fails every
-    retry in place (`Init:CrashLoopBackOff`, jira-observer and jira-processor on u7c).
-    - [x] The held path under restarts (2026-11-01; `core-restarts.md`, "3 in detail", "One answer to a request"): the
-      voucher decided each offer afresh, and its first decision admitted the pod, so an answer lost with a session that
-      ended came back as "too soon" for the same request, final at cert-issuer. It keeps its answers now. The incident's
-      own logs were not kept (only the sink's `polar-init`), so this is a defect found on its path, not its proven
-      cause; `cert-issuer/server/tests/broker_restarts_test.rs` restarts a broker twelve times in a row with issuance
-      working after each (refused at the first or second before). Not yet on a cluster.
-    - [x] (Built 2026-11-01, not yet on a cluster: `deployments.md`, "A retry is not a second request". The renewal
-      rule is keyed on the CSR's key; `polar-init` and the custodian ask again with the same CSR; the voucher's memory
-      is gone.) The same shape remains elsewhere: a request asked again after its reply was lost meets the renewal rule as a
-      second request. `polar-init` through the observer asks again after a 504 (a lost `Issue` reply comes back
-      `TooSoon`, final for `polar-init`; its pod recovers after five minutes of init backoff), and the custodian asks
-      again after `REPLY_TIMEOUT` with a new key (`Bootstrap::next` makes a new CSR), so its re-ask is `TooSoon` and
-      the custodian fails (now: the daemon ends and the pod waits the bound out). For the maintainer: the rule keyed on
-      the pod and type cannot tell a retry from a second request; keying an admission on the request's key (the same
-      CSR admitted again within the bound) and the custodian re-asking with the same CSR would close all three where
-      the voucher's memory closes one.
-    - [x] (Built 2026-11-01, not yet on a cluster: `key-custody.md`, "An escrow certificate asked again, or
-      abandoned"; the same key asked again is issued again too, and the one before is superseded in the ledger.)
-      DECIDED 2026-11-01 (the maintainer), part of the same fix: an escrow certificate whose key was never escrowed
-      locks its workload out for good. A pod issued the workload's one escrow certificate that dies before it stores the
-      sealed key leaves a live certificate no one holds the key of, and every later pod, its replacement included (a new
-      UID), is refused `AlreadyHasValidServiceCertificate`, final, once the issuing custodian's window is past
-      (`first_issuance`, `credentials-agent/consume/src/agent_escrow_issuance.rs:112`). Older than multi-instance; many
-      pods starting at once make it likelier. The rule: past the issuing custodian's window, an escrow certificate with
-      no stored key is abandoned, and the credentials agent revokes it (`Superseded`, in the ledger) and issues a new one,
-      still serialized. Revoking it loses nothing: the certificate lookup can hand it out once it is recorded, but
-      whatever was encrypted to it in that gap is unreadable already, since no one holds its key.
-    - [x] (Built 2026-11-01, not yet on a cluster: `NoPodName`.) DECIDED 2026-11-01 (the maintainer): a multi-instance
-      certificate requires the pod's name beside its UID
-      (`authority-model.md`, "Multi-instance workloads", the decisions marked for review): legibility first, a UUID alone
-      is never what a person reads; and a misconfigured issuer then fails at its first pod. Small; built with the retry
-      fix, which works in the same issuance code (`instance_sans_for`, `credentials-agent/consume/src/issuance.rs:136`).
+- [~] MULTI-INSTANCE WORKLOADS (asked by Blitz 2026-10-31; built 2026-11-01, `docs/architecture/authority-model.md`,
+  "Multi-instance workloads", "As built"; in 3.0.0). Seen on u7c (broker-baseline.md, "The sixth set"): every harness
+  producer pod its own session, none superseded. Left: a clean end closing its session at once; concurrent first escrow
+  issuances of a multi-instance workload with `encryption` (none has one yet); Blitz's `build-job` workload (a reply to
+  Blitz was drafted for the maintainer); the decisions marked for review in authority-model.md. Rotation on a
+  compromise is key-rotation.md's.
+- [ ] THE BROKER, TO MEASURE NEXT (from the fifth and sixth sets, broker-baseline.md; on a quiet machine, release builds):
+  - The tunables again, now that several publishers exercise the controller (`infra/load-plans/pressure.nuon`: the
+    budget reached its 512 MiB ceiling in four of eight runs).
+  - Where the new broker's CPU goes: 8-20% more per message saturated, up to 45% at set rates; -13% at 64 KiB.
+  - Why latency at low rates improved: 64 KiB at 100/s has p50 0.54 ms against about 10 ms on S4m, which S4m carried
+    since 2026-10-21. The maintainer: "astonishing ... on a case that wouldn't seem to have been about back-pressure at
+    all. We should study this to understand why."
+  - That u7c's nested rootless cgroup enforces the broker's 1 GiB `memory.max`, not only reports it (the controller
+    read its ceiling from it, `Ceiling(Limit)`, 512 MiB).
 - [ ] FOUND 2026-11-01 (the sixth set, `broker-baseline.md`, "The sixth set: pressure"): a publisher's messages are
   delivered out of order after the broker spares its connection. Run 3 (six producers at 64 KiB into a sink 10 ms a
   delivery) delivered 18,366 of 60,000 after a later one of the same producer, none lost, none repeated; it alone had
@@ -746,17 +708,6 @@ Design: `docs/architecture/config-catalog-design.md`. Pattern per agent: migrate
   and its client sends the message again while later ones go on: a mechanism read, not reproduced. Test first: a
   publisher refused for now mid-stream, then its order at the subscriber. Also to settle: why a producer's own selftest
   subscription stalls at all while it publishes.
-- [~] (BUILT 2026-11-01, not yet on a cluster: jira-observer holds a start-time configuration error as `Configuration`
-  through `polar_agent_builder::held::stay_up`, stays up, answers health queries and starts no observer, and starts them
-  when a signed update mends it (`8635c729`); its observers hold `Credentials` and `Configuration` at run time
-  (`8c2ec420`); `docs/architecture/soft-state.md`, "As built: pulled health".) SEEN AGAIN 2026-11-01 on u7c, which has no Jira:
-  jira-observer ends at once (`JIRA_URL is still the example
-  placeholder`), the pod's rule restarts every container, and each restart's new custodian key waits out the renewal
-  rule, so it loops every five minutes. NOT correct behaviour: the maintainer decided on 2026-10-30, after the same loop,
-  that a `Configuration` or `Credentials` reason keeps the agent up, reporting and no longer retrying ("HEALTH IN THE
-  GRAPH, PULLED", below). Only the run-time half was built that day (Jira errors retried with backoff, `jira.md`); the
-  start-time configuration refusal still ends the process, and waits on that item, which was queued after the
-  backpressure merge and not started.
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent
