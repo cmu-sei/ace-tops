@@ -81,6 +81,10 @@ nu infra/up.nu local-minimal --dev --user <you> --email <your email>      # step
 # when it pauses at the browser step, on your machine:
 bin/polar-dev cert <you>                          # step 5: your certificate into the browser
 bin/polar-dev forward                             # step 6: then https://localhost:7473 and http://localhost:8050
+
+# Later, to change what an agent is configured with, in the dev container:
+polar-sign template <agent> <section> --out change.json   # step 8: edit it, then
+polar-sign sign change.json --user <you> --push           #   sign it and push it to the cluster's polar-schedules
 ```
 
 ### Decide first
@@ -334,11 +338,70 @@ bin/polar-dev down                 # sync, then stop the dev container; its volu
 - **To switch targets** (`local-minimal` and `sandbox-local` share namespaces), start over on a fresh cluster with the
   other one.
 
-**What to do next:** tell Polar what to observe. Repositories, credentials and the rules for accepting repositories other
-agents propose are signed documents pushed to the cluster's git server with `polar-sign`; the walk-through, with every
-command, is [docs/operations/git-private-repository.md](docs/operations/git-private-repository.md), and the design is in
-[docs/architecture/signed-configuration.md](docs/architecture/signed-configuration.md). `infra/INFRA.md` explains the
-catalog, targets and images behind `up.nu`.
+**What to do next:** tell Polar what to observe (step 8). `infra/INFRA.md` explains the catalog, targets and images
+behind `up.nu`.
+
+### 8. Changing configuration: `polar-sign` in the dev container
+
+Everything an agent is told after bring-up is a **signed document** in the cluster's own `polar-schedules` repository,
+served by the Polar git server: which repositories to observe and the credentials for them, the rules for accepting
+repositories other agents propose, jira-observer's token, the groups policy names, and any setting an agent lets a
+signed document change. You write one with `polar-sign`, which checks it against what the agent accepts, seals any
+secret in it so that only that agent can open it, signs it with your admin certificate and pushes it; the scheduler
+delivers it to the running agent, which checks the signature and applies it without a restart. There is nothing to
+re-render or redeploy. The documents stay in the cluster, where the agents read them; nothing copies them out.
+
+Run all of it in the dev container (`bin/polar-dev attach`), from `/workspace`. The tools are already there.
+
+**Once per dev container** (again for a fresh cluster):
+
+```bash
+just port-forwards-up observer git          # the credentials agent's gateway (8081) and the Polar git server (8443)
+eval "$(just polar-git-config <you> | grep '^git config')"   # git presents your certificate to the git server
+nu infra/resolve.nu scaffolds ~/.config/polar-admin/scaffolds   # what each agent accepts; again after a git pull
+export POLAR_SCHEDULES_URL=https://polar-git-server.polar.svc.cluster.local:8443/polar-schedules.git
+```
+
+Your admin certificate is already in `~/.config/polar-admin` (`<you>.crt`, `<you>.key`): step 4's admin flow made it for
+the `--user` you gave `up.nu`, and `polar-sign` finds it there. Export the scaffolds again after every `git pull` that
+changes an agent: `polar-sign` checks a document against them, and a stale one can refuse a field the new agent takes (or
+accept one it no longer does).
+
+**Each change:**
+
+```bash
+polar-sign template <agent>                            # the sections it takes, and how many settings (the agents: the table below, or ls ~/.config/polar-admin/scaffolds)
+polar-sign template <agent> <section> --out change.json    # or: <agent> --settings, for its settings
+$EDITOR change.json                                    # fill it in; raise "version" above the last one applied
+polar-sign sign change.json --user <you> --push        # check, seal, sign, commit and push
+```
+
+A secret field takes the value as typed, or `-` to read it from standard input, so it never sits in a file or on a
+command line: `printf '%s\n' "$TOKEN" | polar-sign sign creds.json --user <you> --push`. Every section and settings
+document counts its own `version`; one that is not higher than the last applied is refused. A section is replaced whole
+by each version, so a version without an entry withdraws it.
+
+**Check that it landed:** the agent logs `signed configuration verified` and `configuration update applied`, or a refusal
+with its reason (`kubectl -n polar logs deploy/<agent> -c <agent> | grep -i configuration`). Within a minute
+`(:AgentHealth)` in the graph shows the agent's status: an agent given a setting or a credential that cannot work holds
+it as `Configuration` or `Credentials`, stays up and says why, and the next signed version that works releases it.
+
+**Afterwards, on your machine:** `bin/polar-dev sync` brings `~/.config/polar-admin` and `~/.config/polar-deploy` back.
+
+| You want to | Agent and section | Walk-through |
+| --- | --- | --- |
+| observe a repository, and the credential for it | `git-repo-controller repositories`, `git-repo-observer credentials` | [docs/operations/git-private-repository.md](docs/operations/git-private-repository.md) |
+| accept repositories other agents propose | `git-repo-controller admission` | [docs/architecture/proposals.md](docs/architecture/proposals.md) |
+| give or rotate jira-observer's token | `jira-observer credentials` (on a fresh cluster `up.nu` seals it once from sops) | [docs/architecture/jira.md](docs/architecture/jira.md), "The credential" |
+| change Jira's address, deployment or `QUERY_DATE` | `jira-observer --settings` | [docs/architecture/jira.md](docs/architecture/jira.md) |
+| name the groups the policy uses | `credentials-agent groups` | [docs/architecture/credentials-policy.md](docs/architecture/credentials-policy.md) |
+
+*If the push fails:* `Could not resolve host` means the `polar-git-config` line was skipped. `Not possible to
+fast-forward` means the cluster's schedules repository was seeded anew since the tool's last push (a fresh cluster); give
+`--workdir` an empty folder, or remove `~/.cache/polar-sign/schedules`, which holds only signed documents and
+ciphertext. A certificate error usually means `GIT_SSL_CAINFO` is set and overrides the git server's CA (`polar-git-config`
+warns about it): `unset GIT_SSL_CAINFO`. `cannot reach the credentials agent's gateway` means the `observer` forward is
+not running. The design is in [docs/architecture/signed-configuration.md](docs/architecture/signed-configuration.md).
 
 ### On a Mac, with minikube
 
