@@ -47,6 +47,7 @@ Each step is taken in bites, each reported before the next.
 - [ ] **Slices A and B** (the maintainer, 2026-11-02: "I want it done sooner than most of the work I asked you for"; the musl
   move, Scudo, the Cassini benchmarks and the custodian were its foundation). The plan is in `docs/architecture/runtime-attestation.md`,
   its open questions now answered there. Every target has the signed image lock it checks against, since `local` and `local-minimal` went (below).
+  A pod is checked against its Deployment at issuance; the Deployments against a signed record that the scheduler observer delivers from the deployment repository (2026-11-02).
 - [ ] **Slice C**, after the four agents migrate: the node sensor, the runtime challenges, the builder's seccomp and Landlock lock.
 
 ## The Cassini broker and client

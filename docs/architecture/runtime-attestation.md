@@ -79,8 +79,9 @@ The request carries the pod UID its token is bound to (the instance binding, `in
 - the pod exists and has that UID;
 - its owner is the workload the catalog says this identity runs as (its Job, or its Deployment's ReplicaSet);
 - it runs as the expected service account;
-- each container's `imageID` is the digest the signed deployment pins (the Kubernetes consumer's "attestation ladder":
-  the kubelet's `imageID`, never the spec's tag, `kubernetes/consume/src/lib.rs`).
+- each container's `imageID` is the digest its Deployment pins, which is checked continually against the signed record ("What the images
+  are checked against", below; the Kubernetes consumer's "attestation ladder": the kubelet's `imageID`, never the spec's tag,
+  `kubernetes/consume/src/lib.rs`).
 
 Who asks:
 - **the credentials agent,** before it vouches for any workload;
@@ -204,7 +205,7 @@ read the same way.
 2. *The question and its answer,* over Cassini (`attestation-instance-requests`, `attestation-instance-replies`, a
    correlation id): the identity and the pod UID the token was bound to; the answer `Genuine`, or `NotGenuine` with why:
    no such pod, another owner than the catalog's for that identity, another service account, a container whose digest
-   the signed deployment does not name, or an ephemeral container.
+   its Deployment does not pin, or an ephemeral container.
 3. *The askers:* the credentials agent in its three paths, before it vouches; cert-issuer in its gate, before a ticket or
    a window admits. A `NotGenuine` is a refusal, recorded and logged.
 4. *After the fact:* once up, the attestation agent attests every running pod against cert-issuer's record (each entry
@@ -212,6 +213,31 @@ read the same way.
 5. *Tests first,* as everywhere: the verdict a pure function of the pod, its owners, the catalog and the lock (a property
    over pods that differ from the genuine one in each way, and only those genuine pass); the askers refusing on
    `NotGenuine`; on the cluster, a pod of another image or owner running as a workload's service account, refused.
+
+### What the images are checked against (the maintainer, 2026-11-02)
+
+The plan above said "the digest the signed deployment pins" and not how the attestation agent learns it. Its nearest precedent, a section signed at
+`up.nu`'s seed step, cannot be what issuance waits on: the seed runs after Flux has replaced the pods. Nor can anything delivered, alone: Flux may replace the scheduler
+observer first, its new pod needs a certificate, the attestation agent does not know the new digest yet, and only that observer could tell it. So there are two
+checks, with different jobs.
+
+- **At issuance, the pod against its Deployment.** Each container's `imageID` (the kubelet's) is the digest its owning Deployment pins. It is immediate, and it cannot
+  deadlock a rollout. Flux applied that Deployment from the signed commit, and whoever can change it is inside the trust base.
+- **Continually, the Deployments against the signed record.** `deploy-repo.nu publish` writes the deployment's facts into the commit as a signed document; the scheduler
+  observer watches the deployment repository as it watches `polar-schedules`, and sends the document down the ordinary configuration path. The attestation agent compares
+  every Deployment with it and reports a mismatch. A pin changed behind Flux gets a certificate first and is caught at the next comparison: "attested after the fact",
+  as cert-issuer's entries are.
+
+*The document.* A `polar-signing` document in a signing domain of its own, signed by the `pipeline` certificate, chaining to the deployment CA and not Polar's. The observer
+is not trusted: the agent verifies the document itself, and trusts the deployment CA for this section alone, so the deployment PKI gains no authority over anything else. The CA's
+certificate reaches the agent through the signed render. Its version is the commit's height in the repository's history.
+
+*What it says (proposed by the agent that wrote this, for review).* For each workload: its identity, its owner's kind and name, its service account, and each container's digest.
+These are the same facts the instance check needs for "the workload the catalog says this identity runs as", so one document carries them, computed from the rendered manifests
+by `publish`, in line with "applying the catalog is the sign-off". An identity no document names yet is answered as if the agent could not be asked: issued, recorded as made
+without attestation, and attested once the document arrives. An identity it names, on the wrong owner or service account, is `NotGenuine`.
+
+*Also needed:* a client certificate for the observer from the deployment PKI, and the observer among the repository's readers (`infra/deploy-repo.nu`: today `flux` and `pipeline`).
 
 ### Slice B, outlined: watching what was attested
 

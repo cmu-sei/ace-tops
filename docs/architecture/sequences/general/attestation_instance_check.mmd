@@ -20,7 +20,7 @@
 %% DM26-0670
 
 %% Runtime attestation, slice A: the instance check at issuance (runtime-attestation.md, "The plan"). All designed, nothing built.
-%% How the digest is checked is drawn as proposed for review: against the digest the pod's own Deployment pins.
+%% At issuance a pod is checked against its Deployment; the Deployments are checked against the signed record continually (the maintainer, 2026-11-02).
 sequenceDiagram
     autonumber
     participant Init as polar-init (a workload's pod)
@@ -29,6 +29,8 @@ sequenceDiagram
     participant Att as Attestation agent
     participant API as Kubernetes API
     participant CI as cert-issuer
+    participant Sch as Scheduler observer
+    participant Repo as Deployment repository
 
     rect rgb(235, 219, 178)
     Note over Att,API: DESIGNED: read from what it already holds, not a call per question
@@ -81,4 +83,15 @@ sequenceDiagram
     CA-->>Att: the entries
     Att->>Att: attest every running pod they name
     Att-)CA: any that fail: the credentials agent, as body guard, stops renewing
+    end
+
+    rect rgb(235, 219, 178)
+    Note over Att,Repo: DESIGNED: the Deployments against the signed record. An issuance waits on none of this
+    Repo-->>Sch: a new commit, carrying the deployment's facts as a document the pipeline certificate signed
+    Sch-)Att: the document, on the agent's configuration topic. The observer is not trusted
+    Att->>Att: verify it to the deployment CA, for this section alone, and apply it
+    loop on every change, and on a schedule
+        Att->>Att: every Deployment's pins, owner and service account against the document
+    end
+    Att-)CA: a mismatch: reported, and the credentials agent, as body guard, stops renewing
     end
