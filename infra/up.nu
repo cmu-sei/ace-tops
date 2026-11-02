@@ -78,7 +78,7 @@ use runtime.nu [container_runtime]
 use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
 use agent-pods.nu [delete_stale_namespaces]
 use preflight.nu [kubernetes_problem, openssl_problem, uncommitted_problem]
-use rules.nu [POOL_KEY, pools_without_nodes, topology_problem]
+use rules.nu [POOL_KEY, pools_without_nodes, topology_change_problem, topology_problem]
 use cluster-registry.nu
 use registry.nu [node_registry]
 use apply.nu [any_pod_ready, changed_configmaps, changed_lines, config_users, gate_after, job_verdict, jobs_in, stale_images, stale_pod_images, stale_pod_report, workload_needs_restart]
@@ -423,7 +423,16 @@ def choose_topology [target: string, topology: string] {
     let refused = (topology_problem $layouts $topology)
     if $refused != null { fail $refused }
     let path = (cluster_inputs_path $target)
-    let chosen = (cluster-inputs with_topology (cluster-inputs read_inputs $path) $topology (cluster_fingerprint))
+    let fingerprint = (cluster_fingerprint)
+    let held = (cluster-inputs read_inputs $path)
+    # In force on this cluster only if it has been deployed, which its CA and a file tied to it say.
+    let deployed_in = if $fingerprint != null and ($held | get -o cluster) == $fingerprint { (cluster-inputs topology_of $held) | default ($layouts.topology? | default null) } else { null }
+    let in_the_way = (do { ^kubectl get pv -o json } | complete | if $in.exit_code == 0 { $in.stdout | from json | get items } else { [] }
+        | where {|v| ($v.spec.nodeAffinity? | default null) != null and ($v.spec.claimRef?.namespace? | default "" | str starts-with "polar") }
+        | each {|v| $"($v.spec.claimRef.namespace)/($v.spec.claimRef.name)" })
+    let stuck = (topology_change_problem $deployed_in $topology $in_the_way)
+    if $stuck != null { fail $stuck }
+    let chosen = (cluster-inputs with_topology $held $topology $fingerprint)
     if $chosen.changed { $chosen.inputs | to nuon --indent 2 | save --force $path }
 }
 

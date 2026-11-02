@@ -281,6 +281,15 @@ export def topology_problem [placement: any, chosen: any]: nothing -> any {
     }
 }
 
+# Why a deployed cluster cannot go from topology `from` to `to`: a volume bound to a node (local-path's are) keeps its pod on that
+# node, and the new layout would not schedule it there, so the pod stays Pending and every layer after it waits. `bound` names such
+# volumes. Null when nothing has to move, or nothing is in the way.
+export def topology_change_problem [from: any, to: string, bound: list<string>]: nothing -> any {
+    if $from == null or $from == $to or ($bound | is-empty) { return null }
+    let some = ($bound | first 3 | str join ", ")
+    $"this cluster is deployed in the topology '($from)', and its volumes are bound to nodes \(($some), ($bound | length) in all\), so it cannot change to '($to)' in place: their pods would stay Pending. Choose a topology on a fresh cluster."
+}
+
 # The pools a topology places by that no node carries: a pod of one would stay Pending. `nodes` is `[{ name, pool }]`.
 export def pools_without_nodes [declared: any, nodes: list]: nothing -> list<string> {
     if $declared == null { return [] }

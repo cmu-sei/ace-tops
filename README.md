@@ -256,8 +256,8 @@ signed record says so). `infra/INFRA.md` ("How a target works") explains what it
 nu infra/up.nu sandbox-local --topology separated --dev --user <name> --email <email>
 ```
 
-A cluster keeps its choice (`infra/targets/<target>/cluster-inputs.nuon`, which is not committed) until you give another, so
-later runs need no flag. A target's layouts are in its `config.nuon`, under `cluster.placement`.
+Choose it on a fresh cluster: a deployed one's volumes are bound to its nodes, so `up.nu` refuses a change. A cluster keeps its
+choice (`infra/targets/<target>/cluster-inputs.nuon`, which is not committed), so later runs need no flag. A target's layouts are in its `config.nuon`, under `cluster.placement`.
 
 What `sandbox-local` deploys: Neo4j, Cassini, `cert-issuer`, the credentials agent and its observer, ACE, the ingestion
 agents, a git server for the schedules repository, and Keycloak with its own Postgres (an optional identity-provider route

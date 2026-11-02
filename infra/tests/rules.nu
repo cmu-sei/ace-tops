@@ -120,6 +120,20 @@ def main [] {
             assert equal (topology_problem null null) null
         }
 
+        # Seen on u7c, 2026-11-02: from `separated` to `single`, cert-issuer's volume stayed on the tainted core node and its
+        # new pod, with no toleration, stayed Pending, and every layer after it waited.
+        "a deployed cluster cannot change topology while its volumes are bound to nodes": {
+            let bound = ["polar/cert-issuer-data" "polar-graph/polar-db-data"]
+            let refused = (topology_change_problem "separated" "single" $bound)
+            assert ($refused | str contains "separated") $refused
+            assert ($refused | str contains "single") $refused
+            assert ($refused | str contains "polar/cert-issuer-data") $refused
+            # the same topology, or none in force yet, or volumes that can follow their pods: nothing to refuse
+            assert equal (topology_change_problem "separated" "separated" $bound) null
+            assert equal (topology_change_problem null "separated" $bound) null
+            assert equal (topology_change_problem "separated" "single" []) null
+        }
+
         # nix-usernetes' contract: a pod with a pool's selector and toleration stays Pending unless a node carries that pool.
         "up.nu finds a pool no node carries before anything is deployed": {
             let nodes = [
