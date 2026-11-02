@@ -93,6 +93,14 @@ def main [] {
             }
         }
         {
+            name: "an image built elsewhere keeps its own version under a release's tag, since a release does not publish it"
+            body: {
+                let neo4j = { image: "neo4j", tag: "5.26.2", kind: "external" }
+                assert equal (published_ref "docker.io/acme" $neo4j "amd64" "3.0.0") "docker.io/acme/polar-neo4j:5.26.2-amd64"
+                assert equal (published_ref "docker.io/acme" $neo4j "amd64") "docker.io/acme/polar-neo4j:5.26.2-amd64"
+            }
+        }
+        {
             name: "a tag given replaces the table's in the published name, so a release can be published beside latest"
             body: {
                 let row = { image: "cassini", tag: "latest", kind: "nix" }
