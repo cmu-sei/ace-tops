@@ -407,8 +407,8 @@ over Cassini with the certificate it just obtained, for an agent that needs encr
    - **Not done:** NetworkPolicy emission with the canary (the control below); the hand-written agent charts that
      are not in `local-minimal` (gitlab, openapi, build-processor) still ask cert-issuer directly, so a target that
      deploys them cannot enforce the floor until they move; and the larger gap this exposed, that nothing checks a
-     certificate's permissions on service-to-service traffic (`remaining-work.md`, the top item under
-     "Next: orchestration and Justfile").
+     certificate's permissions on service-to-service traffic (`remaining-work.md`,
+     "GAP, MUST BE ADDRESSED (2026-10-14)").
 
 Phases 1 to 5 can be built and tested without touching the cluster. Phase 6 restarts every pod.
 

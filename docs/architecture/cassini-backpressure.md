@@ -338,7 +338,7 @@ slow subscribers by 14 messages; the broker was not at fault. Now the processor 
 before and then, until the budget is exhausted, one more round at a time, each once the broker has taken every
 publish before it and only while every topic stays under its high water (what the test is about is unchanged: each
 topic under its high water, every subscriber making progress, the budget exhausted); the checks after are the same,
-over the rounds it published. Before, 0 of 9 under that load; after, 9 of 9, and the counts in `remaining-work.md`.
+over the rounds it published. Before, 0 of 9 under that load; after, 9 of 9, and the counts in `remaining-work.md` at `f03666c4`.
 
 **B. Progress was one subscription's (plausible, confirmed by its test).** A client acknowledging a large backlog on one
 topic was ended for a delivery on another waiting behind those writes past the stall bound; and the acknowledgements

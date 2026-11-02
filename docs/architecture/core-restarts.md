@@ -244,7 +244,7 @@ Each step tests first, with property tests where an invariant holds.
    - *Found on the way: an escrow certificate is an mTLS certificate too.* By the same rustls rule, a `Service`
      certificate, which has no extended key usage and carries its agent's permissions, authenticates as that agent to
      Cassini, so whoever holds an escrow private key (the agent, and the escrow it is kept in) can connect as the
-     agent. 1c does not change it; it is on record in `remaining-work.md`.
+     agent. 1c does not change it; it is on record in `remaining-work.md` at `f03666c4`.
 
    *Built (2026-10-26): 1c,* in code and tests, not yet on a cluster. `polar-signing` signs and verifies under a
    named `Domain` (`document.rs`; one line, checked when it is made); cert-issuer has `CertType::Signing`
@@ -408,7 +408,7 @@ Each step tests first, with property tests where an invariant holds.
    credentials agent was heard). The new observer was held and offered (03:24:08); the credentials agent's successor
    was held, offered to no one, and admitted once the bound had passed since its predecessor fell silent (03:25:03),
    which is step 4. That successor then could not start: its ledger had been forked by two writers during the redeploy
-   before (`remaining-work.md`, "Two credentials agents appended to one ledger"), so nothing vouched for the observer.
+   before (`remaining-work.md` at `f03666c4`, "Two credentials agents appended to one ledger"), so nothing vouched for the observer.
    Vouching over Cassini and over mTLS is left to the next run, from a fresh cluster with both sides on step 3.
 
    *Validated on sandbox-local, 2026-10-27* (a fresh cluster from `bbf35777`, each core Job then replaced the way Flux

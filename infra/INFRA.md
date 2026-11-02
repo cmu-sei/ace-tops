@@ -635,7 +635,7 @@ cert-issuer, data, cassini, identity, agents; `sandbox-local` adds `flux`). A la
 StatefulSets `up.nu` waits for, except one that cannot be Ready until a later layer is up: Neo4j needs the credentials agent, so `sandbox-local`'s data layer waits for nothing). Where a target declares layers, its `apply_order` is derived from them, so
 `up.nu` applies exactly what it did, and `render.nu` fails when a rendered file is in no layer or in two.
 `nu infra/layers.nu split <target> <dest>` copies a render into `<dest>/<layer>/` with a `layers.json`:
-the shape a GitOps tool reconciles one layer at a time (see the Flux plan in `remaining-work.md`).
+the shape a GitOps tool reconciles one layer at a time (see the plan in `docs/architecture/cluster-bootstrap.md`).
 Declare a new file in the layer it belongs to; the chain is linear, each layer after the one before it.
 
 **`overrides.dhall`** is a flat record merged over each custom chart's

@@ -83,7 +83,7 @@ rebuild state from the ledger.
 5. The browser reaches Neo4j Browser over mTLS (`client_auth=REQUIRE`) at `https://localhost:7473`.
 6. Neo4j password changed interactively from `neo4j`; this unblocks `kube-consumer` and `jira-processor`. (Superseded 2026-10-14: the
    nix-built image now applies `NEO4J_AUTH` on its first start, so Neo4j starts with the password the agents use and
-   there is no interactive step; see `remaining-work.md`.)
+   there is no interactive step; see `remaining-work.md` at `f03666c4`.)
    `NEO4J_AUTH` is ignored by the custom image; do not seed the password.
 
 Neo4j trusts only the Polar CA for client certs on both connectors: the JVM keystore is built from `polar-internal-ca`

@@ -711,7 +711,7 @@ pub const REVOKED_REFUSAL: &str = "the broker refused: this certificate is revok
 
 /// What a refused registration means. A reader acts on this, never on the refusal's text, which is for people and may
 /// change: an older daemon that matched the text did not hear its revocation once the text changed (2026-10-28,
-/// `remaining-work.md`).
+/// `key-custody.md`, "Step 9's follow-ups").
 #[derive(Serialize, Deserialize, Archive, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalCode {
     /// The certificate the connection presented is revoked; the broker closes the connection.

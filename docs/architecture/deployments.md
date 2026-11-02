@@ -32,7 +32,7 @@ seen on `u7c`); step 6, the ticket, next.
 Every agent is a Job (`restartPolicy: Never`, `infra/schema/agent.dhall:226`) and ends by exiting 1, so that its Job
 makes a new pod (`health-and-shutdown.md`). Each ending leaves a Failed pod (`pod-reaper.md`, "The problem"), a new pod
 has a new UID, and a changed Job is replaced by force, which runs the old pod and the new one at once (the ledger fork of
-2026-10-26, `remaining-work.md`). The maintainer's plan (`runtime-attestation.md`, "Deployments, next"): Deployments whose
+2026-10-26, `remaining-work.md` at `f03666c4`). The maintainer's plan (`runtime-attestation.md`, "Deployments, next"): Deployments whose
 pods restart in place.
 
 KEP-5532 does it (`runtime-attestation.md`, "Deployments, next", "Checked"): a container restart rule with the action

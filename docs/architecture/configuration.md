@@ -209,7 +209,7 @@ Next, in order: the scheduler integration (a subscriber on `agent.<id>.schedule`
 into an update), signed configuration in front of `apply`, then the credentials agent's use of it. *(Done another way:
 every agent subscribes to `agent.<name>.configuration` for signed documents, and the unsigned `ScheduleNotification`
 path was removed on 2026-10-21.)* Every step is
-in `remaining-work.md`.
+in `remaining-work.md` at `f03666c4`.
 
 ## 9. The agent's own interface (decided 2026-10-09, not yet built)
 

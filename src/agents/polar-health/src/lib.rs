@@ -1000,7 +1000,7 @@ impl Actor for HealthCheckActor {
 //
 // These pin the behaviour of the health system as it is, before the testability
 // refactor. Where today's behaviour is a known defect (see the "Health system
-// rework" plan in remaining-work.md) the test says so, and the fix flips it.
+// rework" plan in remaining-work.md at f03666c4) the test says so, and the fix flips it.
 
 #[cfg(test)]
 mod tests {

@@ -36,7 +36,7 @@ workload reads it: the Cassini client (`cassini/client/src/lib.rs:1312`, `Privat
 `with_client_auth_cert` at `:1323`) and, for the credentials agent, its mTLS client to cert-issuer
 (`cert-issuer/client/src/handshake.rs:110`, `reqwest::Identity::from_pem`). A compromised process can read the file and
 be the agent from anywhere, for as long as the certificate lives, and nothing Polar does at the broker can tell the
-copy from the agent. On record since 2026-10-08 (`remaining-work.md`, "Harden the mTLS client key").
+copy from the agent. On record since 2026-10-08 (`remaining-work.md` at `f03666c4`, "Harden the mTLS client key").
 
 What existed (until 2026-10-28, step 9) was the escrow key's custody, not this one: `polar-init` loaded the escrow key into the kernel keyring and
 left the workload only its number (`polar-init/src/handle.rs`, `polar_crypto::Custody`, `POLAR_ESCROW_KEY_HANDLE`).
@@ -90,7 +90,7 @@ zeroed). Two things make it whole:
   daemon too, so each restart has a new key and a new certificate; nothing of the old key survives in the shared
   volume, because it never was there. The renewal rule's question (a pod restarted in place asking again under its UID)
   is the same as before, and is to be settled with the move.
-- *The keyring's two recorded gaps* (`remaining-work.md`, "Key lifecycle in the user keyring"): keys shared by UID and
+- *The keyring's two recorded gaps* (`remaining-work.md` at `f03666c4`, "Key lifecycle in the user keyring"): keys shared by UID and
   keys left behind by a killed pod both go, for the mTLS key; the escrow key could move into the daemon later (below).
 - *What runtime attestation assumed* (`runtime-attestation.md`, the table: "The private key lives in the kernel keyring,
   usable but not readable") becomes true of the daemon.
@@ -237,7 +237,7 @@ terms and recorded here:
 *The process keyring, probed (2026-10-27, precisionws, 7.3.0, FIPS on).* The kernel cannot hold the daemon's key, and
 turning ECDSA back on would not change that:
 - *The probe.* A P-256 private key as PKCS#8, given to `add_key("asymmetric", ...)` in the probe's process keyring, is
-  refused with `ENOPKG`, as on 7.2.9 (`remaining-work.md`, "Harden the mTLS client key"). An RSA-2048 control loads and
+  refused with `ENOPKG`, as on 7.2.9 (`remaining-work.md` at `f03666c4`, "Harden the mTLS client key"). An RSA-2048 control loads and
   signs (`KEYCTL_PKEY_SIGN`, `enc=pkcs1`). The RSA tests in `polar-kernel-keyring` pass.
 - *Why, in the 7.3 source.* The PKCS#8 parser takes RSA alone (`crypto/asymmetric_keys/pkcs8_parser.c`,
   `pkcs8_note_algo`: anything but `OID_rsaEncryption` is `-ENOPKG`). The kernel's ECDSA verifies only
@@ -268,7 +268,7 @@ What `polar-init` does today, read for this (`polar-init/src/main.rs`):
 - It asks for P-256 everywhere: all 27 `--cert` flags in `infra` say `ecdsa-p256`.
 - Graph writers ask for two client certificates: Cassini's (`tlsPath`) and Neo4j's (`neo4jClientCertPath`,
   `build-processor/processor.dhall:83`). Neo4j's server asks for one (`neo4j/statefulset.dhall:191`). neo4rs and
-  Neo4j read key files, so those keep files (`remaining-work.md` already records neo4rs).
+  Neo4j read key files, so those keep files (`remaining-work.md` at `f03666c4` records neo4rs).
 
 The plan:
 1. *A `--cert` says when its key is the daemon's.* Decided (the maintainer): the key-algorithm field reads `custody`
@@ -1058,7 +1058,7 @@ that session.
    Polar. Known before starting: Polar's image eviction (`infra/images.nu`) knows only the `u7s` container, so an image
    rebuilt during the run would stay stale on `u7c`'s worker nodes. A fresh cluster has no cache, so it matters only if
    something is rebuilt mid-run; the fix is Polar's to decide, and is reported, not made.
-6. *Not in it:* the Cassini load harness with the daemons (`remaining-work.md`, later), a run with custody off (the
+6. *Not in it:* the Cassini load harness with the daemons (`remaining-work.md` at `f03666c4`, later), a run with custody off (the
    render tests show it byte for byte), the pinning and the watcher cap (planned, to do).
 
 *Cleared (the maintainer, 2026-10-27), kube-observer the one revoked; Mullvad disconnected for the run; the browser
@@ -1123,7 +1123,7 @@ Decided item 3. Two keys are left outside a daemon, and they are not alike.
   (`polar-init/src/handle.rs`), and the workload's `CryptoActor` adopts it (`:1280`) or, without a number, bootstraps
   and holds the key itself. The key is used for one thing: RSA-OAEP-SHA256 decryption, in three places
   (`handle_decrypt_own_message`, `handle_decrypt_own_escrowed`, `handle_retrieve_secret`). Not on disk, but in the
-  user keyring, shared by UID and left behind by a killed pod (`remaining-work.md`, "Key lifecycle in the user keyring"),
+  user keyring, shared by UID and left behind by a killed pod (`remaining-work.md` at `f03666c4`, "Key lifecycle in the user keyring"),
   and in polar-init's memory as PEM on the way there.
 - **The credentials agent's own escrow key.** The root: RSA-4096, generated by the workload on first start and kept in a
   file on its PVC (`credentials-agent/consume/src/escrow.rs:104`, `load_or_generate`,
@@ -1383,9 +1383,9 @@ asked; Mullvad off for the run):** what was checked, how, and what was not.
   refused as revoked once a second for 53 s and did not exit: its custodian's certificate was superseded, so revoked,
   when the new pod's was issued, and the daemon reads its revocation by comparing the refusal's text to
   `REVOKED_REFUSAL`, which part A changed. Only while two images overlap, and the pod was ending; a refusal code on
-  the wire instead of its text would remove it (`remaining-work.md`).
+  the wire instead of its text would remove it (`remaining-work.md` at `f03666c4`).
 - *What it leaves:* `polar-kernel-keyring`, used by nothing now (the maintainer to decide whether it goes); an agent
-  with `encryption` cannot run without the daemon (`remaining-work.md`).
+  with `encryption` cannot run without the daemon (`remaining-work.md` at `f03666c4`).
 
 **Step 9's follow-ups (decided by the maintainer and built, 2026-10-28).**
 - *Kept:* `polar-kernel-keyring`, in the tree though nothing uses it.
