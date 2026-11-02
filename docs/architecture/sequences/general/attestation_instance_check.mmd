@@ -1,0 +1,84 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Runtime attestation, slice A: the instance check at issuance (runtime-attestation.md, "The plan"). All designed, nothing built.
+%% How the digest is checked is drawn as proposed for review: against the digest the pod's own Deployment pins.
+sequenceDiagram
+    autonumber
+    participant Init as polar-init (a workload's pod)
+    participant Obs as Credentials observer
+    participant CA as Credentials agent
+    participant Att as Attestation agent
+    participant API as Kubernetes API
+    participant CI as cert-issuer
+
+    rect rgb(235, 219, 178)
+    Note over Att,API: DESIGNED: read from what it already holds, not a call per question
+    Att->>API: watch pods, ReplicaSets and Deployments in Polar's namespaces (get, list, watch only)
+    API-->>Att: every change
+
+    Init->>Obs: issuance request, with the token Kubernetes signed for this pod
+    Obs->>CA: the request, over Cassini
+    CA->>CA: verify the token, its identity and the pod UID it is bound to, then the renewal rule
+    CA->>Att: attestation-instance-requests: this identity, this pod UID
+
+    alt the attestation agent answers
+        Att->>Att: the pod exists with that UID
+        Att->>Att: its owner chain ends at the Deployment the catalog names for the identity
+        Att->>Att: it runs as the expected service account
+        Att->>Att: each container's imageID (the kubelet's) is the digest its Deployment pins
+        Att->>Att: it has no ephemeral container
+        alt all of them hold
+            Att-->>CA: Genuine
+            CA->>CI: vouch for the certificate
+            CI-->>CA: signed
+            CA-->>Init: the certificate, through the observer
+        else any of them does not
+            Att-->>CA: NotGenuine, and why
+            CA->>CA: record and log the refusal
+            CA-->>Init: refused
+        end
+    else it cannot be asked (not up, restarting, Cassini down)
+        CA->>CI: vouch for the certificate
+        CI-->>CA: signed
+        CA->>CA: record the issuance as made without attestation
+        CA-->>Init: the certificate, through the observer
+    end
+    end
+
+    rect rgb(235, 219, 178)
+    Note over Init,CI: DESIGNED: a token-only request in one of the core's windows (a ticket, the crash window, Cassini's route)
+    Init->>CI: a bootstrap identity's request, on its token alone
+    CI->>CI: is its entry open?
+    CI->>Att: attestation-instance-requests, whenever it is reachable
+    Att-->>CI: Genuine or NotGenuine: the attestation decides who gets through
+    CI-->>Init: signed, or refused. Not reachable: signed, and attested afterwards
+    end
+
+    rect rgb(235, 219, 178)
+    Note over CI,Att: DESIGNED: what was signed before anything could attest it, and while the agent was away
+    Att->>CI: cert-issuer's record: each entry carries its pod UID
+    CI-->>Att: the entries
+    Att->>CA: the same for the issuances recorded as made without attestation
+    CA-->>Att: the entries
+    Att->>Att: attest every running pod they name
+    Att-)CA: any that fail: the credentials agent, as body guard, stops renewing
+    end

@@ -1,0 +1,48 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Runtime attestation, slice B: watching what was attested (runtime-attestation.md, "The plan"; outlined there, to be planned when
+%% slice A is built). All designed, nothing built.
+sequenceDiagram
+    autonumber
+    participant Op as Someone with access
+    participant API as Kubernetes API
+    participant Att as Attestation agent
+    participant CA as Credentials agent
+    participant Bk as Cassini broker
+
+    rect rgb(235, 219, 178)
+    Note over Op,Att: DESIGNED: a pod changes after it was attested
+    Att->>API: watching the pods it attested
+    alt kubectl debug
+        Op->>API: add an ephemeral container
+        API-->>Att: the pod's status now shows it
+    else a container restarted on another digest
+        API-->>Att: the container's imageID is not what its Deployment pins
+    end
+    Att->>Att: the verdict is the attestation agent's: this instance has lapsed
+    Att-)CA: published: this identity, this pod UID, and why
+    CA->>CA: acting on it is the body guard's: stop renewing, so the certificate is dead within the hour
+    opt the credentials agent, or an administrator's signed command, revokes sooner
+        CA-)Bk: the revocation, through authority
+        Bk->>Bk: end the session and refuse its next registration
+    end
+    end

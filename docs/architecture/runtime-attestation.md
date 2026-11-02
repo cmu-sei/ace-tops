@@ -28,6 +28,10 @@ Status, 2026-10-26: the shape, decided with the maintainer. Nothing here is buil
 (the original Attestation Service, cert-issuer's deferred "v2" items, the image attestation ladder) is in
 `core-restarts.md`, question 1, "Runtime attestation: what Polar has on it".
 
+Diagrams, all designed: [the instance check](sequences/general/attestation_instance_check.svg) (slice A),
+[watching what was attested](sequences/general/attestation_watching.svg) (slice B), [the process](sequences/general/attestation_process.svg) (slice C).
+The [original design](sequences/general/attestation_and_issuance.svg) is what these replace in mechanism.
+
 ## Why
 
 The floor signs the core's own identities on a token alone, and the decided fix for the credentials agent's restart

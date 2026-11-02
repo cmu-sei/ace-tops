@@ -1,0 +1,52 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Runtime attestation, slice C: the process itself (runtime-attestation.md, "Runtime attestation of the process", "The node sensor";
+%% outlined, to be planned when slices A and B are built, after the OpenAPI and GitLab agents are on the builder). All designed, nothing built.
+sequenceDiagram
+    autonumber
+    participant Ag as An agent's process
+    participant Lock as Its builder actor
+    participant Sensor as Node sensor (one per node)
+    participant Att as Attestation agent
+    participant CA as Credentials agent
+
+    rect rgb(235, 219, 178)
+    Note over Ag,Lock: DESIGNED: before it parses any untrusted input, irreversibly
+    Ag->>Lock: start
+    Lock->>Ag: apply seccomp (no execve, ptrace or memfd_create, no new executable memory) and Landlock
+    end
+
+    rect rgb(235, 219, 178)
+    Note over Sensor,Att: DESIGNED: evidence from outside the process. What a process says about itself is worthless
+    loop on a schedule
+        Sensor->>Sensor: read the container's cgroup, and the agent's Seccomp and NoNewPrivs state
+        Sensor-)Att: the processes it found, and that state, over Cassini
+        Att->>Lock: a fresh challenge, over Cassini
+        alt it answers in time
+            Lock-->>Att: the answer
+        else missed or stale
+            Att->>Att: the instance has lapsed
+        end
+        Att->>Att: a process that is not the agent, or the lock not in force: the instance has lapsed
+    end
+    Att-)CA: a lapsed instance: acting on it is the body guard's, as in slice B
+    end

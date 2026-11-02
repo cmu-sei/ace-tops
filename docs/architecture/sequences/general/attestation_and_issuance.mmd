@@ -19,6 +19,8 @@
 %%
 %% DM26-0670
 
+%% The original design of attestation, kept as what it set out to prove: a trusted build, a fresh request, a running instance. Superseded in its
+%% mechanism by runtime-attestation.md (no SSH to a host, no attestation service holding a master secret); see attestation_instance_check.mmd.
 sequenceDiagram
     autonumber
     participant Host as Runtime Host (Running Container)
