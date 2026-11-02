@@ -256,8 +256,40 @@ export def custody_cert_problems [specs: list<string>]: nothing -> list<string> 
 # (docs/architecture/placement.md).
 export const POOL_KEY = "polar.dev/pool"
 
+# The name of the topology in force: `chosen`, a cluster's own (infra/cluster-inputs.nu), else the one the target deploys by
+# default. `placement` is the target's `{ topology, topologies: { <name>: [pools] } }`, or null when it names none.
+export def topology_in_force [placement: any, chosen: any]: nothing -> any {
+    if $chosen != null { $chosen } else if $placement != null { $placement.topology? } else { null }
+}
+
+# The pools of the topology in force, as a workload's placement is decided by them (`placement_of`): `{ pools: [...] }`, or
+# null for a layout with no pools, a single node's, where nothing is placed.
+export def placement_in_force [placement: any, chosen: any]: nothing -> any {
+    if $placement == null { return null }
+    let pools = ($placement.topologies? | default {} | get -o (topology_in_force $placement $chosen) | default [])
+    if ($pools | is-empty) { null } else { { pools: $pools } }
+}
+
+# Why the topology in force cannot be deployed: it is not one the target names, or the target names none. Null when it can.
+export def topology_problem [placement: any, chosen: any]: nothing -> any {
+    let name = (topology_in_force $placement $chosen)
+    if $name == null { return null }
+    if $placement == null { return $"the topology '($name)' was asked for, but this target names no topologies" }
+    let named = ($placement.topologies? | default {} | columns)
+    if $name in $named { null } else {
+        $"the topology '($name)' is not one this target names \(it names: ($named | str join ', ')\)"
+    }
+}
+
+# The pools a topology places by that no node carries: a pod of one would stay Pending. `nodes` is `[{ name, pool }]`.
+export def pools_without_nodes [declared: any, nodes: list]: nothing -> list<string> {
+    if $declared == null { return [] }
+    let carried = ($nodes | get pool)
+    $declared.pools | where {|p| not ($p in $carried) }
+}
+
 # Where a workload of `pool` goes, as the pod's template takes it: `{ key, pool }` when the target declares the pool
-# (`declared` is its cluster's `placement`, `{ pools: [...] }`, or null), so the pod gets the pool's selector and the
+# (`declared` is `placement_in_force`, `{ pools: [...] }`, or null), so the pod gets the pool's selector and the
 # toleration of its taint; null for the open pool's (`pool` null), on a target that declares no placement, or for a pool
 # the target lacks (which `placement_problems` reports).
 export def placement_of [declared: any, pool: any]: nothing -> any {

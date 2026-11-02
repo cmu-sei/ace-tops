@@ -171,8 +171,7 @@ outlined, to be planned when the first is built.
 - *What it attests against:* a pod's owner chain and service account (the API); its containers' digests, the kubelet's
   `imageID` (`kubernetes/consume/src/lib.rs`, the attestation ladder: never the spec's tag); and the signed deployment's
   image lock (`infra/images.lock.nuon`, written into the signed `provenance.json` the deployment repository holds,
-  `infra/deploy-repo.nu:407`). Only `sandbox-local` pins its images by digest (`pin_images`); `local-minimal` runs `latest`
-  tags and has no signed deployment.
+  `infra/deploy-repo.nu:407`). `sandbox-local` pins its images by digest (`pin_images`); it is the only target since 2026-11-02.
 - *Who would ask, and where:* the credentials agent in its three vouching paths (workload issuance, between the renewal
   rule and the signing, `credentials-agent/consume/src/issuance.rs` steps 5 and 6; the held-request voucher,
   `held_voucher.rs`, `decide`; a custodian's fetches, `custodian.rs`, `handle`), and cert-issuer in its gate, for a

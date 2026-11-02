@@ -116,7 +116,7 @@ is how images get to the nodes, which is the one thing to settle before running
    node's image cache the way it does on the maintainers' dev node.
 4. Make sure the nodes meet the rest of that list (a storage class, the
    `pkcs8_key_parser` kernel module, pod DNS), then run
-   `nu infra/up.nu local-minimal --user <name> --email <email>`.
+   `nu infra/up.nu sandbox-local --user <name> --email <email>`.
 
 ## Required Environment Variables
 

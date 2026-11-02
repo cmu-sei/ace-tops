@@ -130,7 +130,7 @@ Git pre-commit hooks for static analysis.
 Layered Dhall charts and a configuration catalog, rendered to Kubernetes manifests by `nu infra/render.nu <target>` and applied by `nu infra/up.nu <target>` (or, for a target that deploys with Flux, committed signed to a deployment git server and reconciled by Flux).
 
 - `layers/` - Charts grouped by layer (for example `2-services/` holds cert-issuer, cassini, neo4j and the agents)
-- `targets/<name>/` - Deployment profiles (`local-minimal`, ...): `target.nu` lists what a target deploys, `overrides.dhall` holds per-deployment values, `secrets.sops.yaml` holds encrypted cluster secrets
+- `targets/<name>/` - Deployment profiles (`sandbox-local`, ...): `target.nu` lists what a target deploys, `overrides.dhall` holds per-deployment values, `secrets.sops.yaml` holds encrypted cluster secrets
 - `schema/` - Shared Dhall types and constants (namespaces, hostnames, certificate paths)
 
 See `README.md` for the full deployment walkthrough, `infra/INFRA.md` for how the pipeline works and how to add to it, and `docs/architecture/cluster-bootstrap.md` for the Flux bootstrap.
@@ -274,8 +274,8 @@ cargo test --package polar -- --nocapture
 The agents are developed against a cluster (README, **Installation**). To try a change to one:
 
 ```bash
-nu infra/images.nu sync <image> --target local-minimal   # build it and push it to the cluster's registry
-nu infra/up.nu local-minimal                             # restarts the Jobs whose image changed, and only those
+nu infra/images.nu sync <image> --target sandbox-local   # build it and push it to the cluster's registry
+nu infra/up.nu sandbox-local                             # restarts the Jobs whose image changed, and only those
 ```
 
 ### Development Container
@@ -319,7 +319,7 @@ In a cluster, the `TLS_*` variables point at files that `polar-init` writes from
 Layered Dhall charts rendered to Kubernetes manifests by `nu infra/render.nu <target>` and brought up, in dependency order and with the CA, secrets and admin flow, by `nu infra/up.nu <target>`.
 
 ```bash
-nu infra/up.nu local-minimal --dev --user <name> --email <email>
+nu infra/up.nu sandbox-local --dev --user <name> --email <email>
 ```
 
 `up.nu` renders the target and then does everything in order: the namespaces, the cluster CA (`polar-admin-grant bootstrap-ca`, once, which needs a Kubernetes admin credential), the secrets, the manifests, the wait for the core pods, the port-forwards and the admin flow. It is resumable: run the same command again after a failure. When the pods are running, `just port-forwards-up` exposes the services locally, and the admin flow (`just admin-bootstrap`, `admin-provision`, `admin-claim`, `user-cert-install`) issues a personal certificate for Neo4j Browser and the admin tools. `README.md` has the full walkthrough.

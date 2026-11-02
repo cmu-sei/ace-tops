@@ -44,8 +44,8 @@ def render [chart: string, extra: record] {
     let context = ({
         chart_dir: ($INFRA | path join "layers/2-services" $chart)
         output_dir: $out
-        overrides: ($INFRA | path join "targets/local-minimal/overrides.dhall")
-        target_dir: ($INFRA | path join "targets/local-minimal")
+        overrides: ($INFRA | path join "targets/sandbox-local/overrides.dhall")
+        target_dir: ($INFRA | path join "targets/sandbox-local")
         enable_tls: true
         polarInitImage: "polar-init:test"
         neo4jBoltAddr: "polar-db-svc.polar-graph.svc.cluster.local:7687"
@@ -104,7 +104,7 @@ def cert_issuer_settings [out: string] {
     open --raw ($out | path join "cert-issuer-configmap.yaml") | from yaml | get data
 }
 
-# The pod spec of a catalog workload as render-catalog.nu renders it for local-minimal, from a stand-in scaffold (the
+# The pod spec of a catalog workload as render-catalog.nu renders it for sandbox-local, from a stand-in scaffold (the
 # real ones are asked of the images on a cluster); the pod's containers do not depend on what the scaffold says.
 def catalog_pod [name: string] {
     let scaffolds = (mktemp --directory)
@@ -114,7 +114,7 @@ def catalog_pod [name: string] {
         runtime: [], topics: [], sections: []
     } | to json | save --force ($scaffolds | path join $"($name).json")
     let r = (with-env { POLAR_SCAFFOLD_DIR: $scaffolds } {
-        do { ^nu ($INFRA | path join "render-catalog.nu") local-minimal $out --only $name } | complete
+        do { ^nu ($INFRA | path join "render-catalog.nu") sandbox-local $out --only $name } | complete
     })
     if $r.exit_code != 0 {
         rm -rf $scaffolds $out
@@ -127,7 +127,7 @@ def catalog_pod [name: string] {
 
 def main [] {
     # The charts' Dhall reads the node registry from the environment, which render.nu sets; these render a chart without it.
-    $env.POLAR_NODE_REGISTRY = (node_registry local-minimal)
+    $env.POLAR_NODE_REGISTRY = (node_registry sandbox-local)
     let tests = {
         # docs/architecture/deployments.md, step 3: the move to Deployments restarts a pod in place by a container's
         # restart rule, which the schema's Kubernetes types have from dhall-kubernetes 1.35.

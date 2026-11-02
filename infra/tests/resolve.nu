@@ -60,13 +60,20 @@ def resolve [name: string] {
     ^nu $RESOLVER json $name | from json
 }
 
-# The target a test reads a workload under: local-minimal, unless that target leaves it out (`enabled: false`),
-# in which case `local`, which runs the whole catalog.
+const INFRA = (path self | path dirname | path dirname)
+
+# The target a test reads a workload under: sandbox-local, unless that target leaves it out (`enabled: false`), in which case
+# the whole catalog's, a throwaway target of this run with nothing left out.
 def target_for [name: string] {
-    if ($name in (^nu $RESOLVER names | from json)) { "local-minimal" } else { "local" }
+    if ($name in (^nu $RESOLVER names | from json)) { "sandbox-local" } else { $env.POLAR_TEST_WHOLE_CATALOG }
 }
 
-# The record for a workload under another target, for what local-minimal does not run.
+# sandbox-local's config with the topology in force set, for what depends on it.
+def laid_out [topology: string] {
+    open ($INFRA | path join "targets/sandbox-local/config.nuon") | upsert cluster.placement.topology $topology
+}
+
+# The record for a workload under another target.
 def resolve_for [target: string, name: string] {
     ^nu $RESOLVER json $name --target $target | from json
 }
@@ -78,7 +85,7 @@ def settings [name: string] {
 
 # What the agent will be given for a variable: from its environment, or, for an agent that reads
 # a configuration document, from the document the resolver wrote.
-def env_value [r: record, name: string, target: string = "local-minimal"] {
+def env_value [r: record, name: string, target: string = "sandbox-local"] {
     if ($r.env | where name == "POLAR_CONFIG" | is-empty) {
         $r.env | where name == $name | get -o 0.value
     } else {
@@ -87,8 +94,6 @@ def env_value [r: record, name: string, target: string = "local-minimal"] {
         | where name == $name | get -o 0.value
     }
 }
-
-const INFRA = (path self | path dirname | path dirname)
 
 # Runs `body` with a throwaway target whose config.nuon is `config`, and removes it afterwards, so a test can
 # say what a target would change (a workload's issuer, whether the floor is enforced).
@@ -184,7 +189,7 @@ const CLUSTER_TESTS = [
     "a bootstrap identity cannot be moved onto the credentials agent"
     "an issuer that is neither is refused"
     "workloads still asking cert-issuer are listed as pending while the floor is off, and refused once it is enforced"
-    "on the local-minimal target no catalog workload asks cert-issuer directly but the bootstrap identities"
+    "on the sandbox-local target no catalog workload asks cert-issuer directly but the bootstrap identities"
 ]
 
 def main [] {
@@ -192,9 +197,9 @@ def main [] {
     # Without it, KUBECONFIG is pointed at a path kubectl cannot load, and the tests that need a cluster are skipped.
     let cluster = (test-cluster pin)
     # The agents' scaffolds, asked of their images on that cluster once for the whole run (it needs the images in the
-    # registry): every resolve below reads them. `local` runs the whole catalog, so its workloads cover every target's.
+    # registry): every resolve below reads them. The whole catalog's target has nothing left out, so it covers every workload.
     # The images are asked of a registry the cluster has: the one in the cluster of POLAR_TEST_REGISTRY_TARGET (default
-    # local-minimal), through its forward, as up.nu does; `local` names a registry on the host. An address already in the
+    # sandbox-local), through its forward, as up.nu does. An address already in the
     # environment wins.
     # Scaffolds already given (POLAR_SCAFFOLD_DIR set, say from the workspace's own binaries' `--scaffold`) are used as
     # they are, and left in place: then the tests that need no cluster run without one.
@@ -203,16 +208,23 @@ def main [] {
         print (test-cluster skip_line "every test here: they read the agents' scaffolds, collected on the cluster unless POLAR_SCAFFOLD_DIR gives them")
         return
     }
+    # A throwaway target running the whole catalog, for what sandbox-local leaves out (the secret harness), removed at the end.
+    $env.POLAR_TEST_WHOLE_CATALOG = $"zz-test-whole-(random chars --length 8)"
+    let whole_catalog = ($INFRA | path join "targets" $env.POLAR_TEST_WHOLE_CATALOG)
+    mkdir $whole_catalog
+    let real = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
+    $real | update workloads {|c| $c.workloads | items {|n, w| { $n: ($w | reject -o enabled) } } | reduce --fold {} {|it, acc| $acc | merge $it } }
+    | to nuon | save --force ($whole_catalog | path join "config.nuon")
     let scaffolds = if ($preset | is-not-empty) { $preset } else {
-        let registry_target = ($env.POLAR_TEST_REGISTRY_TARGET? | default "local-minimal")
+        let registry_target = ($env.POLAR_TEST_REGISTRY_TARGET? | default "sandbox-local")
         if (cluster-registry settings_of (cluster-registry cluster_of $registry_target)) != null {
             if ($env.POLAR_REGISTRY? | default "" | is-empty) { $env.POLAR_REGISTRY = (cluster-registry ensure $registry_target) }
             if ($env.POLAR_NODE_REGISTRY? | default "" | is-empty) { $env.POLAR_NODE_REGISTRY = (node_registry $registry_target) }
         }
         let collecting = (mktemp --directory)
-        let collected = (do { ^nu $RESOLVER collect-scaffolds $collecting --target local } | complete)
+        let collected = (do { ^nu $RESOLVER collect-scaffolds $collecting --target $env.POLAR_TEST_WHOLE_CATALOG } | complete)
         if $collected.exit_code != 0 {
-            rm -rf $collecting
+            rm -rf $collecting $whole_catalog
             print -e $"cannot run: the agents could not be asked for their scaffolds on ($cluster) \(this needs the cluster and their images in the registry\):\n($collected.stderr | lines | last 8 | str join "\n")"
             exit 1
         }
@@ -235,7 +247,7 @@ def main [] {
         }
 
         "the custody daemon is a native sidecar before polar-init, apart, with IPC_LOCK alone": {
-            let pod = (pod_of "kube-observer" "local-minimal")
+            let pod = (pod_of "kube-observer" "sandbox-local")
             let init = ($pod.initContainers | get name)
             assert equal $init ["polar-custody" "polar-init"]
             let daemon = ($pod.initContainers | first)
@@ -267,10 +279,10 @@ def main [] {
             assert equal $cassini.certs ["server:/etc/tls/certs:custody:cassini-ip-svc.polar.svc.cluster.local"]
             assert equal (env_value $cassini "TLS_SERVER_KEY") null
             assert equal (env_value $cassini "POLAR_CUSTODY_SOCKET") "/run/polar-custody/custody.sock"
-            let git = (resolve_for "local" "polar-git-server")
+            let git = (resolve_for "sandbox-local" "polar-git-server")
             assert equal ($git.certs | length) 2
             assert ($git.certs | all {|c| $c | str contains ":custody:" }) $"($git.certs)"
-            assert equal (env_value $git "POLAR_GIT_SERVER_KEY" "local") null
+            assert equal (env_value $git "POLAR_GIT_SERVER_KEY") null
         }
 
         "cert-issuer has no daemon, and a workload that says custody false keeps its key files": {
@@ -304,39 +316,64 @@ def main [] {
             }
         }
 
-        # docs/architecture/placement.md: sandbox-local declares the dedicated pools, and each workload goes to its own;
+        # docs/architecture/placement.md: sandbox-local laid out on separate nodes gives each workload its own pool;
         # the open pool's (services) is given nothing. The mapping is the maintainer's (2026-10-28).
-        "under sandbox-local every workload is placed in its pool, and the open pool's in none": {
+        "under the separated topology every workload is placed in its pool, and the open pool's in none": {
             let pools = {
                 core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server]
-                observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer]
+                observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer oci-registry-resolver]
                 writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor]
             }
             let placed = ($pools | transpose pool names | each {|p| $p.names | each {|n| { name: $n, pool: $p.pool } } } | flatten)
-            let names = (^nu $RESOLVER names --target sandbox-local | from json)
-            for n in $names {
-                let r = (resolve_for sandbox-local $n)
-                let want = ($placed | where name == $n | get -o 0.pool)
-                if $want == null {
-                    assert equal $r.placement null $n
-                } else {
-                    assert equal $r.placement { key: "polar.dev/pool", pool: $want } $n
+            with_target (laid_out "separated") {|t|
+                let names = (^nu $RESOLVER names --target $t | from json)
+                for n in $names {
+                    let r = (resolve_for $t $n)
+                    let want = ($placed | where name == $n | get -o 0.pool)
+                    if $want == null {
+                        assert equal $r.placement null $n
+                    } else {
+                        assert equal $r.placement { key: "polar.dev/pool", pool: $want } $n
+                    }
                 }
+                # every workload the mapping names runs there, so none of it is untested
+                for p in $placed { assert ($p.name in $names) $p.name }
+                # the harness is the open pool's
+                assert equal (resolve_for $t "harness-sink").placement null
             }
-            # every workload the mapping names runs there, so none of it is untested
-            for p in $placed { assert ($p.name in $names) $p.name }
-            # the harness is the open pool's
-            assert equal (resolve_for sandbox-local "harness-sink").placement null
         }
 
-        "a target that declares no placement places nothing": {
-            for n in (^nu $RESOLVER names --target local-minimal | from json) {
-                assert equal (resolve_for local-minimal $n).placement null $n
+        "the single topology places nothing, and it is the one the target deploys in by default": {
+            assert equal (^nu $RESOLVER topology --target sandbox-local | str trim) "single"
+            for n in (^nu $RESOLVER names --target sandbox-local | from json) {
+                assert equal (resolve_for sandbox-local $n).placement null $n
+            }
+        }
+
+        # The same target, laid out differently for one cluster: cluster-inputs.nuon overrides the target's default both ways.
+        "a cluster's own choice of topology overrides the target's": {
+            with_target (laid_out "single") {|t|
+                target_file $t "cluster-inputs.nuon" ({ cluster: null, topology: "separated", workloads: {} } | to nuon)
+                assert equal (^nu $RESOLVER topology --target $t | str trim) "separated"
+                assert equal (resolve_for $t "cassini").placement { key: "polar.dev/pool", pool: "core" }
+            }
+            with_target (laid_out "separated") {|t|
+                target_file $t "cluster-inputs.nuon" ({ cluster: null, topology: "single", workloads: {} } | to nuon)
+                assert equal (resolve_for $t "cassini").placement null
+            }
+        }
+
+        "a topology the target does not name is refused, naming the ones it does": {
+            with_target (laid_out "three-node") {|t|
+                let r = (do { ^nu $RESOLVER json cassini --target $t } | complete)
+                assert ($r.exit_code != 0) "an unknown topology rendered"
+                assert ($r.stderr | str contains "three-node") $r.stderr
+                assert ($r.stderr | str contains "separated") $r.stderr
             }
         }
 
         "a target that declares placement refuses a workload whose pool it lacks": {
-            with_target { cluster: { placement: { pools: ["core"] } }, workloads: {} } {|t|
+            with_target { cluster: { placement: { topology: "t", topologies: { t: ["core"] } } }, workloads: {} } {|t|
                 let r = (do { ^nu $RESOLVER json kube-consumer --target $t } | complete)
                 assert ($r.exit_code != 0) "kube-consumer asks for writers"
                 assert ($r.stderr | str contains "kube-consumer") $r.stderr
@@ -344,7 +381,7 @@ def main [] {
                 assert ((resolve_for $t "cassini").placement == { key: "polar.dev/pool", pool: "core" })
             }
             # and a target that would set a workload's pool itself: the pool is the catalog's
-            with_target { cluster: { placement: { pools: ["core" "writers"] } }, workloads: { cassini: { pool: "writers" } } } {|t|
+            with_target { cluster: { placement: { topology: "t", topologies: { t: ["core" "writers"] } } }, workloads: { cassini: { pool: "writers" } } } {|t|
                 let r = (do { ^nu $RESOLVER json cassini --target $t } | complete)
                 assert ($r.exit_code != 0) "the target set cassini's pool"
                 assert ($r.stderr | str contains "catalog") $r.stderr
@@ -353,14 +390,16 @@ def main [] {
 
         # nix-usernetes' contract: the selector and the toleration both, or the pod stays Pending on a tainted node.
         "a placed pod has the pool's selector and its toleration, in both templates": {
-            for n in [kube-consumer cert-issuer] {
-                let spec = (pod_of $n sandbox-local)
-                let pool = (if $n == "cert-issuer" { "core" } else { "writers" })
-                assert equal $spec.nodeSelector { "polar.dev/pool": $pool } $n
-                assert equal $spec.tolerations [{ key: "polar.dev/pool", operator: "Equal", value: $pool, effect: "NoSchedule" }] $n
-                let plain = (pod_of $n local-minimal)
-                assert equal ($plain.nodeSelector? | default null) null $n
-                assert equal ($plain.tolerations? | default null) null $n
+            with_target (laid_out "separated") {|t|
+                for n in [kube-consumer cert-issuer] {
+                    let spec = (pod_of $n $t)
+                    let pool = (if $n == "cert-issuer" { "core" } else { "writers" })
+                    assert equal $spec.nodeSelector { "polar.dev/pool": $pool } $n
+                    assert equal $spec.tolerations [{ key: "polar.dev/pool", operator: "Equal", value: $pool, effect: "NoSchedule" }] $n
+                    let plain = (pod_of $n sandbox-local)
+                    assert equal ($plain.nodeSelector? | default null) null $n
+                    assert equal ($plain.tolerations? | default null) null $n
+                }
             }
         }
 
@@ -368,15 +407,15 @@ def main [] {
         # memory controller reads for its ceiling (docs/architecture/cassini-backpressure.md, "Runtime budget"). 1 GiB,
         # requested as it is limited; no other workload sets any.
         "the broker's container is given 1 GiB of memory, requested and limited, and no other workload any": {
-            for t in [local-minimal sandbox-local] {
+            for t in [sandbox-local] {
                 assert equal (resolve_for $t "cassini").memory { request: "1Gi", limit: "1Gi" } $t
                 let broker = (pod_of "cassini" $t | get containers | where name == "cassini" | first)
                 assert equal $broker.resources { requests: { memory: "1Gi" }, limits: { memory: "1Gi" } } $t
             }
-            for n in (^nu $RESOLVER names --target local | from json | where {|n| $n != "cassini" }) {
-                assert equal (resolve_for local $n).memory null $n
+            for n in (^nu $RESOLVER names --target sandbox-local | from json | where {|n| $n != "cassini" }) {
+                assert equal (resolve_for sandbox-local $n).memory null $n
             }
-            let plain = (pod_of "kube-consumer" "local-minimal" | get containers | first)
+            let plain = (pod_of "kube-consumer" "sandbox-local" | get containers | first)
             assert equal ($plain.resources? | default null) null "nothing set where the catalog sets nothing"
         }
 
@@ -387,7 +426,7 @@ def main [] {
                 let issuer = (pod_of "cert-issuer" $t | get containers | first)
                 assert equal $issuer.resources { requests: { memory: "256Mi" }, limits: { memory: "512Mi" } }
             }
-            assert equal ((pod_of "cert-issuer" "local-minimal" | get containers | first).resources? | default null) null
+            assert equal ((pod_of "cert-issuer" "sandbox-local" | get containers | first).resources? | default null) null
             for bad in [{ request: "2Gi", limit: "1Gi" } { request: "1Gi", limit: "lots" }] {
                 with_target { workloads: { cassini: { memory: $bad } } } {|t|
                     let r = (do { ^nu $RESOLVER json cassini --target $t } | complete)
@@ -415,7 +454,7 @@ def main [] {
 
         "every wait of a target's layers names a workload its render makes": {
             use ../deploy-objects.nu [health_check, documents, BOOTSTRAP_LAYERS]
-            for t in [sandbox-local local-minimal] {
+            for t in [sandbox-local] {
                 let out = (mktemp --directory)
                 let cat = (do { ^nu ($INFRA | path join "render-catalog.nu") $t ($out | path join "catalog") } | complete)
                 assert equal $cat.exit_code 0 $cat.stderr
@@ -446,7 +485,10 @@ def main [] {
             assert (is_multi_instance $o) "sandbox-local"
             assert equal (parallelism_problems [($o | update spec.parallelism 3)]) [] "it may run three at once"
             assert equal (resolve_for "sandbox-local" "harness-producer").instances "many"
-            assert equal (resolve_for "local" "harness-producer").instances "one" "issued by cert-issuer there"
+            let on_cert_issuer = (open ($INFRA | path join "targets/sandbox-local/config.nuon") | update workloads.harness-producer.issuer "cert-issuer")
+            with_target $on_cert_issuer {|t|
+                assert equal (resolve_for $t "harness-producer").instances "one" "issued by cert-issuer there"
+            }
             assert (not (is_multi_instance (object_of "harness-sink" "sandbox-local")))
             for n in (^nu $RESOLVER names --target sandbox-local | from json | where {|n| $n != "harness-producer" }) {
                 assert equal (resolve_for "sandbox-local" $n).instances "one" $n
@@ -457,7 +499,7 @@ def main [] {
         # which runs to completion, is a Job of the `run` kind.
         "every workload is a Deployment that restarts in place, and the load harness a Job": {
             use ../rules.nu [in_place_problems]
-            for t in [sandbox-local local-minimal] {
+            for t in [sandbox-local] {
                 for n in (^nu $RESOLVER names --target $t | from json) {
                     let o = (object_of $n $t)
                     if $n in [harness-producer harness-sink] {
@@ -511,7 +553,7 @@ def main [] {
             let target_dir = ($env.CARGO_TARGET_DIR? | default ($agents | path join "target"))
             ^($target_dir | path join "debug/credentials-agent-consumer") --scaffold | save --force ($dir | path join "credentials-agent.json")
             let model = (with-env { POLAR_SCAFFOLD_DIR: $dir } {
-                env_value (resolve_for "local" "credentials-agent") "CREDENTIALS_AGENT_AUTHORITY_MODEL" "local"
+                env_value (resolve_for "sandbox-local" "credentials-agent") "CREDENTIALS_AGENT_AUTHORITY_MODEL"
             })
             rm -rf $dir
             let m = ($model | from json)
@@ -567,12 +609,12 @@ def main [] {
             let checked = (with-env { POLAR_SCAFFOLD_DIR: $dir } { do { ^nu $RESOLVER check } | complete })
             rm -rf $dir
             assert ($checked.exit_code != 0) "the check passed"
-            assert ($checked.stderr | str contains "jira-observer reads Nobody, and no workload in local-minimal owns it") $checked.stderr
+            assert ($checked.stderr | str contains "jira-observer reads Nobody, and no workload in sandbox-local owns it") $checked.stderr
             assert (not ($checked.stderr | str contains "reads JiraIssue")) $checked.stderr
         }
 
         "a target that runs an agent needing the state agent and not the state agent fails the check": {
-            let config = (open ($INFRA | path join "targets/local-minimal/config.nuon"))
+            let config = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             let workloads = ($config.workloads | upsert soft-state-observer { enabled: false, issuer: "credentials-agent" })
             with_target ($config | upsert workloads $workloads) {|t|
                 let checked = (do { ^nu $RESOLVER check --target $t } | complete)
@@ -681,7 +723,7 @@ def main [] {
 
         "a target that disables a workload and leaves it out of its apply order checks clean": {
             # Starting from a real target's configuration: a bare one has no Jira address and fails for that alone.
-            let real = (open ($INFRA | path join "targets/local-minimal/config.nuon"))
+            let real = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             with_target ($real | merge deep { workloads: { kube-observer: { enabled: false } } }) {|t|
                 let target_nu = ($INFRA | path join "targets" $t "target.nu")
                 '{ apply_order: ["kube-consumer.yaml"] } | to nuon' | save --force $target_nu
@@ -891,19 +933,19 @@ def main [] {
         }
 
         "the resolver reads its registry credentials from a Secret, mounted read-only where it is told to look": {
-            let r = (resolve_for "local" "oci-registry-resolver")
+            let r = (resolve_for "sandbox-local" "oci-registry-resolver")
             let volume = ($r.volumes | where name == "oci-registry-auth")
             assert equal ($volume | length) 1
             assert equal ($volume | first | get secret) "oci-registry-auth"
             assert equal ($volume | first | get items) [{ key: "oci-registry-auth", path: "config.json" }]
             assert equal ($r.mounts | where name == "oci-registry-auth" | first | get path) "/etc/oci-registry-auth"
             assert ($r.mounts | where name == "oci-registry-auth" | first | get read_only)
-            assert equal (env_value $r "DOCKER_CONFIG" "local") "/etc/oci-registry-auth"
+            assert equal (env_value $r "DOCKER_CONFIG") "/etc/oci-registry-auth"
         }
 
         "the resolver speaks http to the cluster's own development registry, which the target names": {
-            let r = (resolve_for "local" "oci-registry-resolver")
-            assert ((env_value $r "OCI_INSECURE_REGISTRIES" "local") | str contains (node_registry "local"))
+            let r = (resolve_for "sandbox-local" "oci-registry-resolver")
+            assert ((env_value $r "OCI_INSECURE_REGISTRIES") | str contains (node_registry "sandbox-local"))
         }
 
         "the git observer is a plain agent: Cassini only, its cache in the pod, and no graph": {
@@ -1022,7 +1064,7 @@ def main [] {
             }
         }
 
-        "on the local-minimal target no catalog workload asks cert-issuer directly but the bootstrap identities": {
+        "on the sandbox-local target no catalog workload asks cert-issuer directly but the bootstrap identities": {
             # The state phase 6 of the cert-issuer isolation reached (docs/architecture/cert-issuer-isolation.md).
             let r = (^nu $RESOLVER check | complete)
             assert equal $r.exit_code 0 $r.stderr
@@ -1063,7 +1105,7 @@ def main [] {
             for n in $names {
                 { agent: { name: $"agent-of-($n)" }, sections: [], runtime: [] } | to json | save --force ($stubs | path join $"($n).json")
             }
-            let agents = ($names | where {|n| (resolve $n).kind == "agent" } | length)
+            let agents = ($names | where {|n| (resolve $n).kind in ["agent" "run"] } | length)
             with-env { POLAR_SCAFFOLD_DIR: $stubs } { ^nu $RESOLVER scaffolds $out | ignore }
             let written = (ls $out | get name | each {|f| $f | path basename } | sort)
             assert equal ($written | length) $agents
@@ -1124,7 +1166,7 @@ def main [] {
 
         # docs/architecture/egress.md: a target that sets nothing renders as before.
         "for every real target, egress absent and egress {} resolve every workload the same": {
-            for t in ["local" "local-minimal" "sandbox-local"] {
+            for t in ["sandbox-local"] {
                 let config = (open ($INFRA | path join "targets" $t "config.nuon"))
                 let cluster = ($config.cluster? | default {} | reject -o egress)
                 let absent = (with_target ($config | upsert cluster $cluster) {|x| resolve_all $x })
@@ -1135,7 +1177,7 @@ def main [] {
         }
 
         "with a proxy and a CA, each agent that declares the egress section gains exactly them, and nothing else changes": {
-            let config = (open ($INFRA | path join "targets/local/config.nuon"))
+            let config = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             let pem = (fake_pem)
             let base = (with_target $config {|t| resolve_all $t })
             let egress = { proxy: "http://proxy.corp.example:3128", ca_file: "trust/corp-root-ca.pem" }
@@ -1176,7 +1218,7 @@ def main [] {
         }
 
         "an agent is given the proxy and a bypass list that keeps the cluster's own names, and its document stays the first ConfigMap": {
-            let config = (open ($INFRA | path join "targets/local/config.nuon"))
+            let config = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             let egress = { proxy: "http://proxy.corp.example:3128", no_proxy: [".corp.example" "10.20.0.0/16"], ca_file: "trust/ca.pem" }
             with_target ($config | upsert cluster (($config.cluster? | default {}) | insert egress $egress)) {|t|
                 target_file $t "trust/ca.pem" (fake_pem)
@@ -1196,7 +1238,7 @@ def main [] {
         # Apache's, needs nothing taken out: its pod has no Secret reference, its document no token or email. A target that
         # still sets JIRA_TOKEN or JIRA_EMAIL is refused by name, as any variable the agent does not declare.
         "a target that reads Jira anonymously renders jira-observer with no credential and no Secret": {
-            let config = (open ($INFRA | path join "targets/local/config.nuon"))
+            let config = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             let anonymous = [
                 { name: "JIRA_URL", value: "https://issues.apache.org/jira" }
                 { name: "JIRA_ANONYMOUS", value: "true" }
@@ -1228,7 +1270,7 @@ def main [] {
         }
 
         "a target that sets an egress variable itself is refused, and so is a CA file that holds a key": {
-            let config = (open ($INFRA | path join "targets/local/config.nuon"))
+            let config = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             let workloads = ($config.workloads | upsert jira-observer {|w|
                 $w.jira-observer | upsert env (($w.jira-observer.env? | default []) | append { name: "POLAR_EGRESS_PROXY", value: "http://proxy.corp.example:3128" })
             })
@@ -1271,6 +1313,7 @@ def main [] {
         }
     }) ++ ($unknown | each {|n| { name: $n, error: "named in CLUSTER_TESTS, and no test has that name", skipped: false } })
     if ($preset | is-empty) { rm -rf $scaffolds }
+    rm -rf $whole_catalog
 
     for r in $results {
         if $r.skipped {

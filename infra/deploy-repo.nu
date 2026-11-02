@@ -419,6 +419,7 @@ export def cluster_inputs_fact [config: record, target: string] {
         file: $"infra/targets/($target)/cluster-inputs.nuon"
         sha256: (open --raw $path | hash sha256)
         cluster_ca_sha256: ($held | get -o cluster)
+        topology: ($held | get -o topology)
         values: ($held | get -o workloads | default {})
     }
 }

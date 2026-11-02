@@ -66,7 +66,7 @@ hour cold; later ones reuse the store.)
 ## Step 2. Bring the cluster up
 
 ```fish
-nu infra/up.nu local-minimal --dev --user alice --email alice@example.org
+nu infra/up.nu sandbox-local --dev --user alice --email alice@example.org
 ```
 
 It is resumable: after a failure or a pause, run the same command. It stops for you only where a person is needed:
@@ -136,7 +136,7 @@ Expect: `['token', 'username']`.
 ## Step 4. Give `polar-sign` the agents' scaffolds
 
 ```fish
-nu infra/resolve.nu scaffolds ~/.config/polar-admin/scaffolds --target local-minimal
+nu infra/resolve.nu scaffolds ~/.config/polar-admin/scaffolds --target sandbox-local
 ls ~/.config/polar-admin/scaffolds | grep -E 'git-repo-(observer|controller)'
 ```
 

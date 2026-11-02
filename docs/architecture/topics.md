@@ -108,8 +108,7 @@ is `infra/topics.nu` (tests `infra/tests/topics.nu`). A render warns about a top
 four of the credentials agent's request and reply topics (nothing calls them yet; three more that waited were the
 unsigned grants, revocations and provisioning, removed 2026-10-22), the git controller's
 `polar-proposal-observe-repo` (no catalog agent proposes yet), and the resolver's `polar.provenance.events` (read by
-`build-processor`, a chart). `local-minimal` warns about kube-consumer's discovery and resolution topics, since it does
-not run the resolver.
+`build-processor`, a chart).
 
 ## Causes
 

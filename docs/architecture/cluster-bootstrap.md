@@ -42,8 +42,8 @@ The sources are the `.mmd` files beside them (regenerate as in `sequences/assets
 `cluster-inputs.nu`, `secrets.nu` of the target, `tools.nu`, `forwards.nu`, the Justfile recipes `registry-host-up`, `port-forwards-up`,
 `admin-bootstrap`, `admin-provision`, `admin-claim` and `user-cert-install`, and `polar-admin-grant` and `polar-sign`), and a clean
 `sandbox-local` bring-up was run end to end on 2026-10-19 on the podman dev node (all six layers Ready, the seed applied). Other
-runtimes (minikube, kind, a managed cluster) have not run the gitops target; `local-minimal` does not use Flux and `up.nu` applies it
-itself, in `apply_order`, with one gate (Cassini). A target opts in with `gitops: true` (`plan.nu` swaps the apply loop for steps 8 to 11
+runtimes (minikube, kind, a managed cluster) have not run the gitops target. Every shipped deployment is one since `local` and `local-minimal`, which `up.nu` applied
+itself, were retired (2026-11-02). A target opts in with `gitops: true` (`plan.nu` swaps the apply loop for steps 8 to 11
 below).
 
 ## Why three phases
@@ -141,7 +141,7 @@ probe). The bootstrap-admin exchange itself is drawn in `sequences/general/admin
 ## What was not checked
 
 A clean `sandbox-local` bring-up ran end to end on 2026-10-19 (all six layers Ready, the seed applied), on the podman dev node. Not
-exercised: the server rejecting an unsigned push (open item 4), `local` and `local-minimal` as gitops targets, and a runtime other than the
+exercised: the server rejecting an unsigned push (open item 4), and a runtime other than the
 podman node. The deployment git server in the cluster, which replaced the host container and its `--host`, ran on a fresh cluster on 2026-10-19 with the registry in the cluster too: all six layers Ready at both of the bring-up's commits. For the steps that existed before Flux, I did not confirm which of the
 `data` workloads get their certificate from `cert-issuer` directly and which from the credentials agent (the diagram says only that their init
 containers run `polar-init`), nor where the port-forward logs are written. The node's image cache is dropped by

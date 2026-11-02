@@ -139,7 +139,7 @@ The outside-access probe at the end of `up.nu` is skipped for a target with a pr
 
 `infra/tests/egress.nu` (every refusal, the defaults, two properties over 200 random cases: the bypass list starts with
 the defaults with no duplicate and keeps the rest in order; nothing is given without egress and the declaration),
-`infra/tests/resolve.nu` (egress absent and `{}` resolve every workload of local, local-minimal and sandbox-local the
+`infra/tests/resolve.nu` (egress absent and `{}` resolve every workload of sandbox-local the
 same; with a proxy and a CA exactly the three agents gain exactly the egress entries), `src/agents/lib/tests/egress.rs`
 (in child processes: the egress CA trusted beside `SSL_CERT_FILE`, no egress ignoring `HTTPS_PROXY`; a two-certificate
 bundle; a call outside arriving at a proxy as `CONNECT host:443`; a property that cluster hosts bypass the proxy), and

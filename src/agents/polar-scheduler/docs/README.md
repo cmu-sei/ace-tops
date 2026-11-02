@@ -57,13 +57,13 @@ document in `docs/architecture/scheduling-kinds.md`.
 
 # Integration Testing
 
-The scheduler is tested in a cluster, with the rest of Polar. On `local-minimal`, `nu infra/up.nu local-minimal --dev`
+The scheduler is tested in a cluster, with the rest of Polar. On `sandbox-local`, `nu infra/up.nu sandbox-local --dev`
 deploys the observer and the processor with the Polar git server they watch, and seeds the `polar-schedules` repository
 with its first signed policy (the seed step). To try a change to either agent:
 
 ```bash
-nu infra/images.nu sync scheduler-observer scheduler-processor --target local-minimal   # build both, push them to the cluster's registry
-nu infra/up.nu local-minimal                                                           # restarts the Jobs whose image changed, and only those
+nu infra/images.nu sync scheduler-observer scheduler-processor --target sandbox-local   # build both, push them to the cluster's registry
+nu infra/up.nu sandbox-local                                                           # restarts the Jobs whose image changed, and only those
 kubectl -n polar logs -l job-name=polar-scheduler-observer -f
 ```
 

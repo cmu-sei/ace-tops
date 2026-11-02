@@ -25,13 +25,9 @@
 
 Status, 2026-10-28: the plan, cleared by the maintainer, built, and seen on the five-node `u7c` ("On the cluster").
 
-*Superseded (the maintainer, 2026-11-02):* `local` and `local-minimal` are to be retired, and topology becomes a setting on the
-target, so one target deploys on a single node or a laid-out multi-node topology (`remaining-work.md`). What follows is as built until then.
-
-*Where it is going (the maintainer, 2026-10-28):* Polar ships two kinds of exemplar target in `infra/targets`.
-`sandbox-local`, with Flux and the node pools, shows how a deployment on a cluster with placement marks should work.
-`local-minimal`, without Flux, is for development on a single-node cluster, where the pools mean little. So placement
-is declared in `sandbox-local` and nowhere else.
+*Where it is going (the maintainer, 2026-11-02, replacing the two exemplar targets of 2026-10-28):* one target, on one node or
+many. "It should be possible to deploy the same target on either a single node or to lay out a multi-node topology." `local` and
+`local-minimal` are retired; every deployment goes through Flux and the signed deployment repository.
 
 ## Why
 
@@ -67,6 +63,7 @@ there: placement is the target's to declare.
 | core | git-repo-controller | decides what is observed, holds no graph password (`git-controller.md`): off the writers' host, the power to decide and the graph password stay apart. *Decided, the maintainer, 2026-10-28* |
 | core | polar-git-server | serves signed authority (the schedules, the policy). *Decided, the maintainer, 2026-10-28* |
 | observers | git-repo-observer, jira-observer, kube-observer, polar-scheduler-observer, credentials-agent-observer | the low-trust side; the credentials agent's observer is its low-trust gateway |
+| observers | oci-registry-resolver | reads registries outside the cluster and holds no graph password. *Decided by the agent that placed it, for review, 2026-11-02* |
 | writers | kube-consumer, git-repo-processor, jira-processor, polar-scheduler | the graph writers (polar-scheduler writes the ledger to the graph, `git-controller.md`) |
 | writers | soft-state-observer | reads the graph for other agents (`soft-state.md`) and so holds the graph password, which stays on the writers' pool and off the observers'. *Decided by the agent that built it, 2026-10-30, by the rule of the row above; to confirm* |
 | writers | soft-state-processor | the state agent's writer: asks every agent about its health and writes `AgentHealth` (`soft-state.md`, "As built: pulled health"), so it holds the graph password. *Decided by the agent that built it, 2026-11-01, by the writers' rule; to confirm* |
@@ -79,15 +76,21 @@ there: placement is the target's to declare.
 1. *The pool is the workload's, in the catalog.* Each entry in `infra/config/workloads/*.nuon` that belongs to a
    dedicated pool says `pool: "<pool>"`; one that says none is the open pool's. What a workload is decides its pool,
    not the target.
-2. *The pools are the target's.* A target whose cluster has them declares the dedicated ones:
-   `cluster: { placement: { pools: ["core" "observers" "writers"] } }` in `targets/sandbox-local/config.nuon`. The
-   default (`config/cluster.nuon`) declares none, so `local`, `local-minimal` and `u7s` render as today.
+2. *The layouts are the target's.* A target names the topologies it deploys in, each the dedicated pools it places by, and
+   the one it deploys in by default: `cluster: { placement: { topology: "single", topologies: { single: [], separated: ["core"
+   "observers" "writers"] } } }` in `targets/sandbox-local/config.nuon`. A layout with no pools places nothing. A cluster chooses
+   another with `up.nu --topology <name>`, recorded in `cluster-inputs.nuon`, so its later runs and renders keep it and the signed
+   provenance records it (`resolve.nu`, `load_cluster`; `rules.nu`, `placement_in_force`). A name the target does not list is
+   refused. *Decided by the agent that built it, for review: the default is `single`, since it is what a new cluster can run; a
+   layout is a list of pools, with no mapping of a pool onto another's node, until one is wanted.*
 3. *Rendered only when declared.* `resolve.nu` gives the pod record `placement: { pool }` when the target declares the
    workload's pool, else nothing; `schema/agent.dhall` renders the `nodeSelector` and the toleration from it. The key
    is `polar.dev/pool`, nix-usernetes' (`cluster.dhall`, `poolKey`), one constant in `resolve.nu`.
 4. *A pool the target lacks is refused* when the target declares placement: a workload asking for `writers` on a target
    that declares only `core` names itself and the pool, rather than landing on the open pool unseen (as the render
-   refuses escrow without custody). A target that declares no placement places nothing and refuses nothing.
+   refuses escrow without custody). A target that declares no placement places nothing and refuses nothing. Before anything
+   is deployed, `up.nu`'s preflight refuses a topology whose pool no node carries (`pools_without_nodes`), and says so when a
+   cluster's nodes carry pools the topology in force does not use.
 5. *Neo4j, the one hand chart placed.* Its pool, `writers`, is in its `values.dhall`; `render.nu` hands the chart the
    target's declared pools, and `statefulset.dhall` renders the selector and toleration when `writers` is among them.
    The other hand charts are the open pool's and do not change.
@@ -95,11 +98,12 @@ there: placement is the target's to declare.
 ## Tests first
 
 - `infra/tests/rules.nu`: the placement rule (declared, not declared, a pool the target lacks).
-- `infra/tests/resolve.nu`: under `sandbox-local`, every enabled workload's pod record has the pool of the mapping
-  above and nothing for the open pool's; under `local-minimal`, none has any; a pool the target lacks refused.
+- `infra/tests/resolve.nu`: under `separated`, every enabled workload's pod record has the pool of the mapping
+  above and nothing for the open pool's; under `single`, none has any; a cluster's choice overrides the target's both ways; a topology
+  the target does not name refused; a pool the target lacks refused.
 - `infra/tests/charts.nu`: Neo4j's StatefulSet with the selector and toleration under `sandbox-local`, without under
   `local`.
-- Render determinism: `local` and `local-minimal` render byte for byte as before; `sandbox-local`'s diff is the
+- Render determinism, when this was built (2026-10-28): `local` and `local-minimal` rendered byte for byte as before; `sandbox-local`'s diff was the
   selectors and tolerations alone.
 - Mutations: the toleration left out (the pod would stay Pending); the selector rendered on a target that declares no
   placement; a pool the target lacks let through.

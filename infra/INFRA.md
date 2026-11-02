@@ -35,8 +35,7 @@ once, then go to the recipe you need.
 
 ## Why this exists
 
-Polar needs infrastructure across several deployment targets: a local
-cluster for development, a `sandbox-local` target for a Flux-based deployment (see [How a target works](#how-a-target-works)),
+Polar needs infrastructure across deployment targets: `sandbox-local`, Flux-based, on one node or many (see [How a target works](#how-a-target-works)),
 which a cloud cluster (AKS, AWS) would then reuse, and more to come. Each shares a large amount of structural intent
 but differs in image registries, TLS configuration, storage classes, service
 topology and platform tooling (Flux, Istio, and so on).
@@ -130,18 +129,18 @@ Run everything from the repo root with `KUBECONFIG` pointing at the cluster.
 
 ```fish
 # Bring a cluster up from a target (resumable: re-run the same command after a failure or pause)
-nu infra/up.nu local-minimal --dev          # --dev builds and pushes the images the target needs
+nu infra/up.nu sandbox-local --dev          # --dev builds and pushes the images the target needs
 
 # Only render (nothing is applied); output goes to manifests/ (gitignored). An agent says what it takes in its own image, so the
 # render needs each agent's scaffold; up.nu collects them from the cluster (cached by the image's digest), and so can you:
-nu infra/resolve.nu collect-scaffolds /tmp/scaffolds --target local-minimal
-POLAR_SCAFFOLD_DIR=/tmp/scaffolds nu infra/render.nu local-minimal
+nu infra/resolve.nu collect-scaffolds /tmp/scaffolds --target sandbox-local
+POLAR_SCAFFOLD_DIR=/tmp/scaffolds nu infra/render.nu sandbox-local
 
 # A cluster whose nodes name the registry differently (the default, 10.0.2.2:5000, is the host as a podman dev node sees it)
-POLAR_NODE_REGISTRY=polar-registry:5000 nu infra/up.nu local-minimal --user U --email E
+POLAR_NODE_REGISTRY=polar-registry:5000 nu infra/up.nu sandbox-local --user U --email E
 
 # Render without the cache, to see the true cost or to rule it out (see "The render cache")
-POLAR_CACHE=off nu infra/render.nu local-minimal
+POLAR_CACHE=off nu infra/render.nu sandbox-local
 
 # What does the catalog say about a workload, and where did each value come from?
 nu infra/resolve.nu explain kube-consumer
@@ -156,7 +155,7 @@ just images-push kube-observer              # stage 2: build and push to the tar
 just images-mirror                          # stage 3: copy third-party images into the target's registry
 just image kube-observer                    # every stage (alias: cluster-load)
 just images-all                             # every stage for everything in the table
-# Each prints the images.nu command it runs. The target is POLAR_TARGET, else local-minimal (just target=<t> ...); its
+# Each prints the images.nu command it runs. The target is POLAR_TARGET, else sandbox-local (just target=<t> ...); its
 # registry is the one in its cluster, through a forward the recipe starts. `just target= ...` uses POLAR_REGISTRY instead.
 nu infra/images.nu import --from docker.io/<account>    # copy published images into your registry (this machine's architecture)
 nu infra/images.nu publish --to docker.io/<account> --arch arm64    # publish them (a mirror only when named)
@@ -206,7 +205,7 @@ infra/
   cache.nu               the render cache: where it lives, how a key is made, read or compute
   digest.nu              an image's digest in a registry, by a manifest HEAD request
   registry.nu            the registry the nodes pull from: POLAR_NODE_REGISTRY, the target's, the default
-  cluster-inputs.nu      what belongs to one cluster and exists only after it does (the git server's administrators)
+  cluster-inputs.nu      what belongs to one cluster (its topology, the git server's administrators)
   agent-pods.nu          asks an agent's image about itself (--scaffold, --check) as a pod on the cluster
   document.nu            how the resolver fills an agent's configuration document
   rules.nu               checks on what a workload resolves to and on a render (image pull policies, restarts in place, Job replacement)
@@ -272,7 +271,7 @@ every directory listing.
 - **1-platform.** Everything that must exist before any service or workload.
   `infra/` is the raw substrate (namespaces, storage classes) applied first;
   `services/` holds platform services (Flux, and the unused cert-manager and Istio networking charts). Not
-  every target uses all of them: `local` has no Flux or Istio. That is a target
+  every target need use all of them: `sandbox-local` has no Istio. That is a target
   declaration, not a chart concern.
 - **2-services.** Shared stateful infrastructure workloads depend on: Neo4j,
   Cassini (the mTLS broker), Jaeger, cert-issuer, Keycloak, Postgres. They are not
@@ -493,7 +492,7 @@ that knows the chart's internals.
 ## How a target works
 
 ```
-targets/local-minimal/
+targets/sandbox-local/
   target.nu         setup logic + the configuration record
   overrides.dhall   per-deployment values for the custom charts
   config.nuon       overrides for the catalog
@@ -510,7 +509,7 @@ facts still passed to the custom charts (`neo4j_bolt_addr`, `cert_issuer_url`,
 `polar_init_image`, `identity_lifetime_overrides`, and so on). Different targets
 can have completely different orderings.
 
-`sandbox-local` is the target for a Flux-based deployment: `local-minimal` plus a `flux` layer holding the controllers
+`sandbox-local` is the target that ships: every deployment of it is applied by Flux, with a `flux` layer holding the controllers
 (`nu infra/flux.nu export` regenerates them). The design, the artifacts and what was found by running it are in
 `docs/architecture/cluster-bootstrap.md`. It declares `gitops: true`, so `up.nu` does not apply its layers:
 
@@ -629,8 +628,8 @@ what `VERSION` reads and whether it agrees with the last tag. The gates (`infra/
 The secret scan shows a finding's rule, path and commit, never what it matched;
 `release.nu secrets accept ID... --reason` (or `--placeholder-like`) records one you have looked at, with the reason.
 
-A target can also group its files into **layers** (`apply_layers`; `local-minimal` has six: platform,
-cert-issuer, data, cassini, identity, agents; `sandbox-local` adds `flux`). A layer is a set of files applied together after the layers it
+A target can also group its files into **layers** (`apply_layers`; `sandbox-local` has seven: platform, flux,
+cert-issuer, data, cassini, identity, agents). A layer is a set of files applied together after the layers it
 `depends_on` are healthy, with the workloads to wait for in `wait_for` (the same pod selectors and
 StatefulSets `up.nu` waits for, except one that cannot be Ready until a later layer is up: Neo4j needs the credentials agent, so `sandbox-local`'s data layer waits for nothing). Where a target declares layers, its `apply_order` is derived from them, so
 `up.nu` applies exactly what it did, and `render.nu` fails when a rendered file is in no layer or in two.
@@ -723,8 +722,8 @@ together into one.
 The cache stores only successes; a failed render reaches the caller and nothing is written. A file is written under a
 name of its own and moved into place, so a reader never sees half of one. `infra/tests/render-determinism.nu --with-cache` renders a
 target with the cache off, cold and warm and fails unless the output is byte-identical, and it covers all three caches (checked
-2026-10-19, on `local-minimal`). The chart cache was also checked against the commit before it: the same render, in a throwaway
-worktree, byte for byte. What was checked on the 16 workloads of `local-minimal` for the catalog's cache, on 2026-10-14:
+2026-10-19, on `sandbox-local`). The chart cache was also checked against the commit before it: the same render, in a throwaway
+worktree, byte for byte. What was checked on the 16 workloads of `sandbox-local` for the catalog's cache, on 2026-10-14:
 
 - rendered with the cache off, cold (empty) and warm, the 32 output files are **byte-identical**;
 - with one workload's pull policy changed, **one** new cache entry was made and **one** output file differed; the
@@ -778,8 +777,8 @@ a note here said to measure before building a cache of the scaffold. Measured, a
 ### Using it
 
 ```fish
-POLAR_CACHE=off nu infra/render.nu local-minimal      # render everything, store nothing
-POLAR_CACHE_DIR=/tmp/c nu infra/render.nu local-minimal   # use another directory
+POLAR_CACHE=off nu infra/render.nu sandbox-local      # render everything, store nothing
+POLAR_CACHE_DIR=/tmp/c nu infra/render.nu sandbox-local   # use another directory
 rm -rf ~/.cache/polar                                 # forget it all; nothing depends on it
 nu infra/measure-render-cache.nu results.md           # reproduce the numbers above (about 16 minutes)
 nu infra/measure-render-cache.nu results.md --user U --email E    # and the up.nu cases, which need a cluster
@@ -1044,7 +1043,7 @@ Rare. A facet is a new operation every capability must answer.
 
 ### Add a target
 
-1. Copy `infra/targets/local-minimal/`.
+1. Copy `infra/targets/sandbox-local/`.
 2. `target.nu`: the charts it deploys, `apply_order`, and the values still passed
    through it.
 3. `overrides.dhall`: values for the custom charts.
@@ -1065,11 +1064,11 @@ the intended differences appear.
 
 ```fish
 # 1. Keep a render from before your change (untracked; add manifests.old/ to .git/info/exclude once)
-nu infra/render.nu local-minimal
+nu infra/render.nu sandbox-local
 rm -rf manifests.old; cp -r manifests manifests.old
 
 # 2. Make your change, then render again
-nu infra/render.nu local-minimal
+nu infra/render.nu sandbox-local
 
 # 3. Compare by meaning, not by text
 nu infra/compare-manifests.nu manifests.old manifests kube      # names after the dirs filter by Kind/namespace/name
@@ -1098,7 +1097,7 @@ They act only on the cluster you name for them, never on the one your shell's KU
 
 ```fish
 POLAR_TEST_CLUSTER_KUBECONFIG=<kubeconfig> nu infra/tests/resolve.nu
-POLAR_TEST_CLUSTER_KUBECONFIG=<kubeconfig> nu infra/tests/render-determinism.nu local-minimal
+POLAR_TEST_CLUSTER_KUBECONFIG=<kubeconfig> nu infra/tests/render-determinism.nu sandbox-local
 POLAR_SCAFFOLD_DIR=<dir> nu infra/tests/resolve.nu       # no cluster: the ten are skipped, the rest run
 ```
 
@@ -1190,7 +1189,7 @@ beside one that may still be alive), but it is an outage until someone acts.
 - **Access to the outside is checked once, at the end of `up.nu`, and only reported.** A pod runs `git ls-remote` against one public repository (`POLAR_EGRESS_PROBE_URL` changes it) and `up.nu` says whether the name resolved and the host answered. It is a note because a cluster used offline works. The probe runs in the `polar-scheduler-observer` pod, the one image with a git CLI, so if that pod is not running the check says it was skipped. On a cluster whose CoreDNS forwards to a resolver that pods cannot reach, pods resolve nothing outside the cluster, and this check says so.
 - **Service-account token ordering.** On a fresh cluster, a `kubernetes.io/service-account-token` Secret is populated by the token controller only after its ServiceAccount exists, so the first apply may need repeating. `serviceaccounts.yaml` precedes `kube-observer-resources.yaml` in `apply_order`, which should avoid it, but this has only been exercised on an existing cluster.
 - **The catalog has two kinds, `agent` and `service`.** All the agents are in it; the custom charts are ace, cert-issuer, jaeger, keycloak, neo4j and postgres.
-- **`apply_order` (and the layers it comes from) is hand-maintained** in each `target.nu`; `local-minimal` and `sandbox-local` have layers, `local` does not. It should be derived from the catalog (resources before the Job).
+- **`apply_order` (and the layers it comes from) is hand-maintained** in each `target.nu`. It should be derived from the catalog (resources before the Job).
 - **`render.nu` passes cluster facts to custom charts through a `match` on the chart name,** and `target.nu` carries values (`cert_issuer_url`, `polar_init_image`, ...) that the catalog derives elsewhere. That is data written as control flow, and a duplicated fact.
 - **Only the kube agents declare capabilities in Rust.** Other agents still hard-code health arguments and Cassini/Neo4j endpoints; they move to the builder one pair at a time.
 - **`POLAR_CAPABILITIES` unset is a warning, not an error,** so an agent run outside the cluster still starts. A deployment that forgets to set it is therefore not caught by the builder; the catalog sets it for every workload it renders.

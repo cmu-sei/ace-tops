@@ -19,7 +19,7 @@
 #
 # DM26-0670
 
-# user.sops.yaml — Polar local target user-specific secrets.
+# user.sops.yaml — Polar sandbox-local target user-specific secrets.
 #
 # This file is gitignored — it contains credentials that are personal
 # to each developer. Each developer maintains their own copy encrypted

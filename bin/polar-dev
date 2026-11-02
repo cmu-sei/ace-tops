@@ -32,7 +32,7 @@
 #   bin/polar-dev down      sync, then stop the pod (its volumes stay); --purge removes the namespace and the volumes too
 #   bin/polar-dev build-image [tag] [target]
 #                           build the dev image from this checkout's current commit, in the pod, and push it to the target's
-#                           registry in the cluster (tag: the short commit; target: POLAR_TARGET, else local-minimal); it
+#                           registry in the cluster (tag: the short commit; target: POLAR_TARGET, else sandbox-local); it
 #                           prints the `up` that runs it
 #
 # Settings (environment): POLAR_DEV_IMAGE, POLAR_DEV_ARCH (amd64 or arm64; default: the cluster's nodes'),
@@ -434,7 +434,7 @@ BUILD
 # published one lacks. The commit goes in as a git bundle, so what is built is what is committed. It prints the `up` that
 # puts the pod on it.
 build_image() {
-    local tag=${1:-} target=${2:-${POLAR_TARGET:-local-minimal}} scratch=/tmp/polar-dev-build-image
+    local tag=${1:-} target=${2:-${POLAR_TARGET:-sandbox-local}} scratch=/tmp/polar-dev-build-image
     local commit branch p machine arch node_port
     git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1 || die "$HERE is not a git checkout: build-image bundles its current commit"
     commit=$(git -C "$HERE" rev-parse --short HEAD) || die "cannot read the current commit of $HERE"

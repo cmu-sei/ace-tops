@@ -97,6 +97,41 @@ def main [] {
             assert equal (placement_of { pools: ["core"] } "writers") null
         }
 
+        # docs/architecture/placement.md: topology is the target's. It names the layouts it can deploy in and the one it deploys
+        # by default; a cluster's own choice (cluster-inputs.nuon) overrides that, and an empty layout places nothing.
+        "the topology in force gives the pools to place by, or none on a single node": {
+            let placement = { topology: "single", topologies: { single: [], separated: ["core" "observers" "writers"] } }
+            assert equal (placement_in_force $placement null) null
+            assert equal (placement_in_force $placement "separated") { pools: ["core" "observers" "writers"] }
+            assert equal (placement_in_force ($placement | upsert topology "separated") null) { pools: ["core" "observers" "writers"] }
+            assert equal (placement_in_force ($placement | upsert topology "separated") "single") null
+            assert equal (placement_in_force null null) null
+        }
+
+        "a topology the target does not name is refused, naming what it does name": {
+            let placement = { topology: "single", topologies: { single: [], separated: ["core"] } }
+            let unknown = (topology_problem $placement "three-node")
+            assert ($unknown | str contains "three-node") $unknown
+            assert ($unknown | str contains "separated") $unknown
+            assert equal (topology_problem $placement "separated") null
+            assert equal (topology_problem $placement null) null
+            assert ((topology_problem { topology: "gone", topologies: { single: [] } } null) | str contains "gone")
+            assert ((topology_problem null "separated") | str contains "names no topologies")
+            assert equal (topology_problem null null) null
+        }
+
+        # nix-usernetes' contract: a pod with a pool's selector and toleration stays Pending unless a node carries that pool.
+        "up.nu finds a pool no node carries before anything is deployed": {
+            let nodes = [
+                { name: "core", pool: "core" }
+                { name: "observers", pool: "observers" }
+                { name: "services", pool: null }
+            ]
+            assert equal (pools_without_nodes { pools: ["core" "observers"] } $nodes) []
+            assert equal (pools_without_nodes { pools: ["core" "writers"] } $nodes) ["writers"]
+            assert equal (pools_without_nodes null $nodes) []
+        }
+
         # A container's memory (the broker's, 2026-11-01: its limit is the memory.max its controller reads): a request
         # and a limit, each a quantity of whole bytes, Ki, Mi, Gi or Ti, the request no more than the limit.
         "a workload's memory is a request and a limit, each a quantity, the request no more than the limit": {

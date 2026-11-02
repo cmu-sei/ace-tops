@@ -26,7 +26,7 @@
 # Brings a Polar cluster up from a target, end to end. Run it from the repo
 # root with KUBECONFIG pointing at the cluster:
 #
-#   nu infra/up.nu local-minimal --dev --user alice --email alice@example.org
+#   nu infra/up.nu sandbox-local --dev --user alice --email alice@example.org
 #
 # It is target-aware: what to do is derived from the target's own config (the
 # charts it deploys, its apply order, whether it provisions the cluster CA), so
@@ -78,6 +78,7 @@ use runtime.nu [container_runtime]
 use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
 use agent-pods.nu [delete_stale_namespaces]
 use preflight.nu [kubernetes_problem, openssl_problem]
+use rules.nu [POOL_KEY, pools_without_nodes, topology_problem]
 use cluster-registry.nu
 use registry.nu [node_registry]
 use apply.nu [any_pod_ready, changed_configmaps, changed_lines, config_users, gate_after, job_verdict, jobs_in, stale_images, stale_pod_images, stale_pod_report, workload_needs_restart]
@@ -331,6 +332,24 @@ def build_waits [config: record] {
     $w
 }
 
+# Whether this cluster's nodes can take the topology in force: a pod placed by a pool no node carries would stay Pending.
+def check_topology_fits [target: string] {
+    let declared = (^$nu.current-exe infra/resolve.nu placement --target $target | from json)
+    let name = (^$nu.current-exe infra/resolve.nu topology --target $target | str trim)
+    let nodes = (^kubectl get nodes -o json | from json | get items | each {|n|
+        { name: $n.metadata.name, pool: ($n.metadata.labels | get -o $POOL_KEY) }
+    })
+    let missing = (pools_without_nodes $declared $nodes)
+    if ($missing | is-not-empty) {
+        fail $"the topology ($name) places workloads on the pools ($missing | str join ', '), which no node carries: label and taint a node for each \(($POOL_KEY)=<pool>, docs/architecture/placement.md\), or choose another with --topology"
+    }
+    let carried = ($nodes | where pool != null | get pool | uniq)
+    if $declared == null and ($carried | is-not-empty) {
+        note $"this cluster's nodes carry the pools ($carried | str join ', '), and the topology ($name) places nothing: --topology chooses another"
+    }
+    if ($name | is-not-empty) { ok $"topology ($name)" }
+}
+
 def step_preflight [config: record, runtime_needed: bool] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
@@ -348,6 +367,7 @@ def step_preflight [config: record, runtime_needed: bool] {
     let too_old = (kubernetes_problem $git_version)
     if $too_old != null { fail $too_old }
     ok $"Kubernetes ($git_version)"
+    check_topology_fits $config.name
     let ssl = (do { ^openssl version } | complete)
     let no_ext = (openssl_problem (if $ssl.exit_code == 0 { $ssl.stdout | str trim } else { "" }))
     if $no_ext != null { fail $no_ext }
@@ -393,12 +413,22 @@ def cluster_fingerprint [] {
 
 def cluster_inputs_path [target: string] { cluster-inputs path_of ($env.PWD | path join "infra") $target }
 
+# `--topology`: this cluster's choice among the target's layouts, written down where the render reads it.
+def choose_topology [target: string, topology: string] {
+    let layouts = (open ($env.PWD | path join $"infra/targets/($target)/config.nuon") | get -o cluster.placement)
+    let refused = (topology_problem $layouts $topology)
+    if $refused != null { fail $refused }
+    let path = (cluster_inputs_path $target)
+    let chosen = (cluster-inputs with_topology (cluster-inputs read_inputs $path) $topology (cluster_fingerprint))
+    if $chosen.changed { $chosen.inputs | to nuon --indent 2 | save --force $path }
+}
+
 # What this machine kept of another cluster's inputs (its administrators) is not this cluster's: discard it before it is rendered.
 def discard_other_clusters_inputs [target: string] {
     let path = (cluster_inputs_path $target)
     if not ($path | path exists) { return }
     let held = (cluster-inputs read_inputs $path)
-    if (cluster-inputs reconcile $held (cluster_fingerprint)) != $held {
+    if (cluster-inputs another_clusters $held (cluster_fingerprint)) {
         rm $path
         note $"discarded ($path | path relative-to $env.PWD): it was made for another cluster"
     }
@@ -857,13 +887,14 @@ def report_egress [target: string] {
 }
 
 def main [
-    target: string          # Target name, e.g. local-minimal
+    target: string          # Target name, e.g. sandbox-local
     --dev                   # Also build and load images (local development cluster)
     --user: string          # Username for the first admin account
     --email: string         # Email for the first admin account
     --allow-dirty           # Publish a gitops target from a working tree with uncommitted changes (the provenance records it)
     --import-from: string = ""  # Copy the published images into the registry first, e.g. docker.io/<account> (infra/images.nu import)
     --import-tag: string = ""   # With --import-from: the release to import, e.g. 2.0.0 (images published as polar-<image>:<tag>-<arch>)
+    --topology: string = ""     # Which of the target's layouts this cluster is deployed in, e.g. single or separated; kept for it until another is chosen
 ] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
@@ -885,6 +916,7 @@ def main [
     if ($import_tag | is-not-empty) and ($import_from | is-empty) {
         fail "--import-tag names a release to import: give --import-from too"
     }
+    if ($topology | is-not-empty) { choose_topology $target $topology }
     let plan = (build_plan $config $dev { in_cluster: $in_cluster, import_from: $import_from })
     let enabled = ($plan | where on)
     let waits = (build_waits $config)

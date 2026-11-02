@@ -77,7 +77,7 @@ kubectl get storageclass                          # step 1: a cluster with stora
 bin/polar-dev up                                  # step 3: your dev container, in the cluster; you land in it
 
 # In the dev container, from /workspace:
-nu infra/up.nu local-minimal --dev --user <you> --email <your email>      # step 4: Polar
+nu infra/up.nu sandbox-local --dev --user <you> --email <your email>      # step 4: Polar
 # when it pauses at the browser step, on your machine:
 bin/polar-dev cert <you>                          # step 5: your certificate into the browser
 bin/polar-dev forward                             # step 6: then https://localhost:7473 and http://localhost:8050
@@ -94,7 +94,7 @@ polar-sign sign change.json --user <you> --push           #   sign it and push i
 | Your cluster | A local dev node ([nix-usernetes](https://github.com/daveman1010220/nix-usernetes)), minikube (on a Mac, say: **On minikube**, below), or any cluster you can reach with `kubectl` and have admin rights in; **Kubernetes 1.36 or later** in every case | a local nix-usernetes node |
 | Where you work | **The dev container in the cluster** (`bin/polar-dev`: your machine needs only `kubectl`, `ssh`, `git` and a browser), the dev container on your machine (needs `podman` or `docker`), or the tools installed on your machine. See **Working environments** | in the cluster |
 | Images | **Built from source** (`up.nu --dev`; the way when you change code), or **published** ones copied in (`up.nu --import-from docker.io/<account>`; nothing is built) | built from source |
-| Target | **`local-minimal`**, applied by `up.nu` directly, for one node or many; or **`sandbox-local`**, published signed to a deployment git server in the cluster and applied by Flux, its workloads placed on node pools the cluster must have (**What Polar asks of the cluster**); or a target of your own (**Using your own target**) | `local-minimal` |
+| Topology | **`single`**, every workload wherever there is room, for one node or many; or **`separated`**, its workloads placed on nodes by pool (`up.nu --topology separated`). Either way the one target, `sandbox-local`, is published signed to a deployment git server in the cluster and applied by Flux | `single` |
 | Registry | **In the cluster** (the shipped targets keep it there; nothing to run anywhere), or one you bring. See **Registries** | in the cluster |
 
 You also need data for ACE to show: a Neo4j populated with work items (**Data source**, below).
@@ -132,7 +132,7 @@ old one's resource types, or `kubectl get all` asks for types it no longer has (
 rm -rf ~/.kube/cache/discovery/127.0.0.1_6443
 ```
 
-*On minikube* (an Apple-silicon Mac, for example), `local-minimal` is the target: one node, no Flux, no node pools. Use
+*On minikube* (an Apple-silicon Mac, for example), the default topology, `single`, is the one: one node, no node pools. Use
 minikube **v1.39.0 or later**, the first to offer Kubernetes 1.36 and 1.37 (it starts 1.37 by default; this is from its
 release notes as an aggregator reports them, so check minikube's own release page). Give it as much memory and as many CPUs as
 you can spare: the deployment is twenty-odd pods (Neo4j, Keycloak and Postgres among them).
@@ -143,7 +143,7 @@ kubectl version                    # Server Version v1.36 or later
 ```
 
 Then the images: on an Apple-silicon Mac they are the `arm64` ones, which `--import-from` picks by itself (step 4); the dev
-container (`bin/polar-dev`) picks its own the same way. `sandbox-local` on minikube needs one node per pool, labelled and tainted
+container (`bin/polar-dev`) picks its own the same way. `--topology separated` on minikube needs one node per pool, labelled and tainted
 as the last item below says (`minikube start --nodes 4`, then `kubectl label` and `kubectl taint` three of them); that has not
 been tried.
 
@@ -152,11 +152,11 @@ What Polar asks of the cluster:
 - **Kubernetes 1.36 or later.** Every workload is a Deployment of one pod that restarts in place, its init containers and
   its custody sidecar with it, by a container restart rule (`RestartAllContainers`), which is on by default from 1.36
   (`docs/architecture/deployments.md`). On an older cluster its pods are refused.
-- **For `sandbox-local`, its node pools.** It places each workload on a node by pool (`docs/architecture/placement.md`): a
+- **For the `separated` topology, its node pools.** It places each workload on a node by pool (`docs/architecture/placement.md`): a
   node each for `core`, `observers` and `writers`, labelled `polar.dev/pool=<pool>` and tainted
-  `polar.dev/pool=<pool>:NoSchedule`, and at least one node without a taint for the rest. A cluster without them leaves its
-  pods Pending; `local-minimal` places nothing.
-- **A storage class** for persistent volumes. The `local-minimal` and `sandbox-local` targets install a local-path
+  `polar.dev/pool=<pool>:NoSchedule`, and at least one node without a taint for the rest. `up.nu` refuses a cluster without
+  them before it deploys anything; the default, `single`, places nothing and needs none of this.
+- **A storage class** for persistent volumes. `sandbox-local` installs a local-path
   provisioner and a class named `managed-csi` (`storage.class` in `infra/config/cluster.nuon`) unless the cluster already
   has a class of that name; on a cluster with a class of its own, set `storage.class` to it.
 - **A kube-proxy that answers NodePorts on `localhost`** (the iptables mode does; IPVS and some kube-proxy replacements do
@@ -181,7 +181,7 @@ decrypt the file, and once they have added it, pull. Then check, with the privat
 have `sops`, or in the dev container after step 3 (where the key is already set, so `sops --decrypt` alone):
 
 ```bash
-SOPS_AGE_SSH_PRIVATE_KEY_FILE=~/.ssh/<your key> sops --decrypt infra/targets/local-minimal/secrets.sops.yaml >/dev/null && echo ok
+SOPS_AGE_SSH_PRIVATE_KEY_FILE=~/.ssh/<your key> sops --decrypt infra/targets/sandbox-local/secrets.sops.yaml >/dev/null && echo ok
 ```
 
 The details, what to do when nobody can add you, and your own `user.sops.yaml` for your personal tokens are in **Secrets
@@ -213,7 +213,7 @@ machine happens by itself.
 In the dev container, from `/workspace`:
 
 ```bash
-nu infra/up.nu local-minimal --dev --user <name> --email <email>
+nu infra/up.nu sandbox-local --dev --user <name> --email <email>
 ```
 
 `up.nu` prints its plan first, every step with the reason any is skipped, and then runs it: the registry in the cluster
@@ -243,21 +243,23 @@ and its catalog name them), then builds or copies each once. A build's log is sh
 - **Neither:** the images are already in the registry. Use it to resume, or to finish a run that stopped at a person's
   step; it leaves the running pods alone.
 
-*Target, the choice:* `sandbox-local` deploys with Flux instead:
-
-```bash
-nu infra/up.nu sandbox-local --dev --user <name> --email <email>
-```
-
-It does not apply its manifests: it publishes them, signed, to a deployment git server that runs in the cluster in a
-namespace of its own (`polar-deploy`, held by no layer, so Flux neither applies nor prunes it), installs Flux and waits
-while Flux applies them layer by layer. Signing needs `gpgsm` (in the dev container). The deployment PKI is in
+*How it is applied:* `up.nu` does not apply the manifests itself: it publishes them, signed, to a deployment git server that runs
+in the cluster in a namespace of its own (`polar-deploy`, held by no layer, so Flux neither applies nor prunes it), installs Flux
+and waits while Flux applies them layer by layer. Signing needs `gpgsm` (in the dev container). The deployment PKI is in
 `~/.config/polar-deploy/<target>/` (its CA key never goes to the cluster) with a mirror of the signed history,
 `mirror.git`, which a new cluster's server is given. Add `--allow-dirty` if the checkout has uncommitted changes (the
-signed record says so). `infra/INFRA.md` ("How a target works") explains what it does. The two targets use the same
-namespaces, so they do not share a cluster: rebuild the cluster between them (step 7).
+signed record says so). `infra/INFRA.md` ("How a target works") explains what it does.
 
-What `local-minimal` deploys: Neo4j, Cassini, `cert-issuer`, the credentials agent and its observer, ACE, the ingestion
+*Topology, the choice:* the target deploys in `single` unless a cluster chooses another. On a cluster whose nodes carry the pools:
+
+```bash
+nu infra/up.nu sandbox-local --topology separated --dev --user <name> --email <email>
+```
+
+A cluster keeps its choice (`infra/targets/<target>/cluster-inputs.nuon`, which is not committed) until you give another, so
+later runs need no flag. A target's layouts are in its `config.nuon`, under `cluster.placement`.
+
+What `sandbox-local` deploys: Neo4j, Cassini, `cert-issuer`, the credentials agent and its observer, ACE, the ingestion
 agents, a git server for the schedules repository, and Keycloak with its own Postgres (an optional identity-provider route
 for certificates for people). Each runs as a Deployment of one pod that restarts in place whenever it ends: its init
 container asks for its certificates again each time, which is how it rejuvenates and how it recovers when a certificate or
@@ -291,7 +293,7 @@ the commands for the macOS Keychain (Safari, Chrome, Edge) and for Firefox.
 
 ### 6. Check that it works
 
-`up.nu` ends with `=== Target local-minimal is up ===` and the pods it runs. For a browser on your machine:
+`up.nu` ends with `=== Target sandbox-local is up ===` and the pods it runs. For a browser on your machine:
 
 ```bash
 bin/polar-dev forward              # Neo4j at https://localhost:7473, ACE at http://localhost:8050
@@ -334,8 +336,6 @@ bin/polar-dev down                 # sync, then stop the dev container; its volu
   your machine), rebuild the cluster (step 1, with the discovery-cache line), and `bin/polar-dev up` again: a new cluster is
   a new dev container, with your state copied in again, and step 4 from the top. `up.nu` notices when
   `~/.config/polar-admin` holds the previous cluster's CA and moves those files aside (it tells you where).
-- **To switch targets** (`local-minimal` and `sandbox-local` share namespaces), start over on a fresh cluster with the
-  other one.
 
 **What to do next:** tell Polar what to observe (step 8). `infra/INFRA.md` explains the catalog, targets and images
 behind `up.nu`.
@@ -407,7 +407,7 @@ not running. The design is in [docs/architecture/signed-configuration.md](docs/a
 The steps above, for an Apple-silicon Mac running a minikube cluster in Docker Desktop, with the images that are published
 (nothing is built on your Mac). Each step points to the one above that says more.
 
-**What it needs.** Measured on a single-node cluster running `local-minimal` (2026-10-28): Polar itself used about 7 GB of
+**What it needs.** Measured on a single-node cluster, before Flux was on the single-node path (2026-10-28): Polar itself used about 7 GB of
 memory and little CPU at rest, and about 9 GB of disk (6.6 GB of images, 1.9 GB of volumes). The dev container (step 3)
 asks the cluster for 2 CPUs and 8 GiB of memory, which the cluster must be able to give it, and adds about 2.7 GB of image
 and a 20 GiB volume. So, for the cluster:
@@ -449,7 +449,7 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    image from source, which takes hours on a Mac.
 
    ```bash
-   nu infra/up.nu local-minimal --import-from docker.io/daveman1010220 --user <name> --email <email>
+   nu infra/up.nu sandbox-local --import-from docker.io/daveman1010220 --user <name> --email <email>
    ```
 
    It copies the `arm64` images into the cluster, then deploys. Run the same command again after a failure or a pause.
@@ -542,7 +542,7 @@ An image newer than the published one (a fix not yet on Docker Hub) is built in 
 needs only `kubectl` and `git`: `bin/polar-dev build-image [tag] [target]` bundles this checkout's current commit (what is
 committed, not the working tree), builds `devContainer` for the pod's architecture with the pod's Nix (as root, with
 root's own cache), starts the target's registry in the cluster (`nu infra/cluster-registry.nu up`; the target is
-`POLAR_TARGET`, else `local-minimal`), pushes `polar-dev:<tag>` (the short commit by default) to it, and prints the
+`POLAR_TARGET`, else `sandbox-local`), pushes `polar-dev:<tag>` (the short commit by default) to it, and prints the
 `POLAR_DEV_IMAGE=localhost:30500/polar-dev:<tag> bin/polar-dev up` that puts the pod on it. The script's own tests are
 `bash bin/tests/polar-dev.bash`.
 
@@ -668,7 +668,7 @@ registry, or an archive built elsewhere (Neo4j). `up.nu --dev` builds
 and pushes the ones the target needs. To work on them yourself, with the
 target's registry (**Registries**). Each recipe prints the `infra/images.nu` command it runs. Those that push use the
 registry in the target's cluster, through a forward they start, as `up.nu` does; the target is `POLAR_TARGET`, else
-`local-minimal` (`just target=sandbox-local image cassini` for another), and `just target= …` pushes to `POLAR_REGISTRY`
+`sandbox-local` (`just target=sandbox-local image cassini` for another), and `just target= …` pushes to `POLAR_REGISTRY`
 instead:
 
 ```bash
@@ -700,7 +700,7 @@ For a target whose registry is in the cluster (the shipped ones), let `up.nu` do
 has made it:
 
 ```bash
-nu infra/up.nu local-minimal --import-from docker.io/<account> --user <name> --email <email>
+nu infra/up.nu sandbox-local --import-from docker.io/<account> --user <name> --email <email>
 ```
 
 For a registry of your own, or by hand (`nu infra/cluster-registry.nu up <target>` makes the one in the cluster and its forward
@@ -774,7 +774,7 @@ for the binaries alone.
 ### Customize a target
 
 A "target" is a named deployment profile under `infra/targets/`.
-`local-minimal` is a small, single-node profile for local development;
+`sandbox-local` is the one that ships, on one node or many (its topology);
 `infra/targets/<name>/target.nu` lists what each target deploys, and
 `infra/targets/<name>/overrides.dhall` is where you customize hostnames,
 storage classes and other per-deployment values for the hand-written charts.
@@ -882,7 +882,7 @@ rebuilding the cluster.
 
 ### Bootstrapping Keycloak
 
-`local-minimal`'s Keycloak deploys with no realm, client, or users
+`sandbox-local`'s Keycloak deploys with no realm, client, or users
 configured yet. A single idempotent recipe sets all of it up — safe to
 re-run any time:
 
@@ -893,7 +893,7 @@ just keycloak-bootstrap
 This creates the `polar` realm, a public OIDC client
 (`browser-cert-fetcher`) used for human-facing certificate issuance,
 and a test user, using credentials you provide via `sops` (see
-`infra/targets/local-minimal/secrets.sops.yaml` — add
+`infra/targets/sandbox-local/secrets.sops.yaml` — add
 `keycloak_test_username`/`keycloak_test_password` there before
 running).
 
@@ -906,7 +906,7 @@ make a target for it:
 1. Do steps 1 to 3 of **Installation**: a cluster with storage, the secrets, and your dev container. The registry can be
    in your cluster, as the shipped targets keep it, or one you bring (**Registries**; a real cluster generally can't
    import a local image tarball directly the way `kind load` or `k3d image import` can).
-2. Copy `infra/targets/local-minimal/` to a new target directory
+2. Copy `infra/targets/sandbox-local/` to a new target directory
    (the registry needs no edit: it stays in the cluster, or you set `POLAR_NODE_REGISTRY`; **Registries**), and
    adjust any hostnames/URLs specific to your environment. In particular, `cert-issuer`'s `issuers` list is where
    trust in Kubernetes and/or an external IdP (Keycloak, Okta, etc.)
@@ -980,7 +980,7 @@ without two values, `neo4j_auth` (`neo4j/<password>`) and `graph_password`
 about what it skips. From the repository root:
 
 ```sh
-cd infra/targets/local-minimal
+cd infra/targets/sandbox-local
 PUB=$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub)       # your public key, not the private one
 printf 'creation_rules:\n  - path_regex: secrets\\.sops\\.yaml$\n    age: >-\n      %s\n' "$PUB" > .sops.yaml
 PW=$(openssl rand -hex 16)
@@ -990,7 +990,7 @@ SOPS_CONFIG=.sops.yaml sops --encrypt --in-place secrets.sops.yaml
 
 That replaces the encrypted file that came with the checkout, which you could
 not read. Do not commit it: `git update-index --skip-worktree
-infra/targets/local-minimal/secrets.sops.yaml` keeps it out of `git status`.
+infra/targets/sandbox-local/secrets.sops.yaml` keeps it out of `git status`.
 (Tried with sops 3.13.)
 
 If your SSH private key isn't at the default path the devShell

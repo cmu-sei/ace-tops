@@ -40,9 +40,9 @@ _nix_flags := if verbose == "true" { "-L" } else { "--log-format bar-with-logs" 
 _taskfile := "/workspace/agent-task.json"
 
 # The target whose registry the image and registry recipes use: its own, in the cluster, through a forward they start
-# (infra/cluster-registry.nu). POLAR_TARGET, else local-minimal; `just target=sandbox-local image cassini` for another.
+# (infra/cluster-registry.nu). POLAR_TARGET, else sandbox-local; `just target=sandbox-local image cassini` for another.
 # `just target= images-push ...` pushes to POLAR_REGISTRY instead (default localhost:5000, such as `just registry-host-up`'s).
-target := env_var_or_default('POLAR_TARGET', 'local-minimal')
+target := env_var_or_default('POLAR_TARGET', 'sandbox-local')
 _target_flag := if target == "" { "" } else { "--target " + target }
 
 # ── Help ──────────────────────────────────────────────────────────────────────
@@ -544,7 +544,7 @@ images-all:
 #
 #   2. Bring it up, from the Polar repo root with KUBECONFIG set. --dev builds and
 #      loads images into the local registry; only the steps the target needs run:
-#        nu infra/up.nu local-minimal --dev --user <user> --email <email>
+#        nu infra/up.nu sandbox-local --dev --user <user> --email <email>
 #      It renders, applies namespaces, bootstraps the CA, applies the manifests,
 #      waits for the core pods, starts the needed port-forwards and runs the admin
 #      flow. It pauses for the browser import and the Neo4j password, and is safe
@@ -682,7 +682,7 @@ secret-harness-results:
 # each run's sinks, then its producers, as Jobs; the records go to ~/.cache/polar/harness. The target must enable
 # harness-producer and harness-sink (its config.nuon and target.nu say how).
 #        just load-harness-run infra/load-plans/baseline.nuon
-load-harness-run plan target='local-minimal':
+load-harness-run plan target='sandbox-local':
     nu infra/load-harness.nu run {{plan}} --target {{target}}
 
 # The runs in load-harness records, side by side.
@@ -785,7 +785,7 @@ keycloak-bootstrap:
     fi
 
     echo "Ensuring test user exists..."
-    TARGET_DIR="infra/targets/local-minimal"
+    TARGET_DIR="infra/targets/sandbox-local"
     SHARED_JSON=$(SOPS_CONFIG="$TARGET_DIR/.sops.yaml" sops --decrypt --output-type json "$TARGET_DIR/secrets.sops.yaml" 2>/dev/null || echo "{}")
     USER_JSON=$(SOPS_CONFIG="$TARGET_DIR/.user.sops.yaml" sops --decrypt --output-type json "$TARGET_DIR/user.sops.yaml" 2>/dev/null || echo "{}")
     MERGED_JSON=$(jq -s ".[0] * .[1]" <(echo "$SHARED_JSON") <(echo "$USER_JSON"))

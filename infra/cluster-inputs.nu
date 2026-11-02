@@ -23,16 +23,17 @@
 
 # infra/cluster-inputs.nu
 #
-# What belongs to one cluster and exists only after the cluster does: today, the git server's administrators (the identity of
-# the first admin account is made by the admin flow on the live cluster). They are inputs to the render like any other, so they
+# What belongs to one cluster: its topology (`up.nu --topology`, which of the target's layouts this cluster is deployed in), and
+# the git server's administrators (the identity of the first admin account is made by the admin flow on the live cluster). They are inputs to the render like any other, so they
 # are written down where the render reads them and recorded in the provenance of what is published; they are not committed,
 # because a cluster's identities are not the repository's.
 #
 #   infra/targets/<target>/cluster-inputs.nuon        gitignored
-#   { cluster: "<sha256 of the cluster CA>", workloads: { <name>: { env: [{ name, value }] } } }
+#   { cluster: "<sha256 of the cluster CA>", topology: "<name>", workloads: { <name>: { env: [{ name, value }] } } }
 #
 # `workloads.<name>.env` has the shape of the same key in the target's config.nuon, and replaces an entry of that name there.
-# `cluster` ties the file to the cluster it was made for: a file from another cluster is discarded, not extended.
+# `cluster` ties the file to the cluster it was made for: a file from another cluster is discarded, not extended. A topology is
+# chosen before a new cluster has a CA, so `cluster` is null until there is one: the file is then this machine's next cluster's.
 
 export const ADMINS_WORKLOAD = "polar-git-server"
 export const ADMINS_VAR = "POLAR_GIT_SERVER_ADMINS"
@@ -53,9 +54,26 @@ export def env_for [inputs: record, workload: string] {
     $inputs | get -o workloads | default {} | get -o $workload | default {} | get -o env | default []
 }
 
-# The inputs as they stand for `cluster`: the same, or empty when they were made for another cluster (or there is no cluster yet).
+# Whether these inputs were made for another cluster than `cluster` (null: one with no CA yet). Inputs not yet tied to one were not.
+export def another_clusters [inputs: record, cluster: any] {
+    let tied = ($inputs | get -o cluster)
+    $tied != null and $tied != $cluster
+}
+
+# The inputs as they stand for `cluster`: tied to it if they were tied to none, the same if they were tied to it, and empty when
+# they were made for another.
 export def reconcile [inputs: record, cluster: any] {
-    if $cluster != null and ($inputs | get -o cluster) == $cluster { $inputs } else { empty }
+    if (another_clusters $inputs $cluster) { empty } else { $inputs | upsert cluster $cluster }
+}
+
+# The topology this cluster chose, or null when it deploys in the target's default.
+export def topology_of [inputs: record] { $inputs | get -o topology }
+
+# The inputs with `topology` chosen, for `cluster`, which may have no CA yet. `changed` is false when it already was.
+export def with_topology [inputs: record, topology: string, cluster: any] {
+    let current = (reconcile $inputs $cluster)
+    let chosen = ($current | upsert topology $topology)
+    { inputs: $chosen, changed: ($chosen != $inputs) }
 }
 
 export def admins_of [inputs: record] {
@@ -71,7 +89,7 @@ export def with_admin [inputs: record, identity: string, cluster: string] {
     let others = (env_for $current $ADMINS_WORKLOAD | where name != $ADMINS_VAR)
     let entries = ($others | append { name: $ADMINS_VAR, value: ($held | append $identity | str join ",") })
     {
-        inputs: { cluster: $cluster, workloads: ($current.workloads | upsert $ADMINS_WORKLOAD { env: $entries }) }
+        inputs: ($current | upsert cluster $cluster | upsert workloads ($current.workloads | upsert $ADMINS_WORKLOAD { env: $entries }))
         changed: true
     }
 }

@@ -33,7 +33,7 @@
 # says the same thing as the render from the charts it replaces.
 #
 #   cp -r manifests manifests.old            # a render from the old pipeline
-#   nu infra/render.nu local-minimal         # a render from the new one
+#   nu infra/render.nu sandbox-local         # a render from the new one
 #   nu infra/compare-manifests.nu manifests.old manifests kube-observer kube-consumer
 #
 # The names after the directories keep only documents whose key contains one

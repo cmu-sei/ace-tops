@@ -26,8 +26,8 @@
 # Renders every workload in the catalog (infra/config/workloads/*.nuon) into
 # <output_dir>/<name>.yaml. render.nu calls this after the charts.
 #
-#   nu infra/render-catalog.nu local-minimal manifests
-#   nu infra/render-catalog.nu local-minimal manifests --only kube-observer,kube-consumer
+#   nu infra/render-catalog.nu sandbox-local manifests
+#   nu infra/render-catalog.nu sandbox-local manifests --only kube-observer,kube-consumer
 #
 # Per workload:
 #   resolve.nu json <name>     the resolved record (pure; touches nothing)

@@ -147,6 +147,8 @@ def main [] {
                 "polar-scheduler-observer.yaml"
                 "polar-scheduler-resources.yaml"
                 "polar-scheduler.yaml"
+                "oci-registry-resolver-resources.yaml"
+                "oci-registry-resolver.yaml"
                 # The load harness's accounts and configuration only: infra/load-harness.nu makes its Jobs per run.
                 "harness-producer-resources.yaml"
                 "harness-sink-resources.yaml"
@@ -166,7 +168,7 @@ def main [] {
         # Every image of the node registry is named by digest in the render (infra/lock.nu).
         pin_images : true
 
-        # Flux applies the layers, from a signed commit on a deployment git server outside the cluster (infra/deploy-repo.nu,
+        # Flux applies the layers, from a signed commit on a deployment git server in the cluster (infra/deploy-repo.nu,
         # infra/flux.nu). up.nu does what has to exist before Flux and what needs running workloads after it.
         gitops : true
 

@@ -181,6 +181,7 @@ def main [] {
                 let fact = (cluster_inputs_fact { infra_root: $dir } "t")
                 assert equal $fact.file "infra/targets/t/cluster-inputs.nuon"
                 assert equal $fact.cluster_ca_sha256 "ca-A"
+                assert equal $fact.topology null
                 assert equal $fact.sha256 (open --raw $file | hash sha256)
                 assert equal ($fact.values | get "polar-git-server" | get env | first | get value) "id-1"
                 rm $file

@@ -310,7 +310,7 @@
             echo ""
             echo "Polar dev shell — startup sequence (steps marked [dev] are for nix-usernetes users):"
             echo "  cd ~/Documents/projects/Polar"
-            echo "  nu infra/up.nu local-minimal --dev --user <user> --email <email>"
+            echo "  nu infra/up.nu sandbox-local --dev --user <user> --email <email>"
             echo "  # applies the target, waits, starts forwards, runs the admin flow, and pauses for"
             echo "  # the browser import and the Neo4j password; re-run the same command to resume"
             echo ""

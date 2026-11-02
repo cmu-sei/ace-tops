@@ -31,7 +31,7 @@
 # from.
 #
 #   nu infra/resolve.nu list
-#   nu infra/resolve.nu explain kube-consumer [--target local-minimal]
+#   nu infra/resolve.nu explain kube-consumer [--target sandbox-local]
 #   nu infra/resolve.nu json kube-consumer          # the record the template takes
 #   nu infra/resolve.nu check                       # validate every workload
 #   nu infra/resolve.nu diff kube-consumer          # compare with the rendered manifest
@@ -48,7 +48,7 @@ use document.nu *
 
 const INFRA = (path self | path dirname)
 
-use cluster-inputs.nu [env_for, env_merged, path_of, read_inputs]
+use cluster-inputs.nu [env_for, env_merged, path_of, read_inputs, topology_of]
 use registry.nu [node_registry, push_registry]
 use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
@@ -56,7 +56,7 @@ use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
 use egress.nu
 const CONFIG = ($INFRA | path join "config")
 
-const DEFAULT_TARGET = "local-minimal"
+const DEFAULT_TARGET = "sandbox-local"
 
 # The start marker's file, in the health volume (docs/architecture/deployments.md, step 4).
 const START_MARKER_FILE = "started-by-polar-init"
@@ -88,7 +88,13 @@ def target_config [target: string] {
 def load_cluster [target: string] {
     let overrides = (target_config $target | get -o cluster | default {})
     # The registry is resolved in one place (infra/registry.nu): the environment, then the target, then the default.
-    open ($CONFIG | path join "cluster.nuon") | merge deep $overrides | upsert registry (node_registry $target)
+    let cluster = (open ($CONFIG | path join "cluster.nuon") | merge deep $overrides | upsert registry (node_registry $target))
+    # The pools to place by, from the topology in force: this cluster's choice, else the target's (docs/architecture/placement.md).
+    let chosen = (topology_of (read_inputs (path_of $INFRA $target)))
+    let layouts = ($cluster.placement? | default null)
+    let unknown = (topology_problem $layouts $chosen)
+    if $unknown != null { error make { msg: $"($target): ($unknown)" } }
+    $cluster | upsert placement (placement_in_force $layouts $chosen)
 }
 
 # Every workload the catalog defines, whatever a target says.
@@ -1253,6 +1259,12 @@ def "main identity" [name: string, --target: string = $DEFAULT_TARGET] {
 # declares none. render.nu hands it to the one hand chart placed, Neo4j's.
 def "main placement" [--target: string = $DEFAULT_TARGET] {
     print ((load_cluster $target).placement? | default null | to json --raw)
+}
+
+# The name of the topology in force, or nothing on a target that names none.
+def "main topology" [--target: string = $DEFAULT_TARGET] {
+    let layouts = (target_config $target | get -o cluster.placement)
+    print (topology_in_force $layouts (topology_of (read_inputs (path_of $INFRA $target))) | default "")
 }
 
 def "main floor-enforced" [--target: string = $DEFAULT_TARGET] {

@@ -179,7 +179,7 @@ The aim: the floor open only at bootstrap and when two or more of the core are d
   `cert-issuer-isolation.md`, "Settled, and what is left").
 - **Smaller, on record.** `floor_enforced` is `false` by default (`infra/config/cluster.nuon:55`), which the
   maintainer's rule calls a gap, not an option. The `local` target cannot enforce it yet: it still deploys three
-  hand-written charts that ask cert-issuer directly (gitlab, build-processor, openapi; `infra/targets/local/target.nu:48`).
+  hand-written charts that ask cert-issuer directly (gitlab, build-processor, openapi; `infra/layers/3-workloads/agents`).
   No NetworkPolicy (layer 4, "Network isolation, with a fallback"; the dev cluster runs on the fallback, decided
   2026-10-13).
 - **`/validate` needs no decision of its own.** With the floor set, a token-only caller that is not a bootstrap identity

@@ -432,9 +432,9 @@ def main [] {
         {
             name: "a refusal names the identity and the file the cluster's administrators are kept in"
             body: {
-                let hint = (refused_hint "66b3f4c8-f024" "local-minimal")
+                let hint = (refused_hint "66b3f4c8-f024" "sandbox-local")
                 assert ($hint | str contains "66b3f4c8-f024")
-                assert ($hint | str contains "infra/targets/local-minimal/cluster-inputs.nuon")
+                assert ($hint | str contains "infra/targets/sandbox-local/cluster-inputs.nuon")
                 assert ($hint | str contains "restarts the git server")
             }
         }

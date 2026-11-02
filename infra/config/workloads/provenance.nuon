@@ -31,6 +31,8 @@
     kind: "agent"
     image: "oci-resolver"
     config: "document"
+    # It reads registries outside the cluster and holds no graph password: the low-trust side (docs/architecture/placement.md).
+    pool: "observers"
     # Credentials for private registries, from the Secret the secrets step makes.
     provides: ["oci-registry-auth"]
   }

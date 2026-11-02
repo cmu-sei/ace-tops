@@ -67,7 +67,7 @@ def main [] {
             body: {
                 let base = (with-env { POLAR_NODE_REGISTRY: "" } { node_registry })
                 assert equal $base (open ($env.PWD | path join "infra" "config" "cluster.nuon") | get registry)
-                assert equal (with-env { POLAR_NODE_REGISTRY: "polar-registry:5000" } { node_registry "local-minimal" }) "polar-registry:5000"
+                assert equal (with-env { POLAR_NODE_REGISTRY: "polar-registry:5000" } { node_registry "sandbox-local" }) "polar-registry:5000"
             }
         }
     ]

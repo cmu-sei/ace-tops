@@ -45,7 +45,7 @@ export def validate_env [required: list<string>] {
         }
         print ""
         print "Source your environment file and try again."
-        print "Example: source my.env && nu infra/render.nu local"
+        print "Example: source my.env && nu infra/render.nu sandbox-local"
         exit 1
     }
 }

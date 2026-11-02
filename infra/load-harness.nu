@@ -556,7 +556,7 @@ def run_one [run: record, templates: record, kept: string, image_tag: string = "
 # Every run of the plan in `plan_file`, in turn, on `target`; the records are saved after each run. `--image-tag` runs
 # the harness's producer and sink from their images under that tag in the target's registry, in place of what the
 # target rendered (to run another build's harness against that build's broker).
-def "main run" [plan_file: string, --target: string = "local-minimal", --image-tag: string = ""] {
+def "main run" [plan_file: string, --target: string = "sandbox-local", --image-tag: string = ""] {
     let plan = (open $plan_file)
     let runs = (expand $plan)
     let templates = (templates $target)

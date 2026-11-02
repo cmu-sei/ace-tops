@@ -69,7 +69,7 @@ def differences [a: string, b: string] {
 }
 
 def main [
-    target: string = "local-minimal"
+    target: string = "sandbox-local"
     --with-cache            # also compare a cold-cache and a warm-cache render with the uncached one
 ] {
     let cluster = (test-cluster pin)

@@ -56,7 +56,7 @@ def main [results: string, --user: string = "", --email: string = ""] {
     let infra = ($root | path join "infra")
     # The agents' scaffolds, asked of their images on the cluster once, before anything is timed: every render below reads them.
     let scaffolds = (mktemp --directory)
-    ^nu ($infra | path join "resolve.nu") collect-scaffolds $scaffolds --target local-minimal
+    ^nu ($infra | path join "resolve.nu") collect-scaffolds $scaffolds --target sandbox-local
     let scaffold_env = { POLAR_SCAFFOLD_DIR: $scaffolds }
     let n = 3
     mut rows = []
@@ -65,26 +65,26 @@ def main [results: string, --user: string = "", --email: string = ""] {
     let out = (mktemp --directory)
     print "A1 catalog, cache off"
     $rows = ($rows | append (row "catalog render, cache off" (runs $n {|i|
-        with-env ($scaffold_env | merge { POLAR_CACHE: "off" }) { ^nu ($infra | path join "render-catalog.nu") local-minimal $out } })))
+        with-env ($scaffold_env | merge { POLAR_CACHE: "off" }) { ^nu ($infra | path join "render-catalog.nu") sandbox-local $out } })))
 
     print "A2 catalog, cold cache (a fresh empty cache directory each run)"
     $rows = ($rows | append (row "catalog render, cold cache" (runs $n {|i|
         let cd = (mktemp --directory)
-        let t = (with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $cd }) { ^nu ($infra | path join "render-catalog.nu") local-minimal $out })
+        let t = (with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $cd }) { ^nu ($infra | path join "render-catalog.nu") sandbox-local $out })
         rm -rf $cd
         $t } )))
 
     print "A3 catalog, warm cache"
     let warm_dir = (mktemp --directory)
-    with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render-catalog.nu") local-minimal $out | ignore }
+    with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render-catalog.nu") sandbox-local $out | ignore }
     let entries = (ls ($warm_dir | path join "render") | length)
     let bytes = (ls ($warm_dir | path join "render") | get size | math sum)
     $rows = ($rows | append (row "catalog render, warm cache" (runs $n {|i|
-        with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render-catalog.nu") local-minimal $out } })))
+        with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render-catalog.nu") sandbox-local $out } })))
 
     print "A4 catalog, warm cache, one workload's input changed"
     mkdir ($infra | path join "targets/zz-measure")
-    let cfg = (open --raw ($infra | path join "targets/local-minimal/config.nuon"))
+    let cfg = (open --raw ($infra | path join "targets/sandbox-local/config.nuon"))
     $rows = ($rows | append (row "catalog render, warm cache, one workload changed" (runs $n {|i|
         # a different pull policy each time, so it is never in the cache already
         let policy = (if ($i mod 2) == 0 { "Never" } else { "Always" })
@@ -96,16 +96,16 @@ def main [results: string, --user: string = "", --email: string = ""] {
     # ── B. the whole render that up.nu runs ───────────────────────────────
     print "B1 whole render.nu, cache off"
     $rows = ($rows | append (row "whole render (render.nu), cache off" (runs 2 {|i|
-        with-env ($scaffold_env | merge { POLAR_CACHE: "off" }) { ^nu ($infra | path join "render.nu") local-minimal } })))
+        with-env ($scaffold_env | merge { POLAR_CACHE: "off" }) { ^nu ($infra | path join "render.nu") sandbox-local } })))
     print "B2 whole render.nu, warm cache"
-    with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render.nu") local-minimal | ignore }
+    with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render.nu") sandbox-local | ignore }
     $rows = ($rows | append (row "whole render (render.nu), warm cache" (runs $n {|i|
-        with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render.nu") local-minimal } })))
+        with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render.nu") sandbox-local } })))
 
     # ── C. a no-op resume of up.nu, end to end ─────────────────────────────
     if ($user | is-not-empty) and ($email | is-not-empty) {
         let up = {|env_extra|
-            with-env $env_extra { ^nu ($infra | path join "up.nu") local-minimal --user $user --email $email }
+            with-env $env_extra { ^nu ($infra | path join "up.nu") sandbox-local --user $user --email $email }
         }
         print "C1 up.nu resume, cache off"
         $rows = ($rows | append (row "up.nu resume that changes nothing, cache off" (runs 2 {|i| do $up { POLAR_CACHE: "off" } })))

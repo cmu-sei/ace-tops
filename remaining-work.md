@@ -679,10 +679,10 @@ Each step is taken in bites, each reported before the next.
     the signed image lock. `local` goes now as well, though it is the only target deploying GitLab, OpenAPI and build-processor: they
     return as each joins the catalog (save their rendered charts first, for the migration's comparison). Brent stays on the `v3.0.0`
     tag, whose README still names `local-minimal`; the migration to the new target ships with the next release.
-  - *To learn from them:* `local` is the only target enabling `oci-registry-resolver`, so `sandbox-local` takes it on. `local` has
-    the `secrets.sops.yaml.example` and `user.sops.yaml.example` that `sandbox-local` lacks. `local-minimal` differs from `sandbox-local` by
-    Flux, `pin_images`, the pools, the harness, and a wait for Neo4j in its data layer. Measure what Flux and the deployment git server
-    cost on one node: the README's 16 GiB minimum was for `local-minimal`.
+  - *Taken from them:* `oci-registry-resolver`, which only `local` enabled, and the example secrets files. To render what
+    `local` deployed (GitLab, OpenAPI, build-processor), for a migration's comparison: `nu infra/render.nu local --charts-into <dir>`
+    at `ad8712b5`. Still to measure: what Flux and the deployment git server cost on one node, since the README's 16 GiB minimum was
+    for `local-minimal`.
   - *What names them:* the render determinism gate's and the load harness's defaults, `Justfile`, `bin/polar-dev`, `flake.nix`, `infra/tests`
     (`resolve.nu` alone, 35 lines), the README's main path, and about twenty documents.
 - [~] **`up.nu` must notice a state it is about to crash on, and either stop and say the way out or resolve it itself** (2026-10-14,

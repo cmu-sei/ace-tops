@@ -24,13 +24,50 @@
 # The inputs that belong to one cluster: how they are added, when they are discarded, and how they meet the target's own env.
 
 use std/assert
-use ../cluster-inputs.nu [admins_of, empty, env_for, env_merged, path_of, reconcile, with_admin]
+use ../cluster-inputs.nu [admins_of, another_clusters, empty, env_for, env_merged, path_of, reconcile, topology_of, with_admin, with_topology]
 
 def main [] {
     let tests = [
         {
             name: "the file sits beside the target's config"
             body: { assert equal (path_of "/r/infra" "sandbox-local") "/r/infra/targets/sandbox-local/cluster-inputs.nuon" }
+        }
+        {
+            name: "a topology is chosen before the cluster has a CA, ties to the cluster once it has one, and goes with it"
+            body: {
+                let chosen = (with_topology (empty) "separated" null)
+                assert $chosen.changed
+                assert equal (topology_of $chosen.inputs) "separated"
+                assert equal $chosen.inputs.cluster null
+                assert (not (another_clusters $chosen.inputs null))
+                assert (not (another_clusters $chosen.inputs "ca-A"))
+                let tied = (reconcile $chosen.inputs "ca-A")
+                assert equal $tied.cluster "ca-A"
+                assert equal (topology_of $tied) "separated"
+                assert (another_clusters $tied "ca-B")
+                assert (another_clusters $tied null)
+                assert equal (topology_of (reconcile $tied "ca-B")) null
+                assert equal (topology_of (empty)) null
+            }
+        }
+        {
+            name: "choosing the same topology again changes nothing, and another replaces it"
+            body: {
+                let a = (with_topology (empty) "separated" "ca-A")
+                assert (not (with_topology $a.inputs "separated" "ca-A").changed)
+                let b = (with_topology $a.inputs "single" "ca-A")
+                assert $b.changed
+                assert equal (topology_of $b.inputs) "single"
+            }
+        }
+        {
+            name: "recording an administrator keeps the topology, and ties a file that was not yet tied"
+            body: {
+                let a = (with_admin (with_topology (empty) "separated" null).inputs "id-1" "ca-A")
+                assert equal (topology_of $a.inputs) "separated"
+                assert equal $a.inputs.cluster "ca-A"
+                assert equal (admins_of $a.inputs) ["id-1"]
+            }
         }
         {
             name: "an administrator is added to a cluster's inputs once, and a second one beside it"

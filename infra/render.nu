@@ -28,7 +28,7 @@
 #
 # Usage:
 #   nu infra/render.nu <target>
-#   nu infra/render.nu local-minimal
+#   nu infra/render.nu sandbox-local
 #
 # Output goes to the directory specified in target.nu's output_dir. This script
 # only renders; it never touches a cluster. To apply the result and bring a
@@ -43,7 +43,7 @@ use lock.nu [effective, lock_problems, pin_text]
 use dhall-cache.nu
 
 def main [
-    target: string        # Target name: local, local-minimal, sandbox-local
+    target: string        # Target name, e.g. sandbox-local
     --charts-into: string = ""  # render only the charts, into this directory, and stop: what their manifests name (the images to
                                 # build before the render) needs no agent's scaffold. The target's output is left alone.
 ] {

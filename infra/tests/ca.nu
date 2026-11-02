@@ -54,7 +54,7 @@ const ISSUERS = [{
 
 # A throwaway target running cert-issuer and Cassini alone, with the floor enforced or not.
 def with_ca_target [enforced: bool, body: closure] {
-    let others = (^nu $RESOLVER names --target local | from json | where {|n| not ($n in ["cassini" "cert-issuer"]) })
+    let others = (glob ($INFRA | path join "config/workloads/*.nuon") | each {|f| open $f } | flatten | get name | where {|n| not ($n in ["cassini" "cert-issuer"]) })
     let workloads = ($others | reduce --fold {} {|n, acc| $acc | insert $n { enabled: false } }
         | insert cert-issuer { env: [ { name: "CERT_ISSUER_ISSUERS", value: $ISSUERS } ] })
     let name = $"zz-test-(random chars --length 8)"
@@ -98,7 +98,7 @@ def cargo_target_dir [] {
 def job_pod [out: string] { open --raw ($out | path join "cert-issuer.yaml") | from yaml | get spec.template.spec }
 
 def main [] {
-    $env.POLAR_NODE_REGISTRY = (node_registry local-minimal)
+    $env.POLAR_NODE_REGISTRY = (node_registry sandbox-local)
     # The scaffolds the resolver reads, from the binaries themselves.
     let scaffolds = (mktemp --directory)
     for agent in [[name package bin]; [cert-issuer cert-issuer cert-issuer] [cassini cassini-broker cassini-server]] {
