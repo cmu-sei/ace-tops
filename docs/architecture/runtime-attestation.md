@@ -161,6 +161,8 @@ The plan for the move, with these settled one at a time: `deployments.md`.
 
 ## The plan (2026-10-28, for review)
 
+Cleared to build, 2026-11-02 (the maintainer): slices A and B next, slice C once the OpenAPI and GitLab agents are on the builder (`remaining-work.md`, "The order of work").
+
 Built in three slices, each tested and seen on a cluster before the next. This plans the first in full; the other two are
 outlined, to be planned when the first is built.
 
@@ -228,14 +230,18 @@ as the sections above describe.
    container, and report the images as not attested, without refusing; (b) refuse attestation on such a target
    (so nothing there is issued once the attestation agent runs); (c) give `local-minimal` a lock too. *Recommendation:*
    (a): a development target stays usable, and says what it does not check.
+   **Decided (the maintainer, 2026-11-02): none of these. `local` and `local-minimal` are retired, and every deployment goes through
+   Flux and the signed deployment repository, on one node or many, so every target has the signed lock.**
 3. *When the attestation agent cannot be asked* (not yet up, restarting, Cassini down). Question 2's decision for
    cert-issuer was "whenever it is reachable" (`core-restarts.md`, question 2, B): sign without it, and attest after the
    fact. *Recommendation:* the same for the credentials agent's paths, every issuance made without it recorded as such
    and attested once it is back (item 4). *Or:* once it has been heard, its absence holds requests, as a held request
    waits for the credentials agent.
+   **Decided (the maintainer, 2026-11-02): the same as cert-issuer's.**
 4. *Its pool* on a cluster that places workloads (`placement.md`). It holds a read view of every Polar pod. *Recommendation:*
    `core`, beside the identities it guards; `observers` is the low-trust side. (The sensor of slice C runs on every node,
    tolerating every pool's taint.)
+   **Decided (the maintainer, 2026-11-02): `core`.**
 
 ## Open, to be settled when it is built
 

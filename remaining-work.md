@@ -29,6 +29,25 @@ first. Since 3.0.0 a breaking change carries a migration. Items that may no long
 `(see "possibly obsolete")` and listed in the last section. Done items are in the docs and in git history.
 Last updated: 2026-11-02.
 
+## The order of work (the maintainer, 2026-11-02)
+
+Each step is taken in bites, each reported before the next.
+
+1. **Retire the `local` and `local-minimal` targets; topology becomes a setting on the target.** Below, under infra.
+2. **Runtime attestation, slices A and B.** Its diagrams first, as the review of its plan; `docs/architecture/runtime-attestation.md`, "The plan". Below.
+3. **The sequence diagrams.** Below, under docs.
+4. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
+5. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
+6. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 5.
+7. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
+
+## Runtime attestation
+
+- [ ] **Slices A and B** (the maintainer, 2026-11-02: "I want it done sooner than most of the work I asked you for"; the musl
+  move, Scudo, the Cassini benchmarks and the custodian were its foundation). The plan is in `docs/architecture/runtime-attestation.md`,
+  its open questions now answered there. Slice A needs step 1 above: every target then has the signed image lock it checks against.
+- [ ] **Slice C**, after the four agents migrate: the node sensor, the runtime challenges, the builder's seccomp and Landlock lock.
+
 ## The Cassini broker and client
 
 - [ ] FOUND 2026-11-01 (the sixth set, `broker-baseline.md`, "The sixth set: pressure"): a publisher's messages are
@@ -463,7 +482,7 @@ Last updated: 2026-11-02.
 
 ## The agent builder and its migration
 
-- [ ] MERGE UPSTREAM (github.com/cmu-sei/Polar) BEFORE MIGRATING THE BUILD PROCESSOR (the maintainer, 2026-10-31:
+- [ ] MERGE UPSTREAM (github.com/cmu-sei/Polar) BEFORE MIGRATING THE BUILD PROCESSOR (confirmed 2026-11-02: the OpenAPI and GitLab agents first, then the merge, then build-processor and the orchestrator; the maintainer, 2026-10-31:
   Vaughn may have been working there). Read 2026-10-31 (fetch only): the merge base is `9aea62f6` (2026-08-07); ours has
   1058 commits since, `origin/main` 14 (Vaughn, to 2026-10-17, 161 files, +22.7k/-5.9k): the build orchestrator (56
   files; Blitz's per-run identity request is about its builds), the build processor restructured around cyclops
@@ -501,6 +520,8 @@ Last updated: 2026-11-02.
     | 3 | gitlab-consumer | `gitlab/consume/src/supervisor.rs` | 360 | yes | graph controller and consumers spawned in `Registered`; a repeat stops and respawns them (2026-10-31, `stop_children`); `TcpClient::spawn` |
     | 4 | openapi-processor | `openapi/process/src/actors.rs` | 403 | yes (1 ref) | named spawn in `Registered` |
     | 5 | build-processor | `build-processor/src/supervisor.rs` | 414 | yes | consumes the resolver's output; this file says it was not read to the end for the `Registered` hazard; unread |
+
+    In scope with them (the maintainer, 2026-11-02): the builder owning the graph controller and the shutdown handshake, and the close-out below.
 
     Not part of this migration, so nobody wonders: `polar-init` (init container; has its own client by
     design), `cassini/test/*` and `cassini-c2` and the Cassini CLI client, `credentials-agent/admin` (CLI),
@@ -563,6 +584,11 @@ Last updated: 2026-11-02.
   `ConfigChanged` naming one (read `current()` again, start what depends on it again); a secret travels as a signed
   runtime section, as the git observer's and jira-observer's credentials do. docs/architecture/soft-state.md, "A held
   agent tries again on a signed update".
+  *Scope (the maintainer, 2026-11-02):* stays Static for now: paths, sockets and bind addresses (the deployment mounts or binds them); the
+  channel, `BROKER_ADDR`, `CASSINI_SERVER_NAME`, `POLAR_SCHEDULER_REMOTE_URL` (a wrong value cuts off the path its correction arrives on);
+  and the trust settings, `CERT_ISSUER_ISSUERS`, `CERT_ISSUER_INTERNAL_CALLERS`, `POLAR_GIT_SERVER_ADMINS`,
+  `CREDENTIALS_AGENT_BOOTSTRAP_IDENTITY`. To design before coding: one reaction in the builder rather than Jira's by hand in every agent, and a
+  shared test that fails a Dynamic setting nothing reacts to.
 - [ ] Builder: graph controller as infrastructure via `.with_graph_write()` (builder owns the spawn, `GraphSignal` wiring and flush), builder-owned shutdown handshake boilerplate so a migrated agent cannot forget its half; then migrate kube-consumer, jira-processor and credentials-agent to it
   Since 2026-10-12 the graph start, stop and drain are shared in polar-agent-builder (`graph.rs`).
 - [ ] **cert-issuer's `conf/` describes a file it no longer reads (found 2026-10-23).** `src/agents/cert-issuer/server/conf/dev.dhall` and `cert-issuer.dhall` render the JSON configuration file cert-issuer read before it moved onto the builder (and were already out of date: one `issuer`, where it reads a list). Its settings are declared variables now (`settings.rs`; `cert-issuer --help`). Remove them, or replace them with a development configuration document for `--config`, once the move onto the builder and into the catalog is complete and validated by testing (the maintainer, 2026-10-23).
@@ -646,6 +672,19 @@ Last updated: 2026-11-02.
 
 ## Infra and up.nu, images and release
 
+- [ ] **RETIRE `local` AND `local-minimal`; TOPOLOGY ON THE TARGET** (the maintainer, 2026-11-02: "Learn what we can from them to
+  improve `sandbox-local`. We'll recreate them later, if needed"; "it should be possible to deploy the same target on either a single
+  node or to lay out a multi-node topology"; this replaces the two exemplars of `docs/architecture/placement.md`).
+  - *Decided:* every deployment goes through Flux and the signed deployment repository, on one node or many, so every cluster has
+    the signed image lock. `local` goes now as well, though it is the only target deploying GitLab, OpenAPI and build-processor: they
+    return as each joins the catalog (save their rendered charts first, for the migration's comparison). Brent stays on the `v3.0.0`
+    tag, whose README still names `local-minimal`; the migration to the new target ships with the next release.
+  - *To learn from them:* `local` is the only target enabling `oci-registry-resolver`, so `sandbox-local` takes it on. `local` has
+    the `secrets.sops.yaml.example` and `user.sops.yaml.example` that `sandbox-local` lacks. `local-minimal` differs from `sandbox-local` by
+    Flux, `pin_images`, the pools, the harness, and a wait for Neo4j in its data layer. Measure what Flux and the deployment git server
+    cost on one node: the README's 16 GiB minimum was for `local-minimal`.
+  - *What names them:* the render determinism gate's and the load harness's defaults, `Justfile`, `bin/polar-dev`, `flake.nix`, `infra/tests`
+    (`resolve.nu` alone, 35 lines), the README's main path, and about twenty documents.
 - [~] **`up.nu` must notice a state it is about to crash on, and either stop and say the way out or resolve it itself** (2026-10-14,
   after a fresh-cluster bring-up on a second workstation took five resume loops, each a different stale state that a check said was
   fine). Tests first, in `infra/tests/`, each rule broken on purpose. Kept as the model: the stale `~/.config/polar-admin` check named
@@ -772,6 +811,23 @@ Last updated: 2026-11-02.
 
 ## Docs
 
+- [ ] **THE SEQUENCE DIAGRAMS** (the maintainer, 2026-11-02: "a serious documentation pass"; all four bites, broker and client first,
+  no diagram yet of many new features). An audit against the code, 2026-11-02, over the 41 then in `docs/architecture/sequences`: 26
+  stale, 9 wrong or placeholders, 6 with no mismatch on a shallow reading; none changed since 2026-10-28, and 14 linked from no document. Four
+  early sketches were deleted as nothing the project is heading for. Designed steps stay shaded (`rect rgb(235, 219, 178)`).
+  - *Bite 1, broker and client:* new, session supersede and takeover, back-pressure with admission and shedding, broker shutdown and
+    drain. Fix `broker/` and the five client reliability diagrams (they draw the offline file and deduplication unmarked; `facade.rs`
+    says neither exists); registration refusals.
+  - *Bite 2, certificates and identity:* new, `polar-init` issuance with custody, multi-instance and rotation of pods, revocation, the core
+    restart ticket. Fix account claim. `attestation_and_issuance` stays, marked as the original design; new shaded diagrams of the current
+    attestation design, the instance check and the process, and of key rotation.
+  - *Bite 3, configuration and health:* new, restart in place, held agent and retry with a Dynamic change, replay on registration, the
+    escrowed credential, pulled health, Jira's cursor. Fix health, shutdown and signed configuration.
+  - *Bite 4, the rest:* new, authority catch-up, credentials requests, the git flow (fix `proposal_flow`, which names a Jira consumer as the proposer;
+    only `discover_repo` proposes), image publish and release; shaded, the registry gate and the pod reaper. Link the unlinked.
+  - *After the merge:* anything of GitLab, OpenAPI, build-processor, the orchestrator; the graph write path.
+  - *To read in the code, not only redraw:* `signed_configuration_delivery` has the scheduler observer refusing an import, and a search of its
+    source found no such check, while it does evaluate the Dhall files.
 - [ ] **Stale text** (`docs/` and comments that no longer say what is true):
   - `docs/architecture/git/agents.md` is conceptually sound but stale (2026-10-10): its tree shows `GitObserverRoot` owning the client, it
     omits the `GIT_REPO_CONFIG_EVENTS` configuration path (the README describes `GIT_AGENT_CONFIG` JSON instead), topics, shutdown and

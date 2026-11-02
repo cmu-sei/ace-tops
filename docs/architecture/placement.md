@@ -25,6 +25,9 @@
 
 Status, 2026-10-28: the plan, cleared by the maintainer, built, and seen on the five-node `u7c` ("On the cluster").
 
+*Superseded (the maintainer, 2026-11-02):* `local` and `local-minimal` are to be retired, and topology becomes a setting on the
+target, so one target deploys on a single node or a laid-out multi-node topology (`remaining-work.md`). What follows is as built until then.
+
 *Where it is going (the maintainer, 2026-10-28):* Polar ships two kinds of exemplar target in `infra/targets`.
 `sandbox-local`, with Flux and the node pools, shows how a deployment on a cluster with placement marks should work.
 `local-minimal`, without Flux, is for development on a single-node cluster, where the pools mean little. So placement
