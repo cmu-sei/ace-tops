@@ -79,6 +79,10 @@ Flux's own logs on `u7s` for one full rollout of all six layers, 2026-11-02, sin
 - A measured target for milestone M1: shadow mode reports how long this plan would take beside what Flux took, on the same commit. A guess at what it should reach on this rollout is about 25 seconds: the same health waits, no idle ones.
 - Health waits themselves are not to be cut: what a pod needs to come up is what it needs.
 
+*The maintainer's direction, 2026-11-02:* "We're not trying to build something general purpose, bound to Kubernetes' limitations. If we can get the core up fast, we should be able to take notifications from Cassini on everything else." So readiness has two sources, and this is a Polar controller rather than a Kubernetes one:
+- **The core, before Cassini exists,** is watched through the Kubernetes API, since nothing else can say: up to and including Cassini and what vouches for certificates.
+- **Everything after it** says so itself over Cassini. An agent's start, its health and its registration are already published and asked for (`soft-state.md`, "As built: pulled health"), so the deployer is told rather than asking. What this must settle: whether a workload that never registers is told apart from one still starting, which is a deadline per workload rather than a poll; and what stands in for a service that is not a Polar agent (Neo4j, Keycloak), which a Kubernetes watch can keep doing.
+
 *Cheap on today's Flux, for review:* `--requeue-dependency=5s` in `flux.nu export` should take this rollout from 151 seconds to about 45, by the same arithmetic. Not tried.
 
 ## 3. What it is, and its name
