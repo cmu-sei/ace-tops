@@ -56,6 +56,31 @@ These do not need the deployer, are cheap, and are worth doing whatever is decid
 | B1 | Know that a Kubernetes 1.37 field in a manifest is dropped by Flux 1.36's types before the apply, and that no error says so. |
 | J2 | `cluster-bootstrap.md:98` says the render has no Secret documents. It has two, service-account-token placeholders. |
 
+### Speed: the maintainer's complaint, measured
+
+*The maintainer, 2026-11-02:* "I find it horribly slow... that's something I'd like to work on in a new impl." So speed is a requirement here, not a side benefit.
+
+Flux's own logs on `u7s` for one full rollout of all six layers, 2026-11-02, single node (`kustomize-controller`, `source-controller`):
+
+| Layer | Became eligible | Reconcile took |
+|---|---|---|
+| platform | 21:28:54 | 0.11 s |
+| cert-issuer | 21:29:23 | 5.07 s (a health check) |
+| data | 21:29:53 | 0.08 s |
+| cassini | 21:30:23 | 5.07 s (a health check) |
+| identity | 21:30:54 | 10.10 s (a health check) |
+| agents | 21:31:24 | 0.19 s |
+
+**About 20 of those 151 seconds are work; about 130 are waiting.** Server-side apply takes 60 to 200 ms per layer. A layer whose dependency is not yet ready is asked again only after `--requeue-dependency`, 30 seconds by default (`kc:main.go:116`), and each layer waits for the one before, so six layers wait five times. Before that, a new commit waits for the source's poll: `interval: 1m` (`infra/deploy-objects.nu`), seen at 5, 12 and 28 seconds on three commits. Nothing here says what else is slow when a cluster is under load, or on other rollouts: this is one run, read from logs.
+
+**So the deployer must not poll for anything it can be told.** Requirements:
+- The next layer starts as soon as the one before is healthy, from a watch of what it applied. No dependency timer.
+- A new commit is seen from the git server's `RepoChanged` over Cassini, with a slow poll only as the fallback for when Cassini is away, as it is at bootstrap.
+- A measured target for milestone M1: shadow mode reports how long this plan would take beside what Flux took, on the same commit. A guess at what it should reach on this rollout is about 25 seconds: the same health waits, no idle ones.
+- Health waits themselves are not to be cut: what a pod needs to come up is what it needs.
+
+*Cheap on today's Flux, for review:* `--requeue-dependency=5s` in `flux.nu export` should take this rollout from 151 seconds to about 45, by the same arithmetic. Not tried.
+
 ## 3. What it is, and its name
 
 **`deployer`**: one agent that reads the signed deployment repository and makes the cluster match it. *(for review)* The name says what it does. "Controller" is taken (`git-repo-controller`), "reconciler" describes a mechanism, and any name with "flux" or "gitops" in it would date. Its crates follow `attestation/`: `deployer/common` (the pure core and the protocol), `deployer/agent` (the workload) and `deployer/record` (the graph writer, section 14). This file keeps the name `gitops-controller.md` because `cluster-bootstrap.md:130` already points here.
