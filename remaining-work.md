@@ -816,7 +816,7 @@ Each step is taken in bites, each reported before the next.
   kube-proxy's nftables sync on the vigild node (found 2026-10-26, fixed for the node in nix-usernetes `c7616cb`: `nft --json` listed
   protocols by number where kube-proxy keys them by name).
 - [ ] `my.env`: `GRAPH_PASSWORD` / `NEO4J_AUTH` after the password change; dev shell `BIND_ADDR`/`BROKER_ADDR` on 8080 collides with the Keycloak port-forward; `CASSINI_SHUTDOWN_TOKEN` is a dev constant
-- [ ] Back up the bootstrap and user keys and `secret/cert-issuer-ca`; delete `~/.config/polar-admin.old`
+- [ ] **Archive and restore what a deployment cannot lose** (the maintainer, 2026-11-02). The list and the plan are `docs/operations/critical-state.md`: the credentials agent's store, the root CA and `polar-schedules` have no copy anywhere and no way to restore. For later (the maintainer, 2026-11-02); the plan's open questions are to be cleared first. Delete `~/.config/polar-admin.old` once they are covered.
 - [ ] Dependency updates (from the older backlog; the clippy half is the item above).
 - [ ] ace <-> Neo4j connectivity (parked; ace is running)
 
