@@ -27,7 +27,7 @@ The single source of truth for what is left. Update it as items finish; do not r
 Organized by theme; the themes, and the items within each, run in the order they matter, what blocks or risks users
 first. Since 3.0.0 a breaking change carries a migration. Items that may no longer be wanted are marked
 `(see "possibly obsolete")` and listed in the last section. Done items are in the docs and in git history.
-Last updated: 2026-11-02.
+Last updated: 2026-11-03.
 
 ## The order of work (the maintainer, 2026-11-02)
 
@@ -35,7 +35,7 @@ Each step is taken in bites, each reported before the next.
 
 1. **Runtime attestation, slice A: the agent answering from what it sees** (`docs/architecture/runtime-attestation.md`). In progress.
 2. ~~**Handing a cluster's deployment off to Polar's own git server.**~~ Done 2026-11-02 (`docs/architecture/cluster-bootstrap.md`), on u7s and u7c. The signed record of slice A travels this path.
-3. **Runtime attestation, the rest of slices A and B:** ~~the signed record~~ (done 2026-11-02), ~~the askers~~ (done 2026-11-03: refusing is on, and the agent proves itself first), attesting what was signed unattested (nothing reads `IssuedUnattested` or a record entry's `unattested` yet), then watching.
+3. **Runtime attestation, the rest of slices A and B:** ~~the signed record~~ (done 2026-11-02), ~~the askers~~ (done 2026-11-03: refusing is on, and the agent proves itself first), then watching. Attesting what was signed unattested is optional, not planned (`runtime-attestation.md`, "Optional features").
 4. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
    Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.

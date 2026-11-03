@@ -91,7 +91,7 @@ Who asks:
 **Bootstrap is attested after the fact.** The core's first certificates come from the floor before anything can attest
 them. Every entry in cert-issuer's record carries its pod UID, so once the attestation agent is up it attests the
 running core pods against the record, and reports any that fail. The same pattern as the record itself: the body guard
-learns as soon as it can.
+learns as soon as it can. Optional for now, not planned: "Optional features", below.
 
 ## Runtime attestation of the process
 
@@ -209,7 +209,7 @@ read the same way.
 3. *The askers:* the credentials agent in its three paths, before it vouches; cert-issuer in its gate, before a ticket or
    a window admits. A `NotGenuine` is a refusal, recorded and logged.
 4. *After the fact:* once up, the attestation agent attests every running pod against cert-issuer's record (each entry
-   carries its pod UID), and reports any that fail: the bootstrap's certificates, and anything signed while it was away.
+   carries its pod UID), and reports any that fail: the bootstrap's certificates, and anything signed while it was away. Optional for now, not planned: "Optional features", below.
 5. *Tests first,* as everywhere: the verdict a pure function of the pod, its owners, the catalog and the lock (a property
    over pods that differ from the genuine one in each way, and only those genuine pass); the askers refusing on
    `NotGenuine`; on the cluster, a pod of another image or owner running as a workload's service account, refused.
@@ -264,7 +264,7 @@ A custodian's identity is asked about as its service's (`custodian_of`), since t
 **One way of asking.** An `InstanceAsker` actor in each asker (`attestation/common/src/asker.rs`), with a reply topic of its own, says `Genuine`, `NotGenuine(why)` or `CouldNotAsk`:
 - A reply is taken only from the attestation agent's identity as the broker stamped it, with the question's correlation id.
 - `CouldNotAsk` is at once if the Cassini session is down, and otherwise after a wait of 2 s. So a first bring-up, when nothing can be asked, does not wait: cert-issuer signs the core as it does now. `CannotSay` is treated the same.
-- `CouldNotAsk` issues, as the maintainer decided (item 3 of "For the maintainer"), and records that it did: `IssuedUnattested` in the credentials agent's ledger, and `unattested` in cert-issuer's record entry. Both are additions, so an existing log still reads. Nothing reads them yet: that is item 4.
+- `CouldNotAsk` issues, as the maintainer decided (item 3 of "For the maintainer"), and records that it did: `IssuedUnattested` in the credentials agent's ledger, and `unattested` in cert-issuer's record entry. Both are additions, so an existing log still reads. Nothing reads them: they are an audit trail, and attesting afterwards is optional ("Optional features", below).
 - `NotGenuine` is a refusal with its own reason (`IssuanceRefusalReason::NotGenuine`, `AgentEscrowIssuanceRefusalReason::NotGenuine`, a refused held request, or cert-issuer's `CallerNotAuthorized`), logged and in the ledger (`InstanceRefused`) where the credentials agent is the one asking. A ticket that admitted it is given back, since nothing was signed against it. `polar-init` stops on a refusal, and the pod restarts in place and asks again.
 
 **Shadow first.** A false `NotGenuine` is the failure to fear: pods replace themselves hourly, so a wrong rule would take the cluster down within the hour. So it goes in two commits, with no switch left behind:
@@ -310,7 +310,16 @@ Read on disk: the ledger held `InstanceRefused` and `IssuedUnattested`, each of 
 
 **Pod-less requests.** What an account's path issues (`account.rs`) has no pod and does not come through here. A Kubernetes token with no pod claim is refused earlier, so what reaches the check always names one.
 
-**After it:** item 4, attesting what was signed while the agent was away, from cert-issuer's record and the ledger's new event.
+**After it:** attesting what was signed while the agent was away was to come next, and is now optional ("Optional features", below).
+
+### Optional features (the maintainer, 2026-11-03)
+
+Ideas worth keeping, none of them planned. Polar builds for the happy path and lets things fail, so these wait until something shows they are needed. Read on u7s, 2026-11-03.
+
+- **Attesting after the fact.** A pod signed while the attestation agent could not answer is judged only at its next renewal, within the hour, so nothing checks it until then. The shape that fits best: the attestation agent asks the credentials agent which pods hold in-date certificates, judges them, and publishes any that are not genuine, for the credentials agent to log and record. Each agent keeps what it owns, cert-issuer does not change, and it costs named topics for the question, the answer and the failures. A pod already gone is not a failure, since a certificate outlives its pod after every rollout. To check first: that the ledger can answer this cleanly, and that cert-issuer's record holds every certificate it signs.
+- **Other shapes of it, set aside.** The attestation agent reading cert-issuer's record itself, as item 4 of slice A and the instance-check diagram's DESIGNED box still say: cert-issuer answers only the credentials agent (`record.rs`), its answers go out on one topic, and that request is also the credentials agent's presence, which keeps the crash window shut. The credentials agent doing the asking, with a durable list of what is open: it widens the credentials agent's role, and a bug in it would go unnoticed. The credentials agent broadcasting the list: a question and answer is what agents already do for this.
+- **Revoking on a failure found afterwards.** Reporting leaves a bad pod its certificate until it expires, up to an hour. Revoking at once only here would treat a pod caught this way more harshly than one debugged after it was attested, so it belongs with whatever slice B does about a lapse.
+- **What the markers miss, if something comes to read them.** A record entry's `unattested` is not copied into the ledger (`ReportedCertificate` has no such field), and cert-issuer's own client certificate is never marked, since it is signed with nobody to ask. On u7s the ledger held 108 `IssuedUnattested` entries, 34 of them on pods still running; 25 of cert-issuer's own entries named a pod.
 
 ### Slice B, outlined: watching what was attested
 
