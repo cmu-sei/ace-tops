@@ -247,6 +247,9 @@ place stands, for all of it. In bites, each reported before the next:
 2. **Built, 2026-11-03.** HTTP, against real TLS (`protocol/http.rs`): one attempt, each redirect judged, a bounded reply (`MAX_BODY`, 256 MiB, to review: nothing
    bounded it before), and the egress section brought by the operation. Jira moves: two operations, the credential named `jira`, and `ProtocolHandle::ask`, since its observers go through
    their pages in order and waiting holds only their own mailbox. `request` is for a stream.
+   Checked live on u7s, 2026-11-03, reading Apache's Jira anonymously: the agent starts, each request is on the record, and issues keep arriving in the graph (2,343 to 2,351, the
+   cursor moving on, projects unchanged). Starting the client there found a lost `Registered`, fixed for every agent (`infrastructure::catch_up`). **Not checked live: the credential path.**
+   The sandbox reads anonymously, so the real `CredentialPort`, an applied section and a presented token have run only in tests.
 3. The registry scheme. The resolver moves, with its migration note.
 4. git. The git observer moves.
 5. Kubernetes and the stream. The Kubernetes observer and the attestation agent move.
