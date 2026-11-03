@@ -83,7 +83,7 @@ Flux's own logs on `u7s` for one full rollout of all six layers, 2026-11-02, sin
 - **The core, before Cassini exists,** is watched through the Kubernetes API, since nothing else can say: up to and including Cassini and what vouches for certificates.
 - **Everything after it** says so itself over Cassini. An agent's start, its health and its registration are already published and asked for (`soft-state.md`, "As built: pulled health"), so the deployer is told rather than asking. What this must settle: whether a workload that never registers is told apart from one still starting, which is a deadline per workload rather than a poll; and what stands in for a service that is not a Polar agent (Neo4j, Keycloak), which a Kubernetes watch can keep doing.
 
-*Cheap on today's Flux, for review:* `--requeue-dependency=5s` in `flux.nu export` should take this rollout from 151 seconds to about 45, by the same arithmetic. Not tried.
+*Cheap on today's Flux, measured on `u7c`, 2026-11-02, a commit that changes no pod, one run each:* at the default, 183 s from the commit to all six layers (33 s for the source's poll, 150 s of dependency requeue). With `--requeue-dependency=5s`, 77 s (51 s for the poll, 25 s of requeue). What is left is the 1 minute poll, which `up.nu` could end by asking the source to reconcile when it has just published.
 
 ### Ordering: a dependency graph, not layers
 
@@ -100,6 +100,23 @@ Flux's own logs on `u7s` for one full rollout of all six layers, 2026-11-02, sin
 - *Less than stated:* a required Secret or ConfigMap is absent, so the workload would only fail later and obscurely. The controller holds that workload and says why, naming what is missing.
 - *More than stated (proposed, for review):* a binding that gives a service account more than its catalog entry grants, or a container nothing declares. What the controller owns it puts back. What it does not own it reports and does not delete, as the attestation agent sees and reports and the Reaper alone deletes.
 - *One record:* the signed facts of `runtime-attestation.md`, "What the images are checked against", and this graph are the same deployment facts computed from the same render, so they should be one document, and the attestation agent should read what the controller enforces. Kubernetes stays the trust base: this checks the deployment against its stated intent, and is not a defence against what is already inside the API.
+
+### Fidelity: what matters for a Polar deployment
+
+*The maintainer, 2026-11-02:* "The stuff that matters for a Polar deployment is different from a generic k8s deployment, by design. We should take advantage of that where we can and maybe even use that fact to enforce deployment invariants at a higher fidelity than Flux does."
+
+Flux's question is whether the objects were applied and report Ready. Polar can ask whether the deployment is what was meant, because it knows what its workloads are. *For review; examples, not yet a list:*
+
+| Invariant | Flux sees | Polar can know |
+|---|---|---|
+| An agent is doing its job | the pod is Ready | its registration and pulled health, including an agent that is up but held on `Configuration` or `Credentials` (`soft-state.md`) |
+| One instance of an identity at a time | a Deployment with `replicas: 1` | which identities hold sessions, from the broker, and from which pods |
+| A pod has what custody requires | nothing | the custody sidecar is there, and no key variable is set |
+| Every ending restarts the pod in place | nothing | the restart rule is `RestartAllContainers` (`rules.nu`, `in_place_problems`) |
+| What runs is what was signed | nothing | the digests, the owner and the service account, against the signed facts |
+| A workload's permissions are its catalog's | nothing | certificate topics against what the catalog computed, and role bindings against what it grants |
+
+`infra/rules.nu` already holds many such rules, judged once at render on the operator's machine. Run by the controller, the same rules judge the cluster, continually, and a rollout is finished when these hold rather than when Kubernetes says Ready.
 
 ## 3. What it is, and its name
 
