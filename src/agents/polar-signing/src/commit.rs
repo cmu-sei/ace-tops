@@ -30,6 +30,7 @@
 //! digest is its own, the signature over the attributes verifies with the signer's key, and the signer chains to a pinned CA.
 
 use crate::cert;
+use crate::document::Algorithm;
 use crate::verify::{MAX_CHAIN, SignerInfo, Trust, VerifyError, issued_by, signer_info, valid_at};
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -47,13 +48,9 @@ const OID_MESSAGE_DIGEST: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x
 const SHA256: &[u8] = &[
     0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00,
 ];
-/// The AlgorithmIdentifier of `rsaEncryption`, with its NULL parameters, which is PKCS#1 v1.5 with the digest above.
-const RSA: &[u8] = &[
-    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
-];
-/// The AlgorithmIdentifier of `sha256WithRSAEncryption`, with its NULL parameters.
-const RSA_SHA256: &[u8] = &[
-    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
+/// The whole AlgorithmIdentifier of `ecdsa-with-SHA256`, as `gpgsm` writes it: with NULL parameters, which RFC 5758 would omit.
+const ECDSA_SHA256: &[u8] = &[
+    0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x05, 0x00,
 ];
 
 const TAG_INTEGER: u8 = 0x02;
@@ -133,22 +130,19 @@ pub fn verify_commit(
     {
         return Err(VerifyError::KeyUsage.into());
     }
-    if leaf.public_key().algorithm.algorithm.to_id_string() != "1.2.840.113549.1.1.1" {
+    let Some((Algorithm::EcdsaP256Sha256, key)) = cert::key_of(leaf) else {
         return Err(CommitError::UnsupportedAlgorithm(
             leaf.public_key().algorithm.algorithm.to_id_string(),
         ));
-    }
+    };
 
     // What is signed is the attributes as a SET, though they are written with a context tag.
     let mut attributes = vec![TAG_SET];
     attributes.extend(der_length(signed.attributes.len()));
     attributes.extend_from_slice(signed.attributes);
-    ring::signature::UnparsedPublicKey::new(
-        &ring::signature::RSA_PKCS1_2048_8192_SHA256,
-        &leaf.public_key().subject_public_key.data,
-    )
-    .verify(&attributes, signed.signature)
-    .map_err(|_| VerifyError::BadSignature)?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, &key)
+        .verify(&attributes, signed.signature)
+        .map_err(|_| VerifyError::BadSignature)?;
 
     Ok(signer_info(leaf, ""))
 }
@@ -355,9 +349,9 @@ fn read_signed_data(der: &[u8]) -> Result<SignedData<'_>, CommitError> {
     }
     let attributes = expect(&mut signer, TAG_CONTEXT_0, "what is signed")?;
     let algorithm = expect(&mut signer, TAG_SEQUENCE, "how it is signed")?.whole;
-    if algorithm != RSA && algorithm != RSA_SHA256 {
+    if algorithm != ECDSA_SHA256 {
         return Err(CommitError::UnsupportedAlgorithm(
-            "a signature other than RSA with SHA-256".into(),
+            "a signature other than ECDSA on P-256 with SHA-256".into(),
         ));
     }
     let signature = expect(&mut signer, TAG_OCTET_STRING, "the signature")?.value;
@@ -521,7 +515,7 @@ mod tests {
         // The SET of signers is the last thing in the signedData, definite in length inside three indefinite wrappers.
         let set = der
             .windows(4)
-            .rposition(|w| w[0] == TAG_SET && w[1] == 0x82)
+            .rposition(|w| w[0] == TAG_SET && matches!(w[1], 0x81 | 0x82))
             .unwrap();
         let (found, after) = read_tlv(&der[set..], 0).unwrap();
         let doubled = tlv(TAG_SET, &[found.value, found.value].concat());

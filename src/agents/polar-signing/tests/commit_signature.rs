@@ -32,7 +32,7 @@ use proptest::prelude::*;
 const COMMIT: &[u8] = include_bytes!("fixtures/deploy-commit.raw");
 const CA: &str = include_str!("fixtures/deploy-ca.pem");
 /// When the fixture was signed: the certificates are valid then, whatever today is.
-const SIGNED_AT: i64 = 1793659810;
+const SIGNED_AT: i64 = 1793674307;
 
 fn trust() -> Trust {
     Trust::from_pem(&[CA.to_string()]).unwrap()
@@ -47,6 +47,20 @@ fn spans() -> (std::ops::Range<usize>, usize) {
     (start..end, message)
 }
 
+/// A commit a deployment PKI signed with RSA, as 3.0.0's did, under its own CA and at a time its certificates are valid: nothing about it is wrong
+/// but the kind of key, which is what keeps it out.
+#[test]
+fn a_commit_signed_with_rsa_is_refused() {
+    const RSA_COMMIT: &[u8] = include_bytes!("fixtures/deploy-commit-rsa.raw");
+    const RSA_CA: &str = include_str!("fixtures/deploy-ca-rsa.pem");
+    const RSA_SIGNED_AT: i64 = 1793659810;
+    let trust = Trust::from_pem(&[RSA_CA.to_string()]).unwrap();
+    assert!(matches!(
+        verify_commit(RSA_COMMIT, &trust, "pipeline", RSA_SIGNED_AT),
+        Err(CommitError::UnsupportedAlgorithm(_))
+    ));
+}
+
 #[test]
 fn a_commit_the_pipeline_signed_is_believed() {
     let signer = verify_commit(COMMIT, &trust(), "pipeline", SIGNED_AT).unwrap();
@@ -59,7 +73,7 @@ fn the_test_signer_is_believed_as_gpgsm_is() {
     let commit = b"tree 2f8d81dbd934f72cdade7bb2f0c373eb1e037c1a\nauthor a <a@b> 1793659810 -0500\ncommitter a <a@b> 1793659810 -0500\n\nchore: a commit\n";
     let signer = testing::commit_signer("pipeline");
     let signed = signer.sign(commit);
-    let trust = Trust::from_pem(&[signer.ca_pem.clone()]).unwrap();
+    let trust = Trust::from_pem(std::slice::from_ref(&signer.ca_pem)).unwrap();
     verify_commit(&signed, &trust, "pipeline", SIGNED_AT).unwrap();
     let mut changed = signed.clone();
     let at = changed.len() - 2;

@@ -6288,7 +6288,6 @@ dependencies = [
  "rand 0.10.3",
  "rcgen",
  "ring",
- "rsa 0.10.0-rc.18",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",

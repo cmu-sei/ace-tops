@@ -25,7 +25,7 @@
 
 use std/assert
 use ../deploy-objects.nu [is_handed_off, polar_git_repository]
-use ../deploy-repo.nu [restore_needed, deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
+use ../deploy-repo.nu [ensure_pki, restore_needed, deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
 
 def main [] {
     let tests = [
@@ -181,6 +181,26 @@ def main [] {
                 let repo = (repos_json "t" | from json | get repos | first)
                 assert ("configuration-agent" in $repo.readers)
                 assert (not ("configuration-agent" in $repo.writers))
+            }
+        }
+        {
+            name: "the deployment PKI's keys are all P-256, and a PKI of another kind is refused, not carried on"
+            body: {
+                let dir = (mktemp -d)
+                let curve = {|pem| ^openssl x509 -in $pem -noout -pubkey | ^openssl pkey -pubin -noout -text | lines | where {|l| $l | str contains "ASN1 OID" } | first | str trim }
+                let pki = ($dir | path join "new")
+                ensure_pki $pki "t" "server.example" | ignore
+                for name in ["ca" "server" "pipeline" "flux" "configuration-agent"] {
+                    assert equal (do $curve ($pki | path join $"($name).pem")) "ASN1 OID: prime256v1" $name
+                }
+                ensure_pki $pki "t" "server.example" | ignore
+                let old = ($dir | path join "old")
+                mkdir $old
+                ^openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=old" -keyout ($old | path join "ca.key") -out ($old | path join "ca.pem") out+err>| ignore
+                let refused = (try { ensure_pki $old "t" "server.example"; "" } catch {|e| $e.msg })
+                rm -rf $dir
+                assert ($refused | str contains "P-256") $refused
+                assert ($refused | str contains "clean install") $refused
             }
         }
         {

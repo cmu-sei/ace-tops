@@ -149,7 +149,8 @@ From then on a run has no deployment git server to start. It starts the forwards
 3. ~~How Flux is identified to Polar's git server.~~ *Decided (the maintainer, 2026-11-02):* for now, the server also trusts the deployment CA, and what that CA signs is named `deployment:<name>`, so it speaks for no one in Polar (`tls.rs`, `ClientIdentities`). `deployment:flux` may read the repository `deployment` alone. Flux
    reads its credential only from a Secret, and nothing renews one. Moving Flux onto `polar-init` was considered, and then replacing Flux with a controller of Polar's own: `gitops-controller.md` (a proposal).
 4. ~~Who publishes later.~~ `pipeline` still signs the commit, but it pushes with a Polar identity now, since the server's mTLS is Polar's: the admin's certificate.
-5. *What a cluster on 3.0.0 does.* Its repository moves the same way, by a step of the next release's migration. Not written yet: the next release's.
+5. ~~What a cluster on 3.0.0 does.~~ *Decided (the maintainer, 2026-11-02):* a test deployment does a clean install, which is what Brent is told. A customer's gets a migration plan, not yet written (`remaining-work.md`).
+6. ~~The deployment PKI's keys.~~ *Decided (the maintainer, 2026-11-02):* P-256, as everything else Polar signs with, and all the git server believes. They were RSA with no recorded reason, which kept them out of `polar-signing`. A commit signed with RSA is refused, so history under an RSA PKI does not carry over: `ensure_pki` refuses such a PKI and says so. `gpgsm` writes `ecdsa-with-SHA256` with NULL parameters, which RFC 5758 would omit, and the verifier takes exactly what it writes, tested on a real commit.
 
 ## What looks odd, and why
 

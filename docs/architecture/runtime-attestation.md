@@ -229,7 +229,7 @@ checks, with different jobs.
   behind Flux gets a certificate first and is caught at the next comparison: "attested after the fact", as cert-issuer's entries are. Before the handoff there is no record, so
   every identity is answered `CannotSay`, and the first document attests what is running.
 
-*The document.* A `polar-signing` document in a signing domain of its own, signed by the `pipeline` certificate, chaining to the deployment CA and not Polar's. The configuration agent
+*The document.* A `polar-signing` document in a signing domain of its own, signed by the `pipeline` certificate (P-256 since 2026-11-02, so it can be), chaining to the deployment CA and not Polar's. The configuration agent
 is not trusted: the attestation agent verifies the document itself, and trusts the deployment CA for this section alone, so the deployment PKI gains no authority over anything else. The CA's
 certificate reaches the agent through the signed render. Its version is the commit's height in the repository's history.
 

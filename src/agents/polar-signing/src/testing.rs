@@ -219,32 +219,27 @@ pub struct CommitSigner {
     /// The CA it chains to, to pin.
     pub ca_pem: String,
     certificate: Vec<u8>,
-    key: ring::signature::RsaKeyPair,
+    key: ring::signature::EcdsaKeyPair,
 }
 
-/// A signer whose certificate has the common name `name`, under a CA of its own. Generating an RSA key is slow: keep it for the whole test run.
+/// A signer whose certificate has the common name `name`, under a CA of its own, on P-256 as the deployment PKI's are.
 pub fn commit_signer(name: &str) -> CommitSigner {
-    use rsa::pkcs8::{EncodePrivateKey as _, EncodePublicKey as _};
     let ca = root(&format!("{name}-ca"));
-    let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
-    let public = rcgen::SubjectPublicKeyInfo::from_der(
-        key.to_public_key().to_public_key_der().unwrap().as_bytes(),
-    )
-    .unwrap();
+    let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
     params.distinguished_name.push(DnType::CommonName, name);
     params.not_before = date_time_ymd(2026, 1, 1);
     params.not_after = date_time_ymd(2100, 1, 1);
-    let certificate = params
-        .signed_by(&public, &ca.issuer)
-        .unwrap()
-        .der()
-        .to_vec();
+    let certificate = params.signed_by(&key, &ca.issuer).unwrap().der().to_vec();
     CommitSigner {
         ca_pem: ca.pem,
         certificate,
-        key: ring::signature::RsaKeyPair::from_pkcs8(key.to_pkcs8_der().unwrap().as_bytes())
-            .unwrap(),
+        key: ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            &key.serialize_der(),
+            &ring::rand::SystemRandom::new(),
+        )
+        .unwrap(),
     }
 }
 
@@ -278,9 +273,8 @@ impl CommitSigner {
             0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
             0x00,
         ];
-        const RSA_ALGORITHM: &[u8] = &[
-            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
-            0x00,
+        const ECDSA_ALGORITHM: &[u8] = &[
+            0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x05, 0x00,
         ];
         let attribute =
             |oid: &[u8], value: Vec<u8>| tlv(0x30, &[tlv(0x06, oid), tlv(0x31, &value)].concat());
@@ -289,14 +283,9 @@ impl CommitSigner {
             attribute(DIGEST, tlv(0x04, &Sha256::digest(commit)[..])),
         ]
         .concat();
-        let mut signature = vec![0; self.key.public().modulus_len()];
-        self.key
-            .sign(
-                &ring::signature::RSA_PKCS1_SHA256,
-                &ring::rand::SystemRandom::new(),
-                &tlv(0x31, &attributes),
-                &mut signature,
-            )
+        let signature = self
+            .key
+            .sign(&ring::rand::SystemRandom::new(), &tlv(0x31, &attributes))
             .unwrap();
         let parsed = crate::cert::parse(&self.certificate).unwrap();
         let signer = tlv(
@@ -313,8 +302,8 @@ impl CommitSigner {
                 ),
                 SHA256_ALGORITHM.to_vec(),
                 tlv(0xa0, &attributes),
-                RSA_ALGORITHM.to_vec(),
-                tlv(0x04, &signature),
+                ECDSA_ALGORITHM.to_vec(),
+                tlv(0x04, signature.as_ref()),
             ]
             .concat(),
         );

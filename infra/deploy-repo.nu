@@ -189,6 +189,16 @@ def run_ok [what: string, cmd: closure] {
     $r.stdout
 }
 
+# Every key of the deployment PKI: what the git server's verifier takes (polar_signing::commit), and what Polar signs with everywhere else.
+const KEY_ARGS = ["-newkey" "ec" "-pkeyopt" "ec_paramgen_curve:P-256"]
+
+# Why a PKI cannot be carried on, or null. An older one is RSA: its commits are not believed, so it is replaced with its cluster, not beside it.
+def pki_problem [ca_pem: string] {
+    let text = (run_ok "reading the deployment CA" { ^openssl x509 -in $ca_pem -noout -pubkey } | ^openssl pkey -pubin -noout -text)
+    if ($text | str contains "prime256v1") { return null }
+    $"the deployment PKI at ($ca_pem | path dirname) is not P-256, which is all the git server now believes. This takes a clean install: a new cluster, with that directory moved aside"
+}
+
 # Makes the CA and the certificates that are not there yet, and makes again one whose names are not the ones it should carry (the
 # server's, when the cluster's domain changes). The CA key stays in `pki`; only `serve/` goes to the cluster.
 export def ensure_pki [pki: string, target: string, server: string] {
@@ -199,8 +209,11 @@ export def ensure_pki [pki: string, target: string, server: string] {
     let ca_key = ($pki | path join "ca.key")
     let ca_pem = ($pki | path join "ca.pem")
     mut made = []
-    if not ($ca_pem | path exists) {
-        run_ok "making the CA" { ^openssl req -x509 -newkey rsa:3072 -nodes -days 3650 -subj $"/CN=polar-deploy-($target)-ca" -keyout $ca_key -out $ca_pem }
+    if ($ca_pem | path exists) {
+        let problem = (pki_problem $ca_pem)
+        if $problem != null { error make --unspanned { msg: $problem } }
+    } else {
+        run_ok "making the CA" { ^openssl req -x509 ...$KEY_ARGS -nodes -days 3650 -subj $"/CN=polar-deploy-($target)-ca" -keyout $ca_key -out $ca_pem }
         chmod 600 $ca_key
         $made = ($made | append "ca")
     }
@@ -215,7 +228,7 @@ export def ensure_pki [pki: string, target: string, server: string] {
         let csr = ($pki | path join $"($c.name).csr")
         let ext = ($pki | path join $"($c.name).ext")
         ext_text $c | save --force $ext
-        run_ok $"making ($c.name)'s key" { ^openssl req -newkey rsa:3072 -nodes -subj $"/CN=($c.name)" -keyout $key -out $csr }
+        run_ok $"making ($c.name)'s key" { ^openssl req ...$KEY_ARGS -nodes -subj $"/CN=($c.name)" -keyout $key -out $csr }
         run_ok $"signing ($c.name)'s certificate" { ^openssl x509 -req -in $csr -CA $ca_pem -CAkey $ca_key -CAcreateserial -days 365 -extfile $ext -out $pem }
         rm -f $csr $ext
         chmod 600 $key
