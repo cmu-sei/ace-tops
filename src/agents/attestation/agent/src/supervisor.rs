@@ -95,19 +95,25 @@ fn reconsider(state: &mut AttestationState) {
         &state.held.pods(),
     );
     match (&state.proved, &now) {
-        (Ok(_), Ok(_)) => {}
+        (Ok(before), Ok(proved)) if before.with_record == proved.with_record => {}
         (Err(before), Err(doubt)) if before == doubt => {}
-        // Waiting for what it needs is not doubting itself: a watch relists, and there is no record until a deployment has handed off.
-        (_, Err(doubt @ (Doubt::NotYet | Doubt::NotListed | Doubt::NoRecord))) => {
+        // Waiting for what it needs is not doubting itself: a watch relists.
+        (_, Err(doubt @ (Doubt::NotYet | Doubt::NotListed))) => {
             info!("it cannot say yet: {doubt:?}");
         }
         (_, Err(doubt)) => error!(
             "it doubts itself, and answers that it cannot say until this has gone: {doubt:?}"
         ),
-        (_, Ok(proved)) => info!(
+        (_, Ok(proved)) if proved.with_record => info!(
             judged = proved.judged,
             condemned = proved.condemned,
             "it has proved itself: its verdicts stand"
+        ),
+        // A record comes through the configuration agent and the git server, so a rollout can leave it with none for over a minute.
+        (_, Ok(proved)) => info!(
+            judged = proved.judged,
+            condemned = proved.condemned,
+            "it has proved itself as far as it can with no record: it holds pods to their owners, and cannot say of one that holds up"
         ),
     }
     state.proved = now;
@@ -436,6 +442,7 @@ mod tests {
     const PROVED: Result<Proved, Doubt> = Ok(Proved {
         judged: 1,
         condemned: 0,
+        with_record: true,
     });
 
     fn question() -> InstanceQuestion {
@@ -480,7 +487,6 @@ mod tests {
     fn until_it_has_proved_itself_it_cannot_say_whatever_it_would_have_said() {
         for doubt in [
             Doubt::NotYet,
-            Doubt::NoRecord,
             Doubt::CondemnsMost {
                 condemned: 3,
                 judged: 4,

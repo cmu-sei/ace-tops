@@ -525,13 +525,70 @@ fn tampered(pod: &mut HeldPodFacts) {
 }
 
 #[test]
-fn it_believes_nothing_until_it_holds_what_it_needs() {
+fn it_believes_nothing_until_it_has_listed_what_it_watches() {
     let (record, pods) = deployment(2);
     assert_eq!(
         prove(judge, false, Some(&record), &pods),
         Err(Doubt::NotListed)
     );
-    assert_eq!(prove(judge, true, None, &pods), Err(Doubt::NoRecord));
+    assert_eq!(prove(judge, false, None, &pods), Err(Doubt::NotListed));
+}
+
+// In a rollout there can be no record for over a minute, just as most pods are asking. Holding a pod to its owner needs none.
+#[test]
+fn with_no_record_it_proves_what_it_can_against_each_pods_owner() {
+    let (_, pods) = deployment(5);
+    assert_eq!(
+        prove(judge, true, None, &pods),
+        Ok(Proved {
+            judged: 6,
+            condemned: 0,
+            with_record: false
+        })
+    );
+}
+
+#[test]
+fn with_no_record_it_still_has_to_see_itself_and_pass_its_own_judgement() {
+    let (_, mut pods) = deployment(5);
+    let own = pods.remove(0);
+    assert_eq!(prove(judge, true, None, &pods), Err(Doubt::CannotSeeItself));
+    let mut debugged = own;
+    debugged.facts.ephemeral.push("debug".to_string());
+    pods.push(debugged);
+    assert_eq!(
+        prove(judge, true, None, &pods),
+        Err(Doubt::NotGenuineItself(NotGenuine::EphemeralContainer {
+            container: "debug".to_string()
+        }))
+    );
+}
+
+#[test]
+fn with_no_record_a_rule_blind_to_what_an_owner_tells_cannot_say_no() {
+    let (_, pods) = deployment(3);
+    assert!(matches!(
+        prove(|_, _| Verdict::CannotSay, true, None, &pods),
+        Err(Doubt::CannotSayNo { .. })
+    ));
+}
+
+#[test]
+fn with_no_record_a_rule_that_condemns_everything_doubts_itself() {
+    let (_, pods) = deployment(5);
+    let wrong = |_: Option<&WorkloadFacts>, pod: Option<&PodFacts>| match pod
+        .and_then(|p| p.owner.as_ref())
+    {
+        Some(o) if o.name == AGENT_NAME => Verdict::CannotSay,
+        _ => Verdict::NotGenuine(NotGenuine::NoOwner),
+    };
+    assert_eq!(
+        prove(wrong, true, None, &pods),
+        Err(Doubt::CondemnsMost {
+            condemned: 5,
+            judged: 6
+        })
+    );
 }
 
 #[test]
@@ -664,7 +721,7 @@ proptest! {
         let (record, pods) = deployment(others);
         prop_assert_eq!(
             prove(judge, true, Some(&record), &pods),
-            Ok(Proved { judged: others + 1, condemned: 0 })
+            Ok(Proved { judged: others + 1, condemned: 0, with_record: true })
         );
     }
 
@@ -681,7 +738,7 @@ proptest! {
         if tampered_n * 2 > judged {
             prop_assert_eq!(proved, Err(Doubt::CondemnsMost { condemned: tampered_n, judged }));
         } else {
-            prop_assert_eq!(proved, Ok(Proved { judged, condemned: tampered_n }));
+            prop_assert_eq!(proved, Ok(Proved { judged, condemned: tampered_n, with_record: true }));
         }
     }
 
@@ -697,7 +754,24 @@ proptest! {
         }
         prop_assert_eq!(
             prove(judge, true, Some(&record), &pods),
-            Ok(Proved { judged: others + 1, condemned: 0 })
+            Ok(Proved { judged: others + 1, condemned: 0, with_record: true })
         );
+    }
+
+    // With no record, what fails against its owner is still condemned and the proof still stands, up to the same majority.
+    #[test]
+    fn with_no_record_a_tampered_pod_is_condemned_and_the_proof_stands(others in 1usize..12, tampered_n in 0usize..12) {
+        let tampered_n = tampered_n.min(others);
+        let (_, mut pods) = deployment(others);
+        for pod in pods.iter_mut().skip(1).take(tampered_n) {
+            tampered(pod);
+        }
+        let judged = others + 1;
+        let proved = prove(judge, true, None, &pods);
+        if tampered_n * 2 > judged {
+            prop_assert_eq!(proved, Err(Doubt::CondemnsMost { condemned: tampered_n, judged }));
+        } else {
+            prop_assert_eq!(proved, Ok(Proved { judged, condemned: tampered_n, with_record: false }));
+        }
     }
 }

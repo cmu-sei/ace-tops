@@ -31,7 +31,9 @@ export def attestation_report [lines: list<string>]: nothing -> record {
         return { verdict: "unknown", line: "the attestation agent has said nothing of itself yet: kubectl logs -n polar deploy/attestation-agent -c attestation-agent" }
     }
     let last = ($said | last)
-    if ($last | str contains "it has proved itself") {
+    if ($last | str contains "as far as it can with no record") {
+        { verdict: "waiting", line: "the attestation agent holds pods to their owners, and has no signed record yet to hold them to" }
+    } else if ($last | str contains "it has proved itself") {
         { verdict: "proved", line: "the attestation agent has proved itself: its verdicts stand" }
     } else {
         let why = ($last | str replace --regex '^.*(gone|yet): ' '')

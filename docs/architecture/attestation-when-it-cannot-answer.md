@@ -76,14 +76,16 @@ Raised by the maintainer, 2026-11-03: some validation run whenever the attestati
 
 **What it checks, before the agent's `NotGenuine` is believed:**
 
-1. *It holds what it needs.* Every watch has listed and a signed record has verified.
-2. *It is where it expects to be.* The record names its workload once, every pod of that workload is genuine by its own judgement, and at least one runs the images the record names for it. One is enough, since during its own rollout the old revision's pod is still its workload's. Nothing else proves a judgement works on this cluster's real data as directly.
-3. *It does not condemn what is running.* It judges every pod that runs as a workload the record names. Most of the deployment found not genuine at once says more about the agent than about the deployment.
-4. *It can still say no.* Passing the checks above proves nothing about an agent that says `Genuine` to everything. So each pod it found genuine, altered in each way the verdict knows (another image, owner, service account, no owner, an added ephemeral container, an added container), must come back `NotGenuine`, as must a pod that does not exist. It needs no bad pod on the cluster, and it runs on this cluster's real facts and not a fixture's.
+1. *It has listed what it watches.*
+2. *It is where it expects to be.* Every pod of its own workload is genuine by its own judgement. With a record, the record names its workload once, and at least one of those pods runs the images the record names for it. One is enough, since during its own rollout the old revision's pod is still its workload's. Nothing else proves a judgement works on this cluster's real data as directly.
+3. *It does not condemn what is running.* It judges every pod that runs as a workload the record names, or with no record, every pod it holds. Most of the deployment found not genuine at once says more about the agent than about the deployment.
+4. *It can still say no.* Passing the checks above proves nothing about an agent that says `Genuine` to everything. So each pod that holds up, altered in each way the verdict knows (another image, no owner, an added ephemeral container, an added container, and with a record another owner or service account), must come back `NotGenuine`, as must a pod that does not exist. It needs no bad pod on the cluster, and it runs on this cluster's real facts and not a fixture's.
 
 **What failing does.** The agent answers `CannotSay` to everything, and logs an ERROR saying which check failed, so the askers issue and record it as unattested. It fails open, as everything else here does. It does not end the agent: an agent that cannot pass would restart forever, and a loop says less than the ERROR.
 
-**Waiting is not doubting.** With no list yet, or no record, it logs that it cannot say yet, at INFO. A restarted agent holds no record until the next delivery, so for up to 30 s it answers `CannotSay`, including about what it would otherwise call not genuine. A deployment that has not handed off has no record at all, so nothing is refused until it has, and what was issued is attested afterwards.
+**Waiting is not doubting.** Until a watch has listed it logs that it cannot say yet, at INFO.
+
+**With no record, it proves what it can.** A record reaches the agent through the configuration agent and Polar's git server, and in a rollout all three are replaced at about the same time: on u7s, 2026-11-03, a restarted agent held none for about 70 s, just as most pods were asking. The first version of this check answered `CannotSay` until a record came, so most of that rollout's certificates went out unattested, and a pod with no owner at all would have been issued in that window. Holding a pod to its owner needs no record, so it does not wait: with none it proves itself against each pod's owner and those verdicts stand, down to no owner, another image and an ephemeral container. What only the record can tell, another workload's owner or service account, waits for it; a pod that holds up against its owner is `CannotSay`, issued, and attested afterwards. The same goes for a deployment that has not handed off yet.
 
 **Three calls made by the recommendations, for the maintainer's review:**
 

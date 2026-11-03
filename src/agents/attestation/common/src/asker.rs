@@ -268,7 +268,7 @@ pub async fn check(
                 identity,
                 pod_uid,
                 elapsed_ms,
-                "instance check: could not ask, issued unattested: {why:?}"
+                "instance check: could not ask, so it goes ahead unattested: {why:?}"
             );
         }
     }

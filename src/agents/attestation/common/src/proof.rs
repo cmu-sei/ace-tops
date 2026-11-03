@@ -44,8 +44,6 @@ pub enum Doubt {
     NotYet,
     /// It has not yet listed everything it watches.
     NotListed,
-    /// It holds no signed record, so it has nothing to hold anything to.
-    NoRecord,
     /// The record does not name the agent's own workload, or names it twice.
     NotInItsRecord,
     /// It holds no pod of its own workload, which is impossible for an agent that sees what it should.
@@ -60,11 +58,13 @@ pub enum Doubt {
     CannotSayNo { altered: &'static str },
 }
 
-/// What a proof looked at, for its log line.
+/// What a proof looked at, for its log line. With no record it could hold pods only to their owners, so its verdicts stand only as far as that goes:
+/// `judge` still calls a pod not genuine against its owner, and cannot say of one that holds up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Proved {
     pub judged: usize,
     pub condemned: usize,
+    pub with_record: bool,
 }
 
 /// The workload the record says runs in this namespace under this service account. Two workloads that share one say nothing about a pod.
@@ -101,8 +101,8 @@ fn runs_what_is_recorded(workload: &RecordedWorkload, pod: &PodFacts) -> bool {
 
 const ZEROS: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
-/// `pod`, altered in each way a verdict knows. Each still claims to be what it was.
-fn altered(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
+/// `pod`, altered in each way a verdict knows against its owner. Each still claims to be what it was.
+fn altered_against_its_owner(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
     let change = |change: &dyn Fn(&mut PodFacts)| {
         let mut altered = pod.clone();
         change(&mut altered);
@@ -123,20 +123,7 @@ fn altered(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
                 }
             }),
         ),
-        (
-            "another owner",
-            change(&|p| {
-                p.owner = p.owner.take().map(|owner| Owner {
-                    name: format!("{}-altered", owner.name),
-                    ..owner
-                });
-            }),
-        ),
         ("no owner", change(&|p| p.owner = None)),
-        (
-            "another service account",
-            change(&|p| p.service_account.push_str("-altered")),
-        ),
         (
             "an ephemeral container",
             change(&|p| p.ephemeral.push("altered".to_string())),
@@ -154,9 +141,27 @@ fn altered(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
     ]
 }
 
-/// Whether the agent's verdicts are to be believed: it holds what it needs, it passes its own judgement, it does not condemn most of what is
-/// running, and it still says no to real pods altered. A single tampered pod, or a few, does not make it doubt itself, and is reported in the
-/// ordinary way when it asks.
+/// `pod`, altered in the ways only the record can tell.
+fn altered_against_the_record(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
+    let mut another_owner = pod.clone();
+    another_owner.owner = another_owner.owner.take().map(|owner| Owner {
+        name: format!("{}-altered", owner.name),
+        ..owner
+    });
+    let mut another_account = pod.clone();
+    another_account.service_account.push_str("-altered");
+    vec![
+        ("another owner", another_owner),
+        ("another service account", another_account),
+    ]
+}
+
+/// Whether the agent's verdicts are to be believed: it has listed what it watches, it passes its own judgement, it does not condemn most of what is
+/// running, and it still says no to real pods altered. A single tampered pod, or a few, does not make it doubt itself, and is reported in the ordinary
+/// way when it asks.
+///
+/// A record comes through the configuration agent and Polar's git server, so in a rollout there can be none for over a minute, just as most pods are
+/// asking. It does not wait for one. Holding a pod to its owner needs no record, so with none it proves that much, and those verdicts stand.
 pub fn prove(
     judge: impl Fn(Option<&WorkloadFacts>, Option<&PodFacts>) -> Verdict,
     listed: bool,
@@ -166,52 +171,78 @@ pub fn prove(
     if !listed {
         return Err(Doubt::NotListed);
     }
-    let record = record.ok_or(Doubt::NoRecord)?;
-    let mut own_workloads = record
-        .workloads
-        .iter()
-        .filter(|w| w.owner_name == AGENT_NAME);
-    let own = own_workloads.next().ok_or(Doubt::NotInItsRecord)?;
-    if own_workloads.next().is_some() {
-        return Err(Doubt::NotInItsRecord);
-    }
+    let own = match record {
+        Some(record) => {
+            let mut own_workloads = record
+                .workloads
+                .iter()
+                .filter(|w| w.owner_name == AGENT_NAME);
+            let own = own_workloads.next().ok_or(Doubt::NotInItsRecord)?;
+            if own_workloads.next().is_some() {
+                return Err(Doubt::NotInItsRecord);
+            }
+            Some(own)
+        }
+        None => None,
+    };
 
     let (mut judged, mut condemned, mut own_pods) = (0, 0, 0);
     let mut own_recorded = false;
-    let mut genuine = Vec::new();
+    let mut holding_up = Vec::new();
     for pod in pods {
-        let Some(workload) = claimed_by(record, pod) else {
-            continue;
+        // With a record, only what it says runs here is weighed. With none there is nothing to tell a stranger by.
+        let claim = match record {
+            Some(record) => match claimed_by(record, pod) {
+                Some(workload) => Some(workload),
+                None => continue,
+            },
+            None => None,
         };
-        let facts = facts_of(workload);
-        let verdict = judge(Some(&facts), Some(&pod.facts));
+        let facts = claim.map(facts_of);
+        let verdict = judge(facts.as_ref(), Some(&pod.facts));
         judged += 1;
-        if std::ptr::eq(workload, own) {
+        let is_own = match (claim, own) {
+            (Some(workload), Some(own)) => std::ptr::eq(workload, own),
+            _ => pod
+                .facts
+                .owner
+                .as_ref()
+                .is_some_and(|o| o.name == AGENT_NAME),
+        };
+        if is_own {
             own_pods += 1;
             if let Verdict::NotGenuine(why) = &verdict {
                 return Err(Doubt::NotGenuineItself(why.clone()));
             }
-            own_recorded |= runs_what_is_recorded(workload, &pod.facts);
+            if let Some(workload) = claim {
+                own_recorded |= runs_what_is_recorded(workload, &pod.facts);
+            }
         }
         match verdict {
-            Verdict::Genuine => genuine.push((facts, &pod.facts)),
             Verdict::NotGenuine(_) => condemned += 1,
-            Verdict::CannotSay => {}
+            Verdict::Genuine | Verdict::CannotSay => holding_up.push((facts, &pod.facts)),
         }
     }
     if own_pods == 0 {
         return Err(Doubt::CannotSeeItself);
     }
     // During its own rollout a pod of the old revision is still its workload's, so one pod running what is recorded is enough.
-    if !own_recorded {
+    if record.is_some() && !own_recorded {
         return Err(Doubt::NotTheImageRecorded);
     }
     if condemned * 2 > judged {
         return Err(Doubt::CondemnsMost { condemned, judged });
     }
-    for (facts, pod) in genuine {
-        for (how, altered) in altered(pod) {
-            if !matches!(judge(Some(&facts), Some(&altered)), Verdict::NotGenuine(_)) {
+    for (facts, pod) in holding_up {
+        let mut alterations = altered_against_its_owner(pod);
+        if facts.is_some() {
+            alterations.extend(altered_against_the_record(pod));
+        }
+        for (how, altered) in alterations {
+            if !matches!(
+                judge(facts.as_ref(), Some(&altered)),
+                Verdict::NotGenuine(_)
+            ) {
                 return Err(Doubt::CannotSayNo { altered: how });
             }
         }
@@ -221,5 +252,9 @@ pub fn prove(
             altered: "no such pod",
         });
     }
-    Ok(Proved { judged, condemned })
+    Ok(Proved {
+        judged,
+        condemned,
+        with_record: record.is_some(),
+    })
 }

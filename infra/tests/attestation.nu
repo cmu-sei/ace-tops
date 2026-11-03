@@ -59,6 +59,16 @@ def main [] {
             }
         }
         {
+            name: "proved with no record is still waiting for one, and says so"
+            body: {
+                let partly = "2026-11-03T08:36:00Z  INFO attestation_agent::supervisor: it has proved itself as far as it can with no record: it holds pods to their owners judged=20 condemned=0"
+                let r = (attestation_report [$partly])
+                assert equal $r.verdict "waiting"
+                assert ($r.line | str contains "no signed record") $r.line
+                assert equal (attestation_report [$partly $proved]).verdict "proved"
+            }
+        }
+        {
             name: "colours in a log line do not hide what it says"
             body: { assert equal (attestation_report [$"(ansi green)($proved)(ansi reset)"]).verdict "proved" }
         }
