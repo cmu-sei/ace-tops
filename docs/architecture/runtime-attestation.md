@@ -355,7 +355,9 @@ Ideas worth keeping, none of them planned. Polar builds for the happy path and l
 ### Slice B, outlined: watching what was attested
 
 A pod that changes after it was attested: an ephemeral container added (`kubectl debug`), a container restarted on another
-digest. The attestation agent reports it, and the credentials agent, as body guard, stops renewing and may revoke.
+digest. And a container that dies by a signal ("What an attacker is assumed to want", above). The attestation agent reports it, and the credentials agent, as body guard, logs and records it.
+
+**Report only (the maintainer, 2026-11-03).** This first said the credentials agent stops renewing and may revoke. Polar wants to go on operating through a compromise and shut it down at its own choosing, so the report acts on nothing. Refusing at renewal stays as it is, so a tampered pod is still refused within the hour, and a faster shutdown is a signed revocation, by choice.
 
 ### Slice C, outlined: the node sensor and the process
 
