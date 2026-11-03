@@ -253,7 +253,10 @@ async fn receive_pack(
         .await
     {
         warn!(who = %who.0, repo, %why, "push refused: not signed as this repository requires");
-        return refuse(StatusCode::FORBIDDEN, &why);
+        return git_response(
+            Service::ReceivePack.content_type(),
+            crate::pktline::refusal_report(&body, &updates, &why),
+        );
     }
 
     let out = match state

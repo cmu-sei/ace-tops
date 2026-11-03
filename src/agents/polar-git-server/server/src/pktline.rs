@@ -110,9 +110,85 @@ pub fn pkt_line(payload: &str) -> Vec<u8> {
     format!("{:04x}{payload}", payload.len() + 4).into_bytes()
 }
 
+/// The answer to a push that was refused before git saw it, in git's own report: each ref named as not taken, with why, so that the person pushing reads the reason. Wrapped in a sideband if the
+/// client asked for one, as it does.
+pub fn refusal_report(body: &[u8], updates: &[RefUpdate], why: &str) -> Vec<u8> {
+    fn packet(payload: &[u8]) -> Vec<u8> {
+        let mut out = format!("{:04x}", payload.len() + 4).into_bytes();
+        out.extend_from_slice(payload);
+        out
+    }
+    let why = why.replace('\n', " ");
+    let mut report = packet(b"unpack ok\n");
+    for update in updates {
+        report.extend(packet(format!("ng {} {why}\n", update.refname).as_bytes()));
+    }
+    report.extend_from_slice(ZERO_LEN_FLUSH);
+    let sideband = body
+        .windows(b"side-band-64k".len())
+        .take(4096)
+        .any(|w| w == b"side-band-64k");
+    if !sideband {
+        return report;
+    }
+    let mut band = vec![1];
+    band.extend(report);
+    let mut out = packet(&band);
+    out.extend_from_slice(ZERO_LEN_FLUSH);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn command(capabilities: &str) -> Vec<u8> {
+        let line = format!(
+            "{} {} refs/heads/main\0{capabilities}",
+            "0".repeat(40),
+            "1".repeat(40)
+        );
+        let mut body = format!("{:04x}{line}", line.len() + 4).into_bytes();
+        body.extend_from_slice(b"0000");
+        body
+    }
+
+    fn update() -> RefUpdate {
+        RefUpdate {
+            old: "0".repeat(40),
+            new: "1".repeat(40),
+            refname: "refs/heads/main".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_refusal_without_a_sideband_is_the_report_itself() {
+        let report = refusal_report(&command("report-status"), &[update()], "not signed");
+        assert_eq!(
+            String::from_utf8(report).unwrap(),
+            "000eunpack ok\n0022ng refs/heads/main not signed\n0000"
+        );
+    }
+
+    #[test]
+    fn a_refusal_with_a_sideband_is_the_report_inside_it() {
+        let report = refusal_report(
+            &command("report-status side-band-64k"),
+            &[update()],
+            "not signed",
+        );
+        let inner = "000eunpack ok\n0022ng refs/heads/main not signed\n0000";
+        let expected = format!("{:04x}\u{1}{inner}0000", inner.len() + 5);
+        assert_eq!(String::from_utf8(report).unwrap(), expected);
+    }
+
+    /// A reason is one line of a protocol: a newline in it would end the packet's meaning.
+    #[test]
+    fn a_reason_with_a_newline_stays_one_line() {
+        let report = refusal_report(&command("report-status"), &[update()], "one\ntwo");
+        let text = String::from_utf8(report).unwrap();
+        assert!(text.contains("ng refs/heads/main one two\n"), "{text}");
+    }
 
     const ZERO: &str = "0000000000000000000000000000000000000000";
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -688,6 +688,9 @@ async fn an_unsigned_commit_is_refused_from_someone_who_may_write_and_nothing_st
     let commit = make_commit(&h, &repo, "a.yaml", None, None).await;
     let (ok, text) = push(&h, &repo, &creds, &commit).await;
     assert!(!ok, "{text}");
+    // The person pushing is told why, in git's own words, not "the remote end hung up".
+    assert!(text.contains("no signature"), "{text}");
+    assert!(text.contains("-> main"), "{text}");
     assert_eq!(holds(&h, &commit).await, (None, false));
     assert!(h.changes().is_empty());
 }
