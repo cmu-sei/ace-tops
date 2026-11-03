@@ -270,6 +270,8 @@ mod tests {
     /// ignores names the code does not know.
     const DEPLOYMENT_ONLY: &[&str] = &[
         "cassini-server",
+        "deployment-ca",
+        "deployment-copy",
         "git-server",
         "oci-registry-auth",
         "persistent-data",
