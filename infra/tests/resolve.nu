@@ -413,6 +413,25 @@ def main [] {
             }
         }
 
+        # docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": the deployment is a repository of Polar's git server, whose commits the pipeline must have
+        # signed, that Flux may read and nothing may write yet. The server is given the deployment CA to check them with.
+        "the git server holds the deployment, only signed commits go into it, and Flux reads it under the deployment PKI's name": {
+            let r = (resolve "polar-git-server")
+            let repos = (env_value $r "POLAR_GIT_SERVER_REPOS" | from json | get repos)
+            let deployment = ($repos | where name == "deployment" | first)
+            assert equal $deployment.signed_by { ca: "/etc/polar-deploy-ca/ca.pem", signer: "pipeline" }
+            assert ("deployment:flux" in $deployment.readers)
+            assert equal $deployment.writers []
+            assert equal (env_value $r "POLAR_GIT_SERVER_DEPLOYMENT_CA") "/etc/polar-deploy-ca/ca.pem"
+            let volume = ($r.volumes | where name == "polar-deploy-ca" | first)
+            assert equal $volume.config_map "polar-deploy-ca"
+            let mount = ($r.mounts | where name == "polar-deploy-ca" | first)
+            assert equal $mount.path "/etc/polar-deploy-ca"
+            assert $mount.read_only
+            # and the schedules have no such rule: they are signed document by document
+            assert (($repos | where name == "polar-schedules" | first | get -o signed_by) == null)
+        }
+
         # nix-usernetes' contract: the selector and the toleration both, or the pod stays Pending on a tainted node.
         "a placed pod has the pool's selector and its toleration, in both templates": {
             with_target (laid_out "separated") {|t|

@@ -25,7 +25,7 @@
 # counts as done.
 
 use std/assert
-use ../flux.nu [commit_of_revision, due_stale, revision_waited_on, stale_waits, track_stale, describe_state, layer_states, settled]
+use ../flux.nu [with_requeue, reconcile_request, commit_of_revision, due_stale, revision_waited_on, stale_waits, track_stale, describe_state, layer_states, settled]
 
 def kustomization [name: string, ready: string, revision: string, reason: string = "ReconciliationSucceeded", message: string = ""] {
     {
@@ -50,6 +50,35 @@ const WAITING = "Running health checks for revision main@sha1:abc with a timeout
 
 def main [] {
     let tests = [
+        {
+            name: "the kustomize-controller is told to ask again after five seconds, and nothing else changes"
+            body: {
+                let controller = {|name| $"---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ($name)\nspec:\n  template:\n    spec:\n      containers:\n      - args:\n        - --log-level=info\n        - --log-encoding=json\n        name: manager\n" }
+                let text = ((do $controller "source-controller") + (do $controller "kustomize-controller"))
+                let patched = (with_requeue $text)
+                let docs = ($patched | split row "\n---\n")
+                assert ($patched | str contains "- --requeue-dependency=5s")
+                assert equal ($patched | split row "--requeue-dependency" | length) 2 "only one controller takes it"
+                let kc = ($patched | split row "---" | where {|d| $d | str contains "name: kustomize-controller" } | first)
+                assert ($kc | str contains "--requeue-dependency=5s") "it is the kustomize-controller's"
+                assert equal ($patched | str replace "        - --requeue-dependency=5s\n" "") $text
+            }
+        }
+        {
+            name: "asking the source to look now is an annotation on it, new each time so that Flux sees a change"
+            body: {
+                let first = (reconcile_request "flux-system" "polar-deploy" "2026-11-02T00:00:00Z")
+                assert equal $first ["-n" "flux-system" "annotate" "--overwrite" "gitrepository" "polar-deploy" "reconcile.fluxcd.io/requestedAt=2026-11-02T00:00:00Z"]
+                assert ($first != (reconcile_request "flux-system" "polar-deploy" "2026-11-02T00:00:01Z"))
+            }
+        }
+        {
+            name: "an export that has lost the flag's place is refused rather than silently slow"
+            body: {
+                let refused = (try { with_requeue "kind: Deployment\nmetadata:\n  name: kustomize-controller\n"; false } catch { true })
+                assert $refused
+            }
+        }
         {
             name: "a revision is reduced to its commit"
             body: { assert equal (commit_of_revision "main@sha1:abc123") "abc123" }

@@ -280,7 +280,12 @@
         { name: "POLAR_GIT_SERVER_CA_CERT",   value: "/etc/tls/git-server/ca.pem" }
         { name: "POLAR_GIT_SERVER_PORT",      value: "{polar-git-server.port}" }
         { name: "POLAR_GIT_SERVER_REPO_ROOT", value: "/var/lib/{workload}/repos" }
+        { name: "POLAR_GIT_SERVER_DEPLOYMENT_CA", value: "/etc/polar-deploy-ca/ca.pem" }
       ]
+      # The deployment CA's certificate, which `deploy-repo.nu ensure` puts there: what it checks a deployment commit with, and how it knows Flux
+      # (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server").
+      volumes: [ { name: "polar-deploy-ca", config_map: "polar-deploy-ca" } ]
+      mounts: [ { name: "polar-deploy-ca", path: "/etc/polar-deploy-ca", read_only: true } ]
     }
     identity: { certs: [ { dir: "/etc/tls/git-server", volume: "git-server-certs", read_only: true, kind: "server", san: "{polar-git-server.dns}", watch: ["cert.pem", "ca.pem"] } ] }
     dependency: {}

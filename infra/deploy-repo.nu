@@ -244,6 +244,20 @@ def server_head [pki: string, target: string, port: int] {
     $r.stdout | lines | where {|l| $l | str contains "refs/heads/main" } | each {|l| $l | split row "\t" | first } | get -o 0 | default ""
 }
 
+# The deployment CA's certificate, for Polar's git server, as a ConfigMap: public, and all the server needs to check a deployment commit and to name Flux. The server's own
+# certificate and key stay in the polar-deploy namespace.
+export def deployment_ca_configmap [ca_pem: string, namespace: string] {
+    if ($ca_pem | str contains "PRIVATE KEY") or not ($ca_pem | str contains "BEGIN CERTIFICATE") {
+        error make --unspanned { msg: "the deployment CA's file does not hold just a certificate" }
+    }
+    {
+        apiVersion: "v1"
+        kind: "ConfigMap"
+        metadata: { name: "polar-deploy-ca", namespace: $namespace }
+        data: { "ca.pem": $ca_pem }
+    }
+}
+
 def "main ensure" [
     target: string
     --port: int = 9443          # this machine's end of the forward to the server
@@ -253,6 +267,7 @@ def "main ensure" [
     let server = (server_name $cluster.domain)
     let pki = (pki_dir $env.HOME $target)
     let made = (ensure_pki $pki $target $server)
+    kubectl_apply [(deployment_ca_configmap (open --raw ($pki | path join "ca.pem")) ($cluster.namespaces | get polar))]
     if ($made | is-empty) { print $"  ok: the deployment PKI is in ($pki)" } else { print $"  made in ($pki): ($made | str join ', ')" }
 
     # The image by the digest the registry serves, under the name the nodes pull it by.

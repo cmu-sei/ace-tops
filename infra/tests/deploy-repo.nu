@@ -24,7 +24,7 @@
 # The deployment git server's pure decisions: its PKI, its repository, its container arguments.
 
 use std/assert
-use ../deploy-repo.nu [cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
+use ../deploy-repo.nu [deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
 
 def main [] {
     let tests = [
@@ -169,6 +169,18 @@ def main [] {
                 assert equal $source.spec.url "https://polar-deploy-git.polar-deploy.svc.cluster.local:9443/deploy-t.git" "Flux reaches the server by its Service"
                 let k = ($files | where path == "flux/kustomizations.yaml" | first | get text)
                 assert ($k | str contains "force: true")
+            }
+        }
+        {
+            name: "the deployment CA's certificate goes to Polar's namespace as a ConfigMap, the certificate alone"
+            body: {
+                let map = (deployment_ca_configmap "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n" "polar")
+                assert equal $map.kind "ConfigMap"
+                assert equal $map.metadata { name: "polar-deploy-ca", namespace: "polar" }
+                assert equal ($map.data | columns) ["ca.pem"]
+                assert ($map.data."ca.pem" | str contains "BEGIN CERTIFICATE")
+                let refused = (try { deployment_ca_configmap "-----BEGIN PRIVATE KEY-----\nx\n" "polar"; false } catch { true })
+                assert $refused "a key is not a certificate"
             }
         }
         {
