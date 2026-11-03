@@ -25,7 +25,8 @@
 
 use crate::supervisor::{AttestationSupervisor, SHUTDOWN_BUDGET};
 use attestation_common::{
-    AGENT_NAME, CERT_ISSUER_REPLIES_TOPIC, CREDENTIALS_AGENT_REPLIES_TOPIC, REQUESTS_TOPIC,
+    AGENT_NAME, CERT_ISSUER_REPLIES_TOPIC, CREDENTIALS_AGENT_REPLIES_TOPIC, REPORTS_TOPIC,
+    REQUESTS_TOPIC,
 };
 use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
 use polar_env::Section;
@@ -59,6 +60,14 @@ impl PolarAgent for AttestationAgent {
             "the verdict, on the credentials agent's own topic",
         )
         .because(&[Cause::Topic(REQUESTS_TOPIC)]),
+        TopicDecl::publish(
+            REPORTS_TOPIC,
+            "what it finds of its own accord: a pod that is not what its owner made, a container that died by a signal",
+        )
+        .because(&[
+            Cause::Outside("the pods it watches"),
+            Cause::Timer("each minute, what still stands"),
+        ]),
     ];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
@@ -66,7 +75,8 @@ impl PolarAgent for AttestationAgent {
          answers the questions published on attestation-instance-requests: is the pod this token was bound to what the deployment \
          made? It judges a pod against its owner (its owner chain, by UID, and each container's image against the digest its owner \
          pins), then against the signed record of the workload the identity runs as. It sees and reports; it never acts, and what \
-         follows from a verdict is the asker's. Its verdicts stand only while it has proved itself: it holds what it needs, it passes its \
+         follows from a verdict is the asker's. Of its own accord it reports on attestation-reports a pod that is not what its owner made \
+         and a container that died by a signal. Its verdicts stand only while it has proved itself: it holds what it needs, it passes its \
          own judgement, it does not condemn most of what is running, and it says no to real pods altered. Otherwise it answers that it \
          cannot say, and says why in an ERROR. Each verdict goes to the asker's own topic, attestation-instance-replies.<workload>. \
          docs/architecture/runtime-attestation.md.",

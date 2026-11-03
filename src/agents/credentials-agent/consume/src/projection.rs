@@ -312,7 +312,9 @@ fn graph_ops_for_event(event: &CredentialsEvent, grant_existed: bool) -> Vec<Gra
         // A refused document changes nothing; the ledger keeps the record of it.
         CredentialsEvent::AuthorityRefused { .. } => vec![],
         // The ledger's, for what follows; the graph holds what was issued.
-        CredentialsEvent::InstanceRefused { .. } | CredentialsEvent::IssuedUnattested { .. } => {
+        CredentialsEvent::InstanceRefused { .. }
+        | CredentialsEvent::IssuedUnattested { .. }
+        | CredentialsEvent::AttestationReported { .. } => {
             vec![]
         }
         // A certificate learned from cert-issuer's record is a Certificate node as an issued one is, saying how it was
@@ -583,6 +585,7 @@ fn event_timestamp(event: &CredentialsEvent) -> i64 {
         | CredentialsEvent::AuthorityRefused { timestamp, .. }
         | CredentialsEvent::InstanceRefused { timestamp, .. }
         | CredentialsEvent::IssuedUnattested { timestamp, .. }
+        | CredentialsEvent::AttestationReported { timestamp, .. }
         | CredentialsEvent::CertificatesReported { timestamp, .. }
         | CredentialsEvent::AdminActionRecorded { timestamp, .. } => *timestamp,
     }

@@ -34,8 +34,8 @@ use crate::settings;
 use crate::watch::{self, Source, WatchActor, WatchArgs};
 use attestation_common::{
     AGENT_NAME, DeploymentRecord, Doubt, DriftWatch, Envelope, InstanceQuestion, Proved,
-    REQUESTS_TOPIC, Verdict, WorkloadFacts, decode_question, drift, encode_verdict, judge, prove,
-    replies_topic,
+    REPORTS_TOPIC, REQUESTS_TOPIC, Report, Reporting, Verdict, WorkloadFacts, decode_question,
+    drift, encode_report, encode_verdict, findings, judge, prove, replies_topic,
 };
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
@@ -119,6 +119,45 @@ fn reconsider(state: &mut AttestationState) {
     state.proved = now;
 }
 
+/// Says what is new, once, and publishes what is to go out. A change says only what is new; each minute everything that stands goes again, since the credentials
+/// agent, which records it, restarts too. It keeps one of each. What it holds is not whole until it has listed everything, so nothing is said before.
+fn report(state: &mut AttestationState, regular_check: bool) {
+    if !state.held.ready() {
+        return;
+    }
+    let now = findings(&state.held.observed(), state.proved.is_ok());
+    let new = if regular_check {
+        state.reporting.check(&now)
+    } else {
+        state.reporting.changed(&now)
+    };
+    for found in &new {
+        error!(
+            namespace = found.namespace,
+            pod = found.pod,
+            pod_uid = found.pod_uid,
+            "found of a pod, to be looked at: {:?}",
+            found.finding
+        );
+    }
+    let going: &[Report] = if regular_check {
+        state.reporting.standing()
+    } else {
+        &new
+    };
+    for found in going {
+        if let Err(e) = state.tcp_client.publish(PublishRequest {
+            topic: REPORTS_TOPIC.to_string(),
+            payload: encode_report(found),
+            trace_ctx: WireTraceCtx::from_current_span(),
+            offline_behavior: OfflineBehavior::default(),
+            share_identity: true,
+        }) {
+            warn!("could not report on {REPORTS_TOPIC}: {e:?}");
+        }
+    }
+}
+
 pub enum AttestationMessage {
     ClientEvent {
         event: ClientEvent,
@@ -149,6 +188,7 @@ pub struct AttestationState {
     record: Option<DeploymentRecord>,
     namespaces: Vec<String>,
     drift: DriftWatch,
+    reporting: Reporting,
     /// Whether its verdicts are to be believed.
     proved: Result<Proved, Doubt>,
     shutting_down: bool,
@@ -259,6 +299,7 @@ impl Actor for AttestationSupervisor {
             record: None,
             namespaces,
             drift: DriftWatch::new(DRIFT_GRACE_SECS),
+            reporting: Reporting::default(),
             proved: Err(Doubt::NotYet),
             shutting_down: false,
         })
@@ -288,6 +329,7 @@ impl Actor for AttestationSupervisor {
                     info!(ready = !was_ready, "what it holds of the cluster changed");
                     reconsider(state);
                 }
+                report(state, false);
             }
             AttestationMessage::Record { payload } => {
                 let record = match read_record(&payload, &state.deployment_ca, now_secs()) {
@@ -318,6 +360,7 @@ impl Actor for AttestationSupervisor {
             AttestationMessage::Compare => {
                 // Each time, since the cluster can change under it: a Kubernetes upgrade, a Role lost.
                 reconsider(state);
+                report(state, true);
                 // What it does not hold yet is not missing, so nothing is compared until it has listed everything.
                 let Some(record) = state.record.as_ref().filter(|_| state.held.ready()) else {
                     return Ok(());

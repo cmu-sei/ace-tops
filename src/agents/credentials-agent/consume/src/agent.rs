@@ -145,6 +145,10 @@ impl PolarAgent for CredentialsConsumer {
             attestation_common::CREDENTIALS_AGENT_REPLIES_TOPIC,
             "the attestation agent's verdict on a pod, from it alone",
         ),
+        TopicDecl::subscribe(
+            attestation_common::REPORTS_TOPIC,
+            "what the attestation agent finds of its own accord, recorded and logged, from it alone",
+        ),
         TopicDecl::publish(
             cert_issuer_common::held::HELD_REPLIES_TOPIC,
             "this agent's answer to a request cert-issuer holds: vouched for, or refused",

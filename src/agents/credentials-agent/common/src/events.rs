@@ -446,6 +446,17 @@ pub enum CredentialsEvent {
         tickets: Vec<ReportedTicket>,
         timestamp: i64,
     },
+    /// The attestation agent reported this of a pod of its own accord: it is not what its owner made (`altered`), or a container of it died by a signal
+    /// (`crashed`) (docs/architecture/runtime-attestation.md, "Slice B"). `finding` is what it said, for people, and with the pod's UID what makes one report
+    /// the same as another, since a report is sent again while it stands. Nothing follows from it but the record: what to do about it is someone's choice.
+    AttestationReported {
+        namespace: String,
+        pod: String,
+        pod_uid: String,
+        kind: String,
+        finding: String,
+        timestamp: i64,
+    },
 }
 
 /// A successor ticket cert-issuer took and reported: the pod it admitted, and for how long.

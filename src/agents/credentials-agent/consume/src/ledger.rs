@@ -211,6 +211,11 @@ pub enum LedgerMessage {
         bootstrap: Option<std::collections::BTreeSet<String>>,
         reply: RpcReplyPort<Result<Option<(String, u64)>, String>>,
     },
+    /// Records a report of the attestation agent's, unless it is already recorded. Replies with whether it was new.
+    TakeAttestationReport {
+        event: CredentialsEvent,
+        reply: RpcReplyPort<Result<bool, String>>,
+    },
     /// The current, non-revoked certificate for `identity`, if any --
     /// regardless of instance_binding. Backs the certificate-lookup
     /// query: one agent asking for another's public cert so it can
@@ -503,6 +508,19 @@ impl Actor for LedgerActor {
                     }
                 };
                 let _ = reply.send(result.map(|()| state.credentials_state.record_cursor()));
+            }
+            LedgerMessage::TakeAttestationReport { event, reply } => {
+                let known = matches!(
+                    &event,
+                    CredentialsEvent::AttestationReported { pod_uid, finding, .. }
+                        if state.credentials_state.knows_attestation_report(pod_uid, finding)
+                );
+                let result = if known {
+                    Ok(false)
+                } else {
+                    append_and_project(state, &event).map(|()| true)
+                };
+                let _ = reply.send(result);
             }
             LedgerMessage::CheckCertificate { identity, reply } => {
                 let record = state.credentials_state.certificate_for(&identity).cloned();

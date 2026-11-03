@@ -30,6 +30,7 @@ pub mod asker;
 pub mod proof;
 pub mod protocol;
 pub mod record;
+pub mod report;
 pub mod verdict;
 
 pub use proof::{Doubt, HeldPodFacts, Proved, prove};
@@ -41,6 +42,10 @@ pub use protocol::{
 pub use record::{
     Deployed, DeploymentRecord, Drift, DriftChanges, DriftWatch, RecordedContainer,
     RecordedWorkload, drift,
+};
+pub use report::{
+    CrashSignal, Finding, ObservedPod, REPORTS_TOPIC, Report, Reporting, Termination,
+    accepted_report, crash_signal, decode_report, encode_report, findings,
 };
 pub use verdict::{
     ContainerFacts, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts, digest_of,

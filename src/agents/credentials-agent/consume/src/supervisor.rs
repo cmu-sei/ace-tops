@@ -182,6 +182,11 @@ pub enum ConsumerSupervisorMessage {
     AuthorityRequested,
     /// Time to ask cert-issuer for its record again (docs/architecture/cert-issuer-isolation.md, "Step 2").
     AskRecord,
+    /// Something on the attestation agent's reports topic, published (the broker says) by `published_by`.
+    AttestationReport {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
     /// cert-issuer's answer arrived, published (the broker says) by `published_by`.
     RecordAnswered {
         payload: Vec<u8>,
@@ -219,6 +224,7 @@ pub(crate) fn drain_topics() -> Vec<&'static str> {
             cert_issuer_common::record::RECORD_REPLIES_TOPIC,
             cert_issuer_common::held::HELD_REQUESTS_TOPIC,
             attestation_common::CREDENTIALS_AGENT_REPLIES_TOPIC,
+            attestation_common::REPORTS_TOPIC,
         ])
         .collect()
 }
@@ -233,6 +239,7 @@ pub(crate) fn dropped_while_draining(message: &ConsumerSupervisorMessage) -> boo
         M::AuthorityRequested
             | M::AskRecord
             | M::RecordAnswered { .. }
+            | M::AttestationReport { .. }
             | M::HeldOffered { .. }
             | M::PollHeld
             | M::RuntimeChanged { .. }
@@ -745,6 +752,20 @@ impl ConsumerSupervisor {
         )
     }
 
+    fn attestation_report_subscription(
+        supervisor: &ActorRef<ConsumerSupervisorMessage>,
+    ) -> Subscription {
+        let supervisor = supervisor.clone();
+        Subscription::new(attestation_common::REPORTS_TOPIC, move |incoming| {
+            if let Err(e) = supervisor.send_message(ConsumerSupervisorMessage::AttestationReport {
+                payload: incoming.payload,
+                published_by: incoming.published_by,
+            }) {
+                warn!("could not pass on the attestation agent's report: {e}");
+            }
+        })
+    }
+
     /// Reads a replaced section and hands it to the publisher. A section that cannot be read says so and is
     /// left for the next republish; it is never published half-read.
     async fn pass_on_section(state: &ConsumerSupervisorState, section: &str) {
@@ -913,6 +934,7 @@ impl Actor for ConsumerSupervisor {
             .with_lifecycle_handler(|event| Some(ConsumerSupervisorMessage::ClientEvent { event }));
         builder = builder.with_subscription(Self::instance_verdict_subscription(&instance_asker));
         builder = builder.with_subscription(Self::authority_request_subscription(&myself));
+        builder = builder.with_subscription(Self::attestation_report_subscription(&myself));
         builder = builder.with_subscription(Self::record_reply_subscription(&myself));
         builder = builder.with_subscription(Self::held_offer_subscription(&myself));
         for subscription in Self::request_subscriptions(&myself) {
@@ -1532,6 +1554,20 @@ impl Actor for ConsumerSupervisor {
             ConsumerSupervisorMessage::AskRecord => {
                 if let Some(asker) = &state.record_asker {
                     let _ = asker.send_message(crate::record_asker::RecordAskerMessage::Ask);
+                }
+            }
+            ConsumerSupervisorMessage::AttestationReport {
+                payload,
+                published_by,
+            } => {
+                if let Some(agent) = &state.attestation_agent {
+                    crate::instance_check::take_report(
+                        &state.ledger,
+                        &payload,
+                        published_by.as_deref(),
+                        agent,
+                    )
+                    .await;
                 }
             }
             ConsumerSupervisorMessage::RecordAnswered {

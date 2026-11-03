@@ -30,6 +30,10 @@ use attestation_common::{
     RecordedContainer, RecordedWorkload, Verdict, WorkloadFacts, decode_question, decode_verdict,
     digest_of, drift, encode_question, encode_verdict, judge, prove, replies_topic,
 };
+use attestation_common::{
+    ObservedPod, Report, Reporting, Termination, accepted_report, crash_signal, decode_report,
+    encode_report, findings,
+};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -758,5 +762,144 @@ proptest! {
         } else {
             prop_assert_eq!(proved, Ok(Proved { judged, condemned: tampered_n, with_record: false }));
         }
+    }
+}
+
+fn ending() -> impl Strategy<Value = Termination> {
+    (
+        "[a-z]{1,4}",
+        prop_oneof![
+            Just(0),
+            Just(1),
+            Just(137),
+            Just(143),
+            Just(134),
+            Just(139),
+            Just(159),
+            0i32..256
+        ],
+        prop::option::of(prop_oneof![Just(0), Just(9), Just(11), Just(31), 0i32..65]),
+        0u8..3,
+    )
+        .prop_map(|(container, exit_code, signal, at)| Termination {
+            container,
+            exit_code,
+            signal,
+            finished_at: format!("2026-11-03T12:00:0{at}Z"),
+            image_id: "registry/agent@sha256:0".to_string(),
+        })
+}
+
+/// Pods with distinct UIDs, some genuine, some altered, each with how its containers ended.
+fn observed() -> impl Strategy<Value = Vec<ObservedPod>> {
+    prop::collection::vec(
+        (
+            genuine(),
+            any::<bool>(),
+            prop::collection::vec(ending(), 0..4),
+        ),
+        0..6,
+    )
+    .prop_map(|pods| {
+        pods.into_iter()
+            .enumerate()
+            .map(|(i, ((_, mut facts), debugged, terminations))| {
+                if debugged {
+                    facts.ephemeral = vec!["debugger".to_string()];
+                }
+                ObservedPod {
+                    namespace: "polar".to_string(),
+                    name: format!("pod-{i}"),
+                    uid: format!("uid-{i}"),
+                    facts,
+                    terminations,
+                }
+            })
+            .collect()
+    })
+}
+
+fn is_crash(report: &Report) -> bool {
+    matches!(report.finding, attestation_common::Finding::Crashed { .. })
+}
+
+proptest! {
+    /// Every crash among a pod's endings is said, whether or not the agent is believed, and nothing else is said of an ending.
+    #[test]
+    fn every_crash_is_said_and_nothing_else_of_an_ending(pods in observed(), believed: bool) {
+        let crashes = findings(&pods, believed).iter().filter(|r| is_crash(r)).count();
+        let mut expected: Vec<(String, String, i32, String)> = Vec::new();
+        for pod in &pods {
+            for e in &pod.terminations {
+                let key = (pod.uid.clone(), e.container.clone(), e.exit_code, e.finished_at.clone());
+                if crash_signal(e.exit_code, e.signal).is_some() && !expected.contains(&key) {
+                    expected.push(key);
+                }
+            }
+        }
+        // The same ending can differ only in how the signal was said, which comes to the same crash or another named one.
+        prop_assert!(crashes >= expected.len());
+        prop_assert_eq!(crashes == 0, expected.is_empty());
+    }
+
+    /// While the agent is not believed, it says nothing it judged.
+    #[test]
+    fn what_it_judged_is_said_only_while_it_is_believed(pods in observed()) {
+        prop_assert!(findings(&pods, false).iter().all(is_crash));
+        let debugged = pods.iter().filter(|p| !p.facts.ephemeral.is_empty()).count();
+        let altered = findings(&pods, true).iter().filter(|r| !is_crash(r)).count();
+        prop_assert_eq!(altered, debugged);
+    }
+
+    /// What it finds does not depend on the order it holds pods in.
+    #[test]
+    fn findings_do_not_depend_on_the_order_of_pods(pods in observed(), believed: bool) {
+        let mut reversed = pods.clone();
+        reversed.reverse();
+        prop_assert_eq!(findings(&pods, believed), findings(&reversed, believed));
+    }
+
+    /// Over any sequence: a thing is new once while it stands, an alteration is never reported before its second check running, and what stands after a
+    /// check is within what that check was told.
+    #[test]
+    fn reporting_says_each_thing_once_while_it_stands(
+        rounds in prop::collection::vec((observed(), any::<bool>()), 1..8),
+    ) {
+        let mut reporting = Reporting::default();
+        let mut reported: Vec<Report> = Vec::new();
+        let mut suspected: Vec<Report> = Vec::new();
+        for (pods, checking) in rounds {
+            let now = findings(&pods, true);
+            let before: Vec<Report> = reporting.standing().to_vec();
+            let new = if checking { reporting.check(&now) } else { reporting.changed(&now) };
+            for report in &new {
+                prop_assert!(!before.contains(report), "said twice: {report:?}");
+                prop_assert!(now.contains(report));
+                prop_assert!(is_crash(report) || suspected.contains(report), "too soon: {report:?}");
+            }
+            reported.extend(new);
+            if checking {
+                suspected = now.iter().filter(|r| !is_crash(r)).cloned().collect();
+                prop_assert!(reporting.standing().iter().all(|r| now.contains(r)));
+            }
+        }
+    }
+
+    /// A report reads back whole, and is taken only from the agent.
+    #[test]
+    fn a_report_round_trips_and_only_the_agent_may_send_one(pods in observed(), other in "[a-z]{1,8}x") {
+        for report in findings(&pods, true) {
+            let bytes = encode_report(&report);
+            prop_assert_eq!(decode_report(&bytes).unwrap(), report.clone());
+            prop_assert_eq!(accepted_report(&bytes, Some(AGENT_NAME), AGENT_NAME).unwrap(), report);
+            prop_assert!(accepted_report(&bytes, Some(&other), AGENT_NAME).is_err());
+            prop_assert!(accepted_report(&bytes, None, AGENT_NAME).is_err());
+        }
+    }
+
+    /// What is not a report is refused, and does not panic.
+    #[test]
+    fn what_is_not_a_report_is_refused(noise in prop::collection::vec(any::<u8>(), 0..128)) {
+        let _ = decode_report(&noise);
     }
 }

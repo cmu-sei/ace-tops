@@ -160,6 +160,9 @@ pub struct CredentialsState {
     /// `IssuanceCompleted` event is folded, never mutated in place.
     active_grants: HashMap<String, GrantRecord>,
 
+    /// What the attestation agent has reported, by pod UID and finding: a report is sent again while it stands, and recorded once.
+    attestation_reports: HashSet<(String, String)>,
+
     /// Every currently-valid certificate, keyed on `(identity,
     /// instance_binding, type)` -- exactly what the renewal-prevention
     /// check needs (see credentials-agent-architecture.md, "Pods
@@ -242,6 +245,12 @@ impl CredentialsState {
     }
 
     /// Whether the ledger has recorded a certificate with this serial, by any issuance or report.
+    /// Whether this report of the attestation agent's is already recorded.
+    pub fn knows_attestation_report(&self, pod_uid: &str, finding: &str) -> bool {
+        self.attestation_reports
+            .contains(&(pod_uid.to_string(), finding.to_string()))
+    }
+
     pub fn knows_serial(&self, serial: &str) -> bool {
         self.recorded_serials.contains(serial)
     }
@@ -663,6 +672,12 @@ impl CredentialsState {
             CredentialsEvent::AuthorityRefused { .. } => {}
             CredentialsEvent::InstanceRefused { .. }
             | CredentialsEvent::IssuedUnattested { .. } => {}
+            CredentialsEvent::AttestationReported {
+                pod_uid, finding, ..
+            } => {
+                self.attestation_reports
+                    .insert((pod_uid.clone(), finding.clone()));
+            }
             // A page of cert-issuer's record: each certificate as the kind it is, and where the record was read to.
             CredentialsEvent::CertificatesReported {
                 log,

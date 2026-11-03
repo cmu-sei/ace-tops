@@ -25,7 +25,9 @@
 //! (docs/architecture/runtime-attestation.md, "Slice A"): an answer is read from here, not a call to the API. A platform's backend, in
 //! the plan's terms: nothing Kubernetes-specific goes further than this file and the watches.
 
-use attestation_common::{ContainerFacts, Deployed, HeldPodFacts, Owner, OwnerKind, PodFacts};
+use attestation_common::{
+    ContainerFacts, Deployed, HeldPodFacts, ObservedPod, Owner, OwnerKind, PodFacts, Termination,
+};
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Pod, PodTemplateSpec};
@@ -100,6 +102,8 @@ pub struct Holdings {
 #[derive(Debug, Clone)]
 struct HeldPod {
     namespace: String,
+    name: String,
+    terminations: Vec<Termination>,
     service_account: String,
     owner: Option<OwnerReference>,
     containers: Vec<ContainerFacts>,
@@ -169,6 +173,22 @@ impl Holdings {
                 Some(HeldPodFacts {
                     namespace: pod.namespace.clone(),
                     facts: self.facts_of(uid)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Every pod it holds, with how its containers ended, for what it reports of its own accord.
+    pub fn observed(&self) -> Vec<ObservedPod> {
+        self.pods
+            .iter()
+            .filter_map(|(uid, pod)| {
+                Some(ObservedPod {
+                    namespace: pod.namespace.clone(),
+                    name: pod.name.clone(),
+                    uid: uid.clone(),
+                    facts: self.facts_of(uid)?,
+                    terminations: pod.terminations.clone(),
                 })
             })
             .collect()
@@ -328,6 +348,38 @@ fn pins_of(template: &PodTemplateSpec) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// How each of a pod's containers ended, as far as Kubernetes still says: it keeps a container's last ending and no earlier one, which is why this is read
+/// on each change. An ending can be there as a container's state, until it restarts, and then as its last state.
+fn terminations_of(pod: &Pod) -> Vec<Termination> {
+    pod.status
+        .iter()
+        .flat_map(|status| {
+            status
+                .init_container_statuses
+                .iter()
+                .flatten()
+                .chain(status.container_statuses.iter().flatten())
+        })
+        .flat_map(|c| {
+            [c.state.as_ref(), c.last_state.as_ref()]
+                .into_iter()
+                .flatten()
+                .filter_map(|state| state.terminated.as_ref())
+                .map(|ended| Termination {
+                    container: c.name.clone(),
+                    exit_code: ended.exit_code,
+                    signal: ended.signal,
+                    finished_at: ended
+                        .finished_at
+                        .as_ref()
+                        .map(|at| at.0.to_string())
+                        .unwrap_or_default(),
+                    image_id: c.image_id.clone(),
+                })
+        })
+        .collect()
+}
+
 fn held_pod(pod: &Pod) -> HeldPod {
     let empty = Default::default();
     let spec = pod.spec.as_ref().unwrap_or(&empty);
@@ -345,6 +397,8 @@ fn held_pod(pod: &Pod) -> HeldPod {
         .collect();
     HeldPod {
         namespace: pod.metadata.namespace.clone().unwrap_or_default(),
+        name: pod.metadata.name.clone().unwrap_or_default(),
+        terminations: terminations_of(pod),
         service_account: spec.service_account_name.clone().unwrap_or_default(),
         owner: controller_of(&pod.metadata),
         containers: spec
@@ -641,6 +695,32 @@ mod tests {
             json!([{ "name": "debugger", "image": "busybox" }]);
         let held = holdings(vec![pod_object(debugged)]);
         assert_eq!(held.facts_of("p1").unwrap().ephemeral, ["debugger"]);
+    }
+
+    #[test]
+    fn how_a_container_ended_is_held_from_its_state_and_its_last_state() {
+        let mut value = pod("p", "ReplicaSet", "rs", "rs-uid");
+        value["status"]["containerStatuses"] = json!([{
+            "name": "main",
+            "ready": false,
+            "restartCount": 1,
+            "image": image('m'),
+            "imageID": running('m'),
+            "state": {"terminated": {"exitCode": 139, "finishedAt": "2026-11-03T12:00:01Z"}},
+            "lastState": {"terminated": {"exitCode": 137, "signal": 9, "finishedAt": "2026-11-03T11:00:00Z"}},
+        }]);
+        let held = holdings(vec![pod_object(value)]);
+        let observed = held.observed();
+        assert_eq!(observed.len(), 1);
+        let endings: Vec<(i32, Option<i32>)> = observed[0]
+            .terminations
+            .iter()
+            .map(|t| (t.exit_code, t.signal))
+            .collect();
+        assert_eq!(endings, vec![(139, None), (137, Some(9))]);
+        assert_eq!(observed[0].terminations[0].container, "main");
+        assert_eq!(observed[0].terminations[0].image_id, running('m'));
+        assert!(!observed[0].terminations[0].finished_at.is_empty());
     }
 
     #[test]
