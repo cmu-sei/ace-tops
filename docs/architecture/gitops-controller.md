@@ -56,6 +56,15 @@ These do not need the deployer, are cheap, and are worth doing whatever is decid
 | B1 | Know that a Kubernetes 1.37 field in a manifest is dropped by Flux 1.36's types before the apply, and that no error says so. |
 | J2 | `cluster-bootstrap.md:98` says the render has no Secret documents. It has two, service-account-token placeholders. |
 
+### What it is for
+
+*The maintainer, 2026-11-02:* "Ultimately, what I want from a 'gitops' service is to reconcile a state, from desired -> to deployed." Everything below serves that one loop. Git is how the desired state travels, and is not the point.
+
+- **Desired:** one signed commit, read as the deployment's facts and its dependency graph, not as a pile of manifests.
+- **Deployed:** what is observed, which for Polar is more than Kubernetes objects: registrations, health and holds, sessions, certificates, digests.
+- **Reconcile:** the difference between the two, as a plan, which is a pure function and so can be tested and shown in shadow mode. It is acted on in dependency order.
+- **Done:** when the invariants hold, not when the objects were applied. Anything that later drifts from them is the same difference, found the same way, not a separate feature.
+
 ### Speed: the maintainer's complaint, measured
 
 *The maintainer, 2026-11-02:* "I find it horribly slow... that's something I'd like to work on in a new impl." So speed is a requirement here, not a side benefit.
