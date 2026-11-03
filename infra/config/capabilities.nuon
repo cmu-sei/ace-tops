@@ -197,6 +197,7 @@
   deployment-copy: {
     pod: {
       env: [
+        { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL", value: "{deployment-source}" }
         { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CA", value: "/etc/polar-deployment-reader/ca.crt" }
         { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CERT", value: "/etc/polar-deployment-reader/tls.crt" }
         { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_KEY", value: "/etc/polar-deployment-reader/tls.key" }

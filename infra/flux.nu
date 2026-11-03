@@ -39,7 +39,9 @@
 # generated and committed; `render` copies it, pointing the images at the registry the nodes pull from.
 
 use deploy-repo.nu [DEFAULT_PORT, READER, ensure_signing, pki_dir, repo_name, tls_config]
-use deploy-objects.nu [AUTH_SECRET, FLUX_NS, SOURCE_NAME]
+use deploy-objects.nu [AUTH_SECRET, FLUX_NS, POLAR_AUTH_SECRET, SOURCE_NAME, is_handed_off, polar_git_repository]
+use seed.nu [GIT_HOST, GIT_PORT]
+use retry.nu [with_retries]
 
 const CHART = (path self | path dirname | path join "layers" "1-platform" "services" "flux")
 const SELF = (path self)
@@ -186,28 +188,105 @@ def load_config [target: string] {
     ^$nu.current-exe $file | from nuon
 }
 
-def server_url [target: string, port: int] { $"https://localhost:($port)/(repo_name $target).git" }
+def server_url [target: string, port: int, handed_off: bool = false] {
+    if $handed_off { $"https://($GIT_HOST):($GIT_PORT)/deployment.git" } else { $"https://localhost:($port)/(repo_name $target).git" }
+}
 
-def git_as_reader [pki: string, args: list<string>] {
-    let tls = (tls_config $pki $READER)
+# Polar's CA as the cluster holds it, in a file beside the PKI, which is what to trust Polar's git server with.
+def polar_ca_file [pki: string] {
+    let file = ($pki | path join "polar-ca.pem")
+    ^kubectl -n polar get configmap polar-ca -o 'jsonpath={.data.ca\.pem}' | save --force $file
+    $file
+}
+
+def git_as_reader [pki: string, args: list<string>, handed_off: bool = false] {
+    let tls = if $handed_off {
+        [
+            "-c" $"http.sslCAInfo=(polar_ca_file $pki)"
+            "-c" $"http.sslCert=($pki | path join $'($READER).pem')"
+            "-c" $"http.sslKey=($pki | path join $'($READER).key')"
+            "-c" $"http.curloptResolve=($GIT_HOST):($GIT_PORT):127.0.0.1"
+        ]
+    } else {
+        tls_config $pki $READER
+    }
     ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls ...$args
 }
 
+# Whether this cluster's Flux reads Polar's git server, from the cluster itself: this machine's record of it can be another cluster's, or gone.
+export def cluster_handed_off [] {
+    let r = (do { ^kubectl -n $FLUX_NS get gitrepository $SOURCE_NAME -o 'jsonpath={.spec.url}' } | complete)
+    $r.exit_code == 0 and (is_handed_off ($r.stdout | str trim))
+}
+
+# Flux's credentials for Polar's git server: its certificate of the deployment PKI, and Polar's CA.
+def apply_polar_auth [pki: string] {
+    let secret = (run_ok "building the credentials Secret" {
+        ^kubectl -n $FLUX_NS create secret generic $POLAR_AUTH_SECRET $"--from-file=tls.crt=($pki | path join $'($READER).pem')" $"--from-file=tls.key=($pki | path join $'($READER).key')" $"--from-file=ca.crt=(polar_ca_file $pki)" --dry-run=client -o yaml
+    })
+    let applied = ($secret | do { ^kubectl apply -f - } | complete)
+    if $applied.exit_code != 0 { error make --unspanned { msg: "applying the credentials Secret failed" } }
+}
+
+# What the head of the deployment on Polar's git server, verified, records of the cluster's inputs, as JSON on the last line.
+def "main recorded-inputs" [target: string, --port: int = 9443] {
+    let pki = (pki_dir $env.HOME $target)
+    let work = (mktemp -d)
+    let copy = ($work | path join "repo")
+    let fact = (try { fetch_verified $pki $target $port $copy true; open ($copy | path join "provenance.json") | get -o cluster_inputs } catch {|e| rm -rf $work; error make --unspanned { msg: $e.msg } })
+    rm -rf $work
+    print ($fact | to json --raw)
+}
+
+# Waits until the copy on Polar's git server holds what the bootstrap repository does. Only this machine publishes, so what it waits for holds still.
+def "main copied" [target: string, --port: int = 9443] {
+    let pki = (pki_dir $env.HOME $target)
+    let head = (published_commit $pki $target $port)
+    if $head == null { error make --unspanned { msg: $"nothing is published to deploy-($target)" } }
+    let caught_up = (with_retries 60 5sec {|n|
+        let copy = (try { published_commit $pki $target $port true } catch {|e| $e.msg })
+        { ok: ($copy == $head), final: false, detail: $"it answered ($copy | default 'with no commit')" }
+    })
+    if not $caught_up.ok { error make --unspanned { msg: $"the copy on Polar's git server did not reach ($head | str substring 0..11) after ($caught_up.tries) tries: ($caught_up.detail). See the logs of the polar-scheduler-observer" } }
+    print $"  ok: Polar's git server holds ($head | str substring 0..11), as the bootstrap repository does"
+}
+
+# Moves Flux to the copy on Polar's git server, which must hold what it reads now. Ready alone says nothing until the controller has seen this spec: the condition is still the old URL's.
+def "main switch" [target: string] {
+    let pki = (pki_dir $env.HOME $target)
+    apply_polar_auth $pki
+    let applied = (polar_git_repository $GIT_HOST ($GIT_PORT | into int) | to json | do { ^kubectl apply -f - } | complete)
+    if $applied.exit_code != 0 { error make --unspanned { msg: $"applying the source failed: ($applied.stderr | str trim)" } }
+    do { ^kubectl ...(reconcile_request $FLUX_NS $SOURCE_NAME (date now | format date "%+")) } | complete | ignore
+    let reading = (with_retries 36 5sec {|n|
+        let got = (do { ^kubectl -n $FLUX_NS get gitrepository $SOURCE_NAME -o json } | complete)
+        let source = (try { $got.stdout | from json } catch { {} })
+        let ready = ($source.status?.conditions? | default [] | where type == "Ready" | get -o 0)
+        { ok: (($source.status?.observedGeneration? | default 0) == ($source.metadata?.generation? | default (-1)) and $ready.status? == "True"), final: false, detail: ($ready.message? | default "no condition yet") }
+    })
+    if not $reading.ok { error make --unspanned { msg: $"Flux did not read Polar's git server after ($reading.tries) tries: ($reading.detail)" } }
+    print "  ok: Flux reads the deployment from Polar's git server"
+}
+
 # The commit the deployment repository's main branch is at, or null when nothing is published.
-def published_commit [pki: string, target: string, port: int] {
-    let r = (do { git_as_reader $pki [ls-remote (server_url $target $port) refs/heads/main] } | complete)
-    if $r.exit_code != 0 { error make --unspanned { msg: $"cannot read the deployment repository (is it running? nu infra/deploy-repo.nu ensure ($target)): ($r.stderr | str trim)" } }
-    let line = ($r.stdout | lines | where {|l| $l | str contains "refs/heads/main" })
+def published_commit [pki: string, target: string, port: int, handed_off: bool = false] {
+    # Polar's git server is one of the things a rollout replaces, and it is reached through a forward.
+    let read = (with_retries (if $handed_off { 6 } else { 1 }) 5sec {|n|
+        let r = (do { git_as_reader $pki [ls-remote (server_url $target $port $handed_off) refs/heads/main] $handed_off } | complete)
+        { ok: ($r.exit_code == 0), final: false, detail: (if $r.exit_code == 0 { $r.stdout } else { $r.stderr }) }
+    })
+    if not $read.ok { error make --unspanned { msg: $"cannot read the deployment repository (is it running? nu infra/deploy-repo.nu ensure ($target)): ($read.detail | str trim)" } }
+    let line = ($read.detail | lines | where {|l| $l | str contains "refs/heads/main" })
     if ($line | is-empty) { null } else { $line | first | split row "\t" | first | str trim }
 }
 
 # Clones the deployment repository as the reader and checks that its head is signed by the pipeline's certificate, which
 # chains to the deployment CA. Nothing is applied from a tree that does not pass.
-def fetch_verified [pki: string, target: string, port: int, into: string] {
-    let commit = (published_commit $pki $target $port)
+def fetch_verified [pki: string, target: string, port: int, into: string, handed_off: bool = false] {
+    let commit = (published_commit $pki $target $port $handed_off)
     if $commit == null { error make --unspanned { msg: $"nothing is published to deploy-($target): run nu infra/deploy-repo.nu publish ($target)" } }
     let signing = (ensure_signing $pki)
-    run_ok "cloning the deployment repository" { git_as_reader $pki [clone -q (server_url $target $port) $into] }
+    run_ok "cloning the deployment repository" { git_as_reader $pki [clone -q (server_url $target $port $handed_off) $into] $handed_off }
     let verified = (with-env { GNUPGHOME: $signing.home } {
         let r = (do { ^git -C $into -c gpg.format=x509 -c gpg.x509.program=gpgsm verify-commit HEAD } | complete)
         do { ^gpgconf --kill gpg-agent } | complete | ignore
@@ -222,6 +301,7 @@ def fetch_verified [pki: string, target: string, port: int, into: string] {
 def "main install" [
     target: string
     --port: int = 9443          # this machine's end of the forward to the deployment git server
+    --handed-off                # the deployment is on Polar's git server
 ] {
     let config = (load_config $target)
     let pki = (pki_dir $env.HOME $target)
@@ -232,7 +312,7 @@ def "main install" [
     # Before anything touches the cluster: the published tree is the one the pipeline signed.
     let work = (mktemp -d)
     let copy = ($work | path join "repo")
-    let commit = (try { fetch_verified $pki $target $port $copy } catch {|e| rm -rf $work; error make --unspanned { msg: $e.msg } })
+    let commit = (try { fetch_verified $pki $target $port $copy $handed_off } catch {|e| rm -rf $work; error make --unspanned { msg: $e.msg } })
     print $"  ok: deploy-($target) at ($commit | str substring 0..11) is signed by the pipeline's certificate"
     let objects = ["gitrepository.yaml" "kustomizations.yaml"] | each {|f| $copy | path join "flux" $f }
     for f in $objects { if not ($f | path exists) { rm -rf $work; error make --unspanned { msg: $"the published tree has no ($f | path relative-to $copy)" } } }
@@ -243,14 +323,19 @@ def "main install" [
     run_ok "waiting for Flux's controllers" { ^kubectl -n $FLUX_NS rollout status deploy/source-controller deploy/kustomize-controller --timeout=300s } | ignore
     print "  ok: source-controller and kustomize-controller are running"
 
-    # The `flux` identity's certificate and key, and the deployment CA, are what Flux presents and trusts. They go
+    # The `flux` identity's certificate and key, and the CA of the server it reads, are what Flux presents and trusts. They go
     # from the files into the Secret without being printed or written anywhere else.
-    let secret = (run_ok "building the credentials Secret" {
-        ^kubectl -n $FLUX_NS create secret generic $AUTH_SECRET $"--from-file=tls.crt=($pki | path join $'($READER).pem')" $"--from-file=tls.key=($pki | path join $'($READER).key')" $"--from-file=ca.crt=($pki | path join 'ca.pem')" --dry-run=client -o yaml
-    })
-    let applied = ($secret | do { ^kubectl apply -f - } | complete)
-    if $applied.exit_code != 0 { rm -rf $work; error make --unspanned { msg: "applying the credentials Secret failed" } }
-    print $"  ok: secret/($AUTH_SECRET) holds the ($READER) identity"
+    if $handed_off {
+        apply_polar_auth $pki
+        print $"  ok: secret/($POLAR_AUTH_SECRET) holds the ($READER) identity"
+    } else {
+        let secret = (run_ok "building the credentials Secret" {
+            ^kubectl -n $FLUX_NS create secret generic $AUTH_SECRET $"--from-file=tls.crt=($pki | path join $'($READER).pem')" $"--from-file=tls.key=($pki | path join $'($READER).key')" $"--from-file=ca.crt=($pki | path join 'ca.pem')" --dry-run=client -o yaml
+        })
+        let applied = ($secret | do { ^kubectl apply -f - } | complete)
+        if $applied.exit_code != 0 { rm -rf $work; error make --unspanned { msg: "applying the credentials Secret failed" } }
+        print $"  ok: secret/($AUTH_SECRET) holds the ($READER) identity"
+    }
 
     # The source first, and wait until Flux has fetched the repository: Kustomizations applied before that report
     # "Source artifact not found" and retry after 30 seconds.
@@ -267,9 +352,10 @@ def "main wait" [
     target: string
     --port: int = 9443
     --timeout: duration = 20min
+    --handed-off                # the deployment is on Polar's git server
 ] {
     let pki = (pki_dir $env.HOME $target)
-    let commit = (published_commit $pki $target $port)
+    let commit = (published_commit $pki $target $port $handed_off)
     if $commit == null { error make --unspanned { msg: $"nothing is published to deploy-($target)" } }
     print $"  waiting for every layer to be Ready at ($commit | str substring 0..11)..."
     # What was just published need not wait for the source's next poll. If this fails, it only means waiting for that poll.

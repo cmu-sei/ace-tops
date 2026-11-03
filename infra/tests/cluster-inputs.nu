@@ -24,7 +24,7 @@
 # The inputs that belong to one cluster: how they are added, when they are discarded, and how they meet the target's own env.
 
 use std/assert
-use ../cluster-inputs.nu [admins_of, another_clusters, empty, env_for, env_merged, path_of, reconcile, topology_of, with_admin, with_topology]
+use ../cluster-inputs.nu [ADMINS_VAR, handed_off_of, inputs_from_record, with_handed_off, admins_of, another_clusters, empty, env_for, env_merged, path_of, reconcile, topology_of, with_admin, with_topology]
 
 def main [] {
     let tests = [
@@ -48,6 +48,35 @@ def main [] {
                 assert (another_clusters $tied null)
                 assert equal (topology_of (reconcile $tied "ca-B")) null
                 assert equal (topology_of (empty)) null
+            }
+        }
+        {
+            name: "a machine without a cluster's inputs takes them from that cluster's signed record, and another cluster's record gives it nothing"
+            body: {
+                let values = { polar-git-server: { env: [[name, value]; [$ADMINS_VAR, "alice"]] } }
+                let fact = { file: "f", sha256: "s", cluster_ca_sha256: "ca-1", topology: "separated", values: $values }
+                let got = (inputs_from_record $fact "ca-1")
+                assert equal $got.cluster "ca-1"
+                assert equal $got.workloads $values
+                assert equal (topology_of $got) "separated"
+                assert equal (admins_of $got) ["alice"] "the person who publishes stays an administrator"
+                assert (handed_off_of $got) "only a handed-off cluster's record is read"
+                assert equal (inputs_from_record $fact "ca-2") null
+                assert equal (inputs_from_record null "ca-1") null
+                assert equal (inputs_from_record ($fact | reject values) "ca-1").workloads {}
+            }
+        }
+        {
+            name: "whether the deployment is handed off is recorded for the render, keeps the rest, and is false until it is"
+            body: {
+                assert (not (handed_off_of (empty)))
+                let on = (with_handed_off ((with_topology (empty) "separated" "ca-A").inputs) true "ca-A")
+                assert $on.changed
+                assert (handed_off_of $on.inputs)
+                assert equal (topology_of $on.inputs) "separated"
+                assert (not (with_handed_off $on.inputs true "ca-A").changed)
+                assert (not (handed_off_of (with_handed_off $on.inputs false "ca-A").inputs))
+                assert (not (with_handed_off (empty) false null).changed) "nothing is written to say what is already so"
             }
         }
         {

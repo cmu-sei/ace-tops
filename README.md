@@ -250,6 +250,10 @@ and waits while Flux applies them layer by layer. Signing needs `gpgsm` (in the 
 `mirror.git`, which a new cluster's server is given. Add `--allow-dirty` if the checkout has uncommitted changes (the
 signed record says so). `infra/INFRA.md` ("How a target works") explains what it does.
 
+At the end of that first run the deployment moves to Polar's own git server, and the deployment git server goes: from then
+on a cluster hosts itself, and a run publishes there as an administrator. If a bad commit stops that server, `up.nu <target>
+--bootstrap-again` brings the deployment git server back from `mirror.git` to apply the fix, and the next run moves it again.
+
 *Topology, the choice:* the target deploys in `single` unless a cluster chooses another. On a cluster whose nodes carry the pools:
 
 ```bash

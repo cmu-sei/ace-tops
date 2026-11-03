@@ -147,6 +147,15 @@ def main [] {
             assert equal (pools_deployed [(do $placed "writers") $plain (do $placed "core") (do $placed "core")] | sort) ["core" "writers"]
         }
 
+        # docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": once handed off, the copy's capability, with its write and its key, goes.
+        "the deployment copy is needed only until the handoff": {
+            let needs = ["cassini" "deployment-copy" "tracing"]
+            assert equal (needs_in_force $needs false) $needs
+            assert equal (needs_in_force $needs true) ["cassini" "tracing"]
+            assert equal (deployment_writers false) '["polar-scheduler-observer.polar.serviceaccount.cluster.local"]'
+            assert equal (deployment_writers true) '[]'
+        }
+
         # nix-usernetes' contract: a pod with a pool's selector and toleration stays Pending unless a node carries that pool.
         "up.nu finds a pool no node carries before anything is deployed": {
             let nodes = [

@@ -81,6 +81,24 @@ export def admins_of [inputs: record] {
     if ($found | is-empty) { [] } else { $found | first | get value | split row "," | each {|i| $i | str trim } | where {|i| $i != "" } }
 }
 
+# Whether this cluster's deployment is handed off to Polar's git server. Where Flux reads says so; this is that fact where the render can read it (infra/up.nu).
+export def handed_off_of [inputs: record] { $inputs | get -o handed_off | default false }
+
+# This cluster's inputs from its signed record, `provenance.json`'s `cluster_inputs` (`cluster_inputs_fact`, infra/deploy-repo.nu), for a machine that holds none: rendering without them would take its administrators away. Null when the record is not this cluster's.
+export def inputs_from_record [fact: any, cluster: string] {
+    if $fact == null or ($fact | get -o cluster_ca_sha256) != $cluster { return null }
+    { cluster: $cluster, workloads: ($fact | get -o values | default {}), topology: ($fact | get -o topology), handed_off: true }
+}
+
+# The inputs with that recorded, for `cluster`. `changed` is false when nothing would change.
+export def with_handed_off [inputs: record, handed_off: bool, cluster: any] {
+    let current = (reconcile $inputs $cluster)
+    if (handed_off_of $current) == $handed_off and (handed_off_of $inputs) == $handed_off {
+        return { inputs: $current, changed: false }
+    }
+    { inputs: ($current | upsert handed_off $handed_off), changed: true }
+}
+
 # The inputs with `identity` among the git server's administrators, for `cluster`. `changed` is false when it already was.
 export def with_admin [inputs: record, identity: string, cluster: string] {
     let current = (reconcile $inputs $cluster)

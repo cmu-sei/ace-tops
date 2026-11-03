@@ -73,6 +73,7 @@ use forwards.nu [ensure_observer_forward, forward_live, stop_stale]
 use egress.nu [egress_report, kube_probe, probe_url]
 use seed.nu
 use cluster-inputs.nu
+use flux.nu [cluster_handed_off]
 use tools.nu
 use runtime.nu [container_runtime]
 use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
@@ -351,7 +352,7 @@ def check_topology_fits [target: string] {
     if ($name | is-not-empty) { ok $"topology ($name)" }
 }
 
-def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, topology: string] {
+def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, topology: string, handed_off: bool, forwards: list] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
     }
@@ -375,7 +376,9 @@ def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, top
     # This machine's record of another cluster is not this one's. Only here, with the cluster known to answer: a cluster
     # that does not answer has no CA to compare, and its record would look like another's.
     discard_other_clusters_inputs $config.name
+    if $handed_off { restore_inputs_from_record $config.name $forwards }
     if ($topology | is-not-empty) { choose_topology $config.name $topology }
+    if ($config.gitops? | default false) { record_handed_off $config.name $handed_off }
     check_topology_fits $config.name
     let ssl = (do { ^openssl version } | complete)
     let no_ext = (openssl_problem (if $ssl.exit_code == 0 { $ssl.stdout | str trim } else { "" }))
@@ -569,12 +572,47 @@ def run_script [args: list<string>] {
 
 def step_deploy_host [target: string] { run_script [infra/deploy-repo.nu ensure $target] }
 
-def step_publish [target: string, allow_dirty: bool] {
-    run_script ([infra/deploy-repo.nu publish $target] ++ (if $allow_dirty { ["--allow-dirty"] } else { [] }))
+def step_publish [target: string, allow_dirty: bool, polar_as: string = ""] {
+    run_script ([infra/deploy-repo.nu publish $target] ++ (if $allow_dirty { ["--allow-dirty"] } else { [] }) ++ (if ($polar_as | is-empty) { [] } else { ["--to-polar-as" $polar_as] }))
 }
 
-def step_flux [target: string] { run_script [infra/flux.nu install $target] }
-def step_flux_wait [target: string] { run_script [infra/flux.nu wait $target] }
+def step_flux [target: string, handed_off: bool = false] { run_script ([infra/flux.nu install $target] ++ (if $handed_off { ["--handed-off"] } else { [] })) }
+def step_flux_wait [target: string, handed_off: bool = false] { run_script ([infra/flux.nu wait $target] ++ (if $handed_off { ["--handed-off"] } else { [] })) }
+
+# This cluster's handoff to Polar's git server, in the order a crash can stop at any point of (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server"). Flux moves while both repositories hold the same commit, so where it reads says what state the cluster is in; the commit that takes away the agent's write is then an ordinary publish, and the next run makes it if this one does not. What is left of the bootstrap goes last, on any run.
+def step_handoff [target: string, username: string, allow_dirty: bool] {
+    if not (cluster_handed_off) {
+        run_script [infra/flux.nu copied $target]
+        run_script [infra/flux.nu switch $target]
+        record_handed_off $target true
+        step_render $target --quiet
+        step_publish $target $allow_dirty $username
+        step_flux_wait $target true
+        wait_pods (seed_waits) 10min
+    }
+    run_script [infra/deploy-repo.nu retire $target]
+}
+
+# A machine with no inputs for a handed-off cluster (it last ran against another, or never did) takes them from the cluster's signed record. Publishing without them would take its administrators away, and the person who publishes with them, leaving only --bootstrap-again.
+def restore_inputs_from_record [target: string, forwards: list] {
+    let path = (cluster_inputs_path $target)
+    let cluster = (cluster_fingerprint)
+    if $cluster == null or (cluster-inputs read_inputs $path).cluster == $cluster { return }
+    step_forwards ($forwards | where name == "git")
+    let read = (do { ^$nu.current-exe infra/flux.nu recorded-inputs $target } | complete)
+    if $read.exit_code != 0 { fail $"this machine has no inputs for this cluster, and its record cannot be read: ($read.stderr | str trim). If Polar's git server cannot be brought back: nu infra/up.nu ($target) --bootstrap-again" }
+    let restored = (cluster-inputs inputs_from_record ($read.stdout | lines | last | from json) $cluster)
+    if $restored == null { fail $"this machine has no inputs for this cluster, and the record on its git server is another cluster's: nu infra/up.nu ($target) --bootstrap-again" }
+    $restored | to nuon --indent 2 | save --force $path
+    note $"took this cluster's inputs from its signed record: ($path | path relative-to $env.PWD)"
+}
+
+# Writes down where Flux reads, which is what the render takes it from.
+def record_handed_off [target: string, handed_off: bool] {
+    let path = (cluster_inputs_path $target)
+    let recorded = (cluster-inputs with_handed_off (cluster-inputs read_inputs $path) $handed_off (cluster_fingerprint))
+    if $recorded.changed { $recorded.inputs | to nuon --indent 2 | save --force $path }
+}
 
 # `quiet` (the seed's re-apply, after the first) prints only what changed and what restarts.
 def step_infra [config: record, --quiet] {
@@ -791,7 +829,7 @@ def seed_jira_credential [target: string, config: record, username: string, repo
     [{ path: $seed.JIRA_CREDENTIAL_PATH, section: $"($seed.JIRA_AGENT) ($seed.CREDENTIALS_SECTION)" }]
 }
 
-def step_seed [target: string, config: record, username: string, mail: string, allow_dirty: bool] {
+def step_seed [target: string, config: record, username: string, mail: string, allow_dirty: bool, handed_off: bool] {
     wait_pods (seed_waits) 10min
     let dir = (admin_dir)
     let root = $env.PWD
@@ -818,8 +856,8 @@ def step_seed [target: string, config: record, username: string, mail: string, a
                 note $"recorded this cluster's administrator ($identity) in ($path | path relative-to $env.PWD); applying it to the git server"
                 step_render $target --quiet
                 if ($config.gitops? | default false) {
-                    step_publish $target $allow_dirty
-                    step_flux_wait $target
+                    step_publish $target $allow_dirty (if $handed_off { $username } else { "" })
+                    step_flux_wait $target $handed_off
                 } else {
                     step_infra $config --quiet
                 }
@@ -916,6 +954,7 @@ def main [
     --allow-dirty           # Publish a gitops target from a working tree with uncommitted changes (the provenance records it)
     --import-from: string = ""  # Copy the published images into the registry first, e.g. docker.io/<account> (infra/images.nu import)
     --import-tag: string = ""   # With --import-from: the release to import, e.g. 2.0.0 (images published as polar-<image>:<tag>-<arch>)
+    --bootstrap-again       # Polar's git server cannot be brought back: run the bootstrap repository from this machine's mirror and read from it; the next run hands off again
     --topology: string = ""     # Which of the target's layouts this cluster is deployed in, e.g. single or separated; kept for it until another is chosen
 ] {
     if not ("infra/render.nu" | path exists) {
@@ -938,7 +977,9 @@ def main [
     if ($import_tag | is-not-empty) and ($import_from | is-empty) {
         fail "--import-tag names a release to import: give --import-from too"
     }
-    let plan = (build_plan $config $dev { in_cluster: $in_cluster, import_from: $import_from })
+    # Where this cluster's Flux reads says whether it is handed off. This machine's record of that can be another cluster's, or gone.
+    let handed_off = ($config.gitops? | default false) and (cluster_handed_off) and (not $bootstrap_again)
+    let plan = (build_plan $config $dev { in_cluster: $in_cluster, import_from: $import_from, handed_off: $handed_off, bootstrap_again: $bootstrap_again })
     let enabled = ($plan | where on)
     let waits = (build_waits $config)
     let forwards = (build_forwards $config)
@@ -957,7 +998,7 @@ def main [
         print ""
         print $"[($it.index + 1)/($total)] ($s.title)"
         match $s.id {
-            "preflight" => { step_preflight $config (needs_runtime $plan) $allow_dirty $topology }
+            "preflight" => { step_preflight $config (needs_runtime $plan) $allow_dirty $topology $handed_off $forwards }
             "registry" => { cluster-registry ensure $target | ignore }
             "images" => { $prepared = (step_images $target $in_cluster $dev $import_from $import_tag) }
             "render" => { step_render $target $prepared $config }
@@ -966,9 +1007,14 @@ def main [
             "infra" => { step_infra $config }
             "secrets" => { step_secrets $config }
             "deploy-host" => { step_deploy_host $target }
-            "publish" => { step_publish $target $allow_dirty }
-            "flux" => { step_flux $target }
-            "flux-wait" => { step_flux_wait $target }
+            # Publishing to Polar's git server takes a forward to it and a person it knows.
+            "deployment-forward" => {
+                step_forwards $forwards
+                step_admin $username $mail
+            }
+            "publish" => { step_publish $target $allow_dirty (if $handed_off { $username } else { "" }) }
+            "flux" => { step_flux $target $handed_off }
+            "flux-wait" => { step_flux_wait $target $handed_off }
             "pods" => {
                 wait_pods $waits 10min
                 report_stale_images
@@ -976,7 +1022,8 @@ def main [
             "forwards" => { step_forwards $forwards }
             "admin" => { step_admin $username $mail }
             "browser" => { step_browser $username }
-            "seed" => { step_seed $target $config $username $mail $allow_dirty }
+            "seed" => { step_seed $target $config $username $mail $allow_dirty $handed_off }
+            "handoff" => { step_handoff $target $username $allow_dirty }
         }
     }
 

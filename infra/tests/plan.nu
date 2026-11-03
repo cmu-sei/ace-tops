@@ -51,6 +51,30 @@ def main [] {
             }
         }
         {
+            name: "a cluster handed off to Polar's git server has no deployment git server to run, and publishes through a forward to Polar's"
+            body: {
+                let c = (config ["cert-issuer" "neo4j"] ["namespaces.yaml" "credentials-agent.yaml" "polar-git-server.yaml" "polar-scheduler-observer.yaml"] | insert gitops true)
+                let on = {|plan, id| $plan | where id == $id | first | get on }
+                let before = (build_plan $c false)
+                assert (do $on $before "deploy-host")
+                assert (not (do $on $before "deployment-forward"))
+                assert (do $on $before "handoff") "a new cluster is handed off at the end of its bring-up"
+                let after = (build_plan $c false { handed_off: true })
+                assert (not (do $on $after "deploy-host"))
+                assert (do $on $after "deployment-forward")
+                assert (do $on $after "publish")
+                assert (do $on $after "handoff") "what is left of the bootstrap is removed, on any run"
+                let ids = ($after | get id)
+                let at = {|id| $ids | enumerate | where item == $id | first | get index }
+                assert ((do $at "deployment-forward") < (do $at "publish"))
+                assert ((do $at "seed") < (do $at "handoff"))
+                # --bootstrap-again, to recover: it runs the bootstrap server and hands nothing off in that run.
+                let recovering = (build_plan $c false { bootstrap_again: true })
+                assert (do $on $recovering "deploy-host")
+                assert (not (do $on $recovering "handoff"))
+            }
+        }
+        {
             name: "a container runtime is needed here only to build images (--dev) with the registry on this machine"
             body: {
                 let c = (config ["cert-issuer" "neo4j"] ["namespaces.yaml" "credentials-agent.yaml" "polar-git-server.yaml"])

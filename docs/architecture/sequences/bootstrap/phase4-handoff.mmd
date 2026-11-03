@@ -19,43 +19,50 @@
 %%
 %% DM26-0670
 
-%% Handing a cluster's deployment over to Polar's own git server (cluster-bootstrap.md, "Handing off to Polar's git server"). All designed, nothing
-%% built. Who makes the copy, and how Flux is identified to the server, are open.
+%% Handing a cluster's deployment over to Polar's own git server (cluster-bootstrap.md, "Handing off to Polar's git server").
+%% Built and run, but for the last box's two last lines: the facts the configuration agent reads for the attestation agent (runtime-attestation.md).
 sequenceDiagram
     autonumber
-    actor Op as Operator
+    actor Op as Operator (up.nu)
     participant Boot as Bootstrap git server (polar-deploy)
     participant Flux as Flux
     participant Git as Polar's git server
     participant Cfg as Configuration agent
     participant Att as Attestation agent
 
-    rect rgb(235, 219, 178)
-    Note over Op,Flux: DESIGNED: the bootstrap, as it is today. Polar's git server does not exist yet
-    Op->>Boot: commit the layers, signed by the pipeline certificate
+    Note over Op,Git: The bootstrap
+    Op->>Boot: commit the layers, signed by the pipeline certificate, with a copy to mirror.git
     Flux->>Boot: read them, and apply them
     Flux->>Git: Polar's git server comes up, among the layers
+    loop every 10 s
+        Cfg->>Boot: read main, with its certificate of the deployment PKI
+        Cfg->>Git: push it to deployment. The server refuses a commit the pipeline did not sign
     end
 
-    rect rgb(235, 219, 178)
-    Note over Boot,Git: DESIGNED: the handoff, once
-    Boot-->>Git: the signed history, copied to deploy-T. The server refuses a commit the pipeline did not sign
-    Op->>Git: a signed commit: Flux's source is now Polar's git server
-    Flux->>Git: read from here on
-    Op->>Boot: remove it. Its history stays in mirror.git, off the cluster
-    end
+    Note over Op,Git: The handoff, once. A crash at any point resumes: where Flux reads says how far it got
+    Op->>Git: wait until the copy holds the bootstrap's head
+    Op->>Flux: read from Polar's git server now, while both hold the same commit
+    Flux->>Git: read it
+    Op->>Git: as an administrator, the commit that takes the agent's write, its settings and its key
+    Git-->>Cfg: no copying from here on
+    Op->>Boot: remove it. Its history stays in Polar's git server and in mirror.git, off the cluster
 
-    rect rgb(235, 219, 178)
-    Note over Op,Att: DESIGNED: at nominal
-    Op->>Git: a new deployment: a commit the pipeline signed
+    Note over Op,Att: At nominal
+    Op->>Git: a new deployment: a commit the pipeline signed, pushed as an administrator
     Git->>Git: verify the signature to the deployment CA, or refuse the push
     Flux->>Git: read it, and apply it
+    rect rgb(235, 219, 178)
+    Note over Cfg,Att: DESIGNED: slice A's signed record
     Cfg->>Git: read it, as it reads polar-schedules
     Cfg-)Att: the deployment's facts, as signed configuration
-    Att->>Att: verify them to the deployment CA, for this section alone
     end
 
-    rect rgb(235, 219, 178)
-    Note over Op,Git: DESIGNED: if a bad commit stops Polar's git server, running pods keep running
-    Op->>Boot: bring it back, from mirror.git, and point Flux at it to apply the fix
-    end
+    Note over Op,Git: If the server lost its data
+    Flux->>Git: bring it back, from the artifact Flux holds, empty
+    Op->>Git: give it mirror.git's history, then publish on top
+
+    Note over Op,Git: If a signed commit stops the server (up.nu --bootstrap-again), running pods keep running
+    Op->>Boot: bring it back, from mirror.git, and publish the fix on top of the bad commit
+    Op->>Flux: read from the bootstrap server
+    Flux->>Git: apply the fix
+    Op->>Op: the next run hands off again

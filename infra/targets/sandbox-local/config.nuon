@@ -34,6 +34,8 @@
   cluster: {
     issuance: { floor_enforced: true }
     registry_in_cluster: { node_port: 30500, local_port: 5001 }
+    # The bootstrap repository, which the configuration agent copies until the handoff to Polar's git server is done (docs/architecture/cluster-bootstrap.md).
+    deployment_source: "https://polar-deploy-git.polar-deploy.svc.cluster.local:9443/deploy-sandbox-local.git"
     # The dedicated node pools its cluster has (nix-usernetes' u7c: a node each, labelled and tainted polar.dev/pool=<pool>),
     # where each workload goes by its catalog entry's pool; the rest go to the open pool, services
     # (docs/architecture/placement.md).
@@ -126,13 +128,7 @@
     kube-observer: { issuer: "credentials-agent" }
     git-repo-observer: { issuer: "credentials-agent" }
     git-repo-controller: { issuer: "credentials-agent" }
-    polar-scheduler-observer: {
-      issuer: "credentials-agent"
-      env: [
-        # The bootstrap repository, until the handoff to Polar's git server is done (docs/architecture/cluster-bootstrap.md).
-        { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL", value: "https://polar-deploy-git.polar-deploy.svc.cluster.local:9443/deploy-sandbox-local.git" }
-      ]
-    }
+    polar-scheduler-observer: { issuer: "credentials-agent" }
     # Group 3: the graph agents, which present their one client certificate to Neo4j too (graph-write).
     kube-consumer: { issuer: "credentials-agent" }
     jira-processor: { issuer: "credentials-agent" }

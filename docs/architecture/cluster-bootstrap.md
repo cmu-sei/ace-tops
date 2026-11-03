@@ -111,7 +111,7 @@ probe). The bootstrap-admin exchange itself is drawn in `sequences/general/admin
 
 ## Handing off to Polar's git server
 
-Status, 2026-11-02: the shape, decided with the maintainer. Nothing here is built, and everything above is as it runs today. [The diagram](sequences/bootstrap/phase4-handoff.svg).
+Status, 2026-11-02: built, and run on one- and four-node clusters (u7s and u7c), recovery included. The steps above are the bootstrap, up to the handoff at the end of a cluster's first bring-up. [The diagram](sequences/bootstrap/phase4-handoff.svg).
 
 *The maintainer:* the bootstrap repository is for the bootstrap. Once Polar is up, its contents are copied to Polar's own git server, Flux follows the copy, and the bootstrap
 server is removed. So at nominal a cluster hosts itself: one git server, one set of identities and policy, the deployment on the same audited path as everything else. Trust does not move with
@@ -120,19 +120,36 @@ the hosting: commits still chain to the deployment CA, whose key stays on the op
 *The cost, accepted:* Flux deploys the server it reads from, so a bad commit that stops that server blocks its own fix. Running pods keep running. The way back is a bootstrap server
 brought up from `mirror.git`, which stays off the cluster, with Flux pointed at it for the fix.
 
-**To settle before it is built:**
+**The order** (`up.nu`, `step_handoff`; the last step before the browser's). Where Flux reads says which state a cluster is in: `up.nu` asks the GitRepository before it plans, since this machine's record of that can be another cluster's, or gone. A crash at any point resumes.
+
+1. Wait until the copy on Polar's git server holds the bootstrap repository's head (`flux.nu copied`). Only this machine publishes, so that head holds still.
+2. Move Flux to the copy while both hold the same commit (`flux.nu switch`: Secret `deployment-auth`, the GitRepository, and a wait on the controller having seen that spec, since `Ready` is still the old URL's until it has). The artifact's revision does not change, so nothing else does.
+3. Record `handed_off` in `cluster-inputs.nuon`, for the render.
+4. Render and publish, to `deployment` as the person running it (below, item 4), the commit that takes the agent's write, its copy settings and its key (`needs_in_force`, `deployment_writers`, infra/rules.nu). This is an ordinary publish, and a run that stopped before it makes it on its next run.
+5. Wait for Flux, then remove the namespace `polar-deploy`, the Secrets `deployment-reader` and `deploy-repo-auth`, and the forward (`deploy-repo.nu retire`), on any later run too. `polar-deploy-ca` stays: the git server checks commits with it.
+
+From then on a run has no deployment git server to start. It starts the forwards and the admin flow first, because publishing takes them, and publishes through `git` as an administrator.
+
+**When it goes wrong.** Both were done on purpose, on u7s:
+
+- *The server lost its data* (the volume deleted). Flux brings the server back from the artifact it holds, empty. A plain `up.nu` gives it `mirror.git`'s history before anything goes on top (`restore_needed`), the same rule as a new bootstrap server's: otherwise the publish would start a new root and the mirror would follow it. `polar-schedules` has no such mirror: the seed puts back what it seeded, and what people signed later is gone (`remaining-work.md`).
+- *A signed commit stops the server* (an image that does not exist, under its `Recreate` strategy, so no old pod serves). A plain `up.nu` refuses and says what follows: `up.nu T --bootstrap-again` brings up the bootstrap server from the mirror, publishes the fix on top of the bad commit, and moves Flux back. The next plain run hands off again. History stays whole: the bad commit is in it, under the fix, on one root.
+
+**A machine without a cluster's inputs takes them from the cluster's record.** Moving between clusters discards `cluster-inputs.nuon`, and a publish without it took the cluster's administrators away, among them the person publishing: found on u7s, where it left only `--bootstrap-again`. So on a handed-off cluster a run with no inputs reads `cluster_inputs` from the verified head's `provenance.json` (`inputs_from_record`), and refuses if that is another cluster's. The topology comes back the same way, so `--topology` is only for a change. Before the handoff the pipeline pushes, so nothing is locked out, and the seed puts the administrator back.
+
+**What was settled before it was built:**
 
 1. *The signature is checked by no one after install* (item 4 of "Not settled"), which is true today and not only after the handoff: whoever can write to the repository can deploy anything. The
    handoff needs `polar-git-server` to refuse a commit to `deploy-T` that the pipeline did not sign. The server's image has no `gpgsm`, so it uses a verifier in Rust: `polar_signing::commit::verify_commit`
    (built 2026-11-02). It reads the BER `gpgsm` writes, and is tested against a real commit with every single-bit change of it refused.
    The server's side is built too (`polar-git-server`, `signed.rs`; a repository's `signed_by`): a push is read into a quarantine, and git is given it only if every commit it brings and the head of every ref it
-   moves is signed. A head's certificate must be valid now, and what is under it when it was made, or a repository could not be copied a year on (for review). No deployed repository sets it yet.
+   moves is signed. A head's certificate must be valid now, and what is under it when it was made, or a repository could not be copied a year on (for review). `deployment` sets it.
 2. ~~Who makes the copy.~~ *Decided (the maintainer, 2026-11-02):* the configuration agent, which reads the bootstrap repository once with one client certificate from the deployment PKI, and whose
    write access to `deploy-T` is withdrawn when the copy is done. It runs on the low-trust `observers` pool, so item 1 comes first: with it, the agent could copy signed commits and forge none.
 3. ~~How Flux is identified to Polar's git server.~~ *Decided (the maintainer, 2026-11-02):* for now, the server also trusts the deployment CA, and what that CA signs is named `deployment:<name>`, so it speaks for no one in Polar (`tls.rs`, `ClientIdentities`). `deployment:flux` may read the repository `deployment` alone. Flux
    reads its credential only from a Secret, and nothing renews one. Moving Flux onto `polar-init` was considered, and then replacing Flux with a controller of Polar's own: `gitops-controller.md` (a proposal).
-4. *Who publishes later.* `pipeline` still signs the commit, but it pushes with a Polar identity now, since the server's mTLS is Polar's: the admin's certificate.
-5. *What a cluster on 3.0.0 does.* Its repository moves the same way, by a step of the next release's migration.
+4. ~~Who publishes later.~~ `pipeline` still signs the commit, but it pushes with a Polar identity now, since the server's mTLS is Polar's: the admin's certificate.
+5. *What a cluster on 3.0.0 does.* Its repository moves the same way, by a step of the next release's migration. Not written yet: the next release's.
 
 ## What looks odd, and why
 

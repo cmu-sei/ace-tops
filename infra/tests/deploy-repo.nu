@@ -24,7 +24,8 @@
 # The deployment git server's pure decisions: its PKI, its repository, its container arguments.
 
 use std/assert
-use ../deploy-repo.nu [deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
+use ../deploy-objects.nu [is_handed_off, polar_git_repository]
+use ../deploy-repo.nu [restore_needed, deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
 
 def main [] {
     let tests = [
@@ -156,6 +157,8 @@ def main [] {
                     { name: "agents", depends_on: ["flux"], wait_for: [], files: ["job.yaml"] }
                 ]
                 let texts = { "ns.yaml": "kind: Namespace\nmetadata:\n  name: polar\n", "job.yaml": "kind: Job\nmetadata:\n  name: a\n", "flux.yaml": "kind: Deployment\nmetadata:\n  name: f\n" }
+                let handed = (tree_files "t" $layers $texts (server_name "cluster.local") { schema: 1, target: "t" } --polar-host "polar-git-server.polar.svc.cluster.local:8443")
+                assert ($handed | where path == "flux/gitrepository.yaml" | first | get text | str contains "deployment.git") "a handed-off tree names Polar's git server"
                 let files = (tree_files "t" $layers $texts (server_name "cluster.local") { schema: 1, target: "t" })
                 let paths = ($files | get path)
                 assert ("layers/platform/ns.yaml" in $paths)
@@ -178,6 +181,28 @@ def main [] {
                 let repo = (repos_json "t" | from json | get repos | first)
                 assert ("configuration-agent" in $repo.readers)
                 assert (not ("configuration-agent" in $repo.writers))
+            }
+        }
+        {
+            name: "a server that lost the history is given the mirror's before anything goes on top, so a new root never replaces the record"
+            body: {
+                assert (restore_needed "" "abc")
+                assert (not (restore_needed "abc" "abc"))
+                assert (not (restore_needed "def" "abc")) "a server with a history keeps it"
+                assert (not (restore_needed "" "")) "with no mirror there is nothing to give"
+                assert (not (restore_needed "abc" ""))
+            }
+        }
+        {
+            name: "where Flux reads says whether a cluster is handed off, and that is read from the cluster"
+            body: {
+                assert (is_handed_off "https://polar-git-server.polar.svc.cluster.local:8443/deployment.git")
+                assert (not (is_handed_off "https://polar-deploy-git.polar-deploy.svc.cluster.local:9443/deploy-sandbox-local.git"))
+                assert (not (is_handed_off ""))
+                let source = (polar_git_repository "polar-git-server.polar.svc.cluster.local" 8443)
+                assert equal $source.spec.url "https://polar-git-server.polar.svc.cluster.local:8443/deployment.git"
+                assert equal $source.spec.secretRef.name "deployment-auth"
+                assert (is_handed_off $source.spec.url)
             }
         }
         {

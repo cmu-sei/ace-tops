@@ -107,6 +107,13 @@ export def forward_live [ns: string, svc: string, current?: string]: nothing -> 
     live (processes $ns $svc) ($current | default ($env.KUBECONFIG? | default ""))
 }
 
+# Stops the forward's processes for good, the loop with its kubectl, and says how many.
+export def stop [ns: string, svc: string]: nothing -> int {
+    let pids = (processes $ns $svc | get pid)
+    for pid in $pids { do { ^kill $pid } | complete | ignore }
+    $pids | length
+}
+
 # Stops the forward's processes that reach another cluster, by their pids, and says how many.
 export def stop_stale [ns: string, svc: string, current?: string]: nothing -> int {
     let pids = (stale (processes $ns $svc) ($current | default ($env.KUBECONFIG? | default "")))

@@ -416,34 +416,55 @@ def main [] {
         # docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": the deployment is a repository of Polar's git server, whose commits the pipeline must have
         # signed, that Flux may read and nothing may write yet. The server is given the deployment CA to check them with.
         "the configuration agent is given what it copies the deployment with, and only it": {
-            let r = (resolve "polar-scheduler-observer")
-            assert (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" | str contains "polar-deploy-git.polar-deploy.svc") "the bootstrap repository"
-            assert (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" | str ends-with "/deployment.git")
-            assert equal (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_KEY") "/etc/polar-deployment-reader/tls.key"
-            let volume = ($r.volumes | where name == "deployment-reader" | first)
-            assert equal $volume.secret "deployment-reader"
-            assert ($r.mounts | where name == "deployment-reader" | first | get read_only)
-            for n in (^nu $RESOLVER names | from json | where {|n| $n != "polar-scheduler-observer" }) {
-                assert ((resolve_for sandbox-local $n).volumes | where name == "deployment-reader" | is-empty) $n
+            # A throwaway copy of the target, so this machine's own cluster-inputs.nuon, whichever way it is, is not read.
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                let r = (resolve_for $t "polar-scheduler-observer")
+                assert (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" $t | str contains "polar-deploy-git.polar-deploy.svc") "the bootstrap repository"
+                assert (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" $t | str ends-with "/deployment.git")
+                assert equal (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_KEY" $t) "/etc/polar-deployment-reader/tls.key"
+                let volume = ($r.volumes | where name == "deployment-reader" | first)
+                assert equal $volume.secret "deployment-reader"
+                assert ($r.mounts | where name == "deployment-reader" | first | get read_only)
+                for n in (^nu $RESOLVER names --target $t | from json | where {|n| $n != "polar-scheduler-observer" }) {
+                    assert ((resolve_for $t $n).volumes | where name == "deployment-reader" | is-empty) $n
+                }
+            }
+        }
+
+        "once handed off, the configuration agent has no copy settings, no key of the deployment PKI and no write to the deployment": {
+            let handed = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
+            with_target $handed {|t|
+                target_file $t "cluster-inputs.nuon" ({ cluster: null, handed_off: true, workloads: {} } | to nuon)
+                let observer = (resolve_for $t "polar-scheduler-observer")
+                assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" $t) null
+                assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" $t) null
+                assert ($observer.volumes | where name == "deployment-reader" | is-empty)
+                let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)
+                let deployment = ($repos | where name == "deployment" | first)
+                assert equal $deployment.writers []
+                assert ("polar-scheduler-observer.polar.serviceaccount.cluster.local" in $deployment.readers) "it still reads"
             }
         }
 
         "the git server holds the deployment, only signed commits go into it, and Flux reads it under the deployment PKI's name": {
-            let r = (resolve "polar-git-server")
-            let repos = (env_value $r "POLAR_GIT_SERVER_REPOS" | from json | get repos)
-            let deployment = ($repos | where name == "deployment" | first)
-            assert equal $deployment.signed_by { ca: "/etc/polar-deploy-ca/ca.pem", signer: "pipeline" }
-            assert ("deployment:flux" in $deployment.readers)
-            # The configuration agent writes until the handoff is done, which is safe since the server takes only what the pipeline signed.
-            assert equal $deployment.writers ["polar-scheduler-observer.polar.serviceaccount.cluster.local"]
-            assert equal (env_value $r "POLAR_GIT_SERVER_DEPLOYMENT_CA") "/etc/polar-deploy-ca/ca.pem"
-            let volume = ($r.volumes | where name == "polar-deploy-ca" | first)
-            assert equal $volume.config_map "polar-deploy-ca"
-            let mount = ($r.mounts | where name == "polar-deploy-ca" | first)
-            assert equal $mount.path "/etc/polar-deploy-ca"
-            assert $mount.read_only
-            # and the schedules have no such rule: they are signed document by document
-            assert (($repos | where name == "polar-schedules" | first | get -o signed_by) == null)
+            # A throwaway copy of the target, so this machine's own cluster-inputs.nuon, whichever way it is, is not read.
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                let r = (resolve_for $t "polar-git-server")
+                let repos = (env_value $r "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)
+                let deployment = ($repos | where name == "deployment" | first)
+                assert equal $deployment.signed_by { ca: "/etc/polar-deploy-ca/ca.pem", signer: "pipeline" }
+                assert ("deployment:flux" in $deployment.readers)
+                # The configuration agent writes until the handoff is done, which is safe since the server takes only what the pipeline signed.
+                assert equal $deployment.writers ["polar-scheduler-observer.polar.serviceaccount.cluster.local"]
+                assert equal (env_value $r "POLAR_GIT_SERVER_DEPLOYMENT_CA" $t) "/etc/polar-deploy-ca/ca.pem"
+                let volume = ($r.volumes | where name == "polar-deploy-ca" | first)
+                assert equal $volume.config_map "polar-deploy-ca"
+                let mount = ($r.mounts | where name == "polar-deploy-ca" | first)
+                assert equal $mount.path "/etc/polar-deploy-ca"
+                assert $mount.read_only
+                # and the schedules have no such rule: they are signed document by document
+                assert (($repos | where name == "polar-schedules" | first | get -o signed_by) == null)
+            }
         }
 
         # nix-usernetes' contract: the selector and the toleration both, or the pod stays Pending on a tainted node.

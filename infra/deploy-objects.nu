@@ -159,6 +159,27 @@ export def git_repository [target: string, host: string, port: int] {
     }
 }
 
+# The credentials Flux reads Polar's git server with: its certificate of the deployment PKI, which that server knows as `deployment:flux`, and Polar's CA, to trust the server.
+export const POLAR_AUTH_SECRET = "deployment-auth"
+
+# The GitRepository Flux reads after the handoff: the deployment on Polar's own git server (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server"). `host` and `port` are that server's Service.
+export def polar_git_repository [host: string, port: int] {
+    {
+        apiVersion: "source.toolkit.fluxcd.io/v1"
+        kind: "GitRepository"
+        metadata: { name: $SOURCE_NAME, namespace: $FLUX_NS }
+        spec: {
+            interval: "1m"
+            url: $"https://($host):($port)/deployment.git"
+            ref: { branch: "main" }
+            secretRef: { name: $POLAR_AUTH_SECRET }
+        }
+    }
+}
+
+# Whether a GitRepository's URL is Polar's git server. Where Flux reads is what says a cluster is handed off.
+export def is_handed_off [url: string] { $url | str ends-with "/deployment.git" }
+
 # YAML documents joined into one file.
 export def yaml_docs [docs: list] {
     $docs | each {|d| $d | to yaml | str trim --right } | str join "\n---\n" | $in + "\n"

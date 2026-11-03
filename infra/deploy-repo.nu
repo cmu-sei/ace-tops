@@ -50,10 +50,11 @@ use retry.nu [with_retries]
 use registry.nu [node_registry, push_registry]
 use digest.nu [registry_digest]
 use cluster-registry.nu [cluster_of]
-use forwards.nu [forward_live, stop_stale]
+use forwards.nu [forward_live, stop, stop_stale]
 use layers.nu [layer_problems, to_apply]
 use cluster-inputs.nu
-use deploy-objects.nu [BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
+use seed.nu [GIT_HOST, GIT_PORT, git_config]
+use deploy-objects.nu [AUTH_SECRET, FLUX_NS, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
 
 # The port of the server's Service, and of this machine's end of the forward to it unless --port says otherwise.
 export const DEFAULT_PORT = 9443
@@ -241,10 +242,28 @@ def forward_running [] {
 }
 
 # The commit the server's main branch is at, or "" when it has none.
-def server_head [pki: string, target: string, port: int] {
-    let r = (do { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...(tls_config $pki $WRITER) ls-remote $"https://localhost:($port)/(repo_name $target).git" refs/heads/main } | complete)
-    if $r.exit_code != 0 { error make --unspanned { msg: $"cannot read the deployment repository: ($r.stderr | str trim)" } }
-    $r.stdout | lines | where {|l| $l | str contains "refs/heads/main" } | each {|l| $l | split row "\t" | first } | get -o 0 | default ""
+# The commit `url`'s main branch is at, "" when it has none. Through a forward, which breaks on its first connection after the pod it was made for is replaced, and then reconnects: that is tried again, and a refusal is not.
+def head_at [tls: list, url: string] {
+    let read = (with_retries 12 5sec {|n|
+        let r = (do { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls ls-remote $url refs/heads/main } | complete)
+        { ok: ($r.exit_code == 0), final: ($r.stderr | str contains "returned error: 40"), detail: (if $r.exit_code == 0 { $r.stdout } else { $r.stderr }) }
+    })
+    if not $read.ok { error make --unspanned { msg: $"cannot read the deployment repository: ($read.detail | str trim)" } }
+    $read.detail | lines | where {|l| $l | str contains "refs/heads/main" } | each {|l| $l | split row "\t" | first } | get -o 0 | default ""
+}
+
+# Whether a server is given the mirror's history: it has none, and the mirror has some. A commit published on an empty server would start a new root, and the mirror would follow it.
+export def restore_needed [server_head: string, mirror_head: string] {
+    ($server_head | is-empty) and ($mirror_head | is-not-empty)
+}
+
+# A server that has no history is given the mirror's, so the record stays as it was signed.
+def restore_from_mirror [pki: string, tls: list, url: string] {
+    let mirror = (mirror_dir $pki)
+    let held = if ($mirror | path exists) { do { ^git -C $mirror rev-parse --verify -q refs/heads/main } | complete | get stdout | str trim } else { "" }
+    if not (restore_needed (head_at $tls $url) $held) { return }
+    run_ok "giving the server the mirror's history" { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git -C $mirror ...$tls push -q $url refs/heads/main:refs/heads/main }
+    print $"  ok: the server was empty and now holds the mirror's history, at ($held | str substring 0..11)"
 }
 
 # The deployment CA's certificate, for Polar's git server, as a ConfigMap: public, and all the server needs to check a deployment commit and to name Flux. The server's own
@@ -322,14 +341,7 @@ def "main ensure" [
     print $"  ok: it answers at https://localhost:($port)/ as ($WRITER)"
 
     # A new server (a new cluster) has no history: it is given the mirror's, so Flux finds the record as it was signed.
-    let mirror = (mirror_dir $pki)
-    if (server_head $pki $target $port | is-empty) and ($mirror | path exists) {
-        let held = (do { ^git -C $mirror rev-parse --verify -q refs/heads/main } | complete)
-        if $held.exit_code == 0 {
-            run_ok "giving the server the mirror's history" { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git -C $mirror ...(tls_config $pki $WRITER) push -q $"https://localhost:($port)/(repo_name $target).git" refs/heads/main:refs/heads/main }
-            print $"  ok: the server was empty and now holds the mirror's history, at ($held.stdout | str trim | str substring 0..11)"
-        }
-    }
+    restore_from_mirror $pki (tls_config $pki $WRITER) $"https://localhost:($port)/(repo_name $target).git"
 }
 
 # ---- publish ---------------------------------------------------------------------------------------------------
@@ -410,7 +422,7 @@ export def ensure_signing [pki: string] {
 def digest_of [file: string] { open --raw $file | hash sha256 }
 
 # Everything the published tree is made of, as files: path -> text. Pure given the facts.
-export def tree_files [target: string, layers: list, texts: record, server: string, facts: record] {
+export def tree_files [target: string, layers: list, texts: record, server: string, facts: record, --polar-host: string = ""] {
     let published = (published_layers $layers)
     let rendered = $texts
     let texts = (annotate_config_hashes $rendered)
@@ -422,7 +434,12 @@ export def tree_files [target: string, layers: list, texts: record, server: stri
         let forced = ($l.files | any {|f| ($f in ($texts | columns)) and (has_job ($texts | get $f)) })
         kustomization $l $docs $forced
     })
-    let source = (git_repository $target $server $DEFAULT_PORT)
+    let source = if ($polar_host | is-empty) {
+        git_repository $target $server $DEFAULT_PORT
+    } else {
+        let at = ($polar_host | split row ":")
+        polar_git_repository ($at | first) ($at | last | into int)
+    }
     let recorded = ($facts | insert layers ($published | each {|l|
         { name: $l.name, depends_on: $l.depends_on, files: ($l.files | where {|f| $f in ($texts | columns) } | each {|f| { path: $f, sha256: ($texts | get $f | hash sha256), rendered_sha256: ($rendered | get $f | hash sha256) } }) }
     }))
@@ -459,10 +476,27 @@ def git_out [args: list<string>] {
     run_ok $"git ($args | first)" { ^git ...$args } | str trim
 }
 
+# Removes the bootstrap repository once Flux reads Polar's git server: the server, its forward, and the two Secrets that read it. Nothing here is the record: Polar's git server and the mirror off the cluster hold the history. Safe to run again.
+def "main retire" [target: string] {
+    let polar = ((cluster_of $target).namespaces | get polar)
+    let stopped = (stop $NAMESPACE $SERVICE)
+    let deletes = [
+        ["delete" "namespace" $NAMESPACE "--ignore-not-found" "--timeout=180s"]
+        ["-n" $polar "delete" "secret" "deployment-reader" "--ignore-not-found"]
+        ["-n" $FLUX_NS "delete" "secret" $AUTH_SECRET "--ignore-not-found"]
+    ]
+    for d in $deletes {
+        let r = (do { ^kubectl ...$d } | complete)
+        if $r.exit_code != 0 { error make --unspanned { msg: $"retiring the bootstrap repository: ($d | str join ' ') failed: ($r.stderr | str trim)" } }
+    }
+    print $"  ok: the bootstrap repository is gone from the cluster, and its history stays in Polar's git server and in ((mirror_dir (pki_dir $env.HOME $target)))(if $stopped > 0 { $'; stopped its forward' } else { '' })"
+}
+
 def "main publish" [
     target: string
     --port: int = 9443          # this machine's end of the forward to the deployment git server
     --allow-dirty               # publish from a working tree with uncommitted changes (the provenance says so)
+    --to-polar-as: string = ""  # after the handoff: publish to Polar's git server, pushing with this person's certificate, an administrator's
 ] {
     let config = (load_config $target)
     if ($config.apply_layers? | default [] | is-empty) { error make --unspanned { msg: $"the target '($target)' declares no apply_layers" } }
@@ -504,15 +538,23 @@ def "main publish" [
         deployment_ca_sha256: (sha256_of ($pki | path join "ca.pem"))
         signer: { identity: $WRITER, certificate_sha256: (sha256_of ($pki | path join $"($WRITER).pem")) }
     }
-    let files = (tree_files $target $config.apply_layers $texts (server_name (cluster_of $target).domain) $facts)
+    let to_polar = ($to_polar_as | is-not-empty)
+    let polar_host = if $to_polar { $"($GIT_HOST):($GIT_PORT)" } else { "" }
+    let files = (tree_files $target $config.apply_layers $texts (server_name (cluster_of $target).domain) $facts --polar-host $polar_host)
 
-    let url = $"https://localhost:($port)/(repo_name $target).git"
+    # Before the handoff it goes to the bootstrap repository as the pipeline; after it, to Polar's git server as a person it knows, who may write there. The pipeline signs the commit either way, and that is what the server checks.
+    let url = if $to_polar { $"https://($polar_host)/deployment.git" } else { $"https://localhost:($port)/(repo_name $target).git" }
+    let push_tls = if $to_polar { git_config $to_polar_as ($env.HOME | path join ".config" "polar-admin") } else { tls_config $pki $WRITER }
+    # Polar's git server can lose its history as a new bootstrap server has none: the same rule as `ensure`'s.
+    if $to_polar {
+        try { restore_from_mirror $pki $push_tls $url } catch {|e| error make --unspanned { msg: $"($e.msg). If Polar's git server cannot be brought back: nu infra/up.nu ($target) --bootstrap-again" } }
+    }
     let work = (mktemp -d)
     let copy = ($work | path join "repo")
     let outcome = (try {
         let result = (with-env { GNUPGHOME: $signing.home } {
-            let tls = (tls_config $pki $WRITER)
-            run_ok "cloning the deployment repository (is it running? nu infra/deploy-repo.nu ensure)" { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy }
+            let tls = $push_tls
+            run_ok (if $to_polar { $"cloning the deployment from Polar's git server \(is it running? if it cannot be brought back: nu infra/up.nu ($target) --bootstrap-again\)" } else { "cloning the deployment repository (is it running? nu infra/deploy-repo.nu ensure)" }) { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy }
             ls -a $copy | get name | where {|n| ($n | path basename) not-in [".git" "." ".."] } | each {|n| rm -rf $n } | ignore
             for f in $files {
                 let dest = ($copy | path join $f.path)
@@ -546,9 +588,9 @@ def "main publish" [
     if ($outcome | get -o error) != null { error make --unspanned { msg: ($outcome | get error) } }
 
     if $outcome.changed {
-        print $"  published ($files | length) files to deploy-($target) as ($outcome.commit | str substring 0..11), signed by ($WRITER) \(($signing.fingerprint | str substring 0..7)\)"
+        print $"  published ($files | length) files to (if $to_polar { 'deployment' } else { $'deploy-($target)' }) as ($outcome.commit | str substring 0..11), signed by ($WRITER) \(($signing.fingerprint | str substring 0..7)\)"
     } else {
-        print $"  ok: deploy-($target) already holds this render \(($outcome.commit | str substring 0..11)\)"
+        print $"  ok: (if $to_polar { 'deployment' } else { $'deploy-($target)' }) already holds this render \(($outcome.commit | str substring 0..11)\)"
     }
 }
 

@@ -40,6 +40,9 @@ export def deployed_charts [config: record] {
 export def build_plan [config: record, dev: bool, options: record = {}] {
     let in_cluster = ($options.in_cluster? | default false)
     let import_from = ($options.import_from? | default "")
+    # Polar's git server holds the deployment, read from where Flux reads (infra/flux.nu); `bootstrap_again` is a run recovering through a bootstrap server (`up.nu --bootstrap-again`).
+    let handed_off = ($options.handed_off? | default false)
+    let bootstrap_again = ($options.bootstrap_again? | default false)
     let d = (deployed_charts $config)
     let order = $config.apply_order
     let ca_cm = ($config.cert_issuer_ca_configmap? | default "")
@@ -72,7 +75,8 @@ export def build_plan [config: record, dev: bool, options: record = {}] {
         }
         { id: "infra", title: "secrets and infrastructure", on: (not $gitops), why: "the layers are applied by Flux (gitops target)" }
         { id: "secrets", title: "secrets", on: $gitops, why: "up.nu creates the secrets in the infrastructure step" }
-        { id: "deploy-host", title: "deployment git server", on: $gitops, why: "target is not applied by Flux" }
+        { id: "deploy-host", title: "deployment git server", on: ($gitops and not $handed_off), why: (if $handed_off { "Polar's git server holds the deployment" } else { "target is not applied by Flux" }) }
+        { id: "deployment-forward", title: "a forward to Polar's git server", on: ($gitops and $handed_off), why: "the deployment is on the deployment git server" }
         { id: "publish", title: "publish the layers", on: $gitops, why: "target is not applied by Flux" }
         { id: "flux", title: "install Flux", on: $gitops, why: "target is not applied by Flux" }
         { id: "flux-wait", title: "wait for Flux to reconcile", on: $gitops, why: "target is not applied by Flux" }
@@ -84,6 +88,12 @@ export def build_plan [config: record, dev: bool, options: record = {}] {
             title: "seed the schedules repository"
             on: $has_seed
             why: "target does not deploy all of credentials-agent, polar-git-server and polar-scheduler-observer"
+        }
+        {
+            id: "handoff"
+            title: "hand the deployment to Polar's git server"
+            on: ($gitops and $has_seed and not $bootstrap_again)
+            why: (if $bootstrap_again { "recovering through the bootstrap server: the next run hands off again" } else { "target is not applied by Flux, or has no git server and configuration agent" })
         }
         {
             id: "browser"

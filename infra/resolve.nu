@@ -48,7 +48,7 @@ use document.nu *
 
 const INFRA = (path self | path dirname)
 
-use cluster-inputs.nu [env_for, env_merged, path_of, read_inputs, topology_of]
+use cluster-inputs.nu [env_for, env_merged, handed_off_of, path_of, read_inputs, topology_of]
 use registry.nu [node_registry, push_registry]
 use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
@@ -94,7 +94,7 @@ def load_cluster [target: string] {
     let layouts = ($cluster.placement? | default null)
     let unknown = (topology_problem $layouts $chosen)
     if $unknown != null { error make { msg: $"($target): ($unknown)" } }
-    $cluster | upsert placement (placement_in_force $layouts $chosen)
+    $cluster | upsert placement (placement_in_force $layouts $chosen) | upsert handed_off (handed_off_of (read_inputs (path_of $INFRA $target)))
 }
 
 # Every workload the catalog defines, whatever a target says.
@@ -123,7 +123,7 @@ def all_workloads [target: string] {
 def service_vars [services: record, cluster: record] {
     $services
     | transpose name s
-    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ",") } {|it, acc|
+    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
         let ns = ($cluster.namespaces | get $it.s.namespace)
         let dns = $"($it.s.dns_name).($ns).svc.($cluster.domain)"
         let addr = $"($dns):($it.s.port)"
@@ -136,10 +136,10 @@ def service_vars [services: record, cluster: record] {
 # Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from) and {<service>.dns|port|addr}.
 # A placeholder left over is an error: it means a capability names a service that services.nuon does not have.
 def subst [text: string, vars: record, who: string] {
-    let start = ($text | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
+    let start = ($text | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
     let out = (
         $vars
-        | reject -o _registry _namespaces
+        | reject -o _registry _namespaces _deployment_source _handed_off
         | transpose name v
         | reduce --fold $start {|it, acc|
             $acc
@@ -361,7 +361,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # without needing it to be healthy, for example. The agent says what it requires in its
     # scaffold and the entry says what else it is provided.
     let provided = (($entry.provides? | default []) ++ ($ov.provides? | default []))
-    let needs = ($kind.needs ++ (requires_of $scaffold) ++ $provided | uniq)
+    let needs = (needs_in_force ($kind.needs ++ (requires_of $scaffold) ++ $provided | uniq) ($cluster.handed_off? | default false))
 
     let custody = (custody_of $cluster $spec)
 
@@ -873,7 +873,7 @@ def floor_record [w: record, target: string, kinds: record, caps: record, vars: 
     let s = $merged.spec
     let scaffold = (scaffold_of $w.name $w)
     let provided = (($merged.entry.provides? | default []) ++ ($merged.ov.provides? | default []))
-    let needs = ($merged.kind.needs ++ (requires_of $scaffold) ++ $provided | uniq)
+    let needs = (needs_in_force ($merged.kind.needs ++ (requires_of $scaffold) ++ $provided | uniq) ($vars._handed_off? | default false))
     let certs = ($needs | each {|n|
         ($caps | get -o $n | default {} | get -o identity.certs | default []) | each {|c|
             let san = (if ($c.san? | is-empty) { "" } else { subst $c.san $vars $w.name })
