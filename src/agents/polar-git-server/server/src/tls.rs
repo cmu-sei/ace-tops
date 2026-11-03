@@ -47,7 +47,12 @@ use tracing::{debug, warn};
 /// Builds the server configuration: the server's certificate chain (PEM), its key (a PEM file, or the custody
 /// daemon's server slot, which offers TLS 1.3 alone: docs/architecture/key-custody.md, step 4), and the CA that client
 /// certificates must chain to.
-pub fn server_config(cert: &Path, key: &ServerKey, ca: &Path) -> Result<Arc<ServerConfig>, String> {
+pub fn server_config(
+    cert: &Path,
+    key: &ServerKey,
+    ca: &Path,
+    deployment_ca: Option<&Path>,
+) -> Result<Arc<ServerConfig>, String> {
     // Another component may have installed it already.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -57,10 +62,12 @@ pub fn server_config(cert: &Path, key: &ServerKey, ca: &Path) -> Result<Arc<Serv
         .map_err(|e| format!("bad server certificate: {e}"))?;
 
     let mut roots = RootCertStore::empty();
-    for ca in rustls_pemfile::certs(&mut read(ca)?.as_slice()) {
-        roots
-            .add(ca.map_err(|e| format!("bad CA certificate: {e}"))?)
-            .map_err(|e| format!("cannot trust the CA certificate: {e}"))?;
+    for file in std::iter::once(ca).chain(deployment_ca) {
+        for ca in rustls_pemfile::certs(&mut read(file)?.as_slice()) {
+            roots
+                .add(ca.map_err(|e| format!("bad CA certificate: {e}"))?)
+                .map_err(|e| format!("cannot trust the CA certificate: {e}"))?;
+        }
     }
     let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
         .build()
@@ -72,12 +79,68 @@ pub fn server_config(cert: &Path, key: &ServerKey, ca: &Path) -> Result<Arc<Serv
     Ok(Arc::new(config))
 }
 
-/// The first DNS name in the verified client certificate's SANs.
-pub fn extract_peer_identity(stream: &TlsStream<TcpStream>) -> Option<String> {
+/// What marks an identity as the deployment PKI's: the two CAs' names are kept apart, so that one cannot speak for the other.
+pub const DEPLOYMENT_PREFIX: &str = "deployment:";
+
+/// Who a verified client certificate is. A caller is named by its certificate's first DNS name. The server also trusts the deployment CA, for Flux
+/// (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server"), and that CA's word is good only for names of its own: what it signs is named
+/// `deployment:<name>`, which is what an access list must say. A certificate that claims such a name from Polar's CA is no one.
+#[derive(Default)]
+pub struct ClientIdentities {
+    deployment_ca: Option<Vec<u8>>,
+}
+
+impl ClientIdentities {
+    pub fn new(deployment_ca: Option<&Path>) -> Result<Self, String> {
+        let deployment_ca = deployment_ca
+            .map(|path| {
+                let pem = std::fs::read(path)
+                    .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+                rustls_pemfile::certs(&mut pem.as_slice())
+                    .next()
+                    .ok_or_else(|| format!("{} holds no certificate", path.display()))?
+                    .map(|der| der.to_vec())
+                    .map_err(|e| format!("bad CA certificate: {e}"))
+            })
+            .transpose()?;
+        Ok(Self { deployment_ca })
+    }
+
+    /// The identity of a leaf the TLS layer has verified against one of the two CAs.
+    pub fn of(&self, leaf: &[u8]) -> Option<String> {
+        use x509_parser::prelude::FromDer;
+        let (_, parsed) = x509_parser::certificate::X509Certificate::from_der(leaf).ok()?;
+        let name = first_dns_name(&parsed)?;
+        let from_deployment = self.deployment_ca.as_deref().is_some_and(|ca| {
+            x509_parser::certificate::X509Certificate::from_der(ca).is_ok_and(|(_, ca)| {
+                parsed.issuer() == ca.subject()
+                    && parsed
+                        .verify_signature(Some(&ca.tbs_certificate.subject_pki))
+                        .is_ok()
+            })
+        });
+        if from_deployment {
+            Some(format!("{DEPLOYMENT_PREFIX}{name}"))
+        } else if name.starts_with(DEPLOYMENT_PREFIX) {
+            None
+        } else {
+            Some(name)
+        }
+    }
+}
+
+/// The identity of the client on this connection.
+pub fn extract_peer_identity(
+    stream: &TlsStream<TcpStream>,
+    identities: &ClientIdentities,
+) -> Option<String> {
     let (_, connection) = stream.get_ref();
     let leaf = connection.peer_certificates()?.first()?;
-    use x509_parser::prelude::FromDer;
-    let (_, parsed) = x509_parser::certificate::X509Certificate::from_der(leaf.as_ref()).ok()?;
+    identities.of(leaf.as_ref())
+}
+
+/// The first DNS name in a certificate's SANs.
+fn first_dns_name(parsed: &x509_parser::certificate::X509Certificate<'_>) -> Option<String> {
     for ext in parsed.extensions() {
         if let x509_parser::extensions::ParsedExtension::SubjectAlternativeName(san) =
             ext.parsed_extension()
@@ -101,6 +164,7 @@ pub async fn serve_tls(
     app: axum::Router,
     stop: Arc<Notify>,
     active: Arc<AtomicUsize>,
+    identities: Arc<ClientIdentities>,
 ) {
     loop {
         let (tcp, remote) = tokio::select! {
@@ -117,6 +181,7 @@ pub async fn serve_tls(
         let acceptor = acceptor.clone();
         let app = app.clone();
         let guard = Connection::open(&active);
+        let identities = identities.clone();
         tokio::spawn(async move {
             let _guard = guard;
             let tls = match acceptor.accept(tcp).await {
@@ -126,7 +191,7 @@ pub async fn serve_tls(
                     return;
                 }
             };
-            let Some(identity) = extract_peer_identity(&tls) else {
+            let Some(identity) = extract_peer_identity(&tls, &identities) else {
                 warn!(%remote, "client certificate carries no identity; connection dropped");
                 return;
             };
@@ -160,6 +225,53 @@ impl Drop for Connection {
 
 #[cfg(test)]
 mod tests {
+    /// A CA and a client under it, as DER.
+    fn issued(ca_name: &str, client: &str) -> (Vec<u8>, Vec<u8>) {
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.distinguished_name.push(DnType::CommonName, ca_name);
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let key = KeyPair::generate().unwrap();
+        let ca = params.self_signed(&key).unwrap().der().to_vec();
+        let issuer = Issuer::new(params, key);
+        let mut leaf = CertificateParams::new(Vec::<String>::new()).unwrap();
+        leaf.subject_alt_names = vec![SanType::DnsName(client.try_into().unwrap())];
+        let leaf_key = KeyPair::generate().unwrap();
+        let cert = leaf.signed_by(&leaf_key, &issuer).unwrap().der().to_vec();
+        (ca, cert)
+    }
+
+    fn with_ca(ca: Vec<u8>) -> ClientIdentities {
+        ClientIdentities {
+            deployment_ca: Some(ca),
+        }
+    }
+
+    #[test]
+    fn the_deployment_cas_clients_are_named_as_its_own() {
+        let (ca, flux) = issued("deploy-ca", "flux");
+        assert_eq!(with_ca(ca).of(&flux).as_deref(), Some("deployment:flux"));
+    }
+
+    /// A CA that has taken the deployment CA's name is not the deployment CA: its key decides, not its name.
+    #[test]
+    fn another_key_under_the_deployment_cas_name_speaks_only_for_polar() {
+        let (ca, _) = issued("deploy-ca", "flux");
+        let (_, impostor) = issued("deploy-ca", "alice");
+        assert_eq!(with_ca(ca).of(&impostor).as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn polar_cannot_claim_a_deployment_name_and_without_a_deployment_ca_nothing_changes() {
+        let (_, posing) = issued("polar-ca", "deployment:flux");
+        assert_eq!(ClientIdentities::default().of(&posing), None);
+        let (_, alice) = issued("polar-ca", "alice");
+        assert_eq!(
+            ClientIdentities::default().of(&alice).as_deref(),
+            Some("alice")
+        );
+    }
+
     use super::*;
 
     // Smart HTTP over HTTP/1.1, whichever holds the key (docs/architecture/key-custody.md, step 4).
@@ -184,7 +296,7 @@ mod tests {
             // Built without asking the daemon: it is asked in each handshake.
             ServerKey::Custody(dir.path().join("custody.sock").display().to_string()),
         ] {
-            let config = server_config(&cert_path, &key, &ca_path).unwrap();
+            let config = server_config(&cert_path, &key, &ca_path, None).unwrap();
             assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()], "{key:?}");
         }
     }

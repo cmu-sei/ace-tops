@@ -76,6 +76,12 @@ pub static CA_CERT: Required<String> = Required::text(
     "path to the CA certificate (PEM) that clients' certificates must chain to",
 );
 
+pub static DEPLOYMENT_CA: Optional<String> = Optional::text(
+    "POLAR_GIT_SERVER_DEPLOYMENT_CA",
+    "path to the deployment CA's certificate (PEM), whose clients are also taken, named `deployment:<name>` so that it speaks \
+     for no one in Polar: how Flux reads the deployment (docs/architecture/cluster-bootstrap.md)",
+);
+
 pub static ADMINS: Optional<Vec<String>> = Optional::list(
     "POLAR_GIT_SERVER_ADMINS",
     "identities, comma-separated, that may do anything to every repository and create new ones, \
@@ -85,7 +91,15 @@ pub static ADMINS: Optional<Vec<String>> = Optional::list(
 );
 
 static VARIABLES: &[&dyn Described] = &[
-    &PORT, &REPO_ROOT, &SEED_ROOT, &REPOS, &ADMINS, &CERT, &KEY, &CA_CERT,
+    &PORT,
+    &REPO_ROOT,
+    &SEED_ROOT,
+    &REPOS,
+    &ADMINS,
+    &CERT,
+    &KEY,
+    &CA_CERT,
+    &DEPLOYMENT_CA,
 ];
 
 pub static SECTION: Section = Section {
@@ -119,6 +133,7 @@ pub struct GitServerSettings {
     /// The certificate's key: a file, or the custody daemon's.
     pub key: ServerKey,
     pub ca_cert: String,
+    pub deployment_ca: Option<String>,
 }
 
 impl GitServerSettings {
@@ -132,6 +147,7 @@ impl GitServerSettings {
             cert: config.read(&CERT)?,
             key: read_key(config).map_err(ConfigError::Env)?,
             ca_cert: config.read(&CA_CERT)?,
+            deployment_ca: config.read(&DEPLOYMENT_CA)?,
         })
     }
 }

@@ -29,7 +29,7 @@ use polar_git_server::http::{ServerState, router};
 use polar_git_server::notify::{PushLog, Recorder, RepoChanged, Tee};
 use polar_git_server::signed::{CommitPolicy, SignedRepos};
 use polar_git_server::store::RepoStore;
-use polar_git_server::tls::{serve_tls, server_config};
+use polar_git_server::tls::{ClientIdentities, serve_tls, server_config};
 use polar_signing::testing::{CommitSigner, commit_signer};
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, SanType,
@@ -100,6 +100,7 @@ fn client(ca: &Ca, dir: &Path, identity: &str) -> (PathBuf, PathBuf) {
 struct Harness {
     dir: tempfile::TempDir,
     ca: Ca,
+    deployment_ca: Ca,
     ca_file: PathBuf,
     port: u16,
     notes: Arc<Recorder>,
@@ -123,6 +124,9 @@ impl Harness {
         let ca = new_ca("polar-test-ca");
         let ca_file = dir.path().join("ca.pem");
         std::fs::write(&ca_file, &ca.pem).unwrap();
+        let deployment_ca = new_ca("polar-deploy-test-ca");
+        let deployment_ca_file = dir.path().join("deployment-ca.pem");
+        std::fs::write(&deployment_ca_file, &deployment_ca.pem).unwrap();
         let (cert, key) = leaf(
             &ca,
             dir.path(),
@@ -163,7 +167,7 @@ impl Harness {
                 (
                     SIGNED_REPO.to_string(),
                     RepoAcl {
-                        readers: ["flux".to_string()].into(),
+                        readers: ["deployment:flux".to_string()].into(),
                         writers: ["alice".to_string()].into(),
                     },
                 ),
@@ -194,9 +198,11 @@ impl Harness {
                 &cert,
                 &polar_custody::client::ServerKey::File(key.display().to_string()),
                 &ca_file,
+                Some(&deployment_ca_file),
             )
             .unwrap(),
         );
+        let identities = ClientIdentities::new(Some(&deployment_ca_file)).unwrap();
         let stop = Arc::new(Notify::new());
         tokio::spawn(serve_tls(
             listener,
@@ -204,10 +210,12 @@ impl Harness {
             app,
             stop.clone(),
             Default::default(),
+            Arc::new(identities),
         ));
         Self {
             dir,
             ca,
+            deployment_ca,
             ca_file,
             port,
             notes,
@@ -764,4 +772,86 @@ async fn an_ordinary_repository_still_takes_an_unsigned_commit() {
         .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
         .await;
     assert!(ok, "{text}");
+}
+
+// docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": Flux holds a certificate of the deployment PKI, whose CA this server also trusts, and that CA's word is good
+// only for names of its own: a certificate from it saying `alice` is not alice.
+
+fn deployment_client(h: &Harness, name: &str) -> (PathBuf, PathBuf) {
+    client(&h.deployment_ca, h.dir.path(), name)
+}
+
+/// A clone of the signed repository as `creds`, after the pipeline's first commit.
+async fn clone_signed(h: &Harness, creds: &(PathBuf, PathBuf), into: &str) -> (bool, String) {
+    let dest = h.dir.path().join(into);
+    h.git(
+        h.dir.path(),
+        Some(creds),
+        &[
+            "clone",
+            &format!("https://127.0.0.1:{}/{SIGNED_REPO}.git", h.port),
+            dest.to_str().unwrap(),
+        ],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn flux_reads_the_deployment_with_a_certificate_of_the_deployment_pki() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let commit = make_commit(&h, &repo, "a.yaml", None, Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &creds, &commit).await;
+    assert!(ok, "{text}");
+    let flux = deployment_client(&h, "flux");
+    let (ok, text) = clone_signed(&h, &flux, "flux-clone").await;
+    assert!(ok, "{text}");
+}
+
+#[tokio::test]
+async fn flux_cannot_write_to_the_deployment() {
+    let h = Harness::start().await;
+    let (repo, creds) = signed_checkout(&h).await;
+    let first = make_commit(&h, &repo, "a.yaml", None, Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &creds, &first).await;
+    assert!(ok, "{text}");
+    let flux = deployment_client(&h, "flux");
+    let second = make_commit(&h, &repo, "b.yaml", Some(&first), Some(pipeline())).await;
+    let (ok, text) = push(&h, &repo, &flux, &second).await;
+    assert!(!ok, "{text}");
+    assert_eq!(holds(&h, &first).await.0, Some(first));
+}
+
+#[tokio::test]
+async fn flux_can_read_nothing_else() {
+    let h = Harness::start().await;
+    let flux = deployment_client(&h, "flux");
+    let (ok, _, text) = h.clone_as(Some(&flux), "flux-schedules").await;
+    assert!(!ok, "{text}");
+}
+
+/// The hole this closes: naming callers by a certificate's DNS name, with a second CA trusted, would let that CA name anyone.
+#[tokio::test]
+async fn a_deployment_pki_certificate_is_not_who_it_says_it_is_in_polar() {
+    let h = Harness::start().await;
+    let posing = deployment_client(&h, "alice");
+    let (ok, repo, text) = h.clone_as(Some(&posing), "posing").await;
+    assert!(
+        !ok,
+        "alice may read this repository, and this is not alice: {text}"
+    );
+    drop(repo);
+    let admin = deployment_client(&h, "root");
+    let (status, _) = h.admin_put(&admin, "made-by-a-stranger", "{}").await;
+    assert_ne!(status, 200);
+    assert_ne!(status, 201);
+}
+
+/// And the other way: Polar's CA cannot mint the deployment PKI's names.
+#[tokio::test]
+async fn a_polar_certificate_cannot_pose_as_the_deployment_pki() {
+    let h = Harness::start().await;
+    let posing = client(&h.ca, h.dir.path(), "deployment:flux");
+    let (ok, text) = clone_signed(&h, &posing, "posing").await;
+    assert!(!ok, "{text}");
 }

@@ -44,7 +44,7 @@ use crate::http::{ServerState, router};
 use crate::notify::{CassiniNotifier, Notifier, PushLog, Tee};
 use crate::settings::GitServerSettings;
 use crate::store::RepoStore;
-use crate::tls::{serve_tls, server_config};
+use crate::tls::{ClientIdentities, serve_tls, server_config};
 use cassini_types::ClientEvent;
 use polar_agent_builder::{
     AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
@@ -179,7 +179,11 @@ impl Actor for GitServerSupervisor {
             Path::new(&settings.cert),
             &settings.key,
             Path::new(&settings.ca_cert),
+            settings.deployment_ca.as_deref().map(Path::new),
         )?;
+        let identities = Arc::new(ClientIdentities::new(
+            settings.deployment_ca.as_deref().map(Path::new),
+        )?);
         let tcp = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", settings.port))
             .await
             .map_err(|e| format!("cannot listen on port {}: {e}", settings.port))?;
@@ -193,6 +197,7 @@ impl Actor for GitServerSupervisor {
             app,
             stop.clone(),
             active.clone(),
+            identities,
         ));
 
         Ok(GitServerSupervisorState {
