@@ -30,7 +30,10 @@
 //! `read` is given holds only the response, and the port to the CryptoActor stays here.
 
 pub mod credentials;
+pub mod http;
 pub mod judge;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub use credentials::CredentialsApplied;
 pub use judge::{
     Credential, Denial, Location, OperationDecl, ProtocolKind, Target, Verdict, judge,
@@ -77,8 +80,8 @@ pub enum Failure {
     CredentialRefused(String),
     #[error("the host asked for time: nothing goes to it for another {wait:?}")]
     NotYet { wait: Duration },
-    #[error("the host asked for time: {wait:?}")]
-    Backoff { wait: Duration },
+    #[error("the host answered {status} and asked for time: {wait:?}")]
+    Backoff { status: u16, wait: Duration },
     #[error("{0}")]
     Transient(String),
     #[error("{0}")]
@@ -130,17 +133,30 @@ impl CredentialSource for CredentialPort {
 }
 
 /// Work to run on a task.
-type Pending = Pin<Box<dyn Future<Output = ()> + Send>>;
+type Pending<T = ()> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// Hands a [`Protocol`]'s replies on: each is read by the operation, on a thread of its own and within its budget, and the
-/// value goes to the domain actor. Called once for a request with one reply, and for each change of a stream.
-pub struct Deliver<R> {
-    each: Box<dyn FnMut(R) -> Pending + Send>,
+/// What a hop comes to: the credential for where it goes, or why it may not go.
+type Hopped<P> = Pending<Result<Option<<P as Protocol>::Credential>, Failure>>;
+
+/// What a [`Protocol`] has of the handler while it makes a request.
+pub struct Exchange<P: Protocol> {
+    /// Reads one reply and sends the value to the domain.
+    each: Box<dyn FnMut(P::Reply) -> Pending + Send>,
+    /// Judges where the request goes next, and gets the credential for there.
+    hop: Box<dyn FnMut(Target) -> Hopped<P> + Send>,
 }
 
-impl<R> Deliver<R> {
-    pub async fn reply(&mut self, reply: R) {
+impl<P: Protocol> Exchange<P> {
+    /// Hands a reply on: it is read by the operation, on a thread of its own and within its budget, and the value goes to
+    /// the domain actor. Called once for a request with one reply, and for each change of a stream.
+    pub async fn reply(&mut self, reply: P::Reply) {
         (self.each)(reply).await
+    }
+
+    /// The request is sent on to `target`, as a redirect asks: judged as the request was, and recorded. The credential
+    /// for there, if it goes with one, or why it may not go.
+    pub async fn hop(&mut self, target: Target) -> Result<Option<P::Credential>, Failure> {
+        (self.hop)(target).await
     }
 }
 
@@ -170,35 +186,43 @@ pub trait Protocol: sealed::Sealed + Send + Sync + Sized + 'static {
         name: String,
         host: String,
     ) -> Result<Self::Credential, CryptoError>;
-    /// Makes the request, presenting `credential`, and hands what comes back to `deliver`.
+    /// Makes the request, presenting `credential`, and hands what comes back to `exchange`.
     async fn perform(
         &self,
         request: Self::Request,
         base: Option<String>,
         credential: Option<Self::Credential>,
-        deliver: &mut Deliver<Self::Reply>,
+        exchange: &mut Exchange<Self>,
     ) -> Result<(), Failure>;
 }
 
 /// The protocols the agent started at load, for the operations it declared.
+#[derive(Default)]
 pub struct Instances {
+    http: Option<Arc<http::Http>>,
     #[cfg(test)]
     test: Option<Arc<tests::TestProtocol>>,
 }
 
 impl Instances {
     /// Starts each protocol `operations` uses, and no other. An agent that cannot is told at load.
-    pub(crate) fn start(
+    pub(crate) async fn start(
         operations: &[OperationDecl],
-        _config: &polar_env::Config,
+        config: &polar_env::Config,
     ) -> Result<Self, String> {
-        let _ = operations;
-        Ok(Self {
-            #[cfg(test)]
-            test: operations
+        let uses = |kind| {
+            operations
                 .iter()
-                .any(|operation| operation.protocol == ProtocolKind::Test)
-                .then(|| Arc::new(tests::TestProtocol)),
+                .any(|operation| operation.protocol == kind)
+        };
+        Ok(Self {
+            http: if uses(ProtocolKind::Http) {
+                Some(Arc::new(http::Http::start(config).await?))
+            } else {
+                None
+            },
+            #[cfg(test)]
+            test: uses(ProtocolKind::Test).then(|| Arc::new(tests::TestProtocol)),
         })
     }
 }
@@ -340,6 +364,78 @@ impl Shared {
     }
 }
 
+/// What a request is, as it is judged at each place it goes.
+struct Asked {
+    decl: OperationDecl,
+    /// The host of the operation's variable, for a configured one.
+    configured_host: Option<String>,
+    /// The credential the request names.
+    chosen: Option<String>,
+}
+
+/// Whether the request may go to `target`, recorded either way, and the credential to present there: the judgment, a
+/// host that asked for time, a credential refused before, and the CryptoActor's binding, in that order. The name of
+/// the credential comes back with it.
+async fn admit<P: Protocol>(
+    shared: &Shared,
+    asked: &Asked,
+    target: &Target,
+) -> Result<(Option<String>, Option<P::Credential>), Failure> {
+    let record = |credential: Option<String>, verdict: String| {
+        (shared.record)(&RequestRecord {
+            operation: asked.decl.name,
+            protocol: asked.decl.protocol.as_str(),
+            host: target.host.clone(),
+            credential,
+            arbitrary: asked.decl.location == Location::Arbitrary,
+            verdict,
+        });
+    };
+    let refused = |credential: Option<String>, failure: Failure| {
+        record(credential, failure.to_string());
+        failure
+    };
+
+    let name = match judge(
+        &asked.decl,
+        shared.declared,
+        target,
+        asked.configured_host.as_deref(),
+        asked.chosen.as_deref(),
+    ) {
+        Verdict::Allow { credential } => credential,
+        Verdict::Deny(why) => return Err(refused(None, Failure::Denied(why))),
+    };
+    if let Some(wait) = shared.wait_for(&target.host) {
+        return Err(refused(name, Failure::NotYet { wait }));
+    }
+    let credential = match &name {
+        None => None,
+        Some(name) => {
+            if shared.refused.lock().unwrap().contains(name) {
+                let held = Failure::CredentialHeld { name: name.clone() };
+                return Err(refused(Some(name.clone()), held));
+            }
+            let Some(source) = &shared.credentials else {
+                let failure = Failure::CredentialUnusable {
+                    name: name.clone(),
+                    why: "the agent has no CryptoActor: declare its credentials".to_string(),
+                };
+                return Err(refused(Some(name.clone()), failure));
+            };
+            match P::credential(source.as_ref(), name.clone(), target.host.clone()).await {
+                Ok(credential) => Some(credential),
+                Err(error) => {
+                    let failure = credential_failure(name, error);
+                    return Err(refused(Some(name.clone()), failure));
+                }
+            }
+        }
+    };
+    record(name.clone(), "allowed".to_string());
+    Ok((name, credential))
+}
+
 /// Runs one request: the whole of what the handler does for it.
 async fn run<O: Operation>(
     shared: Arc<Shared>,
@@ -347,28 +443,23 @@ async fn run<O: Operation>(
     send: Arc<dyn Fn(Result<O::Output, Failure>) + Send + Sync>,
 ) {
     let decl = O::DECL;
-    let arbitrary = decl.location == Location::Arbitrary;
-    let refuse = |host: &str, credential: Option<String>, failure: Failure| {
+    let refuse_early = |failure: Failure| {
         (shared.record)(&RequestRecord {
             operation: decl.name,
             protocol: decl.protocol.as_str(),
-            host: host.to_string(),
-            credential,
-            arbitrary,
+            host: String::new(),
+            credential: None,
+            arbitrary: decl.location == Location::Arbitrary,
             verdict: failure.to_string(),
         });
         send(Err(failure));
     };
 
     let Some(protocol) = O::Protocol::instance(&shared.instances) else {
-        return refuse(
-            "",
-            None,
-            Failure::Configuration(format!(
-                "the agent did not start the {} protocol: declare the operation",
-                decl.protocol.as_str()
-            )),
-        );
+        return refuse_early(Failure::Configuration(format!(
+            "the agent did not start the {} protocol: declare the operation",
+            decl.protocol.as_str()
+        )));
     };
     let request = operation.request();
 
@@ -379,105 +470,85 @@ async fn run<O: Operation>(
     let base = match variable {
         Some(variable) => match shared.configuration.value(variable).await {
             Some(base) => Some(base),
-            None => return refuse("", None, Failure::Denied(Denial::NotConfigured)),
+            None => return refuse_early(Failure::Denied(Denial::NotConfigured)),
         },
         None => None,
     };
     let configured_host = match base.as_deref().map(O::Protocol::configured_host) {
         Some(Ok(host)) => Some(host),
-        Some(Err(why)) => return refuse("", None, Failure::Configuration(why)),
+        Some(Err(why)) => return refuse_early(Failure::Configuration(why)),
         None => None,
     };
     let target = match O::Protocol::target(&request, base.as_deref()) {
         Ok(target) => target,
-        Err(why) => return refuse("", None, Failure::Configuration(why)),
+        Err(why) => return refuse_early(Failure::Configuration(why)),
     };
 
-    let chosen = operation.credential();
-    let name = match judge(
-        &decl,
-        shared.declared,
-        &target,
-        configured_host.as_deref(),
-        chosen.as_deref(),
-    ) {
-        Verdict::Allow { credential } => credential,
-        Verdict::Deny(why) => return refuse(&target.host, None, Failure::Denied(why)),
-    };
-
-    if let Some(wait) = shared.wait_for(&target.host) {
-        return refuse(&target.host, name, Failure::NotYet { wait });
-    }
-    if let Some(name) = &name
-        && shared.refused.lock().unwrap().contains(name)
-    {
-        let held = Failure::CredentialHeld { name: name.clone() };
-        return refuse(&target.host, Some(name.clone()), held);
-    }
-
-    let credential = match &name {
-        None => None,
-        Some(name) => {
-            let Some(source) = &shared.credentials else {
-                let failure = Failure::CredentialUnusable {
-                    name: name.clone(),
-                    why: "the agent has no CryptoActor: declare its credentials".to_string(),
-                };
-                return refuse(&target.host, Some(name.clone()), failure);
-            };
-            match O::Protocol::credential(source.as_ref(), name.clone(), target.host.clone()).await
-            {
-                Ok(credential) => Some(credential),
-                Err(error) => {
-                    let failure = credential_failure(name, error);
-                    return refuse(&target.host, Some(name.clone()), failure);
-                }
-            }
-        }
-    };
-
-    (shared.record)(&RequestRecord {
-        operation: decl.name,
-        protocol: decl.protocol.as_str(),
-        host: target.host.clone(),
-        credential: name.clone(),
-        arbitrary,
-        verdict: "allowed".to_string(),
+    let asked = Arc::new(Asked {
+        decl,
+        configured_host,
+        chosen: operation.credential(),
     });
+    let (name, credential) = match admit::<O::Protocol>(&shared, &asked, &target).await {
+        Ok(admitted) => admitted,
+        Err(failure) => return send(Err(failure)),
+    };
 
+    // A hop presents what it is given for where it goes, under the credential's own name: what is refused after it is that
+    // credential's, as it is for the first.
+    let current = Arc::new(Mutex::new(name));
     let operation = Arc::new(operation);
-    let mut deliver = Deliver {
+    let mut exchange = Exchange::<O::Protocol> {
         each: {
             let shared = shared.clone();
             let send = send.clone();
-            let name = name.clone();
+            let current = current.clone();
             Box::new(move |reply| {
                 let operation = operation.clone();
                 let shared = shared.clone();
                 let send = send.clone();
-                let name = name.clone();
+                let current = current.clone();
                 Box::pin(async move {
                     let result =
                         read_within_budget::<O>(operation, reply, O::Protocol::BUDGET).await;
-                    if let (Err(Failure::CredentialRefused(why)), Some(name)) = (&result, &name) {
-                        shared.refused(decl.name, name, why);
+                    if let Err(Failure::CredentialRefused(why)) = &result {
+                        let name = current.lock().unwrap().clone();
+                        if let Some(name) = name {
+                            shared.refused(decl.name, &name, why);
+                        }
                     }
                     send(result);
                 })
             })
         },
+        hop: {
+            let shared = shared.clone();
+            let asked = asked.clone();
+            let current = current.clone();
+            Box::new(move |target| {
+                let shared = shared.clone();
+                let asked = asked.clone();
+                let current = current.clone();
+                Box::pin(async move {
+                    let (name, credential) = admit::<O::Protocol>(&shared, &asked, &target).await?;
+                    *current.lock().unwrap() = name;
+                    Ok(credential)
+                })
+            })
+        },
     };
     let outcome = protocol
-        .perform(request, base, credential, &mut deliver)
+        .perform(request, base, credential, &mut exchange)
         .await;
     if let Err(failure) = outcome {
         match &failure {
             Failure::CredentialRefused(why) => {
-                if let Some(name) = &name {
-                    shared.refused(decl.name, name, why);
+                let name = current.lock().unwrap().clone();
+                if let Some(name) = name {
+                    shared.refused(decl.name, &name, why);
                 }
             }
-            Failure::Backoff { wait } => {
+            Failure::Backoff { wait, .. } => {
                 shared
                     .not_before
                     .lock()
@@ -496,10 +567,14 @@ fn credential_failure(name: &str, error: CryptoError) -> Failure {
     match error {
         CryptoError::SecretNotRegistered(_) => Failure::NoCredential { name },
         CryptoError::Use(UseRefusal::HostNotBound) => Failure::NotBound { name },
-        other => Failure::CredentialUnusable {
+        CryptoError::Use(why) => Failure::CredentialUnusable {
             name,
-            why: other.to_string(),
+            why: why.to_string(),
         },
+        // It did not answer as it should: not the credential's fault, and it may pass.
+        other => Failure::Transient(format!(
+            "the CryptoActor did not give the credential `{name}`: {other}"
+        )),
     }
 }
 
@@ -545,6 +620,7 @@ pub(crate) enum ProtocolMessage {
 pub struct ProtocolHandle {
     actor: ActorRef<ProtocolMessage>,
     applied: Arc<OutputPort<CredentialsApplied>>,
+    in_force: Arc<Mutex<Option<CredentialsApplied>>>,
 }
 
 /// The handler has ended, so the agent is ending.
@@ -571,10 +647,35 @@ impl ProtocolHandle {
             .map_err(|_| HandlerEnded)
     }
 
+    /// Makes `operation`'s request and waits for what comes of it, for a domain actor that goes through its work in order,
+    /// as a pull of pages does. Waiting holds that actor's mailbox and nothing else. A stream's later replies are dropped:
+    /// [`request`](Self::request) is for a stream.
+    pub async fn ask<O: Operation>(&self, operation: O) -> Result<O::Output, Failure> {
+        let (tell, told) = tokio::sync::oneshot::channel();
+        let tell = Mutex::new(Some(tell));
+        let send: Arc<dyn Fn(Result<O::Output, Failure>) + Send + Sync> = Arc::new(move |result| {
+            if let Some(tell) = tell.lock().unwrap().take() {
+                let _ = tell.send(result);
+            }
+        });
+        let ended = || Failure::Transient(HandlerEnded.to_string());
+        self.actor
+            .cast(ProtocolMessage::Run(Box::new(move |shared| {
+                Box::pin(run(shared, operation, send))
+            })))
+            .map_err(|_| ended())?;
+        told.await.map_err(|_| ended())?
+    }
+
     /// Announces what became of each version of the `credentials` section, once the CryptoActor has it: the moment a
     /// request that had no credential is worth making again.
     pub fn credentials_applied(&self) -> Arc<OutputPort<CredentialsApplied>> {
         self.applied.clone()
+    }
+
+    /// What became of the version in force, if one has been handed to the CryptoActor: for what starts after it was.
+    pub fn credentials_in_force(&self) -> Option<CredentialsApplied> {
+        self.in_force.lock().unwrap().clone()
     }
 }
 
@@ -588,6 +689,7 @@ pub(crate) struct ProtocolArgs {
     pub(crate) health: Arc<dyn Holds>,
     pub(crate) record: Recorder,
     pub(crate) applied: Arc<OutputPort<CredentialsApplied>>,
+    pub(crate) in_force: Arc<Mutex<Option<CredentialsApplied>>>,
 }
 
 pub(crate) struct ProtocolState {
@@ -595,6 +697,7 @@ pub(crate) struct ProtocolState {
     shared: Arc<Shared>,
     crypto: Option<Arc<dyn CryptoClient>>,
     applied: Arc<OutputPort<CredentialsApplied>>,
+    in_force: Arc<Mutex<Option<CredentialsApplied>>>,
     /// The version of the section last handed to the CryptoActor.
     applied_version: Option<u64>,
     /// Each request's task: ended with the actor.
@@ -632,6 +735,7 @@ impl Actor for ProtocolActor {
             }),
             crypto: args.crypto,
             applied: args.applied,
+            in_force: args.in_force,
             applied_version: None,
             running: JoinSet::new(),
         })
@@ -717,6 +821,7 @@ async fn apply_section(state: &mut ProtocolState) {
             failed.join("; ")
         ));
     }
+    *state.in_force.lock().unwrap() = Some(applied.clone());
     state.applied.send(applied);
 }
 
@@ -746,9 +851,11 @@ pub(crate) async fn start(
     if start.setup.operations.is_empty() && !start.setup.credentials {
         return Ok(None);
     }
-    let instances =
-        Instances::start(start.setup.operations, start.config).map_err(ActorProcessingErr::from)?;
+    let instances = Instances::start(start.setup.operations, start.config)
+        .await
+        .map_err(ActorProcessingErr::from)?;
     let applied = Arc::new(OutputPort::default());
+    let in_force = Arc::new(Mutex::new(None));
     let (actor, _) = Actor::spawn_linked(
         Some(format!("{}.protocols", start.service_name)),
         ProtocolActor,
@@ -764,6 +871,7 @@ pub(crate) async fn start(
             health: Arc::new(start.health),
             record: Arc::new(log_request),
             applied: applied.clone(),
+            in_force: in_force.clone(),
         },
         supervisor,
     )
@@ -775,7 +883,11 @@ pub(crate) async fn start(
         .subscribe(actor.clone(), |changed| {
             Some(ProtocolMessage::SectionChanged(changed.section))
         });
-    Ok(Some(ProtocolHandle { actor, applied }))
+    Ok(Some(ProtocolHandle {
+        actor,
+        applied,
+        in_force,
+    }))
 }
 
 /// What is wrong with what an agent declares of its operations and credentials, whatever its configuration.
@@ -958,7 +1070,7 @@ pub(crate) mod tests {
             request: TestRequest,
             base: Option<String>,
             credential: Option<Self::Credential>,
-            deliver: &mut Deliver<TestReply>,
+            exchange: &mut Exchange<Self>,
         ) -> Result<(), Failure> {
             let host = base.unwrap_or(request.url);
             TEST_WIRE
@@ -967,17 +1079,17 @@ pub(crate) mod tests {
                 .push((host, credential.as_ref().map(|c| c.to_vec())));
             match request.answer {
                 Answer::Body(body) => {
-                    deliver.reply(TestReply { body }).await;
+                    exchange.reply(TestReply { body }).await;
                     Ok(())
                 }
                 Answer::Stream(bodies) => {
                     for body in bodies {
-                        deliver.reply(TestReply { body }).await;
+                        exchange.reply(TestReply { body }).await;
                     }
                     Ok(())
                 }
                 Answer::Refuses => Err(Failure::CredentialRefused("the site said no".to_string())),
-                Answer::Busy(wait) => Err(Failure::Backoff { wait }),
+                Answer::Busy(wait) => Err(Failure::Backoff { status: 503, wait }),
                 Answer::Hangs => std::future::pending().await,
             }
         }
@@ -1220,6 +1332,7 @@ pub(crate) mod tests {
         });
         let records: Arc<Mutex<Vec<RequestRecord>>> = Arc::default();
         let applied = Arc::new(OutputPort::default());
+        let in_force = Arc::new(Mutex::new(None));
         let recorded = records.clone();
         let (actor, _) = Actor::spawn(
             None,
@@ -1228,6 +1341,7 @@ pub(crate) mod tests {
                 agent: "an-agent".to_string(),
                 declared: &DECLARED,
                 instances: Instances {
+                    http: None,
                     test: Some(Arc::new(TestProtocol)),
                 },
                 credentials: Some(Arc::new(FakeSource {
@@ -1240,6 +1354,7 @@ pub(crate) mod tests {
                 health: health.clone(),
                 record: Arc::new(move |record| recorded.lock().unwrap().push(record.clone())),
                 applied: applied.clone(),
+                in_force: in_force.clone(),
             },
         )
         .await
@@ -1248,6 +1363,7 @@ pub(crate) mod tests {
             protocols: ProtocolHandle {
                 actor: actor.clone(),
                 applied,
+                in_force,
             },
             actor,
             domain,
@@ -1740,11 +1856,65 @@ pub(crate) mod tests {
         assert_eq!(ended, Err(HandlerEnded));
     }
 
-    #[test]
-    fn a_protocol_is_started_only_for_an_agent_with_an_operation_that_uses_it() {
+    #[tokio::test]
+    async fn a_protocol_is_started_only_for_an_agent_with_an_operation_that_uses_it() {
         let config = polar_env::Config::builder(&polar_env::ProcessEnv).build();
-        assert!(Instances::start(&DECLARED, &config).unwrap().test.is_some());
-        assert!(Instances::start(&[], &config).unwrap().test.is_none());
+        let used = Instances::start(&DECLARED, &config).await.unwrap();
+        assert!(used.test.is_some());
+        assert!(used.http.is_none());
+        assert!(Instances::start(&[], &config).await.unwrap().test.is_none());
+    }
+
+    #[tokio::test]
+    async fn asking_waits_for_the_one_answer_and_is_told_what_failed() {
+        let r = rig().await;
+        assert_eq!(
+            r.protocols
+                .ask(r.site(Answer::Body("the data".to_string())))
+                .await,
+            Ok("the data".to_string())
+        );
+        // A stream's first reply is the answer, and the rest go nowhere.
+        assert_eq!(
+            r.protocols
+                .ask(r.site(Answer::Stream(vec![
+                    "first".to_string(),
+                    "second".to_string()
+                ])))
+                .await,
+            Ok("first".to_string())
+        );
+        assert!(matches!(
+            r.protocols.ask(r.site(Answer::Refuses)).await,
+            Err(Failure::CredentialRefused(_))
+        ));
+        r.actor
+            .stop_and_wait(None, Some(Duration::from_secs(5)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            r.protocols
+                .ask(r.site(Answer::Body("no".to_string())))
+                .await,
+            Err(Failure::Transient(_))
+        ));
+    }
+
+    /// What starts after a version was applied can still learn what became of it.
+    #[tokio::test]
+    async fn what_became_of_the_version_in_force_can_be_read_later() {
+        let r = rig().await;
+        assert_eq!(r.protocols.credentials_in_force(), None);
+        r.new_version(4).await;
+        for _ in 0..500 {
+            if r.protocols.credentials_in_force().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let in_force = r.protocols.credentials_in_force().unwrap();
+        assert_eq!(in_force.version, 4);
+        assert_eq!(in_force.registered, vec!["site".to_string()]);
     }
 
     #[test]

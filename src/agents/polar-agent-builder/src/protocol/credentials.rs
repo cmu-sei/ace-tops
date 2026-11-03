@@ -510,6 +510,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_body_with_no_list_is_refused_and_says_what_it_has_instead() {
+        let problems = parse(&json!({"other": []}), 1).unwrap_err();
+        assert!(
+            problems.iter().any(|p| p.contains("`other`")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("`credentials` must be a list")),
+            "{problems:?}"
+        );
+        assert_eq!(
+            parse(&json!([]), 1).unwrap_err(),
+            vec!["the body must be an object".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn a_version_registers_each_entry_with_its_binding_and_context_and_withdraws_the_rest() {
         let crypto = FakeCrypto {
@@ -540,6 +559,19 @@ mod tests {
             crypto.kept.lock().unwrap()[0],
             vec!["good".to_string(), "refused".to_string()]
         );
+    }
+
+    /// A version with no entry withdraws what was there.
+    #[tokio::test]
+    async fn a_version_with_no_entry_keeps_nothing() {
+        let crypto = FakeCrypto {
+            withdraws: vec!["jira".to_string()],
+            ..Default::default()
+        };
+        let applied = apply(&crypto, "an-agent", 8, &[]).await;
+        assert!(applied.registered.is_empty());
+        assert_eq!(applied.withdrawn, vec!["jira".to_string()]);
+        assert_eq!(crypto.kept.lock().unwrap()[0], Vec::<String>::new());
     }
 
     proptest! {

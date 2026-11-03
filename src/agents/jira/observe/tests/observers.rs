@@ -38,8 +38,11 @@ use jira_observer::projects::JiraProjectObserver;
 use jira_observer::users::JiraUserObserver;
 use jira_observer::{JiraAuth, JiraDeployment, JiraObserverArgs, JiraObserverMessage};
 use polar::cassini::TcpClient;
+use polar::egress::testing::{TestCa, https_front};
+use polar_agent_builder::protocol::CredentialSource;
+use polar_agent_builder::protocol::testing::http_handle;
 use polar_agent_builder::{
-    CryptoClient, HealthHandle, HoldReason, SoftValue, StateClient, StateError, StateQuery,
+    HealthHandle, HoldReason, SoftValue, StateClient, StateError, StateQuery,
 };
 use polar_crypto::CryptoError;
 use polar_health::HealthCheckMessage;
@@ -160,17 +163,30 @@ async fn asked(server: &MockServer, endpoint: &str) -> Vec<Request> {
         .collect()
 }
 
+fn ca() -> &'static TestCa {
+    static CA: std::sync::OnceLock<TestCa> = std::sync::OnceLock::new();
+    CA.get_or_init(|| TestCa::new("the stand-in Jira's CA"))
+}
+
 async fn args(server: &MockServer, client: ActorRef<TcpClientMessage>) -> JiraObserverArgs {
+    // A credential goes only over TLS, so the stand-in is behind it, and the real handler goes to it.
+    let jira_url = format!(
+        "https://localhost:{}",
+        https_front(ca(), &server.uri()).await
+    );
+    let site = http_handle(
+        &ca().pem,
+        jira_observer::OPERATIONS,
+        vec![("JIRA_URL", jira_url.clone())],
+        Some(Arc::new(GivesToken)),
+    )
+    .await;
     JiraObserverArgs {
-        jira_url: server.uri(),
-        auth: JiraAuth::Credential {
-            name: "jira".to_string(),
-            host: "jira.example.org".to_string(),
-            crypto: Arc::new(GivesToken),
-        },
+        jira_url,
+        auth: JiraAuth::Credential,
         deployment: JiraDeployment::ServerOrDataCenter,
         tcp_client: TcpClient::from_actor_ref(client),
-        web_client: reqwest::Client::new(),
+        protocols: site.handle,
         // Long enough that only a retry pulls again within a test.
         base_interval: 3600,
         query_date: None,
@@ -191,43 +207,15 @@ async fn args(server: &MockServer, client: ActorRef<TcpClientMessage>) -> JiraOb
 struct GivesToken;
 
 #[async_trait]
-impl CryptoClient for GivesToken {
-    async fn store_secret(&self, _: String, _: Vec<u8>) -> Result<(), CryptoError> {
-        Err(CryptoError::NoReply)
-    }
-    async fn encrypt_for_recipient(&self, _: String, _: Vec<u8>) -> Result<Vec<u8>, CryptoError> {
-        Err(CryptoError::NoReply)
-    }
-    async fn retrieve_secret(
-        &self,
-        _: String,
-    ) -> Result<Option<polar_crypto::Zeroizing<Vec<u8>>>, CryptoError> {
-        Err(CryptoError::NoReply)
-    }
-    async fn register_secret(
-        &self,
-        _: String,
-        _: String,
-        _: Vec<u8>,
-        _: Vec<u8>,
-        _: polar_crypto::registry::SecretBinding,
-    ) -> Result<(), CryptoError> {
-        Err(CryptoError::NoReply)
-    }
-    async fn load_secret(&self, _: String, _: String) -> Result<bool, CryptoError> {
-        Ok(false)
-    }
-    async fn replace_section(&self, _: String, _: Vec<String>) -> Result<Vec<String>, CryptoError> {
-        Ok(Vec::new())
-    }
-    async fn git_credential(
+impl CredentialSource for GivesToken {
+    async fn git(
         &self,
         name: String,
         _: String,
     ) -> Result<polar_crypto::registry::GitCredential, CryptoError> {
         Err(CryptoError::SecretNotRegistered(name))
     }
-    async fn http_credential(
+    async fn http(
         &self,
         _: String,
         _: String,

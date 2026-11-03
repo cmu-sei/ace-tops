@@ -87,7 +87,7 @@ impl Actor for JiraProjectObserver {
             args.jira_url,
             args.auth,
             args.deployment,
-            args.web_client,
+            args.protocols,
             args.tcp_client,
             Duration::from_secs(args.base_interval),
         )

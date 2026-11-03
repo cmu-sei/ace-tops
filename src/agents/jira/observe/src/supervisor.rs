@@ -21,25 +21,24 @@
    DM26-0670
 */
 use crate::agent::Prepared;
-use crate::credentials;
 use crate::groups::JiraGroupObserver;
 use crate::issues::JiraIssueObserver;
 use crate::projects::JiraProjectObserver;
 use crate::users::JiraUserObserver;
 use crate::{
-    BROKER_CLIENT_NAME, JIRA_GROUP_OBSERVER, JIRA_ISSUE_OBSERVER, JIRA_PROJECT_OBSERVER,
-    JIRA_USER_OBSERVER, JiraAuth, JiraObserverArgs, JiraObserverMessage, RETRY,
+    BROKER_CLIENT_NAME, CREDENTIAL, JIRA_GROUP_OBSERVER, JIRA_ISSUE_OBSERVER,
+    JIRA_PROJECT_OBSERVER, JIRA_USER_OBSERVER, JiraAuth, JiraObserverArgs, JiraObserverMessage,
+    RETRY,
 };
 use cassini_types::ClientEvent;
 use polar::cassini::TcpClient;
-use polar::egress::Egress;
+use polar_agent_builder::protocol::{CredentialsApplied, ProtocolHandle};
 use polar_agent_builder::{
-    AgentBuilder, AgentResources, ConfigurationHandle, Configured, CryptoClient, HealthClient,
-    HealthHandle, HoldReason, InfrastructureEvent, InfrastructureSupervisorMessage, StateClient,
+    AgentBuilder, AgentResources, ConfigurationHandle, Configured, HealthClient, HealthHandle,
+    HoldReason, InfrastructureEvent, InfrastructureSupervisorMessage, StateClient,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorId, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
-use reqwest::{Client, ClientBuilder};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -54,15 +53,6 @@ const OBSERVER_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// regardless.
 pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(OBSERVER_STOP_TIMEOUT.as_secs() * 3 + 10);
 
-/// How long opening a connection to Jira may take, the TLS handshake included. A site that
-/// has not answered by then is as good as unreachable, and the pull is tried again later.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// How long one request to Jira may take, from sending it to the end of its body. The largest
-/// is a page of 50 issues with their changelogs; without a bound, a site that stops answering
-/// in the middle of one leaves the observer waiting for ever.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
-
 /// This supervisor's own message type. polar::SupervisorMessage cannot carry
 /// the infrastructure signals without polar-agent-builder depending back on
 /// lib, so the builder is generic over the message (see kube-observer).
@@ -74,10 +64,8 @@ pub enum ObserverSupervisorMessage {
     /// terminated for rejuvenation. Stop the observers, then send
     /// InfrastructureSupervisorMessage::ProceedWithShutdown.
     PrepareShutdown,
-    /// A runtime section was replaced: the `credentials` section brings a new credential, or withdraws it.
-    RuntimeChanged {
-        section: String,
-    },
+    /// A version of the `credentials` section reached the CryptoActor: it brings a new credential, or withdraws it.
+    CredentialsApplied(CredentialsApplied),
     /// A signed update changed the variables named: one the observers are started with makes the supervisor read the
     /// settings again and start them again.
     ConfigChanged {
@@ -91,18 +79,16 @@ pub struct ObserverSupervisorState {
     /// The settings the observers are started with.
     prepared: Prepared,
     base_interval: u64,
-    web_client: Client,
+    /// The agent's way to the site.
+    protocols: ProtocolHandle,
     tcp_client: TcpClient,
     /// The agent's soft state, which the issue observer's cursor is read from (its state actor).
     state: Option<Arc<dyn StateClient>>,
     healthcheck: HealthHandle,
-    /// The CryptoActor, which holds the credential and gives it for the site's host only.
-    crypto: Option<Arc<dyn CryptoClient>>,
-    /// The live configuration: the `credentials` runtime section is read from it.
+    /// The live configuration.
     configuration: Option<ConfigurationHandle>,
-    /// The name of the credential registered from the latest `credentials` section; none until one arrives, or
-    /// once it is withdrawn.
-    credential: Option<String>,
+    /// The CryptoActor has the credential: from the latest `credentials` section, until one withdraws it.
+    credential: bool,
     /// Why the latest `credentials` section gave no credential, when it was refused.
     credential_problem: Option<String>,
     /// Why the settings in force cannot work, when a signed update made them so: no observer runs until another
@@ -145,17 +131,36 @@ const NO_CREDENTIAL: &str = "jira-observer: no credential: sign a `credentials` 
      (polar-sign), or set JIRA_ANONYMOUS to true";
 
 impl ObserverSupervisorState {
-    /// How the observers authenticate: anonymously, or with the registered credential for the site's host. None while
-    /// a credential is needed and none is registered.
+    /// How the observers authenticate: anonymously, or with the credential. None while a credential is needed and none
+    /// is registered.
     fn auth(&self) -> Option<JiraAuth> {
         if self.prepared.anonymous {
             return Some(JiraAuth::Anonymous);
         }
-        Some(JiraAuth::Credential {
-            name: self.credential.clone()?,
-            host: self.prepared.credential_host.clone()?,
-            crypto: self.crypto.clone()?,
-        })
+        self.credential.then_some(JiraAuth::Credential)
+    }
+
+    /// What became of a version of the `credentials` section: whether the observers have their credential, and why not.
+    fn credentials_applied(&mut self, applied: &CredentialsApplied) {
+        self.credential = applied.registered.iter().any(|name| name == CREDENTIAL);
+        self.credential_problem = if self.credential {
+            None
+        } else if let Some((name, why)) = applied.failed.first() {
+            Some(format!(
+                "the credentials section version {}: `{name}`: {why}",
+                applied.version
+            ))
+        } else if !applied.registered.is_empty() {
+            Some(format!(
+                "the credentials section version {} has no entry named `{CREDENTIAL}`, which is the one jira-observer presents",
+                applied.version
+            ))
+        } else {
+            None
+        };
+        if let Some(why) = &self.credential_problem {
+            error!(version = applied.version, "{why}");
+        }
     }
 
     fn observer_args(&self, auth: JiraAuth) -> JiraObserverArgs {
@@ -164,7 +169,7 @@ impl ObserverSupervisorState {
             auth,
             deployment: self.prepared.deployment,
             tcp_client: self.tcp_client.clone(),
-            web_client: self.web_client.clone(),
+            protocols: self.protocols.clone(),
             base_interval: self.base_interval,
             query_date: self.prepared.query_date.clone(),
             retry: RETRY,
@@ -298,77 +303,6 @@ impl ObserverSupervisor {
             .await
     }
 
-    /// Reads the latest `credentials` section and hands it to the CryptoActor; the name registered is the credential
-    /// the observers use. A body that does not read, or an entry the CryptoActor refuses, leaves no credential, and
-    /// says why.
-    async fn apply_credentials(state: &mut ObserverSupervisorState) {
-        let Some(configuration) = &state.configuration else {
-            return;
-        };
-        let value = match configuration.runtime(credentials::SECTION_NAME).await {
-            Ok(Some(value)) => value,
-            Ok(None) => return,
-            Err(e) => {
-                warn!("could not read the credentials section: {e}");
-                return;
-            }
-        };
-        ObserverSupervisor::use_credentials(state, value.version, &value.body).await;
-    }
-
-    /// Version `version` of the `credentials` section, `body`: its entry registered with the CryptoActor is the
-    /// credential the observers use, or there is none, and why.
-    async fn use_credentials(
-        state: &mut ObserverSupervisorState,
-        version: u64,
-        body: &serde_json::Value,
-    ) {
-        let Some(crypto) = state.crypto.clone() else {
-            return;
-        };
-        let applied = match credentials::parse(body) {
-            Ok(entry) => credentials::apply(crypto.as_ref(), version, entry.as_ref()).await,
-            Err(problems) => Err(format!(
-                "the credentials section version {version} does not read: {}",
-                problems.join("; ")
-            )),
-        };
-        match applied {
-            Ok(name) => {
-                state.credential = name;
-                state.credential_problem = None;
-            }
-            Err(why) => {
-                error!(version, "{why}");
-                state.credential = None;
-                state.credential_problem = Some(why);
-            }
-        }
-    }
-
-    /// The reqwest client: the way out of the cluster the egress settings give (polar::egress), with
-    /// a bound on opening a connection and on each request.
-    async fn get_client(
-        egress: &Egress,
-        connect_timeout: Duration,
-        request_timeout: Duration,
-    ) -> Result<Client, ActorProcessingErr> {
-        let bundle = egress.ca_bundle().await?;
-        if !bundle.is_empty() {
-            info!(
-                "trusting {} egress CA certificate(s) beside the system's",
-                bundle.len()
-            );
-        }
-        let builder = ClientBuilder::new()
-            .connect_timeout(connect_timeout)
-            .timeout(request_timeout);
-        egress
-            .configure(builder, &bundle)?
-            .build()
-            .map_err(|e| ActorProcessingErr::from(format!("failed to build web client: {e}")))
-    }
-
     /// Starts whichever observers are not running. Safe to call on every
     /// Registered: a reconnect finds the slots full and starts nothing.
     async fn spawn_observers(
@@ -437,11 +371,6 @@ impl Actor for ObserverSupervisor {
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
 
-        // Fail on an egress CA that cannot be used before anything is started.
-        let web_client =
-            ObserverSupervisor::get_client(&args.prepared.egress, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
-                .await?;
-
         // Health check, router, broker client and CryptoActor in one call. Observers only
         // depend on Cassini, which is the default capability; the issue
         // observer's soft state comes with the state actor the builder starts.
@@ -483,29 +412,26 @@ impl Actor for ObserverSupervisor {
                     changed: changed.changed,
                 })
             });
-        resources
-            .configuration
-            .runtime_changes()
-            .subscribe(myself.clone(), |changed| {
-                Some(ObserverSupervisorMessage::RuntimeChanged {
-                    section: changed.section,
-                })
+        let protocols = resources.protocols.clone().ok_or(
+            "the builder gave no protocol handler, which this agent declares operations for",
+        )?;
+        protocols
+            .credentials_applied()
+            .subscribe(myself.clone(), |applied| {
+                Some(ObserverSupervisorMessage::CredentialsApplied(applied))
             });
 
         Ok(ObserverSupervisorState {
             prepared: args.prepared,
             base_interval: args.base_interval,
-            web_client,
+            protocols,
             tcp_client: resources.tcp_client,
             state: resources
                 .state
                 .map(|handle| Arc::new(handle) as Arc<dyn StateClient>),
             healthcheck: resources.healthcheck,
-            crypto: resources
-                .crypto
-                .map(|handle| Arc::new(handle) as Arc<dyn CryptoClient>),
             configuration: Some(resources.configuration),
-            credential: None,
+            credential: false,
             credential_problem: None,
             settings_problem: None,
             registered,
@@ -523,8 +449,10 @@ impl Actor for ObserverSupervisor {
         myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        // A section that arrived before the subscription.
-        ObserverSupervisor::apply_credentials(state).await;
+        // A section that reached the CryptoActor before the subscription.
+        if let Some(applied) = state.protocols.credentials_in_force() {
+            state.credentials_applied(&applied);
+        }
         // Built by a held supervisor after Cassini registered the agent: no `Registered` comes again.
         ObserverSupervisor::start_observers(&myself, state).await
     }
@@ -552,16 +480,14 @@ impl Actor for ObserverSupervisor {
                     ObserverSupervisor::settings_changed(&myself, state).await?;
                 }
             }
-            ObserverSupervisorMessage::RuntimeChanged { section } => {
-                if section == credentials::SECTION_NAME {
-                    ObserverSupervisor::apply_credentials(state).await;
-                    ObserverSupervisor::restart_observers(
-                        &myself,
-                        state,
-                        "a new version of the credentials section",
-                    )
-                    .await?;
-                }
+            ObserverSupervisorMessage::CredentialsApplied(applied) => {
+                state.credentials_applied(&applied);
+                ObserverSupervisor::restart_observers(
+                    &myself,
+                    state,
+                    "a new version of the credentials section",
+                )
+                .await?;
             }
             ObserverSupervisorMessage::ClientEvent { event } => match event {
                 ClientEvent::Registered { .. } => {
@@ -648,11 +574,10 @@ mod tests {
     use super::*;
     use crate::test_crypto::{FakeCrypto, Gives};
     use crate::test_health::{Told, health_recorder, told};
-    use polar::egress::testing::{TestCa, given, https_server, rerun};
     use polar_agent_builder::HoldReason;
+    use polar_agent_builder::protocol::testing::Site;
     use serde_json::json;
 
-    use std::time::Instant;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -682,32 +607,31 @@ mod tests {
             .0
     }
 
-    /// The supervisor's state as `pre_start` makes it, for a site at `url`, read anonymously or with the credential
-    /// `credential` that `crypto` gives, its health `health`, Cassini registered.
+    /// The supervisor's state as `pre_start` makes it, for a site at `url` (a stand-in is reached through TLS), read
+    /// anonymously or with a credential if `credential`, as `crypto` gives it, its health `health`, Cassini registered.
     async fn supervisor_state(
         url: String,
         anonymous: bool,
-        credential: Option<&str>,
+        credential: bool,
         crypto: FakeCrypto,
         health: ActorRef<polar_health::HealthCheckMessage>,
-    ) -> ObserverSupervisorState {
-        ObserverSupervisorState {
+    ) -> (ObserverSupervisorState, Site) {
+        let url = crate::test_crypto::behind_tls(&url).await;
+        let site = crate::test_crypto::handler(&url, crypto).await;
+        let state = ObserverSupervisorState {
             prepared: Prepared {
                 jira_url: url,
                 anonymous,
-                credential_host: (!anonymous).then(|| "jira.example.org".to_string()),
                 deployment: crate::JiraDeployment::ServerOrDataCenter,
-                egress: Egress::default(),
                 query_date: None,
             },
             base_interval: 3600,
-            web_client: Client::new(),
+            protocols: site.handle.clone(),
             tcp_client: TcpClient::from_actor_ref(sink().await),
             state: None,
             healthcheck: HealthHandle::new(health),
-            crypto: Some(Arc::new(crypto)),
             configuration: None,
-            credential: credential.map(str::to_string),
+            credential,
             credential_problem: None,
             settings_problem: None,
             registered: true,
@@ -717,7 +641,8 @@ mod tests {
             groups: None,
             users: None,
             issues: None,
-        }
+        };
+        (state, site)
     }
 
     /// The observers are registered by name, so the tests that start them take turns.
@@ -739,8 +664,8 @@ mod tests {
         let server = site_without_data().await;
         let (health, recorded) = health_recorder().await;
         let crypto = FakeCrypto::giving(Gives::Bearer("t0ken"));
-        let mut state =
-            supervisor_state(server.uri(), false, None, crypto.clone(), health.clone()).await;
+        let (mut state, _site) =
+            supervisor_state(server.uri(), false, false, crypto.clone(), health.clone()).await;
         let myself = sink::<ObserverSupervisorMessage>().await;
 
         ObserverSupervisor::start_observers(&myself, &mut state)
@@ -756,7 +681,7 @@ mod tests {
         );
         assert!(server.received_requests().await.unwrap().is_empty());
 
-        state.credential = Some("jira".to_string());
+        state.credential = true;
         ObserverSupervisor::restart_observers(&myself, &mut state, "a new credential")
             .await
             .unwrap();
@@ -769,7 +694,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|(name, host)| name == "jira" && host == "jira.example.org")
+                .all(|(name, host)| name == "jira" && host == "localhost")
         );
         assert!(!crypto.asked.lock().unwrap().is_empty());
         state.stop_observers("the test is over").await;
@@ -782,10 +707,10 @@ mod tests {
         let _turn = NAMED.lock().await;
         let server = site_without_data().await;
         let (health, _) = health_recorder().await;
-        let mut state = supervisor_state(
+        let (mut state, _site) = supervisor_state(
             server.uri(),
             true,
-            None,
+            false,
             FakeCrypto::giving(Gives::NotRegistered),
             health,
         )
@@ -806,10 +731,10 @@ mod tests {
         let _turn = NAMED.lock().await;
         let server = site_without_data().await;
         let (health, recorded) = health_recorder().await;
-        let mut state = supervisor_state(
+        let (mut state, _site) = supervisor_state(
             server.uri(),
             false,
-            Some("jira"),
+            true,
             FakeCrypto::giving(Gives::Bearer("t0ken")),
             health.clone(),
         )
@@ -873,10 +798,10 @@ mod tests {
         let _turn = NAMED.lock().await;
         let server = site_without_data().await;
         let (health, recorded) = health_recorder().await;
-        let mut state = supervisor_state(
+        let (mut state, site) = supervisor_state(
             "http://jira.invalid".into(),
             true,
-            None,
+            false,
             FakeCrypto::giving(Gives::NotRegistered),
             health.clone(),
         )
@@ -907,15 +832,16 @@ mod tests {
         assert!(message.contains("placeholder"), "{message}");
 
         // An update that mends it: the observers start again at the address now in force.
-        state.configuration = Some(
-            configuration_of(&[("JIRA_URL", &server.uri()), ("JIRA_ANONYMOUS", "true")]).await,
-        );
+        let mended = crate::test_crypto::behind_tls(&server.uri()).await;
+        site.set("JIRA_URL", mended.clone());
+        state.configuration =
+            Some(configuration_of(&[("JIRA_URL", &mended), ("JIRA_ANONYMOUS", "true")]).await);
         ObserverSupervisor::settings_changed(&myself, &mut state)
             .await
             .unwrap();
         // Read anonymously: three, the users observer not among them.
         assert_eq!(running(&state), 3);
-        assert_eq!(state.prepared.jira_url, server.uri());
+        assert_eq!(state.prepared.jira_url, mended);
         let after = told(&health, &recorded).await;
         assert!(
             after[told_now.len()..].contains(&Told::Release(HoldReason::Configuration)),
@@ -932,39 +858,65 @@ mod tests {
         state.stop_observers("the test is over").await;
     }
 
-    /// The credentials section a signed version brings is registered and becomes the credential the observers use;
-    /// one that does not read leaves none, and the supervisor says why when it holds.
+    /// What the handler says became of a version decides whether the observers have their credential: an entry called
+    /// `jira`. Any other leaves none, and the supervisor says why when it holds.
     #[tokio::test]
     async fn the_credentials_section_gives_the_credential_or_says_why_not() {
         let (health, recorded) = health_recorder().await;
         let crypto = FakeCrypto::giving(Gives::Bearer("t0ken"));
-        let mut state = supervisor_state(
+        let (mut state, _site) = supervisor_state(
             "http://jira.invalid".into(),
             false,
-            None,
+            false,
             crypto.clone(),
             health.clone(),
         )
         .await;
-        let body = json!({"credentials": [{
-            "name": "jira-dc", "host_pattern": "jira.example.org", "kind": "token",
-            "secret": crate::credentials::tests_support::ciphertext(b"pat",
-                &crate::credentials::context(3, "jira-dc").unwrap())}]});
-        ObserverSupervisor::use_credentials(&mut state, 3, &body).await;
-        assert_eq!(state.credential.as_deref(), Some("jira-dc"));
-        assert_eq!(crypto.registered.lock().unwrap().len(), 1);
-
-        ObserverSupervisor::use_credentials(&mut state, 4, &json!({"credentials": "no"})).await;
-        assert_eq!(state.credential, None);
+        let version = |version, registered: &[&str], failed: &[(&str, &str)]| CredentialsApplied {
+            version,
+            registered: registered.iter().map(|name| name.to_string()).collect(),
+            failed: failed
+                .iter()
+                .map(|(name, why)| (name.to_string(), why.to_string()))
+                .collect(),
+            withdrawn: Vec::new(),
+        };
         let myself = sink::<ObserverSupervisorMessage>().await;
+
+        state.credentials_applied(&version(3, &["jira"], &[]));
+        assert!(state.credential);
+        assert_eq!(state.credential_problem, None);
+
+        // Registered under a name the observer does not present: what to do about it.
+        state.credentials_applied(&version(4, &["jira-dc"], &[]));
+        assert!(!state.credential);
         ObserverSupervisor::start_observers(&myself, &mut state)
             .await
             .unwrap();
-        let [Told::Hold(HoldReason::Credentials, message)] = &told(&health, &recorded).await[..]
-        else {
-            panic!("one hold");
+        let said = told(&health, &recorded).await;
+        let Some(Told::Hold(HoldReason::Credentials, message)) = said.last() else {
+            panic!("a hold: {said:?}");
         };
-        assert!(message.contains("version 4 does not read"), "{message}");
+        assert!(message.contains("no entry named `jira`"), "{message}");
+
+        // The CryptoActor would not take it.
+        state.credentials_applied(&version(5, &[], &[("jira", "it does not open")]));
+        assert!(!state.credential);
+        ObserverSupervisor::start_observers(&myself, &mut state)
+            .await
+            .unwrap();
+        let said = told(&health, &recorded).await;
+        let Some(Told::Hold(HoldReason::Credentials, message)) = said.last() else {
+            panic!("a hold: {said:?}");
+        };
+        assert!(message.contains("version 5"), "{message}");
+        assert!(message.contains("it does not open"), "{message}");
+
+        // A version with no entry withdraws it, and it is then as if none had come.
+        state.credentials_applied(&version(6, &[], &[]));
+        assert!(!state.credential);
+        assert_eq!(state.credential_problem, None);
+        assert_eq!(running(&state), 0);
     }
 
     /// A site that answers who the token is and what it is, and 404 to everything else.
@@ -1016,10 +968,10 @@ mod tests {
         let _turn = NAMED.lock().await;
         let server = site_without_data().await;
         let (health, recorded) = health_recorder().await;
-        let mut state = supervisor_state(
+        let (mut state, _site) = supervisor_state(
             server.uri(),
             false,
-            Some("jira"),
+            true,
             FakeCrypto::giving(Gives::Bearer("t0ken")),
             health.clone(),
         )
@@ -1051,99 +1003,5 @@ mod tests {
             ]
         );
         state.stop_observers("the test is over").await;
-    }
-
-    #[tokio::test]
-    async fn a_request_that_takes_too_long_is_given_up() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(5)))
-            .mount(&server)
-            .await;
-        let client = ObserverSupervisor::get_client(
-            &Egress::default(),
-            Duration::from_secs(5),
-            Duration::from_millis(200),
-        )
-        .await
-        .unwrap();
-
-        let started = Instant::now();
-        let error = client.get(server.uri()).send().await.unwrap_err();
-        assert!(error.is_timeout(), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(3));
-    }
-
-    #[tokio::test]
-    async fn a_connection_that_never_opens_is_given_up() {
-        // A listener that never accepts: the kernel completes the TCP handshake, and the TLS
-        // handshake then waits for an answer that never comes.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let client = ObserverSupervisor::get_client(
-            &Egress::default(),
-            Duration::from_millis(200),
-            Duration::from_secs(60),
-        )
-        .await
-        .unwrap();
-
-        let started = Instant::now();
-        let sent = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.get(format!("https://{address}/")).send(),
-        )
-        .await;
-        let error = sent
-            .expect("the connect timeout did not end the request")
-            .unwrap_err();
-        assert!(error.is_connect() || error.is_timeout(), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(3));
-        drop(listener);
-    }
-
-    /// The image's roots (SSL_CERT_FILE, read from the process environment, so the client is made in a child
-    /// process) and the egress CA are trusted together: a site behind a TLS-inspecting proxy and one that is not.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_egress_ca_is_trusted_beside_the_image_roots() {
-        if let Some(urls) = given("JIRA_TEST_URLS") {
-            let egress = Egress {
-                ca_cert: given("POLAR_EGRESS_CA_CERT"),
-                ..Egress::default()
-            };
-            let client = ObserverSupervisor::get_client(&egress, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
-                .await
-                .unwrap();
-            for url in urls.split(',') {
-                let body = client.get(url).send().await.unwrap().text().await.unwrap();
-                assert_eq!(body, "ok", "{url}");
-            }
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let image = TestCa::new("image roots");
-        let corporate = TestCa::new("corporate root");
-        let image_file = image.write(dir.path(), "image.pem");
-        let corporate_file = corporate.write(dir.path(), "corporate.pem");
-        let urls = format!(
-            "{},{}",
-            https_server(&image).await.url,
-            https_server(&corporate).await.url
-        );
-        let output = rerun(
-            "supervisor::tests::the_egress_ca_is_trusted_beside_the_image_roots",
-            &[
-                ("SSL_CERT_FILE", image_file.to_str().unwrap()),
-                ("POLAR_EGRESS_CA_CERT", corporate_file.to_str().unwrap()),
-                ("JIRA_TEST_URLS", &urls),
-            ],
-        )
-        .await;
-        assert!(
-            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }

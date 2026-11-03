@@ -29,8 +29,6 @@
 //! this does not name.
 
 use crate::JiraDeployment;
-use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use polar_env::{Config, ConfigError, Defaulted, Described, Env, Optional, Required, Section};
 use url::Url;
 
@@ -241,23 +239,9 @@ pub fn parse_query_date(raw: &str) -> Result<QueryDate, String> {
     Ok(QueryDate { day, time })
 }
 
-/// True if the token looks like a base64-encoded copy of a token rather than the token itself:
-/// it decodes, as standard or URL-safe base64 with or without padding, to at least 16
-/// characters of printable ASCII with no whitespace. A Data Center personal access token is
-/// base64 too, but of binary, so it does not pass for one.
-pub fn token_looks_base64(token: &str) -> bool {
-    let token = token.trim();
-    [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD]
-        .iter()
-        .filter_map(|engine| engine.decode(token).ok())
-        .any(|decoded| decoded.len() >= 16 && decoded.iter().all(u8::is_ascii_graphic))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
-    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 
     #[test]
     fn trailing_slashes_are_dropped_and_a_context_path_is_kept() {
@@ -352,36 +336,6 @@ mod tests {
             );
         }
         assert!(normalise_jira_url("https://mysite.atlassian.net").is_ok());
-    }
-
-    #[test]
-    fn a_base64_copy_of_a_token_is_noticed() {
-        let raw = "ATATT3xFfGF0Qm9ndXNUb2tlbkZvclRlc3Rpbmc=A1B2C3D4";
-        assert!(!token_looks_base64(raw), "the raw token itself");
-        assert!(token_looks_base64(&STANDARD.encode(raw)));
-        assert!(token_looks_base64(&URL_SAFE_NO_PAD.encode(raw)));
-        assert!(token_looks_base64(&format!("{}\n", STANDARD.encode(raw))));
-    }
-
-    #[test]
-    fn a_data_center_token_or_a_short_one_is_not_taken_for_a_copy() {
-        // A Data Center personal access token: 44 characters of base64, of an id, a colon and
-        // random bytes.
-        let mut pat = b"471706345638:".to_vec();
-        pat.extend([
-            0xb0, 0x58, 0x1f, 0x9c, 0x02, 0xe7, 0x44, 0x81, 0x3a, 0xff, 0x10, 0x6d, 0xc2, 0x99,
-            0x07, 0x5e, 0xa1, 0x30, 0x8b, 0xd4,
-        ]);
-        let pat = STANDARD.encode(&pat);
-        assert_eq!(pat.len(), 44);
-        assert!(!token_looks_base64(&pat));
-        // Too short to say: "short-token" decodes to fewer than 16 characters.
-        assert!(!token_looks_base64(&STANDARD.encode("short-token")));
-        // Whitespace in what it decodes to is not a token.
-        assert!(!token_looks_base64(
-            &STANDARD.encode("a phrase with spaces in it")
-        ));
-        assert!(!token_looks_base64("t0ken"));
     }
     use std::collections::HashMap;
 

@@ -51,6 +51,10 @@ polar-signing.workspace = true
 # What `--version` prints and the scaffold carries as `agent.version`.
 polar-version.workspace = true
 rand.workspace = true
+# The HTTP protocol handler. Its default backend, native-tls, is what the image's trust roots are for (polar::egress).
+reqwest.workspace = true
+# Reads a Retry-After given as an HTTP date.
+chrono.workspace = true
 rsa.workspace = true
 ractor.workspace = true
 rkyv.workspace = true
@@ -59,7 +63,14 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[features]
+# A protocol handler for the tests of an agent, given its credentials by the test (`protocol::testing`).
+testing = []
+
 [dev-dependencies]
+# Test CAs, and TLS in front of a stand-in site (polar::egress::testing).
+polar = { workspace = true, features = ["testing"] }
+wiremock.workspace = true
 polar-signing = { workspace = true, features = ["testing"] }
 polar-health = { path = "../polar-health", features = ["virtual-time"] }
 proptest.workspace = true

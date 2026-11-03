@@ -109,9 +109,9 @@ proxy. The CA file itself is read when the agent starts.
 
 The agents that declare the section:
 
-- **jira-observer**: `get_client` (`src/agents/jira/observe/src/supervisor.rs:161`) is the existing client with its
-  connect and request timeouts, configured by `Egress::configure`. `PROXY_CA_CERT` is gone; it used rustls, which
-  dropped the image's roots, and read only the first certificate of the file.
+- **an agent with an operation over HTTP** (`polar_agent_builder::protocol::http`; jira-observer first): the handler's client, with its connect and
+  request timeouts, is configured by `Egress::configure` when the agent starts. The agent does not register the section itself: the operation brings it.
+  `PROXY_CA_CERT` is gone; it used rustls, which dropped the image's roots, and read only the first certificate of the file.
 - **oci-registry-resolver**: `client_config` (`src/agents/resolver/src/supervisor.rs:67`) sets oci-client's
   `https_proxy`, `http_proxy` and `no_proxy`; `oci_client` (`:105`) gives one `Certificate { Pem }` per PEM block
   (oci-client reads only the first certificate of each) and makes the client with `try_from`, since `new` falls back

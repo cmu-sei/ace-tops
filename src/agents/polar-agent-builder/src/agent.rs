@@ -404,12 +404,12 @@ pub struct AgentInfo {
 /// What `A` needs, with the Cassini client first: every agent built here is one, so the agent
 /// does not have to say so and cannot forget to. See [`computed_needs`].
 pub(crate) fn needs_of<A: PolarAgent>() -> Vec<Capability> {
-    let mut needs = computed_needs(A::CASSINI_CLIENT, A::NEEDS, A::GRAPH);
+    let mut listed = A::NEEDS.to_vec();
     // A credential is opened by the CryptoActor, in the custody daemon.
-    if A::CREDENTIALS.is_some() && !needs.contains(&Capability::Encryption) {
-        needs.push(Capability::Encryption);
+    if A::CREDENTIALS.is_some() {
+        listed.push(Capability::Encryption);
     }
-    needs
+    computed_needs(A::CASSINI_CLIENT, &listed, A::GRAPH)
 }
 
 /// The runtime sections `A` accepts: what it lists, and its credentials section if it declares credentials.
@@ -516,6 +516,13 @@ fn own_sections<A: PolarAgent>() -> Vec<&'static Section> {
     let mut sections: Vec<&'static Section> = A::SECTIONS.to_vec();
     if !A::TOPIC_FAMILIES.is_empty() {
         sections.push(&crate::topics::FAMILY_SECTION);
+    }
+    // An operation over HTTP goes out as the cluster says (docs/architecture/egress.md).
+    if A::OPERATIONS
+        .iter()
+        .any(|operation| operation.protocol == crate::protocol::ProtocolKind::Http)
+    {
+        sections.push(&polar::egress::SECTION);
     }
     sections
 }
@@ -1835,6 +1842,43 @@ mod tests {
             declaration_problems::<Calling>().is_empty(),
             "{:?}",
             declaration_problems::<Calling>()
+        );
+    }
+
+    /// An agent with an operation over HTTP has the egress section, and does not list it.
+    #[test]
+    fn an_operation_over_http_brings_the_egress_section() {
+        const OUT: crate::protocol::OperationDecl = crate::protocol::OperationDecl {
+            name: "out.read",
+            doc: "reads something outside",
+            protocol: crate::protocol::ProtocolKind::Http,
+            location: crate::protocol::Location::Arbitrary,
+        };
+        struct GoesOut;
+        impl PolarAgent for GoesOut {
+            const NAME: &'static str = "goes-out";
+            const PURPOSE: &'static str = "goes out";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const OPERATIONS: &'static [crate::protocol::OperationDecl] = &[OUT];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let variables = |doc: AgentDocument| -> Vec<String> {
+            doc.document
+                .sections
+                .iter()
+                .flat_map(|s| s.variables.iter().map(|v| v.name.clone()))
+                .collect()
+        };
+        let egress = "POLAR_EGRESS_PROXY".to_string();
+        assert!(variables(scaffold_document::<GoesOut>()).contains(&egress));
+        assert!(!variables(scaffold_document::<Calling>()).contains(&egress));
+        assert!(
+            declaration_problems::<GoesOut>().is_empty(),
+            "{:?}",
+            declaration_problems::<GoesOut>()
         );
     }
 

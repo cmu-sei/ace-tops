@@ -61,21 +61,29 @@ then not be the start-time one that pulled health reports.)
 
 ## The credential (since 3.0.0)
 
-The token travels as the git observer's credentials do (`git/observe/src/credentials.rs`, git-controller.md): the
-`credentials` runtime section of jira-observer (`jira/observe/src/credentials.rs`), one entry `{ name, host_pattern,
-kind, username, secret }`, its `secret` an `EscrowedSecret` for jira-observer bound to
-`jira-observer|credentials|<version>|<name>|secret` and to `host_pattern`. `polar-sign` makes it from what is typed, as
-for git. The supervisor hands each version to the CryptoActor (`credentials::apply`: `RegisterSecret`, then
-`ReplaceSection` keeping that name, so a version with no entry withdraws it); the CryptoActor opens it inside the custody
-daemon and escrows it. On each request the observer asks the CryptoActor for the credential for JIRA_URL's host
-(`CryptoClient::http_credential`, `JiraAuth::apply`): a `token` is sent as `Authorization: Bearer` (a Data Center or
+jira-observer is the first agent on the protocol handler (`protocol-handlers.md`, 2026-11-03), and its code never has the token.
+It declares the credential (`PolarAgent::CREDENTIALS`, `jira/observe/src/credentials.rs`), which brings the `credentials` runtime
+section and encryption, so its pod escrows a key in init. The section holds one entry `{ name, host_pattern, kind, username, secret }`, called
+**`jira`** (`CREDENTIAL`, as the seed names it), its `secret` an `EscrowedSecret` for jira-observer bound to
+`jira-observer|credentials|<version>|<name>|secret` and to `host_pattern`. `polar-sign` makes it from what is typed, as for git.
+The infrastructure hands each version to the CryptoActor (`RegisterSecret`, then `ReplaceSection` keeping that name, so a
+version with no entry withdraws it), which opens it inside the custody daemon and escrows it.
+
+Every request to the site is one of two operations (`READ`, `READ_ANONYMOUSLY`, in the scaffold under `operations`), to JIRA_URL's host as it is in
+force. The handler asks the CryptoActor for the credential for that host on each request and presents it: a `token` as `Authorization: Bearer` (a Data Center or
 Server personal access token), a `user-password` as Basic, its `username` the Jira Cloud account's email and its secret
 the API token. A credential the CryptoActor will not give (none registered, not bound to the host, not text) is a
-`Credentials` failure at once. jira-observer needs encryption for it (`NEEDS`), so its pod escrows a key in init.
+`Credentials` failure at once, and nothing is sent. What the observer knows of the token is what the reply says: how it was presented, and that it looks
+base64-encoded.
 
-A new token is a new signed version: it reaches the running agent (`RuntimeChanged`), and the supervisor starts the
+Since the handler (2026-11-03):
+- a token `/myself` refuses is not presented again by any observer until a new version arrives, where each observer used to check it for itself;
+- a redirect is judged at each hop. One to another host is a `Configuration` failure, where it used to be followed with the token dropped;
+- a host's `Retry-After` keeps every observer from that host until it has passed, and a `Retry-After` on `serverInfo` now fails the pull instead of reading the site as configured.
+
+A new token is a new signed version: once the CryptoActor has it (`ProtocolHandle::credentials_applied`) the supervisor starts the
 observers again with it, which releases every hold. Without a credential, and not reading anonymously, it starts no
-observer and holds `Credentials`, saying to sign the section; one arriving starts them. `credentials-agent-architecture.md`
+observer and holds `Credentials`, saying to sign the section; one arriving starts them. An entry under another name is said to be one, with the name to use. `credentials-agent-architecture.md`
 records the CryptoActor's `HttpCredential`, the sibling of git's `GitCredential`.
 
 **On a fresh cluster the token is sealed from sops, once** (built 2026-11-01, `infra/seed.nu` "jira-observer's

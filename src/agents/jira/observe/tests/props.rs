@@ -23,8 +23,6 @@
 
 //! Properties of the Jira observer's configuration checks and of when it pulls.
 
-use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use cassini_client::facade::Backoff;
 use jira_common::types::JiraField;
 use jira_observer::JiraDeployment;
@@ -33,7 +31,7 @@ use jira_observer::issues::{
     Filter, INCREMENTAL_OVERLAP_SECS, ORDER, SiteFields, Start, cursor_minutes, incremental_window,
     issue_jql, jql_filter,
 };
-use jira_observer::settings::{normalise_jira_url, parse_query_date, token_looks_base64};
+use jira_observer::settings::{normalise_jira_url, parse_query_date};
 use jira_observer::{BRIEF_CHARS, JiraError};
 use proptest::prelude::*;
 use std::time::{Duration, Instant};
@@ -147,34 +145,6 @@ proptest! {
         prop_assume!(scheme != "http" && scheme != "https");
         let given = format!("{scheme}://{rest}");
         prop_assert!(normalise_jira_url(&given).is_err(), "{}", given);
-    }
-
-    #[test]
-    fn a_base64_copy_of_any_printable_token_is_noticed(token in "[!-~]{16,64}") {
-        for engine in [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
-            let encoded = engine.encode(&token);
-            prop_assert!(token_looks_base64(&encoded), "{}", encoded);
-        }
-    }
-
-    #[test]
-    fn printable_text_with_one_other_byte_in_it_is_never_noticed(
-        mut bytes in proptest::collection::vec(0x21u8..=0x7e, 15..63),
-        odd in prop_oneof![0u8..=0x20, 0x7fu8..=0xff],
-        at in any::<proptest::sample::Index>(),
-    ) {
-        let at = at.index(bytes.len() + 1);
-        bytes.insert(at, odd);
-        for engine in [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD] {
-            prop_assert!(!token_looks_base64(&engine.encode(&bytes)));
-        }
-    }
-
-    #[test]
-    fn a_data_center_shaped_token_is_not_noticed(blob in proptest::collection::vec(any::<u8>(), 33)) {
-        // 33 random bytes as 44 characters of base64, the shape of a personal access token. All
-        // 33 are printable with probability (94/256)^33, about 5e-15.
-        prop_assert!(!token_looks_base64(&STANDARD.encode(&blob)));
     }
 
     #[test]
@@ -305,7 +275,7 @@ proptest! {
             Some(context) => format!("/{context}{endpoint}"),
             None => endpoint.to_string(),
         };
-        let status = reqwest::StatusCode::from_u16(status).unwrap();
+        let status = polar_agent_builder::protocol::http::StatusCode::from_u16(status).unwrap();
         let brief = JiraError::status(&format!("{path}?{query}"), status, None).brief();
         let whole = format!("{path} returned {status}");
         if whole.chars().count() <= BRIEF_CHARS {

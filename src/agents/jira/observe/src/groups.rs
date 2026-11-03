@@ -27,10 +27,10 @@ use crate::{
 use jira_common::JIRA_GROUPS_CONSUMER_TOPIC;
 use jira_common::types::{JiraData, JiraGroup};
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
-use reqwest::Url;
 use std::collections::HashSet;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+use url::Url;
 
 const GROUPS_OP: &str = "/rest/api/2/groups/picker";
 
@@ -181,7 +181,7 @@ impl Actor for JiraGroupObserver {
             args.jira_url,
             args.auth,
             args.deployment,
-            args.web_client,
+            args.protocols,
             args.tcp_client,
             Duration::from_secs(args.base_interval),
         )

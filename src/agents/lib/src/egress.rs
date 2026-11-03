@@ -293,9 +293,8 @@ pub mod testing {
         }
     }
 
-    /// An https server on 127.0.0.1 with a certificate for 127.0.0.1 and localhost that `ca` signed. It answers
-    /// every request with 200 and `ok` until the runtime ends.
-    pub async fn https_server(ca: &TestCa) -> TestServer {
+    /// What takes TLS for 127.0.0.1 and localhost, with a certificate that `ca` signed.
+    fn acceptor(ca: &TestCa) -> tokio_rustls::TlsAcceptor {
         let key = rcgen::KeyPair::generate().unwrap();
         let mut params =
             rcgen::CertificateParams::new(vec!["127.0.0.1".to_string(), "localhost".to_string()])
@@ -312,7 +311,42 @@ pub mod testing {
                 rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()),
             )
             .unwrap();
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        tokio_rustls::TlsAcceptor::from(Arc::new(config))
+    }
+
+    /// Puts TLS in front of the plain server at `upstream` (a stand-in such as wiremock, `http://127.0.0.1:<port>`), for
+    /// a test of something that sends a credential over nothing else. Returns its port: reach it as `127.0.0.1` or as
+    /// `localhost`, which the certificate both names. Until the runtime ends.
+    pub async fn https_front(ca: &TestCa, upstream: &str) -> u16 {
+        let acceptor = acceptor(ca);
+        let upstream = upstream.trim_start_matches("http://").to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((tcp, _)) = listener.accept().await else {
+                    return;
+                };
+                let acceptor = acceptor.clone();
+                let upstream = upstream.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let Ok(mut plain) = tokio::net::TcpStream::connect(&upstream).await else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut tls, &mut plain).await;
+                });
+            }
+        });
+        port
+    }
+
+    /// An https server on 127.0.0.1 with a certificate for 127.0.0.1 and localhost that `ca` signed. It answers
+    /// every request with 200 and `ok` until the runtime ends.
+    pub async fn https_server(ca: &TestCa) -> TestServer {
+        let acceptor = acceptor(ca);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let served = Arc::new(AtomicUsize::new(0));

@@ -23,8 +23,8 @@
 
 # Protocol handlers: the domain's I/O in infrastructure
 
-Status, 2026-11-03: the design, from the maintainer, vetted. The framework is built, against a test protocol, with no agent on it and no real
-protocol yet (`polar-agent-builder/src/protocol.rs`, "When, and in what order"). Framework code that lets us reason about
+Status, 2026-11-03: the design, from the maintainer, vetted. The framework and HTTP are built, and jira-observer is on them; the rest moves in bites ("When, and in what order";
+`polar-agent-builder/src/protocol.rs`). Framework code that lets us reason about
 each request a domain actor makes, whether to allow or deny it, and that protects the credentials it uses. The domain says what it
 wants; a protocol handler in the builder's infrastructure gets the credential itself, uses it, and calls the domain's code with what
 came back. No code a developer writes on the domain side can be given the credential.
@@ -244,7 +244,9 @@ place stands, for all of it. In bites, each reported before the next:
 1. **Built, 2026-11-03.** The framework: `Protocol`, operations, `judge` and its record, the port from the `CryptoActor` (`polar_crypto::CredentialPort`, whose
    `CredentialPass` the actor compares by identity), `PolarAgent::CREDENTIALS` and `OPERATIONS` and the facts they give the scaffold, the section handed to the
    `CryptoActor`, a refused credential held and cleared by a new version, and a host's `Retry-After` honoured. Against a test protocol, no real one.
-2. HTTP, against a real TLS server. Jira moves. On a cluster: nothing changes in what lands in the graph.
+2. **Built, 2026-11-03.** HTTP, against real TLS (`protocol/http.rs`): one attempt, each redirect judged, a bounded reply (`MAX_BODY`, 256 MiB, to review: nothing
+   bounded it before), and the egress section brought by the operation. Jira moves: two operations, the credential named `jira`, and `ProtocolHandle::ask`, since its observers go through
+   their pages in order and waiting holds only their own mailbox. `request` is for a stream.
 3. The registry scheme. The resolver moves, with its migration note.
 4. git. The git observer moves.
 5. Kubernetes and the stream. The Kubernetes observer and the attestation agent move.

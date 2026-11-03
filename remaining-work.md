@@ -588,7 +588,7 @@ Each step is taken in bites, each reported before the next.
   Handlers for HTTP (with the registry scheme), git and the Kubernetes API in the builder's infrastructure, for the domain side, on behalf of a domain actor
   that declares its credential and registers its operations at load. The handler gets the credential from the `CryptoActor` itself and calls the callback with
   what came back; nothing domain code can call answers with a credential. A request is judged and logged; an arbitrary one is a declared permission and carries no
-  credential. Not the credentials agent or cert-issuer. Step 4 of the order of work. The framework is built, against a test protocol (2026-11-03); HTTP and Jira are next.
+  credential. Not the credentials agent or cert-issuer. Step 4 of the order of work. The framework and HTTP are built and jira-observer is on them (2026-11-03); the registry scheme and the resolver are next. For the customer's migration: a `credentials` section for jira-observer must name its entry `jira`, as the seed does; one hand-signed under another name registers, and the agent holds `Credentials` and says so until it is signed again.
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent

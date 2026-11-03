@@ -52,11 +52,7 @@ pub struct Prepared {
     pub jira_url: String,
     /// Read without a credential (JIRA_ANONYMOUS).
     pub anonymous: bool,
-    /// The host the credential is asked for: JIRA_URL's, which must then be https and a name. None reading
-    /// anonymously.
-    pub credential_host: Option<String>,
     pub deployment: JiraDeployment,
-    pub egress: polar::egress::Egress,
     pub query_date: Option<String>,
 }
 
@@ -82,17 +78,14 @@ pub fn prepare(config: &polar_env::Config) -> Result<Prepared, String> {
         .map(settings::parse_query_date)
         .transpose()?
         .map(|date| date.to_string());
-    let credential_host = if settings.anonymous {
-        None
-    } else {
-        Some(crate::credentials::credential_host(&jira_url)?)
-    };
+    // A credential goes only to the host of an https address, a name: said at once, with what to set.
+    if !settings.anonymous {
+        crate::credentials::credential_host(&jira_url)?;
+    }
     Ok(Prepared {
         anonymous: settings.anonymous,
-        credential_host,
         deployment: JiraDeployment::resolve(deployment, &jira_url),
         jira_url,
-        egress: polar::egress::Egress::read(config).map_err(|e| e.to_string())?,
         query_date,
     })
 }
@@ -141,9 +134,12 @@ impl PolarAgent for JiraObserver {
     const NAME: &'static str = crate::BROKER_CLIENT_NAME;
     const PURPOSE: &'static str =
         "Polls a Jira site for projects, groups, users and issues and publishes them to Cassini";
-    // The CryptoActor holds the credential of the `credentials` runtime section and gives it for the site's host only.
-    const NEEDS: &'static [polar_agent_builder::Capability] =
-        &[polar_agent_builder::Capability::Encryption];
+    const NEEDS: &'static [polar_agent_builder::Capability] = &[];
+    // The CryptoActor holds the credential of the `credentials` runtime section, and the handler asks it for the site's
+    // host only.
+    const CREDENTIALS: Option<&'static polar_agent_builder::RuntimeSection> =
+        Some(&crate::credentials::CREDENTIALS);
+    const OPERATIONS: &'static [polar_agent_builder::protocol::OperationDecl] = crate::OPERATIONS;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::publish(
@@ -174,9 +170,7 @@ impl PolarAgent for JiraObserver {
         crate::issues::CURSOR_LABEL,
         "the newest updated_ms of an issue, where its first issue pull starts",
     )];
-    const SECTIONS: &'static [&'static Section] = &[&settings::SECTION, &polar::egress::SECTION];
-    const RUNTIME: &'static [&'static polar_agent_builder::RuntimeSection] =
-        &[&crate::credentials::CREDENTIALS];
+    const SECTIONS: &'static [&'static Section] = &[&settings::SECTION];
     const HELP: Option<&'static str> = Some(
         "jira-observer polls the Jira site at JIRA_URL every half hour and publishes its \
          projects, groups, users and issues for jira-processor to write into the graph. \
@@ -278,16 +272,11 @@ mod tests {
         assert_eq!(prepared.jira_url, "https://jira.example.org");
     }
 
-    /// A site read with a credential is https and a host name, and the credential is asked for that host; one read
-    /// anonymously needs neither.
+    /// A site read with a credential is https and a host name; one read anonymously needs neither.
     #[test]
-    fn a_credential_is_asked_for_the_site_s_host_and_only_over_https() {
+    fn a_credential_goes_only_over_https() {
         let prepared = prepare(&config("https://Jira.Example.org/jira")).unwrap();
         assert!(!prepared.anonymous);
-        assert_eq!(
-            prepared.credential_host.as_deref(),
-            Some("jira.example.org")
-        );
 
         let why = match prepare(&config("http://jira.example.org")) {
             Ok(_) => panic!("a credential would go over http"),
@@ -304,7 +293,6 @@ mod tests {
         ]))
         .unwrap();
         assert!(anonymous.anonymous);
-        assert_eq!(anonymous.credential_host, None);
     }
 
     /// u7c's settings (infra/targets/sandbox-local/config.nuon): Apache's Jira, read anonymously as a Server, the
@@ -320,20 +308,39 @@ mod tests {
         .unwrap();
         assert_eq!(prepared.jira_url, "https://issues.apache.org/jira");
         assert!(prepared.anonymous);
-        assert_eq!(prepared.credential_host, None);
         assert_eq!(prepared.deployment, JiraDeployment::ServerOrDataCenter);
         assert_eq!(prepared.query_date.as_deref(), Some("2026-10-31"));
     }
 
-    /// The credential is the `credentials` runtime section, opened by the CryptoActor: the agent needs encryption,
-    /// and declares the section.
+    /// The credential is the `credentials` runtime section, opened by the CryptoActor: declaring it brings encryption and
+    /// the section, and the scaffold says what the agent asks of the site and with what.
     #[test]
-    fn the_agent_needs_encryption_and_declares_the_credentials_section() {
-        assert!(JiraObserver::NEEDS.contains(&polar_agent_builder::Capability::Encryption));
+    fn the_scaffold_says_the_agent_needs_encryption_and_reads_its_site_with_its_credential() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<JiraObserver>();
+        assert!(scaffold.requires.contains(&"encryption".to_string()));
         assert!(
-            JiraObserver::RUNTIME
+            scaffold
+                .runtime
                 .iter()
-                .any(|section| section.name == crate::credentials::SECTION_NAME)
+                .any(|section| section.name == "credentials")
+        );
+        let operations: Vec<(&str, Option<&str>, Option<&str>)> = scaffold
+            .operations
+            .iter()
+            .map(|o| {
+                (
+                    o.name.as_str(),
+                    o.variable.as_deref(),
+                    o.credential.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            operations,
+            [
+                ("jira.site.read", Some("JIRA_URL"), Some("jira")),
+                ("jira.site.read-anonymously", Some("JIRA_URL"), None),
+            ]
         );
     }
 

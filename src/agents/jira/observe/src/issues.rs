@@ -29,12 +29,12 @@ use jira_common::types::{JiraData, JiraField, JsonString};
 use polar::cassini::TcpClient;
 use polar_agent_builder::{SoftValue, StateClient, StateError, StateQuery};
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
-use reqwest::Url;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+use url::Url;
 
 const ISSUES_OP: &str = "/rest/api/2/search";
 const PAGE_SIZE: usize = 50;
@@ -353,7 +353,7 @@ impl Actor for JiraIssueObserver {
             args.jira_url,
             args.auth,
             args.deployment,
-            args.web_client,
+            args.protocols,
             args.tcp_client,
             Duration::from_secs(args.base_interval),
         )

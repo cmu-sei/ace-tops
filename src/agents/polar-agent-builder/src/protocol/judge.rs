@@ -27,6 +27,7 @@
 /// The protocols a handler exists for. An operation says which it is for, and the builder starts those at load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProtocolKind {
+    Http,
     /// Only in this crate's tests, for the framework alone.
     #[cfg(test)]
     Test,
@@ -35,6 +36,7 @@ pub enum ProtocolKind {
 impl ProtocolKind {
     pub const fn as_str(self) -> &'static str {
         match self {
+            ProtocolKind::Http => "http",
             #[cfg(test)]
             ProtocolKind::Test => "test",
         }

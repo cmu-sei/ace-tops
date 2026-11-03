@@ -27,22 +27,17 @@ license.workspace = true
 description = "Observer agent for Jira — polls APIs, publishes updates via Cassini broker."
 
 [dependencies]
-base64.workspace = true
 polar-scudo.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
-# Reads a Retry-After given as an HTTP date, and checks QUERY_DATE is a date (lib.rs, settings.rs).
+# Checks QUERY_DATE is a date (settings.rs).
 chrono.workspace = true
 jira_common.workspace = true
 log.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
-# The credential: the CryptoActor's answers (polar-crypto) and the escrowed secret a section carries (polar-escrow).
-polar-crypto.workspace = true
 polar-env.workspace = true
-polar-escrow.workspace = true
 ractor.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rkyv.workspace = true
 serde_json.workspace = true
 serde.workspace = true
@@ -54,14 +49,15 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-# Test CAs, TLS servers and child processes (polar::egress::testing).
+base64.workspace = true
+# Test CAs, and TLS in front of the stand-in Jira, since a credential goes over nothing else (polar::egress::testing).
 polar = { workspace = true, features = ["testing"] }
+# The real handler, given a test's stand-in for the CryptoActor (polar_agent_builder::protocol::testing).
+polar-agent-builder = { workspace = true, features = ["testing"] }
+polar-crypto.workspace = true
 # What the observers tell the agent's health (a hold, a release), recorded by a stand-in health actor in the tests.
 polar-health.workspace = true
 proptest.workspace = true
-# A real escrowed secret for the credentials section's tests (an RSA recipient, as git's tests make).
-rand.workspace = true
-rsa.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 
