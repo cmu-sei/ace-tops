@@ -289,7 +289,18 @@ A custodian's identity is asked about as its service's (`custodian_of`), since t
 - *The 2 s wait.* Well over the slowest answer. With the agent down it costs 2 s for each of a pod's two certificates, which added about 5 s to a rollout (57 s against 52 s), so nothing shortens it.
 - *Not run live.* `agent_escrow_issuance.rs` asked nothing on either cluster: it runs only at a workload's first escrow certificate, and both clusters already had theirs. Its unit test covers it; a clean install would run it.
 
-**What refusing will do to a debugged pod.** A `kubectl debug` marks a pod for the rest of its life. With refusing on, it runs until its next renewal, within the hour, then its `polar-init` is refused, and it restarts in place and is refused again until someone replaces it. So debugging a pod costs that pod, with no more warning than the hour. That is the verdict's intent and slice B's direction, but it should be said where an operator will read it, and whether the Reaper replaces such a pod is open.
+**What refusing found, on u7s and u7c (`84237da6`, 2026-11-03).** Each cluster: a rollout of every agent with refusing on, each core member killed in turn, a rollout with the attestation agent scaled to nothing. All pods came back, and no genuine pod was refused, on either cluster. Run on purpose:
+
+- *A pod of another image, as `jira-observer`'s service account, with no owner:* refused, `NoOwner`, and it sat in `Init:Error` with no certificate (u7s).
+- *The same, with the agent restarted and no record to be had (the configuration agent stopped):* refused the same, on both; a genuine pod in that window went ahead, `CannotSay`, and was recorded as unattested.
+- *A real pod's image patched in place:* refused at its next ask, `AnotherImage`, naming the digest its owner pins (u7s).
+- *A real pod given a debug container:* refused at its next renewal, `EphemeralContainer`, within the hour, and replacing it cleared it (u7s).
+- *A debug container on the agent's own pod:* within 30 s it logged `NotGenuineItself` and answered `CannotSay`, so the intruder above was given a certificate, recorded as unattested, as decided; replacing the agent brought refusing back (u7s).
+- *The agent down while the credentials agent restarted:* cert-issuer signed on the token and its record says `unattested` (u7c).
+
+Read on disk: the ledger held `InstanceRefused` and `IssuedUnattested`, each of the latter with its serial, and two tampered pods among 24 did not make the agent doubt itself.
+
+**What refusing will do to a debugged pod.** A `kubectl debug` marks a pod for the rest of its life. With refusing on, it runs until its next renewal, within the hour, then its `polar-init` is refused, and it restarts in place and is refused again until someone replaces it. So debugging a pod costs that pod, with no more warning than the hour, and it was seen to on u7s. That is the verdict's intent and slice B's direction, but it should be said where an operator will read it, and whether the Reaper replaces such a pod is open.
 
 **The topics are named.** This first said the agent answers on a family over every served workload. Only those who vouch ask, so that family put a publish for every other agent in the attestation agent's certificate that nobody hears, each one-sided in the catalog's cross-check. The agent declares `attestation-instance-replies.cert-issuer` and `attestation-instance-replies.credentials-agent`, and an asker added later adds its name.
 

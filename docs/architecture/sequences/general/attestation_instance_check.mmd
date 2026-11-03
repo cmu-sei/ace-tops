@@ -19,8 +19,9 @@
 %%
 %% DM26-0670
 
-%% Runtime attestation, slice A: the instance check at issuance (runtime-attestation.md, "The plan"). All designed, nothing built.
-%% At issuance a pod is checked against its Deployment; the Deployments are checked against the signed record continually (the maintainer, 2026-11-02).
+%% Runtime attestation, slice A: the instance check at issuance (runtime-attestation.md, "Slice A, the askers"). Built, but for what was signed before it could be attested.
+%% At issuance a pod is checked against its owner; the Deployments are checked against the signed record continually (the maintainer, 2026-11-02).
+%% The agent's verdicts stand only while it has proved itself (attestation-when-it-cannot-answer.md, "The agent proves itself").
 sequenceDiagram
     autonumber
     participant Init as polar-init (a workload's pod)
@@ -32,66 +33,66 @@ sequenceDiagram
     participant Sch as Configuration agent
     participant Repo as Deployment repository, on Polar's git server
 
-    rect rgb(235, 219, 178)
-    Note over Att,API: DESIGNED: read from what it already holds, not a call per question
-    Att->>API: watch pods, ReplicaSets and Deployments in Polar's namespaces (get, list, watch only)
+    Note over Att,API: read from what it already holds, not a call per question
+    Att->>API: watch pods, ReplicaSets, Deployments, StatefulSets and Jobs in Polar's namespaces (get, list, watch only)
     API-->>Att: every change
+
+    loop each minute, when a list finishes, and when a new record arrives
+        Att->>Att: prove itself: every watch listed, its own pods genuine, most of what runs not condemned, real pods altered all refused
+        Note over Att: Failing: an ERROR, and CannotSay to everything. With no record: pods held to their owners, and verdicts stand that far
+    end
 
     Init->>Obs: issuance request, with the token Kubernetes signed for this pod
     Obs->>CA: the request, over Cassini
-    CA->>CA: verify the token, its identity and the pod UID it is bound to, then the renewal rule
-    CA->>Att: attestation-instance-requests: this identity, this pod UID
+    CA->>CA: verify the token, its identity and the pod UID it is bound to (an IdP's credential has no pod, and is not asked about)
+    CA->>Att: attestation-instance-requests: this identity, this pod UID (a custodian's as its service's)
 
     alt the attestation agent answers
-        Att->>Att: the pod exists with that UID
-        Att->>Att: its owner chain ends at the Deployment the catalog names for the identity
+        Att->>Att: the pod exists with that UID, and has no ephemeral container
+        Att->>Att: its owner chain, by UID, ends at the workload the signed record names for the identity
         Att->>Att: it runs as the expected service account
-        Att->>Att: each container's imageID (the kubelet's) is the digest its Deployment pins
-        Att->>Att: it has no ephemeral container
+        Att->>Att: each container's image and imageID (the kubelet's) is the digest its nearest owner pins
         alt all of them hold
             Att-->>CA: Genuine
+            CA->>CA: the renewal rule, which records what it admits, so only now
             CA->>CI: vouch for the certificate
             CI-->>CA: signed
             CA-->>Init: the certificate, through the observer
         else any of them does not
             Att-->>CA: NotGenuine, and why
-            CA->>CA: record and log the refusal
-            CA-->>Init: refused
+            CA->>CA: record (InstanceRefused) and log the refusal. Its type is not used up
+            CA-->>Init: refused: polar-init stops, and the pod restarts in place and asks again
         end
-    else it cannot be asked (not up, restarting, Cassini down)
+    else no session (at once), no answer within 2 s, or CannotSay
+        CA->>CA: the renewal rule
         CA->>CI: vouch for the certificate
         CI-->>CA: signed
-        CA->>CA: record the issuance as made without attestation
+        CA->>CA: record it (IssuedUnattested)
         CA-->>Init: the certificate, through the observer
     end
-    end
 
-    rect rgb(235, 219, 178)
-    Note over Init,CI: DESIGNED: a token-only request in one of the core's windows (a ticket, the crash window, Cassini's route)
+    Note over Init,CI: a token-only request in one of the core's windows (the floor state's entry open, a ticket)
     Init->>CI: a bootstrap identity's request, on its token alone
-    CI->>CI: is its entry open?
-    CI->>Att: attestation-instance-requests, whenever it is reachable
+    CI->>CI: is its entry open, or a ticket its pod's? If held, the credentials agent asks instead, as above
+    CI->>Att: attestation-instance-requests
     Att-->>CI: Genuine or NotGenuine: the attestation decides who gets through
-    CI-->>Init: signed, or refused. Not reachable: signed, and attested afterwards
-    end
+    CI-->>Init: signed, or refused, and a ticket given back. Could not ask: signed, and its record entry says so (unattested)
 
     rect rgb(235, 219, 178)
     Note over CI,Att: DESIGNED: what was signed before anything could attest it, and while the agent was away
-    Att->>CI: cert-issuer's record: each entry carries its pod UID
+    Att->>CI: cert-issuer's record: each entry carries its pod UID, and says if it was unattested
     CI-->>Att: the entries
-    Att->>CA: the same for the issuances recorded as made without attestation
+    Att->>CA: the same for the issuances recorded as IssuedUnattested
     CA-->>Att: the entries
     Att->>Att: attest every running pod they name
     Att-)CA: any that fail: the credentials agent, as body guard, stops renewing
     end
 
-    rect rgb(235, 219, 178)
-    Note over Att,Repo: DESIGNED: the Deployments against the signed record. An issuance waits on none of this
+    Note over Att,Repo: the Deployments against the signed record. An issuance waits on none of this
     Repo-->>Sch: a new commit, carrying the deployment's facts as a document the pipeline certificate signed
-    Sch-)Att: the document, on the agent's configuration topic. The observer is not trusted
-    Att->>Att: verify it to the deployment CA, for this section alone, and apply it
-    loop on every change, and on a schedule
-        Att->>Att: every Deployment's pins, owner and service account against the document
+    Sch-)Att: every 30 s, the document as it is, on a topic of its own. The configuration agent is not trusted
+    Att->>Att: verify it to the deployment CA, for this alone, and refuse an older version
+    loop each minute
+        Att->>Att: every Deployment's and StatefulSet's pins against the document
     end
-    Att-)CA: a mismatch: reported, and the credentials agent, as body guard, stops renewing
-    end
+    Note over Att: a difference that has lasted ten minutes: an ERROR, for now. Acting on it is slice B
