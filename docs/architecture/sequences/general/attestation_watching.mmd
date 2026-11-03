@@ -19,30 +19,27 @@
 %%
 %% DM26-0670
 
-%% Runtime attestation, slice B: watching what was attested (runtime-attestation.md, "The plan"; outlined there, to be planned when
-%% slice A is built). All designed, nothing built.
+%% Runtime attestation, slice B: watching (runtime-attestation.md, "Slice B: watching, report only"). Built, 2026-11-03: it reports, and nothing acts.
 sequenceDiagram
     autonumber
-    participant Op as Someone with access
+    participant Op as Someone with access, or a fault
     participant API as Kubernetes API
     participant Att as Attestation agent
-    participant CA as Credentials agent
     participant Bk as Cassini broker
+    participant CA as Credentials agent
 
-    rect rgb(235, 219, 178)
-    Note over Op,Att: DESIGNED: a pod changes after it was attested
-    Att->>API: watching the pods it attested
-    alt kubectl debug
-        Op->>API: add an ephemeral container
-        API-->>Att: the pod's status now shows it
-    else a container restarted on another digest
-        API-->>Att: the container's imageID is not what its Deployment pins
+    Att->>API: watching every pod of Polar's namespaces, and what owns them
+    alt a container dies by a signal
+        Op->>API: the kubelet sets its state: exit 139, say
+        API-->>Att: the pod's status. Seconds later a restart of the pod has overwritten it
+        Att->>Att: a crash is a fact: reported at once, even while it doubts itself
+    else a pod is changed, or made by hand
+        Op->>API: kubectl debug, an image patched, a pod with no owner
+        API-->>Att: the pod
+        Att->>Att: held to its owner, each minute. A new pod can come before its owner, so it has to stand at two checks running
     end
-    Att->>Att: the verdict is the attestation agent's: this instance has lapsed
-    Att-)CA: published: this identity, this pod UID, and why
-    CA->>CA: acting on it is the body guard's: stop renewing, so the certificate is dead within the hour
-    opt the credentials agent, or an administrator's signed command, revokes sooner
-        CA-)Bk: the revocation, through authority
-        Bk->>Bk: end the session and refuse its next registration
-    end
-    end
+    Att->>Att: an ERROR, once
+    Att-)Bk: attestation-reports, and again each minute while it stands
+    Bk-)CA: stamped with who published it
+    CA->>CA: only from the attestation agent: logged, and one AttestationReported in the ledger, however often it is sent
+    Note over CA: nothing follows. Refusing at renewal stays as it was, and shutting it down sooner is someone's choice: a signed revocation
