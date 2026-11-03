@@ -679,6 +679,8 @@ Each step is taken in bites, each reported before the next.
 
 ## Infra and up.nu, images and release
 
+- [ ] **A SERVICE DEPENDENCY GRAPH INSTEAD OF LAYERS** (the maintainer, 2026-11-02: agents declare their dependencies and the infrastructure works out the order, "no need for shit like layers"; and it holds what each requires, out of the catalog,
+  so that a controller can enforce the catalog's intent). The design, with its two kinds of edge, is in the GitOps controller proposal (`docs/architecture/gitops-controller.md`, on its branch until vetted). It can be proved on Flux first, by generating `apply_layers` and `dependsOn`. Where it falls in the order of work is open: suggested after the handoff.
 - [ ] **HANDING OFF TO POLAR'S GIT SERVER** (the maintainer, 2026-11-02: the bootstrap repository is for the bootstrap; Flux follows a copy on Polar's git server, and the bootstrap
   server is removed). Its own step; `docs/architecture/cluster-bootstrap.md`, "Handing off to Polar's git server", with what is to settle first. Found on the way: no one verifies the deployment
   commit's signature after install, today, so write access to the repository is deployment.
