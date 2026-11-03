@@ -85,6 +85,16 @@ Flux's own logs on `u7s` for one full rollout of all six layers, 2026-11-02, sin
 
 *Cheap on today's Flux, for review:* `--requeue-dependency=5s` in `flux.nu export` should take this rollout from 151 seconds to about 45, by the same arithmetic. Not tried.
 
+### Ordering: a dependency graph, not layers
+
+*The maintainer, 2026-11-02:* agents declare their dependencies, and the infrastructure works out the right order for the entire cluster, "no need for shit like layers". There is no such graph yet: the layers are hand-kept in `target.nu`, and `INFRA.md` already says they should be derived. The raw material exists: an agent's `NEEDS` (its scaffold's `requires`, computed by the builder), each capability's `dependency` (`infra/config/capabilities.nuon`: Cassini, Neo4j, the state agent), a workload's `issuer`, and who publishes and subscribes which topic.
+
+*What it has to get right (from reading the comments and the catalog, not yet checked against a run):* the edges are not all one kind, because taken as one kind they have cycles. Neo4j's certificate comes through the credentials agent, and the credentials agent has `graph-write`, but its graph is a best-effort projection of its ledger; cert-issuer has the `cassini` capability and Cassini's certificate comes from cert-issuer. So an edge is either *cannot start without* (the issuer of its certificate) or *uses when it is there*. The first kind must form no cycle, which the render can refuse, and only it orders anything.
+
+*It may also need far less ordering than the layers imply.* A pod already waits in `polar-init` for its own certificate, and an agent already tolerates what it uses being away. If so, everything can be started at once, and the only real ordering is the issuance chain. To be measured, not assumed.
+
+*It does not need the deployer.* The same graph can generate today's `apply_layers` and Flux's `dependsOn`, so it can come first and be proved on Flux.
+
 ## 3. What it is, and its name
 
 **`deployer`**: one agent that reads the signed deployment repository and makes the cluster match it. *(for review)* The name says what it does. "Controller" is taken (`git-repo-controller`), "reconciler" describes a mechanism, and any name with "flux" or "gitops" in it would date. Its crates follow `attestation/`: `deployer/common` (the pure core and the protocol), `deployer/agent` (the workload) and `deployer/record` (the graph writer, section 14). This file keeps the name `gitops-controller.md` because `cluster-bootstrap.md:130` already points here.
