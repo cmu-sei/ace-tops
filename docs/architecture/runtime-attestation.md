@@ -245,7 +245,7 @@ without attestation, and attested once the document arrives. An identity it name
 
 ### Slice A, the askers: the plan (2026-11-02, for review)
 
-What makes a `NotGenuine` refuse a certificate. The shadow commit (1, below) is built; refusing is not.
+What makes a `NotGenuine` refuse a certificate. The shadow commit (1, below) is built and has run; refusing is not built.
 
 **Where the questions go in.** Item 3 above says three paths in the credentials agent. Reading the code, there are four entries, and cert-issuer:
 
@@ -268,14 +268,28 @@ A custodian's identity is asked about as its service's (`custodian_of`), since t
 - `NotGenuine` is a refusal with its own reason (`IssuanceRefusalReason::NotGenuine`), logged and in the ledger. `polar-init` stops on a refusal, and the pod restarts in place and asks again.
 
 **Shadow first.** A false `NotGenuine` is the failure to fear: pods replace themselves hourly, so a wrong rule would take the cluster down within the hour. So it goes in two commits, with no switch left behind:
-1. The askers ask, log the verdict, and act on nothing. It runs on u7s and u7c through a full rollout, each core member killed in turn, and `kubectl debug` on a pod. Every `NotGenuine` and `CouldNotAsk` is read.
+1. The askers ask, log the verdict, and act on nothing. It runs on u7s and u7c through a full rollout, each core member killed in turn, and `kubectl debug` on a pod. Every `NotGenuine` and `CouldNotAsk` is read. (Done: "What the shadow run found", below.)
 2. Then they refuse, with a pod of another image running as a workload's service account refused on the cluster.
 
 **What is known already.** Measured 2026-11-02 on both clusters: every one of the 122 running containers has an `imageID` with the digest its spec pins, and no pod has an ephemeral container.
 
-**What the shadow run has to answer:**
-- *`NoSuchPod` while the agent is ready.* A pod's token can reach an asker before the watch event reaches the agent. `polar-init` starts seconds after the pod exists, so it should be rare, but a refusal there is false. If it is seen, the asker asks once more after a few seconds before it believes it.
-- *How long an answer takes.* In a release build, since a rollout asks about two dozen pods. The 2 s wait should be well over it.
+**What the shadow run found** (`6d2ed6d6`, release images, 2026-11-03; u7s single-node, u7c with node pools). Each cluster: a rollout of every agent that is not core, each core member killed in turn, a rollout with the attestation agent scaled to nothing, then an hour and more of pods restarting in place, with `kubectl debug` on one pod.
+
+| | u7s | u7c |
+|---|---|---|
+| Asks | 112 | 93 |
+| `Genuine` | 92 | 75 |
+| `NotGenuine` | 2 | 2 |
+| `CouldNotAsk` | 18 | 16 |
+| Answer, median and slowest | 48 ms, 83 ms | 80 ms, 83 ms |
+
+- *`NotGenuine`.* All four are the pod with the debug container, `EphemeralContainer`, at its next renewal, and it went on running since this is shadow. No genuine pod was called anything else.
+- *`NoSuchPod` while the agent is ready.* Not seen, so the second ask this first proposed is not built.
+- *`CouldNotAsk`.* Each lines up with something being down: Cassini (`NoSession`, answered in 0 ms), the attestation agent's own two certificates each time it starts, since it cannot answer for itself, and the rollout with it scaled down. Two more were cert-issuer's on the first rollout: the agent it replaced answered on a family over kinds `agent` and `run`, and cert-issuer is kind `ca`, so it could not be answered, as the code reads (not tested separately). It has been answered since.
+- *The 2 s wait.* Well over the slowest answer. With the agent down it costs 2 s for each of a pod's two certificates, which added about 5 s to a rollout (57 s against 52 s), so nothing shortens it.
+- *Not run live.* `agent_escrow_issuance.rs` asked nothing on either cluster: it runs only at a workload's first escrow certificate, and both clusters already had theirs. Its unit test covers it; a clean install would run it.
+
+**What refusing will do to a debugged pod.** A `kubectl debug` marks a pod for the rest of its life. With refusing on, it runs until its next renewal, within the hour, then its `polar-init` is refused, and it restarts in place and is refused again until someone replaces it. So debugging a pod costs that pod, with no more warning than the hour. That is the verdict's intent and slice B's direction, but it should be said where an operator will read it, and whether the Reaper replaces such a pod is open.
 
 **The topics are named.** This first said the agent answers on a family over every served workload. Only those who vouch ask, so that family put a publish for every other agent in the attestation agent's certificate that nobody hears, each one-sided in the catalog's cross-check. The agent declares `attestation-instance-replies.cert-issuer` and `attestation-instance-replies.credentials-agent`, and an asker added later adds its name.
 
