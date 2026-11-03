@@ -242,6 +242,7 @@ mod tests {
 
     fn entry(seq: u64, serial: &str) -> RecordEntry {
         RecordEntry {
+            unattested: None,
             log: "log-1".to_string(),
             seq,
             serial: serial.to_string(),

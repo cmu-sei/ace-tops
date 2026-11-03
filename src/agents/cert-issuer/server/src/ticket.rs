@@ -126,6 +126,7 @@ mod tests {
 
     fn signed(seq: u64, binding: &str, cert_type: CertType, path: IssuePath) -> RecordEntry {
         RecordEntry {
+            unattested: None,
             log: "l".into(),
             seq,
             serial: format!("{seq:02x}"),

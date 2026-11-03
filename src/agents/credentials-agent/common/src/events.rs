@@ -368,6 +368,24 @@ pub enum CredentialsEvent {
         timestamp: i64,
         certificate_pem: String,
     },
+    /// A certificate was refused because the attestation agent said its pod is not what the deployment made
+    /// (docs/architecture/runtime-attestation.md, "Slice A, the askers"). `why` is the verdict, for people. Folds to nothing.
+    InstanceRefused {
+        identity: String,
+        instance_binding: String,
+        why: String,
+        timestamp: i64,
+    },
+    /// A certificate went ahead with nothing learned about its pod, since the attestation agent could not be asked or could not say: what is to be
+    /// attested once it can (same document, "After the fact"). `serial` is none for a held request vouched for here and signed by cert-issuer, whose
+    /// record has the certificate. Folds to nothing.
+    IssuedUnattested {
+        identity: String,
+        instance_binding: String,
+        serial: Option<String>,
+        why: String,
+        timestamp: i64,
+    },
     /// The credentials agent signed and published an update of its policy, group membership or revoked
     /// certificates (docs/architecture/authority-distribution.md). Recorded so that the sequence number it
     /// carries is durable: the agent restarts, and the numbering has to go on rising for the agents that hold

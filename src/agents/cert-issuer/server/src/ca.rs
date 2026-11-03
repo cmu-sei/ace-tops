@@ -75,6 +75,8 @@ use time::OffsetDateTime;
 
 #[derive(Debug, Clone)]
 pub struct CaIssueRequest {
+    /// Why nothing was learned about the pod, if the instance check could not ask: for the record, to be attested afterwards.
+    pub unattested: Option<String>,
     /// PEM-encoded CSR. Parsed and validated by the `CaClient`
     /// before signing.
     pub csr_pem: String,
@@ -763,6 +765,7 @@ mod tests {
 
     fn sample_request(identity: &str) -> CaIssueRequest {
         CaIssueRequest {
+            unattested: None,
             csr_pem: make_csr(identity),
             sans: vec![identity.to_string()],
             lifetime: Duration::from_secs(3600),
@@ -775,6 +778,7 @@ mod tests {
 
     fn server_request(identity: &str) -> CaIssueRequest {
         CaIssueRequest {
+            unattested: None,
             csr_pem: make_csr(identity),
             sans: vec![identity.to_string()],
             lifetime: Duration::from_secs(3600),
@@ -840,6 +844,7 @@ mod tests {
         let topic_san = "p:sub:jira:consumer:projects";
         let group_san = "g:cassini-client";
         let req = CaIssueRequest {
+            unattested: None,
             csr_pem: make_csr(identity),
             sans: vec![
                 identity.to_string(),
@@ -898,6 +903,7 @@ mod tests {
         let identity = "git-observer.polar.svc.cluster.local";
         let extra_hostname = "extra-host.cluster.local";
         let req = CaIssueRequest {
+            unattested: None,
             csr_pem: make_csr(identity),
             sans: vec![identity.to_string(), extra_hostname.to_string()],
             lifetime: Duration::from_secs(3600),
@@ -945,6 +951,7 @@ mod tests {
         // panicked the whole process on input like this rather than
         // returning a real error.
         let req = CaIssueRequest {
+            unattested: None,
             csr_pem: make_csr(identity),
             sans: vec![identity.to_string(), "café.example.com".to_string()],
             lifetime: Duration::from_secs(3600),
@@ -1010,6 +1017,7 @@ mod tests {
 
     fn signing_request(identity: &str) -> CaIssueRequest {
         CaIssueRequest {
+            unattested: None,
             cert_type: CertType::Signing,
             path: cert_issuer_common::record::IssuePath::Internal,
             ..sample_request(identity)
@@ -1098,6 +1106,7 @@ mod tests {
 
     fn escrow_request(identity: &str) -> CaIssueRequest {
         CaIssueRequest {
+            unattested: None,
             cert_type: CertType::Service,
             ..sample_request(identity)
         }
@@ -1138,6 +1147,7 @@ mod tests {
         .unwrap();
         let issued = make_client()
             .issue(CaIssueRequest {
+                unattested: None,
                 csr_pem: rsa.csr_pem,
                 ..escrow_request(identity)
             })
@@ -1162,6 +1172,7 @@ mod tests {
             .unwrap();
         let refused = make_client()
             .issue(CaIssueRequest {
+                unattested: None,
                 csr_pem: csr_pem.clone(),
                 ..escrow_request(identity)
             })
@@ -1170,6 +1181,7 @@ mod tests {
         // The same key is still a client's.
         let client = make_client()
             .issue(CaIssueRequest {
+                unattested: None,
                 csr_pem,
                 ..sample_request(identity)
             })
@@ -1229,6 +1241,7 @@ mod tests {
         let client = make_client();
         let lifetime = Duration::from_secs(900);
         let req = CaIssueRequest {
+            unattested: None,
             csr_pem: make_csr("agent.polar.svc.cluster.local"),
             sans: vec!["agent.polar.svc.cluster.local".to_string()],
             lifetime,
@@ -1257,6 +1270,7 @@ mod tests {
     async fn malformed_csr_returns_malformed() {
         let client = make_client();
         let req = CaIssueRequest {
+            unattested: None,
             csr_pem: "not a CSR".to_string(),
             sans: vec!["agent.polar.svc.cluster.local".to_string()],
             lifetime: Duration::from_secs(3600),

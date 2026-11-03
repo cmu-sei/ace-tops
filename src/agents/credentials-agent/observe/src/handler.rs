@@ -539,6 +539,7 @@ fn reply_to_response(reply: IssuanceReply) -> Response {
             IssuanceRefusalReason::NotACustodian | IssuanceRefusalReason::CustodianWindowClosed => {
                 StatusCode::FORBIDDEN
             }
+            IssuanceRefusalReason::NotGenuine => StatusCode::FORBIDDEN,
         },
     };
     (status, Json(reply)).into_response()

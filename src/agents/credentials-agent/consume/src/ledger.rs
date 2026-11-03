@@ -1041,6 +1041,7 @@ pub(crate) mod tests {
         let page = RecordReply {
             log: "log-1".to_string(),
             entries: vec![RecordEntry {
+                unattested: None,
                 log: "log-1".to_string(),
                 seq: 3,
                 serial: "c3".to_string(),

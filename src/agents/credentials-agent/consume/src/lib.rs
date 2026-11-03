@@ -52,6 +52,7 @@ pub mod escrow_key_actor;
 pub mod held_voucher;
 pub mod identity_normalization;
 pub mod identity_normalization_actor;
+pub mod instance_check;
 pub mod introspection;
 pub mod issuance;
 pub mod issuance_actor;

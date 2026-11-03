@@ -515,18 +515,36 @@ impl Handler {
         //
         // What the credentials agent vouches for, on the spot or held, it has asked about itself; and cert-issuer's own
         // certificate is signed at its start, with nobody to ask.
+        let mut unattested = None;
         if !own
             && !self.vouched_for(peer_identity)
             && !matches!(gated, Gated::Vouched(_))
             && let Some(pod_uid) = &claims.instance_binding
         {
-            attestation_common::asker::check_in_shadow(
+            use attestation_common::asker::Asked;
+            match attestation_common::asker::check(
                 self.instance_asker.as_ref(),
                 "token",
                 &dns_identity,
                 pod_uid,
             )
-            .await;
+            .await
+            {
+                Asked::Genuine => {}
+                Asked::CouldNotAsk(why) => unattested = Some(format!("{why:?}")),
+                Asked::NotGenuine(why) => {
+                    // Nothing was signed against the ticket, if that is what admitted it.
+                    if let (Some(gate), Gated::Ticketed) = (&self.gate, &gated) {
+                        gate.give_back_ticket(&request.cert_type);
+                    }
+                    return error_response(
+                        IssueOutcome::CallerNotAuthorized,
+                        &format!(
+                            "the attestation agent says this pod is not what the deployment made: {why:?}"
+                        ),
+                    );
+                }
+            }
         }
 
         // ---- Steps 3.5-5: shared signing path ----
@@ -559,6 +577,7 @@ impl Handler {
                 // A custodian lives as long as its workload's certificates would.
                 Some(&workload_identity),
                 None,
+                unattested,
             )
             .await;
         if let Some(gate) = &self.gate {
@@ -593,6 +612,7 @@ impl Handler {
         instance_binding: Option<String>,
         lifetime_of: Option<&str>,
         expires_by: Option<i64>,
+        unattested: Option<String>,
     ) -> HandlerResponse {
         // TODO: pass this in so we get a cert valid for multiple SANs
         let all_sans = match csr::validate_extra_sans(dns_identity, &extra_sans) {
@@ -696,6 +716,7 @@ impl Handler {
             subject_dn,
             path,
             instance_binding,
+            unattested,
         };
 
         let issued = match self.ca.issue(ca_request).await {
@@ -860,6 +881,8 @@ impl Handler {
             request.instance_binding,
             None,
             request.expires_by,
+            // The credentials agent, which vouches for it, has asked about the pod, and its ledger says if it could not.
+            None,
         )
         .await
     }

@@ -224,6 +224,7 @@ mod tests {
         let page = RecordReply {
             log: "log-1".to_string(),
             entries: vec![RecordEntry {
+                unattested: None,
                 log: "log-1".to_string(),
                 seq,
                 serial: format!("serial-{seq}"),

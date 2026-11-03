@@ -172,6 +172,7 @@ impl Record {
             cert_type: request.cert_type.clone(),
             path: request.path,
             instance_binding: request.instance_binding.clone(),
+            unattested: request.unattested.clone(),
             signed_at: time::OffsetDateTime::now_utc().unix_timestamp(),
             not_after: issued.not_after.unix_timestamp(),
             certificate_pem: issued.certificate_pem.clone(),
@@ -344,6 +345,7 @@ mod tests {
 
     fn request(identity: &str, cert_type: CertType, path: IssuePath) -> CaIssueRequest {
         CaIssueRequest {
+            unattested: None,
             csr_pem: String::new(),
             sans: vec![identity.to_string()],
             lifetime: Duration::from_secs(3600),
@@ -360,6 +362,43 @@ mod tests {
 
     fn ticket_payload() -> Vec<u8> {
         serde_json::to_vec(&cert_issuer_common::ticket::SuccessorTicket { issued_at: 990 }).unwrap()
+    }
+
+    // docs/architecture/runtime-attestation.md: what was signed with nothing learned about its pod is in the record, to be attested afterwards, and
+    // survives a restart.
+    #[tokio::test]
+    async fn an_entry_says_it_was_signed_unattested_and_says_so_again_when_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("issued.jsonl");
+        let ca = recording(&log);
+        let mut unattested = request("w", CertType::Client, IssuePath::TokenOnly);
+        unattested.unattested = Some("NoAnswer".into());
+        ca.issue(unattested).await.unwrap();
+        ca.issue(request("w", CertType::Server, IssuePath::TokenOnly))
+            .await
+            .unwrap();
+        let reopened = Record::open(&log).unwrap();
+        let read: Vec<Option<String>> = reopened
+            .entries()
+            .iter()
+            .map(|e| e.unattested.clone())
+            .collect();
+        assert_eq!(read, vec![Some("NoAnswer".to_string()), None]);
+    }
+
+    // Additive: a log written before the field existed still reads, and an attested entry does not grow it.
+    #[tokio::test]
+    async fn a_log_from_before_the_field_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("issued.jsonl");
+        let ca = recording(&log);
+        ca.issue(request("w", CertType::Client, IssuePath::TokenOnly))
+            .await
+            .unwrap();
+        let written = std::fs::read_to_string(&log).unwrap();
+        assert!(!written.contains("unattested"), "{written}");
+        let reopened = Record::open(&log).unwrap();
+        assert_eq!(reopened.entries()[0].unattested, None);
     }
 
     /// docs/architecture/core-restarts.md, "Step 5, the ticket": a ticket from the credentials agent is bound to the pod

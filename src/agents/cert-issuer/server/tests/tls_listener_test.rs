@@ -120,6 +120,7 @@ async fn client_cert(f: &Fixture, identity: &str) -> (String, String) {
     let csr = generate_csr(identity, &KeyAlgorithm::Ed25519, &[]).unwrap();
     let issued =
         f.ca.issue(CaIssueRequest {
+            unattested: None,
             csr_pem: csr.csr_pem,
             sans: vec![identity.to_string()],
             lifetime: Duration::from_secs(3600),

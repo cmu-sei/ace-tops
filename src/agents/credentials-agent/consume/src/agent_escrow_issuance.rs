@@ -188,13 +188,18 @@ impl AgentEscrowIssuanceHandler {
         let identity = custodian.workload;
 
         // ---- Step 1.5: the instance check, before a place is held for the issuance ----
-        attestation_common::asker::check_in_shadow(
+        let admitted = match crate::instance_check::check_instance(
             self.instance_asker.as_ref(),
+            &self.ledger,
             "agent-escrow",
             &identity,
             &custodian.instance_binding,
         )
-        .await;
+        .await
+        {
+            Ok(admitted) => admitted,
+            Err(_) => return refused(AgentEscrowIssuanceRefusalReason::NotGenuine),
+        };
 
         // ---- Step 2: the first issuance of an identity, serialized; one escrow certificate per identity ----
         //
@@ -299,6 +304,14 @@ impl AgentEscrowIssuanceHandler {
         // certificate. Already signed, so a logging failure here is an
         // audit-trail gap, not a reason to fail the caller's valid
         // certificate.
+        crate::instance_check::record_if_unattested(
+            &admitted,
+            &self.ledger,
+            &identity,
+            &custodian.instance_binding,
+            Some(&issued.serial_number),
+        )
+        .await;
         let event = CredentialsEvent::AgentEscrowIssuanceCompleted {
             identity,
             instance_binding: custodian.instance_binding,
@@ -440,22 +453,21 @@ mod tests {
         }
     }
 
-    // docs/architecture/runtime-attestation.md, "Shadow first": it asks about the custodian's pod, as its service, and what it is told
-    // changes nothing yet.
+    // docs/architecture/runtime-attestation.md, "Slice A, the askers": it asks about the custodian's pod, as its service.
     #[tokio::test]
-    async fn an_escrow_issuance_is_asked_about_as_its_service_and_issued_whatever_the_answer() {
+    async fn an_escrow_issuance_in_a_pod_that_is_not_genuine_is_refused() {
         let ledger = ledger_with_custodian(&[CustodyPermission::Escrow], 0).await;
         let server = cert_issuer_signing(&["p:s2s"]).await;
         let (asker, asked) = attestation_common::asker::testing::answering(
             attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
         )
         .await;
-        let mut handler = handler(ledger, &server);
+        let mut handler = handler(ledger.clone(), &server);
         handler.instance_asker = Some(asker);
         let reply = handler.handle(request(), Some(CUSTODIAN.to_string())).await;
-        assert!(
-            matches!(reply, AgentEscrowIssuanceReply::Issued { .. }),
-            "{reply:?}"
+        assert_eq!(
+            reason(&reply),
+            Some(AgentEscrowIssuanceRefusalReason::NotGenuine)
         );
         assert_eq!(
             *asked.lock().unwrap(),
@@ -463,6 +475,35 @@ mod tests {
                 identity: X.to_string(),
                 pod_uid: POD.to_string(),
             }]
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        // No place is held for it, so a genuine pod of the workload is not told one is being issued.
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::Genuine)
+                .await
+                .0,
+        );
+        let reply = handler.handle(request(), Some(CUSTODIAN.to_string())).await;
+        assert!(
+            matches!(reply, AgentEscrowIssuanceReply::Issued { .. }),
+            "{reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_escrow_issuance_nothing_could_be_learned_about_is_issued() {
+        let ledger = ledger_with_custodian(&[CustodyPermission::Escrow], 0).await;
+        let server = cert_issuer_signing(&["p:s2s"]).await;
+        let mut handler = handler(ledger, &server);
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::CannotSay)
+                .await
+                .0,
+        );
+        let reply = handler.handle(request(), Some(CUSTODIAN.to_string())).await;
+        assert!(
+            matches!(reply, AgentEscrowIssuanceReply::Issued { .. }),
+            "{reply:?}"
         );
     }
 

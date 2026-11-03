@@ -63,12 +63,14 @@ const CREDENTIALS_AGENT: &str = "credentials-agent.polar.serviceaccount.cluster.
 struct RecordingCa {
     asked: Mutex<Vec<(CertType, Vec<String>)>>,
     paths: Mutex<Vec<cert_issuer_common::record::IssuePath>>,
+    unattested: Mutex<Vec<Option<String>>>,
 }
 
 #[async_trait::async_trait]
 impl CaClient for RecordingCa {
     async fn issue(&self, req: CaIssueRequest) -> Result<IssuedCert, CaError> {
         self.paths.lock().unwrap().push(req.path);
+        self.unattested.lock().unwrap().push(req.unattested.clone());
         self.asked.lock().unwrap().push((req.cert_type, req.sans));
         Ok(IssuedCert {
             certificate_pem: "-----BEGIN CERTIFICATE-----\nrecorded\n-----END CERTIFICATE-----\n"
@@ -576,16 +578,25 @@ fn gated(handler: &mut Handler, state: FloorState) -> (Arc<FloorGate>, Offers) {
 /// The pod `mint_default_token` is bound to.
 const POD_OF_THE_DEFAULT_TOKEN: &str = "11111111-2222-3333-4444-555555555555";
 
+/// Gives `handler` an asker the attestation agent answers `verdict`, and what it was asked.
+async fn answering(
+    handler: &mut Handler,
+    verdict: attestation_common::Verdict,
+) -> Arc<Mutex<Vec<attestation_common::InstanceQuestion>>> {
+    let (asker, asked) = attestation_common::asker::testing::answering(verdict).await;
+    handler.instance_asker = Some(asker);
+    asked
+}
+
 /// Gives `handler` an asker the attestation agent answers "not genuine", and what it was asked.
 async fn not_genuine(
     handler: &mut Handler,
 ) -> Arc<Mutex<Vec<attestation_common::InstanceQuestion>>> {
-    let (asker, asked) = attestation_common::asker::testing::answering(
+    answering(
+        handler,
         attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
     )
-    .await;
-    handler.instance_asker = Some(asker);
-    asked
+    .await
 }
 
 /// A cert-issuer restarted just now with a record, that has heard no one yet: nothing open.
@@ -746,18 +757,17 @@ async fn a_held_request_the_credentials_agent_refuses_is_refused_at_every_ask_af
     assert!(ca.asked.lock().unwrap().is_empty());
 }
 
-// docs/architecture/runtime-attestation.md, "Shadow first": what is admitted on a token alone is asked about, against that token's pod,
-// and what it is told changes nothing yet.
+// docs/architecture/runtime-attestation.md, "Slice A, the askers": what is admitted on a token alone is asked about, against that token's pod.
 #[tokio::test]
-async fn what_the_state_admits_on_a_token_is_asked_about_and_signed_whatever_the_answer() {
+async fn what_the_state_admits_on_a_token_is_refused_if_it_is_not_genuine() {
     let (mut handler, ca) = rig(floor_with_this_workload());
     gated(&mut handler, FloorState::new(true, Instant::now()));
     let asked = not_genuine(&mut handler).await;
     let response = handler
         .handle(None, &mint_default_token(), request(CertType::Client, &[]))
         .await;
-    assert_eq!(response.status, 200, "{response:?}");
-    assert_eq!(*ca.paths.lock().unwrap(), vec![IssuePath::TokenOnly]);
+    assert_eq!(outcome(&response), Some(IssueOutcome::CallerNotAuthorized));
+    assert!(ca.asked.lock().unwrap().is_empty(), "nothing is signed");
     assert_eq!(
         *asked.lock().unwrap(),
         [attestation_common::InstanceQuestion {
@@ -768,7 +778,37 @@ async fn what_the_state_admits_on_a_token_is_asked_about_and_signed_whatever_the
 }
 
 #[tokio::test]
-async fn what_a_successor_ticket_admits_is_asked_about_too() {
+async fn what_the_state_admits_on_a_token_is_signed_if_it_is_genuine() {
+    let (mut handler, ca) = rig(floor_with_this_workload());
+    gated(&mut handler, FloorState::new(true, Instant::now()));
+    answering(&mut handler, attestation_common::Verdict::Genuine).await;
+    let response = handler
+        .handle(None, &mint_default_token(), request(CertType::Client, &[]))
+        .await;
+    assert_eq!(response.status, 200, "{response:?}");
+    assert_eq!(*ca.paths.lock().unwrap(), vec![IssuePath::TokenOnly]);
+    assert_eq!(*ca.unattested.lock().unwrap(), vec![None]);
+}
+
+// The maintainer's decision: when the attestation agent cannot be asked, or cannot say, it signs, and its record says so.
+#[tokio::test]
+async fn what_nothing_could_be_learned_about_is_signed_and_recorded_as_unattested() {
+    let (mut handler, ca) = rig(floor_with_this_workload());
+    gated(&mut handler, FloorState::new(true, Instant::now()));
+    answering(&mut handler, attestation_common::Verdict::CannotSay).await;
+    let response = handler
+        .handle(None, &mint_default_token(), request(CertType::Client, &[]))
+        .await;
+    assert_eq!(response.status, 200, "{response:?}");
+    assert_eq!(
+        *ca.unattested.lock().unwrap(),
+        vec![Some("CannotSay".to_string())]
+    );
+}
+
+// Nothing was signed against the ticket, so the pod, found genuine after all, may still use it.
+#[tokio::test]
+async fn a_ticket_is_not_used_up_by_a_refusal() {
     let (mut handler, ca) = rig(floor_with_this_workload());
     handler.internal_callers.push(IDENTITY.to_string());
     let (gate, _) = gated(&mut handler, just_restarted());
@@ -783,12 +823,22 @@ async fn what_a_successor_ticket_admits_is_asked_about_too() {
         expires_at: now + 300,
         issued_at: now,
     });
-    let response = handler
+    let refused = handler
         .handle(None, &mint_default_token(), request(CertType::Client, &[]))
         .await;
-    assert_eq!(response.status, 200, "{response:?}");
+    assert_eq!(outcome(&refused), Some(IssueOutcome::CallerNotAuthorized));
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        1,
+        "a ticket's pod is asked about too"
+    );
+
+    answering(&mut handler, attestation_common::Verdict::Genuine).await;
+    let signed = handler
+        .handle(None, &mint_default_token(), request(CertType::Client, &[]))
+        .await;
+    assert_eq!(signed.status, 200, "{signed:?}");
     assert_eq!(*ca.paths.lock().unwrap(), vec![IssuePath::Ticketed]);
-    assert_eq!(asked.lock().unwrap().len(), 1);
 }
 
 // The credentials agent has asked about what it vouches for, on the spot or held; cert-issuer does not ask again.

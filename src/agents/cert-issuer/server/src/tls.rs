@@ -93,6 +93,7 @@ pub async fn build_server_config(
 
     let issued = ca
         .issue(crate::ca::CaIssueRequest {
+            unattested: None,
             csr_pem: csr_output.csr_pem,
             sans: vec![server_identity.to_string()],
             lifetime: std::time::Duration::from_secs(3600 * 24 * 365),

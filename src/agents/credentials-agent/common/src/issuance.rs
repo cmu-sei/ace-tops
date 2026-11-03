@@ -155,6 +155,9 @@ pub enum IssuanceRefusalReason {
     NotACustodian,
     /// A custodian's request after its window (`custodian::CUSTODIAN_WINDOW_SECS`): its authority is spent.
     CustodianWindowClosed,
+    /// The attestation agent says this pod is not what the deployment made (docs/architecture/runtime-attestation.md). Final for the pod as it is:
+    /// a pod with a debug container added stays so until it is replaced. Last, so no earlier reason's tag moves.
+    NotGenuine,
 }
 
 #[cfg(test)]

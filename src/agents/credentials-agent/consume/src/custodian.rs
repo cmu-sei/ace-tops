@@ -226,13 +226,18 @@ impl CustodianIssuanceHandler {
         };
         let identity = custodian.workload.clone();
         // ---- Step 2.5: the instance check, before the renewal rule, which records what it admits ----
-        attestation_common::asker::check_in_shadow(
+        let admitted = match crate::instance_check::check_instance(
             self.instance_asker.as_ref(),
+            &self.ledger,
             "custodian",
             &identity,
             &custodian.instance_binding,
         )
-        .await;
+        .await
+        {
+            Ok(admitted) => admitted,
+            Err(_) => return refused(IssuanceRefusalReason::NotGenuine),
+        };
         // ---- Step 3: the renewal rule, for the workload's pod instance: once of each type, a request asked again, for
         // the same key, admitted again ----
         let admitted_at = polar::time::now_millis();
@@ -327,6 +332,14 @@ impl CustodianIssuanceHandler {
             }
         };
         // ---- Step 6: record it, as the token path does ----
+        crate::instance_check::record_if_unattested(
+            &admitted,
+            &self.ledger,
+            &identity,
+            &custodian.instance_binding,
+            Some(&issued.serial_number),
+        )
+        .await;
         let event = CredentialsEvent::IssuanceCompleted {
             identity,
             instance_binding: custodian.instance_binding,
@@ -470,11 +483,34 @@ pub(crate) mod tests {
         }
     }
 
-    // docs/architecture/runtime-attestation.md, "Shadow first": it asks about the custodian's pod, as its service, and what it is told
-    // changes nothing yet.
+    /// A ledger writing to `dir`, holding a custodian that may ask for a client certificate.
+    async fn logged_ledger_with_custodian(
+        dir: &tempfile::TempDir,
+    ) -> (ActorRef<LedgerMessage>, std::path::PathBuf) {
+        let log = dir.path().join("events.jsonl");
+        let ledger = crate::ledger::tests::spawn_ledger(log.to_str().unwrap()).await;
+        call_append(
+            &ledger,
+            CredentialsEvent::IssuanceCompleted {
+                identity: CUSTODIAN.to_string(),
+                instance_binding: POD.to_string(),
+                serial: "0c".to_string(),
+                timestamp: polar::time::now_millis(),
+                cert_type: WorkloadCertType::Custody,
+                grant_key: None,
+                certificate_pem: custodian_pem(&[CustodyPermission::Client], 3600),
+            },
+        )
+        .await
+        .unwrap();
+        (ledger, log)
+    }
+
+    // docs/architecture/runtime-attestation.md, "Slice A, the askers": it asks about the custodian's pod, as its service.
     #[tokio::test]
-    async fn a_custodians_request_is_asked_about_as_its_service_and_issued_whatever_the_answer() {
-        let ledger = ledger_with_custodian(&[CustodyPermission::Client], 0).await;
+    async fn a_custodian_in_a_pod_that_is_not_genuine_is_refused_and_it_has_not_used_up_the_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ledger, log) = logged_ledger_with_custodian(&dir).await;
         let server = cert_issuer_signing_for(X).await;
         let (asker, asked) = attestation_common::asker::testing::answering(
             attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
@@ -482,13 +518,9 @@ pub(crate) mod tests {
         .await;
         let mut handler = handler(ledger, &server);
         handler.instance_asker = Some(asker);
-        let reply = handler
-            .handle(
-                asking(WorkloadCertType::Client),
-                Some(CUSTODIAN.to_string()),
-            )
-            .await;
-        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        let ask = || asking(WorkloadCertType::Client);
+        let reply = handler.handle(ask(), Some(CUSTODIAN.to_string())).await;
+        assert_eq!(reason(&reply), Some(IssuanceRefusalReason::NotGenuine));
         assert_eq!(
             *asked.lock().unwrap(),
             [attestation_common::InstanceQuestion {
@@ -496,6 +528,47 @@ pub(crate) mod tests {
                 pod_uid: POD.to_string(),
             }]
         );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("InstanceRefused")
+        );
+
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::Genuine)
+                .await
+                .0,
+        );
+        let reply = handler.handle(ask(), Some(CUSTODIAN.to_string())).await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        assert!(
+            !std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("IssuedUnattested")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_custodian_nothing_could_be_learned_about_is_issued_and_recorded_as_unattested() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ledger, log) = logged_ledger_with_custodian(&dir).await;
+        let server = cert_issuer_signing_for(X).await;
+        let mut handler = handler(ledger, &server);
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::CannotSay)
+                .await
+                .0,
+        );
+        let reply = handler
+            .handle(
+                asking(WorkloadCertType::Client),
+                Some(CUSTODIAN.to_string()),
+            )
+            .await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        let events = std::fs::read_to_string(&log).unwrap();
+        assert!(events.contains("IssuedUnattested"), "{events}");
     }
 
     #[tokio::test]

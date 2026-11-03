@@ -78,6 +78,10 @@ pub struct RecordEntry {
     /// The pod instance it was signed for, when a token said so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_binding: Option<String>,
+    /// Why nothing was learned about its pod, if it was signed on a token and the attestation agent could not be asked or could not say: what is to be
+    /// attested afterwards (docs/architecture/runtime-attestation.md). Absent from every entry written before it existed, and from one attested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unattested: Option<String>,
     /// Unix seconds.
     pub signed_at: i64,
     pub not_after: i64,

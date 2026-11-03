@@ -109,8 +109,11 @@ pub enum AgentEscrowIssuanceRefusalReason {
     /// Another pod of the workload is being issued its escrow key's certificate, within its custodian's window: the first
     /// escrow issuance of an identity is serialized, one key per workload shared by its instances
     /// (docs/architecture/authority-model.md, "Multi-instance workloads"). Not final: the custodian waits and asks for
-    /// the key again, which it retrieves once the other pod has escrowed it. Last, so no earlier reason's tag moves.
+    /// the key again, which it retrieves once the other pod has escrowed it.
     BeingIssued,
+    /// The attestation agent says this pod is not what the deployment made (docs/architecture/runtime-attestation.md). Last, so no earlier reason's
+    /// tag moves.
+    NotGenuine,
 }
 
 #[cfg(test)]

@@ -311,6 +311,10 @@ fn graph_ops_for_event(event: &CredentialsEvent, grant_existed: bool) -> Vec<Gra
         CredentialsEvent::AuthorityPublished { .. } => vec![],
         // A refused document changes nothing; the ledger keeps the record of it.
         CredentialsEvent::AuthorityRefused { .. } => vec![],
+        // The ledger's, for what follows; the graph holds what was issued.
+        CredentialsEvent::InstanceRefused { .. } | CredentialsEvent::IssuedUnattested { .. } => {
+            vec![]
+        }
         // A certificate learned from cert-issuer's record is a Certificate node as an issued one is, saying how it was
         // learned and whether it was unexpected (docs/architecture/cert-issuer-isolation.md, "Step 2"). Its PEM stays
         // out of the graph, as an issued one's does.
@@ -577,6 +581,8 @@ fn event_timestamp(event: &CredentialsEvent) -> i64 {
         | CredentialsEvent::AccountCertificateIssued { timestamp, .. }
         | CredentialsEvent::AuthorityPublished { timestamp, .. }
         | CredentialsEvent::AuthorityRefused { timestamp, .. }
+        | CredentialsEvent::InstanceRefused { timestamp, .. }
+        | CredentialsEvent::IssuedUnattested { timestamp, .. }
         | CredentialsEvent::CertificatesReported { timestamp, .. }
         | CredentialsEvent::AdminActionRecorded { timestamp, .. } => *timestamp,
     }

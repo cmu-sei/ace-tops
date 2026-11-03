@@ -245,7 +245,7 @@ without attestation, and attested once the document arrives. An identity it name
 
 ### Slice A, the askers: the plan (2026-11-02, for review)
 
-What makes a `NotGenuine` refuse a certificate. The shadow commit (1, below) is built and has run; refusing is not built.
+What makes a `NotGenuine` refuse a certificate. Built: the shadow commit (1, below) ran first, then the agent proving itself (`attestation-when-it-cannot-answer.md`), then refusing.
 
 **Where the questions go in.** Item 3 above says three paths in the credentials agent. Reading the code, there are four entries, and cert-issuer:
 
@@ -264,8 +264,8 @@ A custodian's identity is asked about as its service's (`custodian_of`), since t
 **One way of asking.** An `InstanceAsker` actor in each asker (`attestation/common/src/asker.rs`), with a reply topic of its own, says `Genuine`, `NotGenuine(why)` or `CouldNotAsk`:
 - A reply is taken only from the attestation agent's identity as the broker stamped it, with the question's correlation id.
 - `CouldNotAsk` is at once if the Cassini session is down, and otherwise after a wait of 2 s. So a first bring-up, when nothing can be asked, does not wait: cert-issuer signs the core as it does now. `CannotSay` is treated the same.
-- `CouldNotAsk` issues, as the maintainer decided (item 3 of "For the maintainer"), and records that it did: a new event in the credentials agent's ledger, and a field in cert-issuer's record entry. Both are additions, so an existing log still reads.
-- `NotGenuine` is a refusal with its own reason (`IssuanceRefusalReason::NotGenuine`), logged and in the ledger. `polar-init` stops on a refusal, and the pod restarts in place and asks again.
+- `CouldNotAsk` issues, as the maintainer decided (item 3 of "For the maintainer"), and records that it did: `IssuedUnattested` in the credentials agent's ledger, and `unattested` in cert-issuer's record entry. Both are additions, so an existing log still reads. Nothing reads them yet: that is item 4.
+- `NotGenuine` is a refusal with its own reason (`IssuanceRefusalReason::NotGenuine`, `AgentEscrowIssuanceRefusalReason::NotGenuine`, a refused held request, or cert-issuer's `CallerNotAuthorized`), logged and in the ledger (`InstanceRefused`) where the credentials agent is the one asking. A ticket that admitted it is given back, since nothing was signed against it. `polar-init` stops on a refusal, and the pod restarts in place and asks again.
 
 **Shadow first.** A false `NotGenuine` is the failure to fear: pods replace themselves hourly, so a wrong rule would take the cluster down within the hour. So it goes in two commits, with no switch left behind:
 1. The askers ask, log the verdict, and act on nothing. It runs on u7s and u7c through a full rollout, each core member killed in turn, and `kubectl debug` on a pod. Every `NotGenuine` and `CouldNotAsk` is read. (Done: "What the shadow run found", below.)

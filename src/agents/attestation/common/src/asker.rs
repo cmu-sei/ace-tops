@@ -234,14 +234,14 @@ pub async fn ask(asker: &ActorRef<InstanceAskerMessage>, question: InstanceQuest
         .unwrap_or(Asked::CouldNotAsk(NotAsked::NoAsker))
 }
 
-/// The instance check in shadow: it asks and says what it was told, and what follows is the same whatever that was
-/// (docs/architecture/runtime-attestation.md, "Shadow first"). `path` says which way into issuance asked.
-pub async fn check_in_shadow(
+/// The instance check: it asks, says what it was told, and gives it back for the asker to act on (docs/architecture/runtime-attestation.md,
+/// "Slice A, the askers"). `path` says which way into issuance asked.
+pub async fn check(
     asker: Option<&ActorRef<InstanceAskerMessage>>,
     path: &'static str,
     identity: &str,
     pod_uid: &str,
-) {
+) -> Asked {
     let question = question_about(identity, pod_uid);
     let started = Instant::now();
     let asked = match asker {
@@ -251,25 +251,28 @@ pub async fn check_in_shadow(
     let elapsed_ms = started.elapsed().as_millis() as u64;
     match &asked {
         Asked::Genuine => {
-            info!(
+            debug!(
                 path,
-                identity, pod_uid, elapsed_ms, "instance check (shadow): genuine"
+                identity, pod_uid, elapsed_ms, "instance check: genuine"
             );
         }
         Asked::NotGenuine(why) => {
             warn!(
                 path,
-                identity, pod_uid, elapsed_ms, "instance check (shadow): NOT GENUINE: {why:?}"
+                identity, pod_uid, elapsed_ms, "instance check: NOT GENUINE, refused: {why:?}"
             );
         }
         Asked::CouldNotAsk(why) => {
             info!(
                 path,
-                identity, pod_uid, elapsed_ms, "instance check (shadow): could not ask: {why:?}"
+                identity,
+                pod_uid,
+                elapsed_ms,
+                "instance check: could not ask, issued unattested: {why:?}"
             );
         }
     }
-    debug!(path, "the instance check changes nothing in shadow");
+    asked
 }
 
 /// A running asker for tests of those who ask, answering every question with `verdict` as the attestation agent, and what it was asked.

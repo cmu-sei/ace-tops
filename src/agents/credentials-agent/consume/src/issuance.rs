@@ -344,15 +344,26 @@ impl IssuanceHandler {
         // ---- Step 4.5: the instance check, before the renewal rule, which records what it admits ----
         //
         // An IdP's credential is a person's, with no pod behind it to ask about.
-        if kind == CredentialKind::Kubernetes {
-            attestation_common::asker::check_in_shadow(
+        let admitted = if kind == CredentialKind::Kubernetes {
+            match crate::instance_check::check_instance(
                 self.instance_asker.as_ref(),
+                &self.ledger,
                 "issuance",
                 &identity,
                 &instance_binding,
             )
-            .await;
-        }
+            .await
+            {
+                Ok(admitted) => admitted,
+                Err(_) => {
+                    return IssuanceReply::Refused {
+                        reason: IssuanceRefusalReason::NotGenuine,
+                    };
+                }
+            }
+        } else {
+            crate::instance_check::Admitted::Attested
+        };
 
         // ---- Step 5: the renewal rule (docs/architecture/deployments.md, "The renewal rule") ----
         //
@@ -429,6 +440,14 @@ impl IssuanceHandler {
         // a failure here is a genuine audit-trail gap, not a reason to
         // tell the caller their (already valid) certificate failed.
         // Logged loudly for operator attention, not silently swallowed.
+        crate::instance_check::record_if_unattested(
+            &admitted,
+            &self.ledger,
+            &identity,
+            &instance_binding,
+            Some(&issued.serial_number),
+        )
+        .await;
         let event = CredentialsEvent::IssuanceCompleted {
             identity,
             instance_binding,
@@ -1555,25 +1574,44 @@ pub(crate) mod tests {
         }
     }
 
-    // docs/architecture/runtime-attestation.md, "Shadow first": it asks about the token's pod, and what it is told changes nothing yet.
-    #[tokio::test]
-    async fn a_pods_request_is_asked_about_and_issued_whatever_the_answer() {
-        let server = MockServer::start().await;
-        kubernetes_pod(&server, "pod-1").await;
+    /// A handler for the pod `pod-1`, its ledger writing to `dir`, and cert-issuer signing.
+    async fn asking_handler(
+        server: &MockServer,
+        dir: &tempfile::TempDir,
+    ) -> (IssuanceHandler, std::path::PathBuf) {
+        kubernetes_pod(server, "pod-1").await;
         Mock::given(method("POST"))
             .and(path("/issue"))
             .respond_with(ResponseTemplate::new(200).set_body_json(fake_issue_response()))
-            .mount(&server)
+            .mount(server)
             .await;
+        let log = dir.path().join("events.jsonl");
+        let ledger = crate::ledger::tests::spawn_ledger(log.to_str().unwrap()).await;
+        (handler_for(server, ledger).await, log)
+    }
+
+    // docs/architecture/runtime-attestation.md, "Slice A, the askers".
+    #[tokio::test]
+    async fn a_pod_that_is_not_genuine_is_refused_before_cert_issuer_is_asked_and_it_is_recorded() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut handler, log) = asking_handler(&server, &dir).await;
         let (asker, asked) = attestation_common::asker::testing::answering(
             attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
         )
         .await;
-        let mut handler = handler_for(&server, spawn_test_ledger().await).await;
         handler.instance_asker = Some(asker);
 
         let reply = handler.handle(request_for(Client, &[])).await;
-        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        assert!(
+            matches!(
+                reply,
+                IssuanceReply::Refused {
+                    reason: IssuanceRefusalReason::NotGenuine
+                }
+            ),
+            "{reply:?}"
+        );
         assert_eq!(
             *asked.lock().unwrap(),
             [attestation_common::InstanceQuestion {
@@ -1581,6 +1619,79 @@ pub(crate) mod tests {
                 pod_uid: "pod-1".to_string(),
             }]
         );
+        let signed = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/issue")
+            .count();
+        assert_eq!(signed, 0, "nothing is signed for it");
+        let events = std::fs::read_to_string(&log).unwrap();
+        assert!(events.contains("InstanceRefused"), "{events}");
+        assert!(events.contains("NoOwner"), "{events}");
+    }
+
+    // The renewal rule records what it admits, so the check comes first: a pod refused and then found genuine has not used up its type.
+    #[tokio::test]
+    async fn a_refused_pod_has_not_used_up_its_type() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut handler, _) = asking_handler(&server, &dir).await;
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::NotGenuine(
+                attestation_common::NotGenuine::NoOwner,
+            ))
+            .await
+            .0,
+        );
+        handler.handle(request_for(Client, &[])).await;
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::Genuine)
+                .await
+                .0,
+        );
+        let reply = handler.handle(request_for(Client, &[])).await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+    }
+
+    #[tokio::test]
+    async fn a_genuine_pod_is_issued_and_nothing_says_it_was_unattested() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut handler, log) = asking_handler(&server, &dir).await;
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::Genuine)
+                .await
+                .0,
+        );
+        let reply = handler.handle(request_for(Client, &[])).await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        let events = std::fs::read_to_string(&log).unwrap();
+        assert!(!events.contains("IssuedUnattested"), "{events}");
+    }
+
+    // The maintainer's decision: when the attestation agent cannot be asked, or cannot say, it issues, and says so.
+    #[tokio::test]
+    async fn a_pod_nothing_could_be_learned_about_is_issued_and_recorded_as_unattested() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut handler, log) = asking_handler(&server, &dir).await;
+        handler.instance_asker = Some(
+            attestation_common::asker::testing::answering(attestation_common::Verdict::CannotSay)
+                .await
+                .0,
+        );
+        let reply = handler.handle(request_for(Client, &[])).await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        let events = std::fs::read_to_string(&log).unwrap();
+        let unattested: Vec<&str> = events
+            .lines()
+            .filter(|l| l.contains("IssuedUnattested"))
+            .collect();
+        assert_eq!(unattested.len(), 1, "{events}");
+        assert!(unattested[0].contains("pod-1"), "{events}");
+        assert!(unattested[0].contains("CannotSay"), "{events}");
     }
 
     #[tokio::test]

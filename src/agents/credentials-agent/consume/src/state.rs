@@ -661,6 +661,8 @@ impl CredentialsState {
             }
             // A refused document changes nothing the state holds.
             CredentialsEvent::AuthorityRefused { .. } => {}
+            CredentialsEvent::InstanceRefused { .. }
+            | CredentialsEvent::IssuedUnattested { .. } => {}
             // A page of cert-issuer's record: each certificate as the kind it is, and where the record was read to.
             CredentialsEvent::CertificatesReported {
                 log,
@@ -2316,6 +2318,7 @@ pub(crate) mod tests {
         serial: &str,
     ) -> cert_issuer_common::record::RecordEntry {
         cert_issuer_common::record::RecordEntry {
+            unattested: None,
             log: "log-1".to_string(),
             seq,
             serial: serial.to_string(),

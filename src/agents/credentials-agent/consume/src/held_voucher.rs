@@ -153,13 +153,24 @@ impl HeldVoucherState {
             workload_cert_type(&offer.cert_type),
         ) {
             (HeldDecision::Vouch, Some(binding), Some(cert_type)) => {
-                attestation_common::asker::check_in_shadow(
+                let admitted = match crate::instance_check::check_instance(
                     self.args.instance_asker.as_ref(),
+                    &self.args.ledger,
                     "held",
                     &offer.identity,
                     binding,
                 )
-                .await;
+                .await
+                {
+                    Ok(admitted) => admitted,
+                    Err(why) => {
+                        return HeldDecision::Refuse {
+                            reason: format!(
+                                "the attestation agent says this pod is not what the deployment made: {why:?}"
+                            ),
+                        };
+                    }
+                };
                 match ractor::call!(self.args.ledger, |reply| LedgerMessage::Admit {
                     identity: offer.identity.clone(),
                     instance_binding: binding.clone(),
@@ -168,7 +179,21 @@ impl HeldVoucherState {
                     now: polar::time::now_millis(),
                     reply,
                 }) {
-                    Ok(admitted) => rule(offer, bootstrap, own, !admitted),
+                    Ok(not_too_soon) => {
+                        let decided = rule(offer, bootstrap, own, !not_too_soon);
+                        if decided == HeldDecision::Vouch {
+                            // cert-issuer signs it, so its record has the serial.
+                            crate::instance_check::record_if_unattested(
+                                &admitted,
+                                &self.args.ledger,
+                                &offer.identity,
+                                binding,
+                                None,
+                            )
+                            .await;
+                        }
+                        decided
+                    }
                     Err(e) => {
                         // Not knowing is not a reason to vouch: refused, and the pod asks again as a new one.
                         warn!("the ledger could not apply the renewal rule: {e}");
@@ -479,6 +504,7 @@ mod tests {
         let page = RecordReply {
             log: "log-1".to_string(),
             entries: vec![RecordEntry {
+                unattested: None,
                 log: "log-1".to_string(),
                 seq: 1,
                 serial: "s1".to_string(),
@@ -502,10 +528,10 @@ mod tests {
         .unwrap();
     }
 
-    // docs/architecture/runtime-attestation.md, "Shadow first": what the rules would vouch for is asked about, and what it is told
-    // changes nothing yet; what the rules refuse has nobody to ask about.
+    // docs/architecture/runtime-attestation.md, "Slice A, the askers": what the rules would vouch for is asked about, and what they refuse has
+    // no one to ask about.
     #[tokio::test]
-    async fn an_offer_the_rules_allow_is_asked_about_and_vouched_for_whatever_the_answer() {
+    async fn an_offer_in_a_pod_that_is_not_genuine_is_refused_and_it_has_not_used_up_the_type() {
         let (asker, asked) = attestation_common::asker::testing::answering(
             attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
         )
@@ -532,15 +558,14 @@ mod tests {
             ))
             .unwrap();
         settle().await;
-        let decisions: Vec<HeldDecision> = rig
-            .published
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(_, reply)| reply.decision.clone())
-            .collect();
-        assert_eq!(decisions[0], HeldDecision::Vouch);
-        assert!(matches!(decisions[1], HeldDecision::Refuse { .. }));
+        let decided = decisions(&rig);
+        assert!(
+            matches!(&decided[0], HeldDecision::Refuse { reason } if reason.contains("not what the deployment made")),
+            "{decided:?}"
+        );
+        assert!(
+            matches!(&decided[1], HeldDecision::Refuse { reason } if reason == "not a bootstrap service")
+        );
         assert_eq!(
             *asked.lock().unwrap(),
             [attestation_common::InstanceQuestion {
@@ -548,6 +573,38 @@ mod tests {
                 pod_uid: "pod-1".to_string(),
             }]
         );
+        let admitted = ractor::call!(rig.ledger, |reply| LedgerMessage::Admit {
+            identity: OBSERVER.to_string(),
+            instance_binding: "pod-1".to_string(),
+            cert_type: WorkloadCertType::Client,
+            key: None,
+            now: polar::time::now_millis(),
+            reply,
+        })
+        .unwrap();
+        assert!(admitted, "the refused pod still has its type");
+    }
+
+    #[tokio::test]
+    async fn an_offer_nothing_could_be_learned_about_is_vouched_for_and_recorded_as_unattested() {
+        let (asker, _) =
+            attestation_common::asker::testing::answering(attestation_common::Verdict::CannotSay)
+                .await;
+        let rig = rig_asking(
+            HandshakeClient::new("http://127.0.0.1:1".to_string()),
+            Some(asker),
+        )
+        .await;
+        rig.voucher
+            .send_message(offered(
+                &offer(OBSERVER, Some("pod-1"), CertType::Client),
+                Some(CERT_ISSUER),
+            ))
+            .unwrap();
+        settle().await;
+        assert_eq!(decisions(&rig), [HeldDecision::Vouch]);
+        let events = std::fs::read_to_string(rig._dir.path().join("events.jsonl")).unwrap();
+        assert!(events.contains("IssuedUnattested"), "{events}");
     }
 
     #[tokio::test]
