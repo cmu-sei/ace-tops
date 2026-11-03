@@ -50,8 +50,6 @@ pub enum Doubt {
     CannotSeeItself,
     /// A pod of its own workload is not genuine by its own judgement.
     NotGenuineItself(NotGenuine),
-    /// No pod of its own workload runs the images the record names for it.
-    NotTheImageRecorded,
     /// It would call most of what is running not genuine, which says more about the agent than about the deployment.
     CondemnsMost { condemned: usize, judged: usize },
     /// It does not call a real pod, altered in this way, not genuine.
@@ -86,17 +84,6 @@ fn facts_of(workload: &RecordedWorkload) -> WorkloadFacts {
         owner_name: workload.owner_name.clone(),
         service_account: workload.service_account.clone(),
     }
-}
-
-/// Whether `pod` runs every image the record names for `workload`.
-fn runs_what_is_recorded(workload: &RecordedWorkload, pod: &PodFacts) -> bool {
-    workload.containers.iter().all(|recorded| {
-        pod.containers.iter().any(|c| {
-            c.name == recorded.name
-                && digest_of(&c.image).is_some()
-                && digest_of(&c.image) == digest_of(&recorded.image)
-        })
-    })
 }
 
 const ZEROS: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
@@ -187,7 +174,6 @@ pub fn prove(
     };
 
     let (mut judged, mut condemned, mut own_pods) = (0, 0, 0);
-    let mut own_recorded = false;
     let mut holding_up = Vec::new();
     for pod in pods {
         // With a record, only what it says runs here is weighed. With none there is nothing to tell a stranger by.
@@ -214,9 +200,6 @@ pub fn prove(
             if let Verdict::NotGenuine(why) = &verdict {
                 return Err(Doubt::NotGenuineItself(why.clone()));
             }
-            if let Some(workload) = claim {
-                own_recorded |= runs_what_is_recorded(workload, &pod.facts);
-            }
         }
         match verdict {
             Verdict::NotGenuine(_) => condemned += 1,
@@ -225,10 +208,6 @@ pub fn prove(
     }
     if own_pods == 0 {
         return Err(Doubt::CannotSeeItself);
-    }
-    // During its own rollout a pod of the old revision is still its workload's, so one pod running what is recorded is enough.
-    if record.is_some() && !own_recorded {
-        return Err(Doubt::NotTheImageRecorded);
     }
     if condemned * 2 > judged {
         return Err(Doubt::CondemnsMost { condemned, judged });

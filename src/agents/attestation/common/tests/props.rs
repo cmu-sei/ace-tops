@@ -629,28 +629,13 @@ fn it_has_to_pass_its_own_judgement() {
     );
 }
 
+// A record can reach it before the new pod exists, in its own rollout, and a pod of the old revision is still its workload's. An image that differs
+// from the record is the comparison's to report, after its grace (`Drift`), and not a reason to doubt its verdicts.
 #[test]
-fn it_has_to_run_what_the_record_names() {
+fn an_image_that_differs_from_the_record_is_not_a_reason_to_doubt_itself() {
     let (mut record, pods) = deployment(5);
     record.workloads[0].containers[0].image =
         format!("registry:5000/image:latest@sha256:{}", "e".repeat(64));
-    assert_eq!(
-        prove(judge, true, Some(&record), &pods),
-        Err(Doubt::NotTheImageRecorded)
-    );
-}
-
-// During its own rollout the record names the new image, and the old pod is still its workload's.
-#[test]
-fn one_of_its_pods_running_what_is_recorded_is_enough() {
-    let (record, mut pods) = deployment(5);
-    let mut old = pods[0].clone();
-    let old_image = format!("registry:5000/image:latest@sha256:{}", "a".repeat(64));
-    old.facts.owner.as_mut().unwrap().pins =
-        BTreeMap::from([("main".to_string(), old_image.clone())]);
-    old.facts.containers[0].image = old_image;
-    old.facts.containers[0].image_id = None;
-    pods.push(old);
     assert!(prove(judge, true, Some(&record), &pods).is_ok());
 }
 
