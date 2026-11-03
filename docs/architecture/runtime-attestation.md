@@ -243,6 +243,44 @@ These are the same facts the instance check needs for "the workload the catalog 
 by `publish`, in line with "applying the catalog is the sign-off". An identity no document names yet is answered as if the agent could not be asked: issued, recorded as made
 without attestation, and attested once the document arrives. An identity it names, on the wrong owner or service account, is `NotGenuine`.
 
+### Slice A, the askers: the plan (2026-11-02, for review)
+
+What makes a `NotGenuine` refuse a certificate. Nothing here is built.
+
+**Where the questions go in.** Item 3 above says three paths in the credentials agent. Reading the code, there are four entries, and cert-issuer:
+
+| Who | Where | What it asks about |
+|---|---|---|
+| Credentials agent | `IssuanceHandler::handle` (`issuance.rs`), which the sealed route (`workload_issuance.rs`) comes through too | the token's identity and pod |
+| Credentials agent | `custodian.rs` | the pod the custodian's certificate names |
+| Credentials agent | `agent_escrow_issuance.rs` | the same |
+| Credentials agent | `HeldVoucher::decide` (`held_voucher.rs`), for what cert-issuer holds | the offer's identity and pod |
+| cert-issuer | `gate_on_token` (`handler.rs`), when it admits on a token: `Gated::Token` and `Gated::Ticketed`. Not `Gated::Vouched`, which the credentials agent has judged | the claims' identity and pod |
+
+A custodian's identity is asked about as its service's (`custodian_of`), since the record names the service, and the custodian runs in its pod.
+
+**Before the renewal rule.** The diagram has the renewal rule first. It has to be after: `LedgerMessage::Admit` records, so a refused pod would have used up its type for five minutes. `HeldVoucher::decide` already asks it last for that reason.
+
+**One way of asking.** An `InstanceAsker` actor in each asker, with the reply topic its workload already has by the family, says `Genuine`, `NotGenuine(why)` or `CouldNotAsk`:
+- A reply is taken only from the attestation agent's identity as the broker stamped it, with the question's correlation id.
+- `CouldNotAsk` is at once if the Cassini session is down, and otherwise after a wait of 2 s. So a first bring-up, when nothing can be asked, does not wait: cert-issuer signs the core as it does now. `CannotSay` is treated the same.
+- `CouldNotAsk` issues, as the maintainer decided (item 3 of "For the maintainer"), and records that it did: a new event in the credentials agent's ledger, and a field in cert-issuer's record entry. Both are additions, so an existing log still reads.
+- `NotGenuine` is a refusal with its own reason (`IssuanceRefusalReason::NotGenuine`), logged and in the ledger. `polar-init` stops on a refusal, and the pod restarts in place and asks again.
+
+**Shadow first.** A false `NotGenuine` is the failure to fear: pods replace themselves hourly, so a wrong rule would take the cluster down within the hour. So it goes in two commits, with no switch left behind:
+1. The askers ask, log the verdict, and act on nothing. It runs on u7s and u7c through a full rollout, each core member killed in turn, and `kubectl debug` on a pod. Every `NotGenuine` and `CouldNotAsk` is read.
+2. Then they refuse, with a pod of another image running as a workload's service account refused on the cluster.
+
+**What is known already.** Measured 2026-11-02 on both clusters: every one of the 122 running containers has an `imageID` with the digest its spec pins, and no pod has an ephemeral container.
+
+**What the shadow run has to answer:**
+- *`NoSuchPod` while the agent is ready.* A pod's token can reach an asker before the watch event reaches the agent. `polar-init` starts seconds after the pod exists, so it should be rare, but a refusal there is false. If it is seen, the asker asks once more after a few seconds before it believes it.
+- *How long an answer takes.* In a release build, since a rollout asks about two dozen pods. The 2 s wait should be well over it.
+
+**What it does not change.** The floor's rules still apply to what the agent says is genuine, and a compromised attestation agent can refuse but cannot admit. Stopping the attestation agent turns the check off, recorded as unattested, which is the decision's cost and also the way out of a wrong verdict: whoever can do that is inside the trust base.
+
+**After it:** item 4, attesting what was signed while the agent was away, from cert-issuer's record and the ledger's new event.
+
 ### Slice B, outlined: watching what was attested
 
 A pod that changes after it was attested: an ephemeral container added (`kubectl debug`), a container restarted on another
