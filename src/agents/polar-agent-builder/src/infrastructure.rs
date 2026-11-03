@@ -106,6 +106,11 @@ pub enum InfrastructureSupervisorMessage {
     GetResources {
         reply: RpcReplyPort<Option<AgentResources>>,
     },
+    /// The `Registered` the client is on, if it is registered now: for a subscriber to the client's events, which may
+    /// have come too late to hear it.
+    LastRegistered {
+        reply: RpcReplyPort<Option<ClientEvent>>,
+    },
     /// What a service without a Cassini client is given: the health handle, the shutdown
     /// events and the snapshot.
     GetService {
@@ -313,6 +318,27 @@ struct ClientParts {
     state: Option<crate::state::StateHandle>,
 }
 
+/// Tells `subscriber` of the registration it may have missed, through `map` as its subscription does. Call it after
+/// subscribing. Cassini may register while this supervisor is still starting, and that event is sent on as soon as it has,
+/// before anything could have been given the port to subscribe to. It may repeat one the subscriber did hear, as a reconnect
+/// does.
+pub(crate) async fn catch_up<M: ractor::Message>(
+    infrastructure: &ActorRef<InfrastructureSupervisorMessage>,
+    subscriber: &ActorRef<M>,
+    map: &(dyn Fn(ClientEvent) -> Option<M> + Send + Sync),
+) -> Result<(), ActorProcessingErr> {
+    let registered = ractor::call!(infrastructure, |reply| {
+        InfrastructureSupervisorMessage::LastRegistered { reply }
+    })
+    .map_err(|e| ActorProcessingErr::from(e.to_string()))?;
+    if let Some(message) = registered.and_then(map) {
+        subscriber
+            .send_message(message)
+            .map_err(|_| ActorProcessingErr::from("the agent's supervisor has ended"))?;
+    }
+    Ok(())
+}
+
 pub struct InfrastructureSupervisorState {
     config: Arc<polar_env::Config>,
     configuration: ConfigurationHandle,
@@ -328,6 +354,8 @@ pub struct InfrastructureSupervisorState {
     self_test: Option<SelfTestState>,
     /// What answers a health question, for a Cassini client.
     health_answerer: Option<crate::health_query::Answerer>,
+    /// The `Registered` the client is on, until it loses the connection.
+    last_registered: Option<ClientEvent>,
 }
 
 pub struct InfrastructureSupervisor;
@@ -896,6 +924,7 @@ impl Actor for InfrastructureSupervisor {
             process_exit: args.process_exit,
             self_test,
             health_answerer,
+            last_registered: None,
         })
     }
 
@@ -913,12 +942,14 @@ impl Actor for InfrastructureSupervisor {
                 // restores them too.
                 match &event {
                     ClientEvent::Registered { .. } => {
+                        state.last_registered = Some(event.clone());
                         if let Some(test) = &mut state.self_test {
                             test.connected = true;
                             test.machine.registered();
                         }
                     }
                     ClientEvent::TransportError { .. } => {
+                        state.last_registered = None;
                         if let Some(test) = &mut state.self_test {
                             test.connected = false;
                         }
@@ -1147,6 +1178,9 @@ impl Actor for InfrastructureSupervisor {
                             .expect("a Cassini client has an authority actor"),
                     }
                 }));
+            }
+            InfrastructureSupervisorMessage::LastRegistered { reply } => {
+                let _ = reply.send(state.last_registered.clone());
             }
             InfrastructureSupervisorMessage::GetService { reply } => {
                 let _ = reply.send(crate::ServiceResources {
@@ -1671,6 +1705,87 @@ mod tests {
         async fn settle(&self) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    // -- a subscriber that comes after the registration ---------------------------------------------
+
+    /// A stand-in for a domain supervisor: it keeps the events it is sent.
+    struct Domain;
+
+    #[async_trait]
+    impl Actor for Domain {
+        type Msg = ClientEvent;
+        type State = Arc<Mutex<Vec<ClientEvent>>>;
+        type Arguments = Arc<Mutex<Vec<ClientEvent>>>;
+        async fn pre_start(
+            &self,
+            _: ActorRef<Self::Msg>,
+            heard: Self::Arguments,
+        ) -> Result<Self::State, ActorProcessingErr> {
+            Ok(heard)
+        }
+        async fn handle(
+            &self,
+            _: ActorRef<Self::Msg>,
+            event: Self::Msg,
+            heard: &mut Self::State,
+        ) -> Result<(), ActorProcessingErr> {
+            heard.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    /// Cassini can register before the agent's supervisor has subscribed: its agent would then wait for ever for an event
+    /// that has gone by, connected and doing nothing. Seen live when building the HTTP client made the infrastructure's start
+    /// longer than a registration.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscriber_that_came_too_late_is_told_of_the_registration() {
+        let rig = Rig::standard("late-subscriber").await;
+        rig.registered().await;
+        rig.settle().await;
+
+        let heard: Arc<Mutex<Vec<ClientEvent>>> = Arc::default();
+        let (domain, _) = Actor::spawn(None, Domain, heard.clone()).await.unwrap();
+        rig.resources.events_output.subscribe(domain.clone(), Some);
+        rig.settle().await;
+        assert!(heard.lock().unwrap().is_empty(), "the port does not replay");
+
+        catch_up(&rig.infra, &domain, &Some).await.unwrap();
+        rig.settle().await;
+        assert!(
+            matches!(&heard.lock().unwrap()[..], [ClientEvent::Registered { .. }]),
+            "{:?}",
+            heard.lock().unwrap()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_is_not_registered_gives_nothing_to_catch_up_on() {
+        let rig = Rig::standard("not-registered").await;
+        let heard: Arc<Mutex<Vec<ClientEvent>>> = Arc::default();
+        let (domain, _) = Actor::spawn(None, Domain, heard.clone()).await.unwrap();
+
+        catch_up(&rig.infra, &domain, &Some).await.unwrap();
+        rig.settle().await;
+        assert!(heard.lock().unwrap().is_empty());
+
+        // Registered, then gone: what it was registered on is no more.
+        rig.registered().await;
+        rig.infra
+            .cast(InfrastructureSupervisorMessage::ClientEvent(
+                ClientEvent::TransportError {
+                    reason: "gone".to_string(),
+                },
+            ))
+            .unwrap();
+        rig.settle().await;
+        catch_up(&rig.infra, &domain, &Some).await.unwrap();
+        rig.settle().await;
+        assert!(
+            heard.lock().unwrap().is_empty(),
+            "{:?}",
+            heard.lock().unwrap()
+        );
     }
 
     // -- authority from the credentials agent -----------------------------------------------------

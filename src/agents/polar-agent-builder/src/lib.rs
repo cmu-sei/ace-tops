@@ -538,12 +538,22 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
         // other real port in this codebase already uses (matching
         // TcpClient::spawn_with_router's own, previous, direct
         // parameter exactly, just one real layer removed now).
-        let map_lifecycle_event = this
-            .map_lifecycle_event
-            .unwrap_or_else(|| Box::new(|_event| None));
-        resources
-            .events_output
-            .subscribe(this.myself, map_lifecycle_event);
+        let map_lifecycle_event: Arc<dyn Fn(ClientEvent) -> Option<M> + Send + Sync> =
+            match this.map_lifecycle_event {
+                Some(map) => Arc::from(map),
+                None => Arc::new(|_event| None),
+            };
+        resources.events_output.subscribe(this.myself.clone(), {
+            let map = map_lifecycle_event.clone();
+            move |event| map(event)
+        });
+        // Cassini may have registered the agent already.
+        infrastructure::catch_up(
+            &resources.infrastructure,
+            &this.myself,
+            map_lifecycle_event.as_ref(),
+        )
+        .await?;
 
         Ok(resources)
     }
