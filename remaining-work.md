@@ -53,6 +53,7 @@ Each step is taken in bites, each reported before the next.
 - [ ] **The escrow path's instance check has never run live** (found 2026-11-03). `agent_escrow_issuance.rs` runs only at a workload's first escrow certificate, and u7s and u7c already had theirs, so the shadow run asked nothing there. Only its unit test covers it. A clean install of the askers runs it; read its verdicts then.
 - [ ] **A debugged pod crash-loops once refusing is on** (found 2026-11-03). `kubectl debug` marks a pod for good, so with refusing on it is refused at its next renewal and restarts in place until someone replaces it. Say so in the operator docs, and decide whether the Reaper replaces it. `runtime-attestation.md`, "What refusing will do to a debugged pod".
 - [ ] **Slice C**, after the four agents migrate: the node sensor, the runtime challenges, the builder's seccomp and Landlock lock.
+- [ ] **Hardening the binaries** (the maintainer, 2026-11-03: every security feature Rust allows in what ships). Flags and state in `runtime-attestation.md`, "Hardening the binaries". Needs no builder work, so it need not wait for slice C; none has been tried on the musl target, and each is measured in release.
 
 ## The Cassini broker and client
 
