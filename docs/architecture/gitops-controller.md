@@ -95,6 +95,12 @@ Flux's own logs on `u7s` for one full rollout of all six layers, 2026-11-02, sin
 
 *It does not need the deployer.* The same graph can generate today's `apply_layers` and Flux's `dependsOn`, so it can come first and be proved on Flux.
 
+*What a workload requires is in the graph too (the maintainer, 2026-11-02),* right out of the catalog, so that the controller enforces the catalog's stated intent. Its nodes are not only workloads but what each is stated to need: Secrets, ConfigMaps, claims, its service account and roles, its images. Today `resolve.nu check` judges this on the operator's machine at render time, where the cluster is not visible; the controller can judge it against the cluster, continually.
+
+- *Less than stated:* a required Secret or ConfigMap is absent, so the workload would only fail later and obscurely. The controller holds that workload and says why, naming what is missing.
+- *More than stated (proposed, for review):* a binding that gives a service account more than its catalog entry grants, or a container nothing declares. What the controller owns it puts back. What it does not own it reports and does not delete, as the attestation agent sees and reports and the Reaper alone deletes.
+- *One record:* the signed facts of `runtime-attestation.md`, "What the images are checked against", and this graph are the same deployment facts computed from the same render, so they should be one document, and the attestation agent should read what the controller enforces. Kubernetes stays the trust base: this checks the deployment against its stated intent, and is not a defence against what is already inside the API.
+
 ## 3. What it is, and its name
 
 **`deployer`**: one agent that reads the signed deployment repository and makes the cluster match it. *(for review)* The name says what it does. "Controller" is taken (`git-repo-controller`), "reconciler" describes a mechanism, and any name with "flux" or "gitops" in it would date. Its crates follow `attestation/`: `deployer/common` (the pure core and the protocol), `deployer/agent` (the workload) and `deployer/record` (the graph writer, section 14). This file keeps the name `gitops-controller.md` because `cluster-bootstrap.md:130` already points here.
