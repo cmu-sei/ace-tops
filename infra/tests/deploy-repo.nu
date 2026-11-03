@@ -172,6 +172,15 @@ def main [] {
             }
         }
         {
+            name: "the configuration agent has a certificate of the deployment PKI, and may read the bootstrap repository and not write it"
+            body: {
+                assert ("configuration-agent" in (cert_plan "s" | get name))
+                let repo = (repos_json "t" | from json | get repos | first)
+                assert ("configuration-agent" in $repo.readers)
+                assert (not ("configuration-agent" in $repo.writers))
+            }
+        }
+        {
             name: "the deployment CA's certificate goes to Polar's namespace as a ConfigMap, the certificate alone"
             body: {
                 let map = (deployment_ca_configmap "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n" "polar")

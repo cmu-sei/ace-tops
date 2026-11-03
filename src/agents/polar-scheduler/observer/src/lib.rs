@@ -24,6 +24,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod agent;
+pub mod deployment_copy;
 pub mod git_ops;
 pub mod held;
 pub mod settings;

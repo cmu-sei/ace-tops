@@ -61,6 +61,8 @@ export const NAMESPACE = "polar-deploy"
 export const SERVICE = "polar-deploy-git"
 export const WRITER = "pipeline"
 export const READER = "flux"
+# What the configuration agent reads the bootstrap repository as, once, to copy it to Polar's git server (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server").
+export const COPIER = "configuration-agent"
 
 # The name Flux is given, and the server's certificate carries: its Service, in the cluster's DNS domain.
 export def server_name [domain: string] { $"($SERVICE).($NAMESPACE).svc.($domain)" }
@@ -84,12 +86,13 @@ export def cert_plan [server: string] {
         { name: "server", dns: [$server "localhost"], usage: "serverAuth" }
         { name: $WRITER, dns: [$WRITER], usage: "clientAuth" }
         { name: $READER, dns: [$READER], usage: "clientAuth" }
+        { name: $COPIER, dns: [$COPIER], usage: "clientAuth" }
     ]
 }
 
 # `POLAR_GIT_SERVER_REPOS`: one repository, written by the pipeline and read by Flux and the pipeline.
 export def repos_json [target: string] {
-    { admins: [$WRITER], repos: [{ name: (repo_name $target), readers: [$READER $WRITER], writers: [$WRITER] }] }
+    { admins: [$WRITER], repos: [{ name: (repo_name $target), readers: [$READER $WRITER $COPIER], writers: [$WRITER] }] }
     | to json --raw
 }
 
@@ -268,6 +271,13 @@ def "main ensure" [
     let pki = (pki_dir $env.HOME $target)
     let made = (ensure_pki $pki $target $server)
     kubectl_apply [(deployment_ca_configmap (open --raw ($pki | path join "ca.pem")) ($cluster.namespaces | get polar))]
+    # What the configuration agent copies the deployment with. It holds a key in a Secret, as Flux's does, for as long as the bootstrap repository exists.
+    let polar = ($cluster.namespaces | get polar)
+    let reader = (run_ok "building the configuration agent's Secret" {
+        ^kubectl -n $polar create secret generic deployment-reader $"--from-file=ca.crt=($pki | path join 'ca.pem')" $"--from-file=tls.crt=($pki | path join $'($COPIER).pem')" $"--from-file=tls.key=($pki | path join $'($COPIER).key')" --dry-run=client -o yaml
+    })
+    let reader_applied = ($reader | do { ^kubectl apply -f - } | complete)
+    if $reader_applied.exit_code != 0 { error make --unspanned { msg: "applying the configuration agent's Secret failed" } }
     if ($made | is-empty) { print $"  ok: the deployment PKI is in ($pki)" } else { print $"  made in ($pki): ($made | str join ', ')" }
 
     # The image by the digest the registry serves, under the name the nodes pull it by.

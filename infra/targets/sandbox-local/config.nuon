@@ -126,7 +126,13 @@
     kube-observer: { issuer: "credentials-agent" }
     git-repo-observer: { issuer: "credentials-agent" }
     git-repo-controller: { issuer: "credentials-agent" }
-    polar-scheduler-observer: { issuer: "credentials-agent" }
+    polar-scheduler-observer: {
+      issuer: "credentials-agent"
+      env: [
+        # The bootstrap repository, until the handoff to Polar's git server is done (docs/architecture/cluster-bootstrap.md).
+        { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL", value: "https://polar-deploy-git.polar-deploy.svc.cluster.local:9443/deploy-sandbox-local.git" }
+      ]
+    }
     # Group 3: the graph agents, which present their one client certificate to Neo4j too (graph-write).
     kube-consumer: { issuer: "credentials-agent" }
     jira-processor: { issuer: "credentials-agent" }

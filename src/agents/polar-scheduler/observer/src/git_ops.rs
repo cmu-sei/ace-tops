@@ -87,6 +87,48 @@ pub fn ensure_repo(local_path: &Path, remote_url: &str, tls: &GitTls) -> Result<
     run(cmd, "clone").map(|_| ())
 }
 
+/// A git remote and how to reach it.
+#[derive(Debug, Clone)]
+pub struct Remote {
+    pub url: String,
+    pub tls: GitTls,
+}
+
+/// Copies `main` from `source` to `target` through a bare repository at `work`, and says the commit `target` now has. It only ever moves `target` forward, and every commit of the
+/// history goes with it, for the server to judge. Running it again takes what is new.
+pub fn copy_main(source: &Remote, target: &Remote, work: &Path) -> Result<String, anyhow::Error> {
+    const HELD: &str = "refs/polar/copy";
+    let in_work = |tls: &GitTls| {
+        let mut cmd = tls.command();
+        cmd.current_dir(work);
+        cmd
+    };
+    std::fs::create_dir_all(work).with_context(|| format!("cannot make {}", work.display()))?;
+    let mut init = in_work(&GitTls::default());
+    init.args(["init", "--quiet", "--bare", "."]);
+    run(init, "init")?;
+    let mut fetch = in_work(&source.tls);
+    fetch.args([
+        "fetch",
+        "--quiet",
+        "--force",
+        &source.url,
+        &format!("refs/heads/main:{HELD}"),
+    ]);
+    run(fetch, "fetch")?;
+    let mut push = in_work(&target.tls);
+    push.args([
+        "push",
+        "--quiet",
+        &target.url,
+        &format!("{HELD}:refs/heads/main"),
+    ]);
+    run(push, "push")?;
+    let mut held = in_work(&GitTls::default());
+    held.args(["rev-parse", HELD]);
+    Ok(run(held, "rev-parse")?.trim().to_string())
+}
+
 /// Whether a failed clone is the server refusing this identity, which trying again cannot change,
 /// rather than a server that does not answer yet (it is starting, or its pod was just replaced).
 pub fn clone_refused(error: &str) -> bool {

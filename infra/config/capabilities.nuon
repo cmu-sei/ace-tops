@@ -192,6 +192,25 @@
     }
   }
 
+  # Copying the deployment from the bootstrap repository to Polar's git server, until the handoff is done (docs/architecture/cluster-bootstrap.md,
+  # "Handing off to Polar's git server"). A client certificate of the deployment PKI, in a Secret `deploy-repo.nu ensure` makes.
+  deployment-copy: {
+    pod: {
+      env: [
+        { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CA", value: "/etc/polar-deployment-reader/ca.crt" }
+        { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CERT", value: "/etc/polar-deployment-reader/tls.crt" }
+        { name: "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_KEY", value: "/etc/polar-deployment-reader/tls.key" }
+        { name: "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL", value: "https://{polar-git-server.addr}/deployment.git" }
+      ]
+      volumes: [ { name: "deployment-reader", secret: "deployment-reader" } ]
+      mounts: [ { name: "deployment-reader", path: "/etc/polar-deployment-reader", read_only: true } ]
+    }
+    identity: {}
+    dependency: {}
+    init: {}
+    resources: {}
+  }
+
   # State that must outlive the pod, on a persistent volume claim named for the workload and
   # mounted at /var/lib/<workload>. The claim is created alongside the workload (the storage
   # class and size are the cluster's, in cluster.nuon). It is not an emptyDir: the credentials

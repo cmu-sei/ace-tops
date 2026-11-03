@@ -40,7 +40,8 @@
 //! 4. The infrastructure supervisor's termination makes this supervisor exit non-zero, so the
 //!    workload is restarted with fresh certificates.
 
-use crate::git_ops::{GitTls, clone_refused, ensure_repo, repo_name};
+use crate::deployment_copy::{DeploymentCopyActor, DeploymentCopyArgs};
+use crate::git_ops::{GitTls, Remote, clone_refused, ensure_repo, repo_name};
 use crate::settings::ObserverSettings;
 use crate::sync_actor::{GitSyncActor, GitSyncArgs, SyncMessage};
 use crate::watcher::{GitWatcherActor, GitWatcherMsg};
@@ -166,6 +167,7 @@ impl Actor for SchedulerObserverSupervisor {
             client_key: settings.git_client_key.map(PathBuf::from),
         };
 
+        let target_tls = tls.clone();
         let mut sync = None;
         let mut watched_repo = None;
         if let Some(remote_url) = &settings.remote_url {
@@ -217,6 +219,31 @@ impl Actor for SchedulerObserverSupervisor {
             sync = Some(actor);
         } else {
             info!("No remote URL configured; watching local directory only.");
+        }
+
+        if let Some(copy) = &settings.deployment_copy {
+            info!("copying the deployment until the handoff to Polar's git server is done");
+            Actor::spawn_linked(
+                Some(format!("{SERVICE_NAME}.deployment_copy")),
+                DeploymentCopyActor,
+                DeploymentCopyArgs {
+                    source: Remote {
+                        url: copy.source_url.clone(),
+                        tls: GitTls {
+                            ca_cert: Some(PathBuf::from(&copy.source_ca)),
+                            client_cert: Some(PathBuf::from(&copy.source_cert)),
+                            client_key: Some(PathBuf::from(&copy.source_key)),
+                        },
+                    },
+                    target: Remote {
+                        url: copy.target_url.clone(),
+                        tls: target_tls,
+                    },
+                    work: PathBuf::from(&settings.local_path).with_extension("deployment-copy"),
+                },
+                myself.get_cell(),
+            )
+            .await?;
         }
 
         Ok(SchedulerObserverSupervisorState {
