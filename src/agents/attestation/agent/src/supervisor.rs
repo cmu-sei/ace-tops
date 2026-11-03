@@ -33,8 +33,9 @@ use crate::record::{Arrival, arrival, read_record};
 use crate::settings;
 use crate::watch::{self, Source, WatchActor, WatchArgs};
 use attestation_common::{
-    AGENT_NAME, DeploymentRecord, DriftWatch, Envelope, InstanceQuestion, REQUESTS_TOPIC, Verdict,
-    WorkloadFacts, decode_question, drift, encode_verdict, judge, replies_topic,
+    AGENT_NAME, DeploymentRecord, Doubt, DriftWatch, Envelope, InstanceQuestion, Proved,
+    REQUESTS_TOPIC, Verdict, WorkloadFacts, decode_question, drift, encode_verdict, judge, prove,
+    replies_topic,
 };
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
@@ -60,14 +61,15 @@ const DRIFT_GRACE_SECS: u64 = 600;
 /// What it holds is nothing it must save, so this is the handshake's margin.
 pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
 
-/// The answer to a question, from what it holds and what the signed record says of the identity. Until every watch has listed, a pod it
-/// does not hold may exist, so it cannot say.
+/// The answer to a question, from what it holds and what the signed record says of the identity. Until it has proved itself it cannot say, which
+/// covers every watch having listed: a pod it does not hold may exist until then, so nothing can be called absent.
 pub fn answer(
     held: &Holdings,
+    proved: &Result<Proved, Doubt>,
     record: impl Fn(&str) -> Option<WorkloadFacts>,
     question: &InstanceQuestion,
 ) -> Verdict {
-    if !held.ready() {
+    if proved.is_err() || !held.ready() {
         return Verdict::CannotSay;
     }
     judge(
@@ -81,6 +83,34 @@ pub fn reply_topic_for(published_by: Option<&str>) -> Option<String> {
     published_by
         .and_then(cert_issuer_common::identity::workload_of)
         .map(replies_topic)
+}
+
+/// Whether its verdicts are to be believed now, saying so when that changes. A doubt says what it is, and an answer of `CannotSay` follows from it:
+/// the askers issue and record that they did (docs/architecture/attestation-when-it-cannot-answer.md, "The agent proves itself").
+fn reconsider(state: &mut AttestationState) {
+    let now = prove(
+        judge,
+        state.held.ready(),
+        state.record.as_ref(),
+        &state.held.pods(),
+    );
+    match (&state.proved, &now) {
+        (Ok(_), Ok(_)) => {}
+        (Err(before), Err(doubt)) if before == doubt => {}
+        // Waiting for what it needs is not doubting itself: a watch relists, and there is no record until a deployment has handed off.
+        (_, Err(doubt @ (Doubt::NotYet | Doubt::NotListed | Doubt::NoRecord))) => {
+            info!("it cannot say yet: {doubt:?}");
+        }
+        (_, Err(doubt)) => error!(
+            "it doubts itself, and answers that it cannot say until this has gone: {doubt:?}"
+        ),
+        (_, Ok(proved)) => info!(
+            judged = proved.judged,
+            condemned = proved.condemned,
+            "it has proved itself: its verdicts stand"
+        ),
+    }
+    state.proved = now;
 }
 
 pub enum AttestationMessage {
@@ -113,6 +143,8 @@ pub struct AttestationState {
     record: Option<DeploymentRecord>,
     namespaces: Vec<String>,
     drift: DriftWatch,
+    /// Whether its verdicts are to be believed.
+    proved: Result<Proved, Doubt>,
     shutting_down: bool,
 }
 
@@ -221,6 +253,7 @@ impl Actor for AttestationSupervisor {
             record: None,
             namespaces,
             drift: DriftWatch::new(DRIFT_GRACE_SECS),
+            proved: Err(Doubt::NotYet),
             shutting_down: false,
         })
     }
@@ -247,6 +280,7 @@ impl Actor for AttestationSupervisor {
                 state.held.apply(change);
                 if state.held.ready() != was_ready {
                     info!(ready = !was_ready, "what it holds of the cluster changed");
+                    reconsider(state);
                 }
             }
             AttestationMessage::Record { payload } => {
@@ -271,10 +305,13 @@ impl Actor for AttestationSupervisor {
                             "holds a new deployment record"
                         );
                         state.record = Some(record);
+                        reconsider(state);
                     }
                 }
             }
             AttestationMessage::Compare => {
+                // Each time, since the cluster can change under it: a Kubernetes upgrade, a Role lost.
+                reconsider(state);
                 // What it does not hold yet is not missing, so nothing is compared until it has listed everything.
                 let Some(record) = state.record.as_ref().filter(|_| state.held.ready()) else {
                     return Ok(());
@@ -316,6 +353,7 @@ impl Actor for AttestationSupervisor {
                 let record = state.record.as_ref();
                 let verdict = answer(
                     &state.held,
+                    &state.proved,
                     |identity| record.and_then(|r| r.facts_of(identity)),
                     &envelope.payload,
                 );
@@ -395,6 +433,11 @@ mod tests {
     use crate::holdings::{Change, Watch};
     use attestation_common::{NotGenuine, OwnerKind};
 
+    const PROVED: Result<Proved, Doubt> = Ok(Proved {
+        judged: 1,
+        condemned: 0,
+    });
+
     fn question() -> InstanceQuestion {
         InstanceQuestion {
             identity: "the-app.polar.serviceaccount.cluster.local".into(),
@@ -418,15 +461,36 @@ mod tests {
     #[test]
     fn before_every_watch_has_listed_it_cannot_say_even_for_a_pod_it_does_not_hold() {
         let held = Holdings::new(&["polar".to_string()]);
-        assert_eq!(answer(&held, |_| None, &question()), Verdict::CannotSay);
+        assert_eq!(
+            answer(&held, &PROVED, |_| None, &question()),
+            Verdict::CannotSay
+        );
     }
 
     #[test]
     fn once_it_has_listed_a_pod_it_does_not_hold_does_not_exist() {
         assert_eq!(
-            answer(&listed_holdings(), |_| None, &question()),
+            answer(&listed_holdings(), &PROVED, |_| None, &question()),
             Verdict::NotGenuine(NotGenuine::NoSuchPod)
         );
+    }
+
+    // docs/architecture/attestation-when-it-cannot-answer.md, "The agent proves itself": an agent that doubts itself refuses no one.
+    #[test]
+    fn until_it_has_proved_itself_it_cannot_say_whatever_it_would_have_said() {
+        for doubt in [
+            Doubt::NotYet,
+            Doubt::NoRecord,
+            Doubt::CondemnsMost {
+                condemned: 3,
+                judged: 4,
+            },
+        ] {
+            assert_eq!(
+                answer(&listed_holdings(), &Err(doubt), |_| None, &question()),
+                Verdict::CannotSay
+            );
+        }
     }
 
     #[test]
@@ -440,7 +504,7 @@ mod tests {
                 service_account: "the-app".into(),
             })
         };
-        answer(&listed_holdings(), record, &question());
+        answer(&listed_holdings(), &PROVED, record, &question());
         assert_eq!(*asked.borrow(), question().identity);
     }
 

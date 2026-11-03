@@ -27,10 +27,12 @@
 //! platform backend turns what it sees into these facts.
 
 pub mod asker;
+pub mod proof;
 pub mod protocol;
 pub mod record;
 pub mod verdict;
 
+pub use proof::{Doubt, HeldPodFacts, Proved, prove};
 pub use protocol::{
     AGENT_NAME, CERT_ISSUER_REPLIES_TOPIC, CREDENTIALS_AGENT_REPLIES_TOPIC, Envelope,
     InstanceQuestion, REQUESTS_TOPIC, decode_question, decode_verdict, encode_question,

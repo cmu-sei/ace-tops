@@ -25,7 +25,7 @@
 //! (docs/architecture/runtime-attestation.md, "Slice A"): an answer is read from here, not a call to the API. A platform's backend, in
 //! the plan's terms: nothing Kubernetes-specific goes further than this file and the watches.
 
-use attestation_common::{ContainerFacts, Deployed, Owner, OwnerKind, PodFacts};
+use attestation_common::{ContainerFacts, Deployed, HeldPodFacts, Owner, OwnerKind, PodFacts};
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Pod, PodTemplateSpec};
@@ -159,6 +159,19 @@ impl Holdings {
             containers: pod.containers.clone(),
             ephemeral: pod.ephemeral.clone(),
         })
+    }
+
+    /// Every pod it holds, for the agent to hold its own judgement up to.
+    pub fn pods(&self) -> Vec<HeldPodFacts> {
+        self.pods
+            .iter()
+            .filter_map(|(uid, pod)| {
+                Some(HeldPodFacts {
+                    namespace: pod.namespace.clone(),
+                    facts: self.facts_of(uid)?,
+                })
+            })
+            .collect()
     }
 
     /// What each Deployment and StatefulSet it holds pins, to hold to the record. A Job finishes and goes, so it is not among them.

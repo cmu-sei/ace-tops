@@ -23,7 +23,7 @@
 
 # When the check cannot answer, or answers wrongly
 
-The instance check at issuance (`runtime-attestation.md`, "Slice A, the askers") can refuse a certificate, and a refused certificate stops a pod. So it is the same kind of thing as a Kubernetes admission webhook: a check that was added for safety, and that can take down what it guards. This page records how others handle that, read on 2026-11-03, what Polar decided from it, and a proposal that came out of it.
+The instance check at issuance (`runtime-attestation.md`, "Slice A, the askers") can refuse a certificate, and a refused certificate stops a pod. So it is the same kind of thing as a Kubernetes admission webhook: a check that was added for safety, and that can take down what it guards. This page records how others handle that, read on 2026-11-03, what Polar decided from it, and and the check that came out of it.
 
 ## Three failures, not one
 
@@ -64,31 +64,34 @@ A blank cell is one the page read does not address, not a claim that the product
 
 **No setting for the other answer yet.** A deployment that must fail closed would need more than a flag: the core and the attestation agent's own certificate cannot wait on an agent that cannot start without them, so it would be "once it has been heard, its absence holds requests" (`runtime-attestation.md`, "For the maintainer", item 3), with what a wedged cluster does about it worked out first. A setting that decides this is a security control, so it would travel signed.
 
-**The third failure is what the shadow run is for** (`runtime-attestation.md`, "Shadow first"), the same idea as Anchore's passive mode and Sigstore's `warn`. But a shadow run proves only the code that ran in it, which leads to the proposal below.
+**The third failure is what the shadow run is for** (`runtime-attestation.md`, "Shadow first"), the same idea as Anchore's passive mode and Sigstore's `warn`. But a shadow run proves only the code that ran in it, which is why the agent also proves itself, below.
 
-## Proposed: the agent proves itself each time it changes (for review, nothing built)
+## The agent proves itself
 
-Raised by the maintainer, 2026-11-03: some validation run whenever the attestation agent changes, cross-checking that it is healthy and in the environment it expects.
+Raised by the maintainer, 2026-11-03: some validation run whenever the attestation agent changes, cross-checking that it is healthy and in the environment it expects. Decided the same day: it lands with refusing, and first, so that an agent that has not proved itself can never refuse.
 
 **Why the shadow run is not enough.** It is done once. After refusing is turned on, a later image of the agent carries a new rule straight into refusing, with no shadow in front of it. And the environment moves under an unchanged agent: a Kubernetes upgrade, another container runtime writing `imageID` differently, a Role lost for one namespace. Each would read as `AnotherImage` or `NoSuchPod`, which is a false refusal.
 
-**Where it runs: at every start, not in the pipeline.** A changed agent is a new pod, so "every change" is covered without knowing what changed, and it also catches the environment moving, which no pipeline sees. It is one path with no version comparison in it.
+**Where it runs: in the agent, and not in the pipeline.** A changed agent is a new pod, so "every change" is covered without knowing what changed, and it also catches the environment moving, which no pipeline sees. It is one path with no version comparison in it. `prove` (`attestation/common/src/proof.rs`) is a pure function that takes the judgement as an argument, so its tests can hand it a wrong rule and see it fail.
 
 **What it checks, before the agent's `NotGenuine` is believed:**
 
-1. *It holds what it needs.* Every watch has listed and the signed record has verified, as `ready()` and `read_record` already say.
-2. *It is where it expects to be.* Its own pod is genuine by its own judgement, its image being the digest the signed record names for it. Nothing else proves a judgement works on this cluster's real data as directly.
-3. *It does not condemn what is running.* It judges every running pod the record names. Most of the deployment found not genuine at once says more about the agent than about the deployment.
-4. *It can still say no.* Passing the checks above proves nothing about an agent that says `Genuine` to everything. So each real pod's facts, altered in each way the verdict knows (another image, owner, service account, an added ephemeral container), must come back `NotGenuine`. It needs no bad pod on the cluster, and it runs on this cluster's real `imageID`s and not a fixture's.
+1. *It holds what it needs.* Every watch has listed and a signed record has verified.
+2. *It is where it expects to be.* The record names its workload once, every pod of that workload is genuine by its own judgement, and at least one runs the images the record names for it. One is enough, since during its own rollout the old revision's pod is still its workload's. Nothing else proves a judgement works on this cluster's real data as directly.
+3. *It does not condemn what is running.* It judges every pod that runs as a workload the record names. Most of the deployment found not genuine at once says more about the agent than about the deployment.
+4. *It can still say no.* Passing the checks above proves nothing about an agent that says `Genuine` to everything. So each pod it found genuine, altered in each way the verdict knows (another image, owner, service account, no owner, an added ephemeral container, an added container), must come back `NotGenuine`, as must a pod that does not exist. It needs no bad pod on the cluster, and it runs on this cluster's real facts and not a fixture's.
 
-**What failing does.** The agent answers `CannotSay` to everything and logs an ERROR saying which check failed, so the askers issue and record it as unattested. It fails open, as everything else here does. It does not end the agent: an agent that cannot pass would restart forever, and a loop says less than the ERROR.
+**What failing does.** The agent answers `CannotSay` to everything, and logs an ERROR saying which check failed, so the askers issue and record it as unattested. It fails open, as everything else here does. It does not end the agent: an agent that cannot pass would restart forever, and a loop says less than the ERROR.
 
-**To decide:**
+**Waiting is not doubting.** With no list yet, or no record, it logs that it cannot say yet, at INFO. A restarted agent holds no record until the next delivery, so for up to 30 s it answers `CannotSay`, including about what it would otherwise call not genuine. A deployment that has not handed off has no record at all, so nothing is refused until it has, and what was issued is attested afterwards.
 
-- *How much condemnation is "most"?* It must not let one real tampered pod switch the check off for everything. A majority of the deployment, or any core member? *Recommendation:* a majority: below that, the verdicts stand and each is reported as usual. Someone who could tamper with a majority of the Deployments is inside the trust base already.
-- *Is a passed check a one-time gate or a standing one?* A Kubernetes upgrade happens under a running agent. *Recommendation:* repeat checks 3 and 4 on the existing one-minute comparison, since they read only what it holds.
-- *Does `up.nu` read the result?* So a bring-up says the agent came up doubting itself, and does not leave it to a log line. *Recommendation:* yes, as a report that does not stop the run.
-- *When it lands.* *Recommendation:* with the commit that turns refusing on, since that is when an unproved agent starts being able to do harm.
+**Three calls made by the recommendations, for the maintainer's review:**
+
+- *"Most" is a strict majority of the pods judged.* One tampered pod, or a few, must not switch the check off for everything; those verdicts stand and are reported as usual. Someone who could tamper with a majority of the Deployments is inside the trust base already.
+- *It stands, and is not a one-time gate.* It is judged again each minute, on the existing comparison, as well as when a list finishes or a new record arrives, since a Kubernetes upgrade happens under a running agent.
+- *`up.nu` reports it and does not stop.* After the handoff step it says whether the agent has proved itself (`infra/attestation.nu`), giving it a minute to say.
+
+**What it costs.** A `kubectl debug` on the attestation agent's own pod makes it doubt itself, so anyone with that right can turn refusing off, with an ERROR. They are inside the trust base, and could stop the agent anyway.
 
 **What it does not do.** A compromised agent can pass all of this, and can refuse but cannot admit. It finds an agent that is wrong, not one that lies.
 

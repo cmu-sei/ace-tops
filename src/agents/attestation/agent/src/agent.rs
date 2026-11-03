@@ -66,7 +66,9 @@ impl PolarAgent for AttestationAgent {
          answers the questions published on attestation-instance-requests: is the pod this token was bound to what the deployment \
          made? It judges a pod against its owner (its owner chain, by UID, and each container's image against the digest its owner \
          pins), then against the signed record of the workload the identity runs as. It sees and reports; it never acts, and what \
-         follows from a verdict is the asker's. Each verdict goes to the asker's own topic, attestation-instance-replies.<workload>. \
+         follows from a verdict is the asker's. Its verdicts stand only while it has proved itself: it holds what it needs, it passes its \
+         own judgement, it does not condemn most of what is running, and it says no to real pods altered. Otherwise it answers that it \
+         cannot say, and says why in an ERROR. Each verdict goes to the asker's own topic, attestation-instance-replies.<workload>. \
          docs/architecture/runtime-attestation.md.",
     );
 

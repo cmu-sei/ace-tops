@@ -67,6 +67,7 @@ use images.nu
 use secrets-lib.nu [decrypt_sops, existing_required_secrets, secrets_check]
 use jira-check.nu [settings_of_document]
 use retry.nu [with_retries]
+use attestation.nu [attestation_report]
 use admin.nu [aside_path, is_another_clusters, move_aside]
 use browser.nu [browser_expected, browser_found, browser_problems, neo4j_answer, neo4j_probe, nss_db, password_verdict, probe_until_answered]
 use forwards.nu [ensure_observer_forward, forward_live, stop_stale]
@@ -591,6 +592,7 @@ def step_handoff [target: string, username: string, allow_dirty: bool] {
         wait_pods (seed_waits) 10min
     }
     run_script [infra/deploy-repo.nu retire $target]
+    report_attestation
 }
 
 # A machine with no inputs for a handed-off cluster (it last ran against another, or never did) takes them from the cluster's signed record. Publishing without them would take its administrators away, and the person who publishes with them, leaving only --bootstrap-again.
@@ -936,6 +938,18 @@ def step_seed [target: string, config: record, username: string, mail: string, a
 # Whether a pod can reach the outside, said once the cluster is up. A note, never a failure: the cluster works
 # offline, and a probe that cannot run is not a reason to stop. A target that goes out through cluster.egress.proxy is
 # not probed: the probe's git does not use it.
+# What the attestation agent says of itself. Its rollout may still be finishing, so it is given a minute to say, and either way the run goes on.
+def report_attestation [] {
+    mut r = { verdict: "unknown", line: "" }
+    for _ in 1..12 {
+        let logs = (do { ^kubectl logs -n polar deploy/attestation-agent -c attestation-agent --tail=5000 } | complete)
+        $r = (attestation_report ($logs.stdout | lines))
+        if $r.verdict in ["proved" "doubts"] { break }
+        sleep 5sec
+    }
+    if $r.verdict == "proved" { ok $r.line } else { note $r.line }
+}
+
 def report_egress [target: string] {
     let r = try {
         let proxy = ((cluster-registry cluster_of $target).egress? | default {} | get -o proxy)

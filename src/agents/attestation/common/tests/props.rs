@@ -25,10 +25,10 @@
 //! (docs/architecture/runtime-attestation.md, "Slice A"): the genuine pod passes, and each difference, alone, does not.
 
 use attestation_common::{
-    ContainerFacts, Deployed, DeploymentRecord, Drift, DriftWatch, Envelope, InstanceQuestion,
-    NotGenuine, Owner, OwnerKind, PodFacts, RecordedContainer, RecordedWorkload, Verdict,
-    WorkloadFacts, decode_question, decode_verdict, digest_of, drift, encode_question,
-    encode_verdict, judge, replies_topic,
+    AGENT_NAME, ContainerFacts, Deployed, DeploymentRecord, Doubt, Drift, DriftWatch, Envelope,
+    HeldPodFacts, InstanceQuestion, NotGenuine, Owner, OwnerKind, PodFacts, Proved,
+    RecordedContainer, RecordedWorkload, Verdict, WorkloadFacts, decode_question, decode_verdict,
+    digest_of, drift, encode_question, encode_verdict, judge, prove, replies_topic,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -461,5 +461,243 @@ proptest! {
                 prop_assert_eq!(open.contains(&as_drift(*n)), due, "reported exactly once it has lasted");
             }
         }
+    }
+}
+
+// ---- The agent proving itself (docs/architecture/attestation-when-it-cannot-answer.md, "The agent proves itself") ----
+
+/// A deployment of the agent and `others` more workloads, each with one genuine pod, and the record that names them.
+fn deployment(others: usize) -> (DeploymentRecord, Vec<HeldPodFacts>) {
+    let image = |n: usize| format!("registry:5000/image:latest@sha256:{n:064x}");
+    let names: Vec<String> = std::iter::once(AGENT_NAME.to_string())
+        .chain((0..others).map(|n| format!("workload-{n}")))
+        .collect();
+    let workloads = names
+        .iter()
+        .enumerate()
+        .map(|(n, name)| RecordedWorkload {
+            identity: format!("{name}.polar.serviceaccount.cluster.local"),
+            owner_kind: OwnerKind::Deployment,
+            owner_name: name.clone(),
+            namespace: "polar".to_string(),
+            service_account: name.clone(),
+            containers: vec![RecordedContainer {
+                name: "main".to_string(),
+                image: image(n),
+            }],
+        })
+        .collect();
+    let pods = names
+        .iter()
+        .enumerate()
+        .map(|(n, name)| HeldPodFacts {
+            namespace: "polar".to_string(),
+            facts: PodFacts {
+                service_account: name.clone(),
+                owner: Some(Owner {
+                    kind: OwnerKind::Deployment,
+                    name: name.clone(),
+                    pins: BTreeMap::from([("main".to_string(), image(n))]),
+                }),
+                containers: vec![ContainerFacts {
+                    name: "main".to_string(),
+                    image: image(n),
+                    image_id: Some(format!("registry:5000/image@sha256:{n:064x}")),
+                }],
+                ephemeral: vec![],
+            },
+        })
+        .collect();
+    (
+        DeploymentRecord {
+            schema: 1,
+            target: "t".to_string(),
+            version: 1,
+            workloads,
+        },
+        pods,
+    )
+}
+
+/// A pod some other image was put into.
+fn tampered(pod: &mut HeldPodFacts) {
+    pod.facts.containers[0].image = format!("registry:5000/other@sha256:{}", "f".repeat(64));
+}
+
+#[test]
+fn it_believes_nothing_until_it_holds_what_it_needs() {
+    let (record, pods) = deployment(2);
+    assert_eq!(
+        prove(judge, false, Some(&record), &pods),
+        Err(Doubt::NotListed)
+    );
+    assert_eq!(prove(judge, true, None, &pods), Err(Doubt::NoRecord));
+}
+
+#[test]
+fn a_record_that_does_not_name_it_once_is_not_believed() {
+    let (mut record, pods) = deployment(2);
+    let own = record.workloads.remove(0);
+    assert_eq!(
+        prove(judge, true, Some(&record), &pods),
+        Err(Doubt::NotInItsRecord)
+    );
+    record.workloads.push(own.clone());
+    record.workloads.push(own);
+    assert_eq!(
+        prove(judge, true, Some(&record), &pods),
+        Err(Doubt::NotInItsRecord)
+    );
+}
+
+#[test]
+fn it_has_to_see_itself() {
+    let (record, mut pods) = deployment(2);
+    pods.remove(0);
+    assert_eq!(
+        prove(judge, true, Some(&record), &pods),
+        Err(Doubt::CannotSeeItself)
+    );
+}
+
+#[test]
+fn it_has_to_pass_its_own_judgement() {
+    let (record, mut pods) = deployment(5);
+    pods[0].facts.ephemeral.push("debug".to_string());
+    assert_eq!(
+        prove(judge, true, Some(&record), &pods),
+        Err(Doubt::NotGenuineItself(NotGenuine::EphemeralContainer {
+            container: "debug".to_string()
+        }))
+    );
+}
+
+#[test]
+fn it_has_to_run_what_the_record_names() {
+    let (mut record, pods) = deployment(5);
+    record.workloads[0].containers[0].image =
+        format!("registry:5000/image:latest@sha256:{}", "e".repeat(64));
+    assert_eq!(
+        prove(judge, true, Some(&record), &pods),
+        Err(Doubt::NotTheImageRecorded)
+    );
+}
+
+// During its own rollout the record names the new image, and the old pod is still its workload's.
+#[test]
+fn one_of_its_pods_running_what_is_recorded_is_enough() {
+    let (record, mut pods) = deployment(5);
+    let mut old = pods[0].clone();
+    let old_image = format!("registry:5000/image:latest@sha256:{}", "a".repeat(64));
+    old.facts.owner.as_mut().unwrap().pins =
+        BTreeMap::from([("main".to_string(), old_image.clone())]);
+    old.facts.containers[0].image = old_image;
+    old.facts.containers[0].image_id = None;
+    pods.push(old);
+    assert!(prove(judge, true, Some(&record), &pods).is_ok());
+}
+
+#[test]
+fn a_rule_that_condemns_everything_doubts_itself() {
+    let (record, pods) = deployment(5);
+    // Its own pod passes, or it would stop there: the rule is wrong about everyone else.
+    let wrong = |facts: Option<&WorkloadFacts>, pod: Option<&PodFacts>| match facts {
+        Some(f) if f.owner_name == AGENT_NAME => judge(facts, pod),
+        _ => Verdict::NotGenuine(NotGenuine::NoOwner),
+    };
+    assert_eq!(
+        prove(wrong, true, Some(&record), &pods),
+        Err(Doubt::CondemnsMost {
+            condemned: 5,
+            judged: 6
+        })
+    );
+}
+
+// Passing everything else proves nothing about an agent that says yes to everything.
+#[test]
+fn a_rule_that_says_yes_to_everything_cannot_say_no() {
+    let (record, pods) = deployment(5);
+    assert!(matches!(
+        prove(|_, _| Verdict::Genuine, true, Some(&record), &pods),
+        Err(Doubt::CannotSayNo { .. })
+    ));
+}
+
+/// A way of altering a pod, and how to tell a pod altered in that way.
+type Blindness = (&'static str, fn(&PodFacts) -> bool);
+
+// One altered in a way this cannot see is one the rule is blind to, whichever it is.
+#[test]
+fn a_rule_blind_to_any_one_alteration_cannot_say_no() {
+    let blind_to: [Blindness; 4] = [
+        ("an ephemeral container", |p| !p.ephemeral.is_empty()),
+        ("another service account", |p| {
+            p.service_account.ends_with("-altered")
+        }),
+        ("no owner", |p| p.owner.is_none()),
+        ("another owner", |p| {
+            p.owner
+                .as_ref()
+                .is_some_and(|o| o.name.ends_with("-altered"))
+        }),
+    ];
+    for (how, is_it) in blind_to {
+        let (record, pods) = deployment(3);
+        let rule = |facts: Option<&WorkloadFacts>, pod: Option<&PodFacts>| {
+            if pod.is_some_and(is_it) {
+                Verdict::Genuine
+            } else {
+                judge(facts, pod)
+            }
+        };
+        assert_eq!(
+            prove(rule, true, Some(&record), &pods),
+            Err(Doubt::CannotSayNo { altered: how }),
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn a_deployment_as_recorded_is_proved(others in 0usize..12) {
+        let (record, pods) = deployment(others);
+        prop_assert_eq!(
+            prove(judge, true, Some(&record), &pods),
+            Ok(Proved { judged: others + 1, condemned: 0 })
+        );
+    }
+
+    // A tampered pod cannot switch the check off for everything: it doubts itself only once most of what it judges is condemned.
+    #[test]
+    fn it_doubts_itself_exactly_when_most_is_condemned(others in 1usize..12, tampered_n in 0usize..12) {
+        let tampered_n = tampered_n.min(others);
+        let (record, mut pods) = deployment(others);
+        for pod in pods.iter_mut().skip(1).take(tampered_n) {
+            tampered(pod);
+        }
+        let judged = others + 1;
+        let proved = prove(judge, true, Some(&record), &pods);
+        if tampered_n * 2 > judged {
+            prop_assert_eq!(proved, Err(Doubt::CondemnsMost { condemned: tampered_n, judged }));
+        } else {
+            prop_assert_eq!(proved, Ok(Proved { judged, condemned: tampered_n }));
+        }
+    }
+
+    // A pod that no workload in the record runs as is not the agent's to weigh here, however many of them there are.
+    #[test]
+    fn a_pod_the_record_does_not_claim_counts_for_nothing(others in 0usize..6, strangers in 0usize..12) {
+        let (record, mut pods) = deployment(others);
+        for n in 0..strangers {
+            let mut stranger = pods[0].clone();
+            stranger.facts.service_account = format!("stranger-{n}");
+            tampered(&mut stranger);
+            pods.push(stranger);
+        }
+        prop_assert_eq!(
+            prove(judge, true, Some(&record), &pods),
+            Ok(Proved { judged: others + 1, condemned: 0 })
+        );
     }
 }
