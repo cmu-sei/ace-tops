@@ -36,6 +36,8 @@ credentials_agent_common.workspace = true
 cert-issuer-common = { path = "../cert-issuer/common" }
 polar.workspace = true
 polar-crypto.workspace = true
+# The credentials section: judging that a secret is an escrowed one, and what it was bound to.
+polar-escrow.workspace = true
 polar-env = { workspace = true, features = ["document"] }
 serde.workspace = true
 polar-health = { path = "../polar-health" }

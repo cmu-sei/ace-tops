@@ -70,6 +70,7 @@ use crate::capability::Capability;
 use crate::command::{CommandSpec, spec_problems};
 use crate::environment;
 use crate::graph_schema::{GraphDecl, GraphEntry};
+use crate::protocol::{OperationDecl, OperationEntry, ProtocolSetup};
 use crate::runtime::RuntimeSection;
 use crate::startup::{self, Startup};
 use crate::topics::{Facts, FamilyDecl, TopicDecl, TopicEntry, TopicSet};
@@ -135,6 +136,13 @@ pub trait PolarAgent: Sized + 'static {
     /// `ConfigurationHandle::runtime`. They appear in the schema export beside the variable sections. A
     /// section not declared here is refused however it is signed.
     const RUNTIME: &'static [&'static RuntimeSection] = &[];
+    /// The credentials the agent's operations use: a section made by `protocol::credentials::section`, which saying this
+    /// adds to `RUNTIME`. The infrastructure hands each signed version to the CryptoActor, so the domain never has one in
+    /// its hands (docs/architecture/protocol-handlers.md). It needs encryption for it, and need not list that.
+    const CREDENTIALS: Option<&'static RuntimeSection> = None;
+    /// What the agent asks the outside for: each kind of request, where it may go and what it may use. They appear in the
+    /// schema export, so applying the catalog is the sign-off, and a request of a kind not declared here is denied.
+    const OPERATIONS: &'static [OperationDecl] = &[];
     /// The topics the agent uses itself, each with its access and its purpose (docs/architecture/topics.md).
     /// The topics every agent uses, and those a need brings, are implied and not listed here; the scaffold
     /// prints the whole set, and the agent's client refuses what is outside it unless policy permits it.
@@ -171,6 +179,8 @@ pub struct Configured {
     pub(crate) commands: &'static [CommandSpec],
     /// The runtime sections the agent declared.
     pub(crate) runtime: &'static [&'static RuntimeSection],
+    /// The operations and credentials the agent declared.
+    pub(crate) protocols: ProtocolSetup,
     /// The constraints and indexes for the labels the agent owns ([`graph_key_indexes`]).
     pub(crate) graph_key_indexes: Vec<polar::graph::schema::KeyIndex>,
     /// Every topic the agent uses, its families expanded for the workloads it serves.
@@ -267,6 +277,7 @@ impl Configured {
             self_test: false,
             commands: &[],
             runtime: &[],
+            protocols: ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Arc::new(TopicSet::default()),
             hooks: Hooks {
@@ -329,6 +340,10 @@ pub struct AgentDocument {
     /// when there is one, so every other agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graph: Vec<GraphEntry>,
+    /// What the agent asks the outside for ([`PolarAgent::OPERATIONS`]). Written only when there is one, so every other
+    /// agent's scaffold is as it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<OperationEntry>,
     #[serde(flatten)]
     pub document: Document,
     /// Every problem found, when the document was filled from a file.
@@ -389,7 +404,17 @@ pub struct AgentInfo {
 /// What `A` needs, with the Cassini client first: every agent built here is one, so the agent
 /// does not have to say so and cannot forget to. See [`computed_needs`].
 pub(crate) fn needs_of<A: PolarAgent>() -> Vec<Capability> {
-    computed_needs(A::CASSINI_CLIENT, A::NEEDS, A::GRAPH)
+    let mut needs = computed_needs(A::CASSINI_CLIENT, A::NEEDS, A::GRAPH);
+    // A credential is opened by the CryptoActor, in the custody daemon.
+    if A::CREDENTIALS.is_some() && !needs.contains(&Capability::Encryption) {
+        needs.push(Capability::Encryption);
+    }
+    needs
+}
+
+/// The runtime sections `A` accepts: what it lists, and its credentials section if it declares credentials.
+fn runtime_of<A: PolarAgent>() -> Vec<&'static RuntimeSection> {
+    A::RUNTIME.iter().copied().chain(A::CREDENTIALS).collect()
 }
 
 /// What an agent needs, from how it is declared: `Cassini` first for a Cassini client, then what it lists, then
@@ -445,7 +470,7 @@ fn topic_facts<A: PolarAgent>() -> Facts<'static> {
         name: A::NAME,
         cassini_client: A::CASSINI_CLIENT || cassini_optional::<A>(),
         self_test: A::SELF_TEST,
-        encryption: A::NEEDS.contains(&Capability::Encryption),
+        encryption: needs_of::<A>().contains(&Capability::Encryption),
         soft_state: needs_of::<A>().contains(&Capability::SoftState),
     }
 }
@@ -565,7 +590,7 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
                 timeout_secs: c.timeout.as_secs(),
             })
             .collect(),
-        runtime: A::RUNTIME
+        runtime: runtime_of::<A>()
             .iter()
             .map(|section| RuntimeDocument {
                 name: section.name.to_string(),
@@ -590,6 +615,7 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
             })
             .collect(),
         graph: crate::graph_schema::graph_set(A::GRAPH),
+        operations: A::OPERATIONS.iter().map(OperationEntry::from).collect(),
         document: Document::scaffold(&tagged),
         problems: Vec::new(),
     }
@@ -626,7 +652,18 @@ fn surface_problems<A: PolarAgent>() -> Vec<String> {
             A::NAME
         ));
     }
-    problems.extend(crate::runtime::check_declarations(A::RUNTIME));
+    problems.extend(crate::runtime::check_declarations(&runtime_of::<A>()));
+    let variables: Vec<&str> = own_sections::<A>()
+        .iter()
+        .flat_map(|section| section.vars.iter().map(|var| var.desc().name))
+        .collect();
+    problems.extend(crate::protocol::problems(
+        A::NAME,
+        A::OPERATIONS,
+        A::CREDENTIALS,
+        &variables,
+        A::CASSINI_CLIENT,
+    ));
     problems.extend(crate::topics::problems(&topic_facts::<A>(), A::TOPICS));
     problems.extend(crate::topics::family_problems(A::TOPIC_FAMILIES));
     problems.extend(crate::graph_schema::problems(
@@ -1106,7 +1143,12 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         self_test: A::SELF_TEST && used.contains(&Capability::Cassini),
         required: used,
         commands: A::COMMANDS,
-        runtime: A::RUNTIME,
+        // Once, for the life of the process, as the declarations it is made from are.
+        runtime: runtime_of::<A>().leak(),
+        protocols: ProtocolSetup {
+            operations: A::OPERATIONS,
+            credentials: A::CREDENTIALS.is_some(),
+        },
         graph_key_indexes: graph_key_indexes::<A>(),
         hooks: Hooks::real(),
     };
@@ -1733,6 +1775,110 @@ mod tests {
             reversed.reverse();
             proptest::prop_assert_eq!(&needs, &computed_needs(cassini, &listed, &reversed));
         }
+    }
+
+    // -- what an agent declares of its protocols --------------------------------------------------------------------
+
+    static CREDS: RuntimeSection = crate::protocol::credentials::section::<1>("the site's token");
+    static SITE: Section = Section {
+        name: "site",
+        vars: &[&SITE_URL],
+        relations: |_| Vec::new(),
+    };
+    static SITE_URL: polar_env::Required<String> =
+        polar_env::Required::text("SITE_URL", "the site").dynamic();
+
+    const SITE_READ: crate::protocol::OperationDecl = crate::protocol::OperationDecl {
+        name: "site.read",
+        doc: "reads the site",
+        protocol: crate::protocol::ProtocolKind::Test,
+        location: crate::protocol::Location::Configured {
+            variable: "SITE_URL",
+            credential: Some(crate::protocol::Credential::Named("site")),
+        },
+    };
+
+    struct Calling;
+    impl PolarAgent for Calling {
+        const NAME: &'static str = "calling";
+        const PURPOSE: &'static str = "calls a site";
+        const NEEDS: &'static [Capability] = &[];
+        const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+        const SECTIONS: &'static [&'static Section] = &[&SITE];
+        const CREDENTIALS: Option<&'static RuntimeSection> = Some(&CREDS);
+        const OPERATIONS: &'static [crate::protocol::OperationDecl] = &[SITE_READ];
+        async fn start(_configured: Configured) -> Result<(), StartError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn declaring_a_credential_brings_its_section_and_encryption_and_nobody_lists_them() {
+        let doc = scaffold_document::<Calling>();
+        assert!(
+            doc.requires.contains(&"encryption".to_string()),
+            "{:?}",
+            doc.requires
+        );
+        assert_eq!(doc.runtime.len(), 1);
+        assert_eq!(doc.runtime[0].name, "credentials");
+        assert_eq!(doc.runtime[0].doc, "the site's token");
+        assert_eq!(doc.operations.len(), 1);
+        assert_eq!(doc.operations[0].name, "site.read");
+        assert_eq!(doc.operations[0].location, "configured");
+        assert_eq!(doc.operations[0].credential.as_deref(), Some("site"));
+        // The topics encryption brings come with it.
+        let implied = crate::agent::topic_set::<Calling>().entries();
+        let bare = crate::agent::topic_set::<Reading>().entries();
+        assert!(implied.len() > bare.len(), "{implied:?}");
+        assert!(
+            declaration_problems::<Calling>().is_empty(),
+            "{:?}",
+            declaration_problems::<Calling>()
+        );
+    }
+
+    #[test]
+    fn an_agent_with_no_operations_has_the_scaffold_it_had() {
+        let json = serde_json::to_value(scaffold_document::<Reading>()).unwrap();
+        assert!(json.get("operations").is_none(), "{json}");
+    }
+
+    #[test]
+    fn an_operation_that_goes_to_a_variable_nobody_declares_is_a_problem() {
+        struct Undeclared;
+        impl PolarAgent for Undeclared {
+            const NAME: &'static str = "undeclared";
+            const PURPOSE: &'static str = "calls a site it does not name";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const CREDENTIALS: Option<&'static RuntimeSection> = Some(&CREDS);
+            const OPERATIONS: &'static [crate::protocol::OperationDecl] = &[SITE_READ];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let problems = declaration_problems::<Undeclared>().join(" | ");
+        assert!(problems.contains("the host of SITE_URL"), "{problems}");
+    }
+
+    #[test]
+    fn a_section_listed_beside_the_credentials_it_comes_from_is_declared_twice() {
+        static BOTH: [&RuntimeSection; 1] = [&CREDS];
+        struct Twice;
+        impl PolarAgent for Twice {
+            const NAME: &'static str = "twice";
+            const PURPOSE: &'static str = "lists its credentials section";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const RUNTIME: &'static [&'static RuntimeSection] = &BOTH;
+            const CREDENTIALS: Option<&'static RuntimeSection> = Some(&CREDS);
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let problems = declaration_problems::<Twice>().join(" | ");
+        assert!(problems.contains("more than once"), "{problems}");
     }
 
     #[test]

@@ -541,7 +541,8 @@ material, as `GitCredential` does for libgit2, rather than going through an HTTP
 designs; jira-observer sends its requests with reqwest, and no I/O actor is built yet. Its first user is jira-observer
 (`jira.md`, "The credential").
 **To be closed (the maintainer, 2026-11-03):** the protocol handler gets the credential from the `CryptoActor` itself, and domain code
-cannot be given it, so these two answers go to the handlers alone (`protocol-handlers.md`, "No way to the credential from domain code"). Not built.
+cannot be given it, so these two answers go to the handlers alone (`protocol-handlers.md`, "No way to the credential from domain code"). The port is built
+(`CryptoMessage::UseCredential`, `CredentialPort`), and the two messages stay until the agents have moved off them.
 
 A **host pattern** is a bare host name, matched case-insensitively and exactly (`github.com`), or `*.` followed by
 a domain (`*.example.org`), which matches that domain with one or more labels before it, at any depth

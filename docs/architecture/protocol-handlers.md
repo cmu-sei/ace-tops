@@ -23,7 +23,8 @@
 
 # Protocol handlers: the domain's I/O in infrastructure
 
-Status, 2026-11-03: the design, from the maintainer, for vetting. Nothing here is built. Framework code that lets us reason about
+Status, 2026-11-03: the design, from the maintainer, vetted. The framework is built, against a test protocol, with no agent on it and no real
+protocol yet (`polar-agent-builder/src/protocol.rs`, "When, and in what order"). Framework code that lets us reason about
 each request a domain actor makes, whether to allow or deny it, and that protects the credentials it uses. The domain says what it
 wants; a protocol handler in the builder's infrastructure gets the credential itself, uses it, and calls the domain's code with what
 came back. No code a developer writes on the domain side can be given the credential.
@@ -86,17 +87,18 @@ logic." This is as much the reason for the design as the secret is.
 
 ## The flow
 
-1. **Declare.** `AgentBuilder::with_credential("jira-site")`. The builder computes the fact: the `credentials` runtime section appears in the
-   scaffold and so in the catalog, as `polar::egress::SECTION` does (`egress.md`, "How it stays opt-in"). Jira and git each write that section
-   by hand today (`*/observe/src/credentials.rs`); it is written once, in the builder. The catalog carries that the credential exists, never
-   its value.
+1. **Declare.** `PolarAgent::CREDENTIALS`, with what `protocol::credentials::section::<MAX>(doc)` makes. As the agent's other facts are, it is
+   a constant of the trait, since the scaffold is printed without running the agent. The builder computes the rest: the `credentials` runtime
+   section appears in the scaffold and so in the catalog, as `polar::egress::SECTION` does (`egress.md`, "How it stays opt-in"), and the
+   agent needs encryption without listing it. Jira and git each write that section by hand today (`*/observe/src/credentials.rs`); it is
+   written once, in the builder, and they lose theirs as they move. The catalog carries that the credential exists, never its value.
 2. **Apply.** As built. The value is signed as an `EscrowedSecret` for this agent. The `CryptoActor` opens it through the custody daemon, keeps it
    with its binding, and escrows both with the credentials agent (`StoreSecret`, `signed-configuration.md`). The builder does this
    for the section, so the domain no longer calls `register_secret` or `replace_section`.
-3. **Register, at load.** `.with_operation::<Projects>()`. A protocol's handler serves the operations registered for it, each a request type with
-   a name. The list is fixed once the agent has started. This is the callback "registered at load", which is where IO effects really occur,
-   and it pairs with the lock in `runtime-attestation.md`. What an agent can ask for is a fact the builder knows, so the scaffold and the catalog
-   can say it.
+3. **Register, at load.** `PolarAgent::OPERATIONS`, each a request type's declaration, so nobody declares it twice and it cannot differ from
+   what runs. The list is a constant, and each `read` is compiled code called directly, so there is no table of pointers to change. This is the callback
+   "registered at load", which is where IO effects really occur, and it pairs with the lock in `runtime-attestation.md`. What an agent can ask
+   for is a fact the builder knows, so the scaffold prints it under `operations`.
 4. **Ask.** The domain actor sends the request. It names no secret value, holds no client, and gets on with its mailbox.
 5. **Judge.** One pure function decides, and the decision is logged (below).
 6. **Fulfil.** The protocol handler asks the `CryptoActor` for the credential for that host. The `CryptoActor` checks the binding, where
@@ -105,18 +107,26 @@ logic." This is as much the reason for the design as the secret is.
 8. **Return.** The callback's value reaches the domain actor as an ordinary message.
 
 ```rust
-AgentBuilder::new(..)
-    .with_credential("jira-site")       // the catalog learns of it
-    .with_operation::<Projects>();      // the list is fixed at load
-
-impl HttpOperation for Projects {
-    const NAME: &str = "jira.projects";
-    const LOCATION: Location = Location::Configured("JIRA_URL");
-    const CREDENTIAL: Option<&str> = Some("jira-site");
-    type Output = Vec<Project>;
-    fn request(&self) -> Request { /* the specifics */ }
-    fn read(reply: &Reply) -> Result<Self::Output, ReadFailure> { /* domain logic */ }
+impl PolarAgent for JiraObserver {
+    const CREDENTIALS: Option<&'static RuntimeSection> = Some(&CREDENTIALS);  // the catalog learns of it
+    const OPERATIONS: &'static [OperationDecl] = &[Projects::DECL];           // fixed at load
+    // ...
 }
+
+impl Operation for Projects {
+    type Protocol = Http;
+    type Output = Vec<Project>;
+    const DECL: OperationDecl = OperationDecl {
+        name: "jira.projects",
+        doc: "the projects the token can see",
+        protocol: ProtocolKind::Http,
+        location: Location::Configured { variable: "JIRA_URL", credential: Some(Credential::Named("jira")) },
+    };
+    fn request(&self) -> Request { /* the specifics */ }
+    fn read(&self, reply: &Reply) -> Result<Self::Output, ReadFailure> { /* domain logic */ }
+}
+
+protocols.request(Projects { start_at }, myself, Message::Projects)?;   // the value comes back as a message
 ```
 
 `Protocol` is the trait each handler implements, and it says only what differs: its request, how a credential attaches, and what a callback
@@ -148,8 +158,9 @@ Moving them there would mean the daemon also makes the request, which is the sea
 
 | Location | Where it comes from | Credential | Example |
 |---|---|---|---|
-| `Configured` | the agent's configuration actor, signed | if the operation declares one and the host matches its binding | Jira and GitLab's site; the git observer's repositories |
-| `Arbitrary` | the domain, at run time, with the permission declared on the operation | **never** | OpenAPI following a document's URL; a registry nothing is bound to |
+| `Configured` | a variable of the agent's, read as it is in force at each request | if the operation declares one and the host matches its binding | Jira and GitLab's site |
+| `Bound` | the domain, at run time, and the host must match the credential's signed binding | always | the git observer's repositories that name a credential; a registry with a credential |
+| `Arbitrary` | the domain, at run time, with the permission declared on the operation | **never**: the declaration has no place to name one | OpenAPI following a document's URL; a public repository; a registry nothing is bound to |
 
 - A path, a query and a page belong to the request; the host is what is judged. A location a response gives, such as GitLab's `Link` header, is
   judged like any other: another host is not the same request.
@@ -157,10 +168,10 @@ Moving them there would mean the daemon also makes the request, which is the sea
 - The permission is declared on the operation when it is built, so the builder knows it and the catalog says it. Applying the catalog is the
   sign-off (`policy-enforcement.md`).
 
-Proposed, to review: the **resolver** is the only case found that wants a credential at a host not known ahead. It learns registries from the images
-it sees (`resolver/src/resolver.rs:78`). The host is the domain's, but the host pattern a credential may go to is signed, so a match is a location
-someone signed off and not an arbitrary request. So `Configured` means the host comes from configuration *or* matches a signed binding. No match
-means no credential, and the request is `Arbitrary` under the permission.
+Proposed, to review: `Bound`. The **resolver** learns registries from the images it sees (`resolver/src/resolver.rs:78`), and the git observer's repositories
+come from the controller naming their credential. The host is the domain's, but the host pattern a credential may go to is signed, so a match is a
+location someone signed off and not an arbitrary request. No match is `NotBound`, nothing is sent, and the domain may make the `Arbitrary`
+operation it declared, with no credential.
 
 ## The judgment
 
@@ -202,10 +213,11 @@ and has never had `GRAPH_PASSWORD`. The trait is checked against it; moving it i
 ### Callbacks and the actor rule (proposed, for review)
 
 A callback runs domain code inside infrastructure, and actors exchange messages and never touch each other's state (`AGENTS.md`). So:
-- it is a plain `fn`, which cannot capture actor state: it works on what the handler gives it and returns a value, and that value reaches the
-  domain actor as an ordinary message;
+- `read(&self, reply)` has the request's own values, which the domain moved into it, and what came back. It returns a value, and that value reaches the
+  domain actor as an ordinary message. Not a plain `fn` as first proposed: git's needs the commit it last saw and Jira's the page it is on. So what keeps actor
+  state out is the review of what an operation holds, not the compiler;
 - each call runs on its own blocking task with its own budget, so a slow callback stalls neither the handler nor anyone else's request. One past its
-  budget is reported and its result dropped. A stuck `fn` cannot be killed, so it costs a thread until it returns, and that is left to show;
+  budget is reported and its result dropped. A stuck `read` cannot be killed, so it costs a thread until it returns, and that is left to show;
 - **no retries inside a handler.** The 2026-11-02 list had retries here, but Jira retries at the level of the pull, and retrying in both multiplies attempts
   and hides failures. One attempt, a failure kind returned, and no call to a host before its `Retry-After` has passed. Let it fail, and see why.
 
@@ -229,8 +241,9 @@ The HTTP handler was placed after runtime attestation's slices A and B and befor
 OpenAPI migrations, so those agents move onto it once and not twice (the maintainer, 2026-11-02; `remaining-work.md`, "The order of work"). The
 place stands, for all of it. In bites, each reported before the next:
 
-1. The framework: `Protocol`, operations, `judge` and its log, the port from the `CryptoActor`, `with_credential` and the facts it gives the scaffold.
-   Against a test protocol, no real one.
+1. **Built, 2026-11-03.** The framework: `Protocol`, operations, `judge` and its record, the port from the `CryptoActor` (`polar_crypto::CredentialPort`, whose
+   `CredentialPass` the actor compares by identity), `PolarAgent::CREDENTIALS` and `OPERATIONS` and the facts they give the scaffold, the section handed to the
+   `CryptoActor`, a refused credential held and cleared by a new version, and a host's `Retry-After` honoured. Against a test protocol, no real one.
 2. HTTP, against a real TLS server. Jira moves. On a cluster: nothing changes in what lands in the graph.
 3. The registry scheme. The resolver moves, with its migration note.
 4. git. The git observer moves.

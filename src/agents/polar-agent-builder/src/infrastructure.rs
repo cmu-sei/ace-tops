@@ -226,6 +226,8 @@ pub struct InfrastructureSupervisorArgs {
     )>,
     /// The runtime sections the agent declared: what its configuration actor will accept.
     pub(crate) runtime_sections: &'static [&'static crate::runtime::RuntimeSection],
+    /// The operations and credentials the agent declared: what its protocol handler serves.
+    pub(crate) protocols: crate::protocol::ProtocolSetup,
     /// The agent's judge of a runtime section before it is replaced, if it has one.
     pub(crate) section_judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
     /// Publish probes to the agent itself and expect them back; see `selftest`.
@@ -310,6 +312,10 @@ struct ClientParts {
     /// its session at once (docs/architecture/authority-model.md, "Multi-instance workloads").
     one_of_many: bool,
     crypto: Option<CryptoHandle>,
+    /// What the protocol handler asks the crypto actor with: nothing else ever has it.
+    credential_port: Option<polar_crypto::CredentialPort>,
+    /// The agent's protocol handler, if it declares operations or credentials.
+    protocols: Option<crate::protocol::ProtocolHandle>,
     state: Option<crate::state::StateHandle>,
 }
 
@@ -584,7 +590,8 @@ impl InfrastructureSupervisor {
                 Some(cassini_client::TcpClientMessage::JudgeAgain)
             });
 
-        let crypto = if setup.wants_crypto {
+        let (crypto, credential_port) = if setup.wants_crypto {
+            let pass = polar_crypto::CredentialPass::new();
             let (crypto_actor, _) = polar_crypto::CryptoActor::spawn_linked(
                 None,
                 polar_crypto::CryptoActor,
@@ -592,14 +599,18 @@ impl InfrastructureSupervisor {
                     .with_settings(
                         polar_crypto::environment::CryptoSettings::from_env(&*setup.config)
                             .map_err(ActorProcessingErr::from)?,
-                    ),
+                    )
+                    .with_credential_pass(pass.clone()),
                 myself_cell,
             )
             .await
             .map_err(ActorProcessingErr::from)?;
-            Some(CryptoHandle::new(crypto_actor))
+            (
+                Some(CryptoHandle::new(crypto_actor.clone())),
+                Some(polar_crypto::CredentialPort::new(crypto_actor, pass)),
+            )
         } else {
-            None
+            (None, None)
         };
 
         let state = match state_replies {
@@ -629,6 +640,8 @@ impl InfrastructureSupervisor {
                 tcp_client,
                 one_of_many,
                 crypto,
+                credential_port,
+                protocols: None,
                 state,
             },
             self_test,
@@ -840,7 +853,7 @@ impl Actor for InfrastructureSupervisor {
 
         let infrastructure_events = Arc::new(OutputPort::default());
 
-        let (client, self_test) = if args.with_client {
+        let (mut client, self_test) = if args.with_client {
             let (client, self_test) = Self::spawn_client_parts(
                 &myself,
                 &args.service_name,
@@ -873,6 +886,24 @@ impl Actor for InfrastructureSupervisor {
         }
 
         let healthcheck = HealthHandle::new(healthcheck);
+        if let Some(client) = &mut client {
+            client.protocols = crate::protocol::start(
+                myself.get_cell(),
+                crate::protocol::Start {
+                    service_name: &args.service_name,
+                    setup: args.protocols,
+                    config: &args.config,
+                    credentials: client.credential_port.take(),
+                    crypto: client
+                        .crypto
+                        .clone()
+                        .map(|crypto| Arc::new(crypto) as Arc<dyn crate::CryptoClient>),
+                    configuration: configuration.clone(),
+                    health: healthcheck.clone(),
+                },
+            )
+            .await?;
+        }
         let health_answerer = client.as_ref().map(|client| crate::health_query::Answerer {
             topic: polar_health::report::health_topic(&args.service_name),
             writer: args.health_writer.clone(),
@@ -1135,6 +1166,7 @@ impl Actor for InfrastructureSupervisor {
                         tcp_client: client.tcp_client.clone(),
                         healthcheck: state.healthcheck.clone(),
                         crypto: client.crypto.clone(),
+                        protocols: client.protocols.clone(),
                         state: client.state.clone(),
                         events_output: client.events_output.clone(),
                         infrastructure_events: state.infrastructure_events.clone(),
@@ -1581,6 +1613,7 @@ mod tests {
                     tcp_spawner: spawner.clone(),
                     commands,
                     runtime_sections: runtime,
+                    protocols: crate::protocol::ProtocolSetup::default(),
                     section_judge: None,
                     self_test: self_test.is_some(),
                 },
@@ -3280,6 +3313,7 @@ mod service_tests {
                     tcp_spawner: Arc::new(CassiniSpawner::default()),
                     commands: vec![],
                     runtime_sections: &[],
+                    protocols: crate::protocol::ProtocolSetup::default(),
                     section_judge: None,
                     self_test: false,
                 },

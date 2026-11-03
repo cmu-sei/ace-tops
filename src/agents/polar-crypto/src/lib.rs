@@ -146,6 +146,10 @@ pub enum CryptoError {
     RecipientKeyNotFound(String),
     #[error("no secret is registered under {0:?}")]
     SecretNotRegistered(String),
+    #[error(
+        "a credential goes only to this agent's protocol handlers, and this pass is not theirs"
+    )]
+    NotThePort,
     #[error(transparent)]
     Use(#[from] registry::UseRefusal),
     #[error(transparent)]
@@ -158,6 +162,83 @@ struct KeyPaths {
     /// The pinned CA, which a recipient's escrow certificate must chain to; none if it could not be read, and then
     /// nothing is encrypted to a recipient.
     pinned_ca: Option<String>,
+}
+
+/// What lets its holder ask the CryptoActor for a credential: the one the actor was started with, compared by identity,
+/// so one made anywhere else is not it. The builder makes it, starts the actor with it and gives it to the protocol
+/// handlers, and nothing hands it on, so domain code cannot get a credential by writing a function that asks for one
+/// (docs/architecture/protocol-handlers.md, "No way to the credential from domain code").
+#[derive(Clone)]
+pub struct CredentialPass(Arc<()>);
+
+impl CredentialPass {
+    pub fn new() -> Self {
+        Self(Arc::new(()))
+    }
+
+    fn is(&self, other: &CredentialPass) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Default for CredentialPass {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What a protocol handler asks for. The named operations: which credential, for which host, in the form its protocol
+/// presents (`registry::http_credential`, `registry::git_credential`).
+pub enum CredentialAsk {
+    Http {
+        name: String,
+        host: String,
+        reply: RpcReplyPort<Result<registry::HttpCredential, CryptoError>>,
+    },
+    Git {
+        name: String,
+        host: String,
+        reply: RpcReplyPort<Result<registry::GitCredential, CryptoError>>,
+    },
+}
+
+/// A protocol handler's way to the CryptoActor's credentials: the actor and the pass together.
+#[derive(Clone)]
+pub struct CredentialPort {
+    actor: ActorRef<CryptoMessage>,
+    pass: CredentialPass,
+}
+
+impl CredentialPort {
+    pub fn new(actor: ActorRef<CryptoMessage>, pass: CredentialPass) -> Self {
+        Self { actor, pass }
+    }
+
+    /// The credential an HTTP request presents to `host`. The binding is checked by the actor, where the secret is.
+    pub async fn http(
+        &self,
+        name: String,
+        host: String,
+    ) -> Result<registry::HttpCredential, CryptoError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::Http { name, host, reply },
+        })
+        .map_err(|_| CryptoError::NoReply)?
+    }
+
+    /// The credential git presents to `host`, checked as [`http`](Self::http) is.
+    pub async fn git(
+        &self,
+        name: String,
+        host: String,
+    ) -> Result<registry::GitCredential, CryptoError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::Git { name, host, reply },
+        })
+        .map_err(|_| CryptoError::NoReply)?
+    }
 }
 
 pub enum CryptoMessage {
@@ -247,6 +328,12 @@ pub enum CryptoMessage {
         host: String,
         reply: RpcReplyPort<Result<registry::HttpCredential, CryptoError>>,
     },
+    /// A protocol handler asks for a credential, with the pass the builder started this actor with: the way
+    /// [`CredentialPort`] reaches it. Any other pass is refused, and learns nothing.
+    UseCredential {
+        pass: CredentialPass,
+        ask: CredentialAsk,
+    },
     /// Asks the credentials agent for a secret by name. It comes back encrypted to this identity's own
     /// escrow public key and is decrypted here, with the key in custody, so the plaintext is only ever
     /// in this process. `Ok(None)` means nothing is stored under the name. Whether this identity may
@@ -290,6 +377,8 @@ pub struct CryptoActorArgs {
     pub settings: Option<environment::CryptoSettings>,
     /// How long to wait before trying to escrow a registered secret again, and the most that wait grows to.
     pub escrow_retry: (Duration, Duration),
+    /// The pass a protocol handler asks for a credential with. None: nothing can ask that way.
+    pub credential_pass: Option<CredentialPass>,
 }
 
 impl CryptoActorArgs {
@@ -303,7 +392,14 @@ impl CryptoActorArgs {
             router,
             settings: None,
             escrow_retry: (Duration::from_secs(1), Duration::from_secs(30)),
+            credential_pass: None,
         }
+    }
+
+    /// The pass the protocol handlers will ask with.
+    pub fn with_credential_pass(mut self, pass: CredentialPass) -> Self {
+        self.credential_pass = Some(pass);
+        self
     }
 
     /// Escrow a registered secret again after `initial`, doubling up to `most`, until the credentials agent
@@ -361,6 +457,8 @@ pub struct CryptoActorState {
     /// every one is stopped when the actor is.
     escrow_tasks: EscrowTasks,
     escrow_retry: (Duration, Duration),
+    /// The pass the protocol handlers ask with.
+    credential_pass: Option<CredentialPass>,
 }
 
 /// A secret and where it may be used. The secret is wiped when it is dropped.
@@ -476,6 +574,7 @@ impl Actor for CryptoActor {
             registry: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             escrow_tasks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             escrow_retry: args.escrow_retry,
+            credential_pass: args.credential_pass,
         })
     }
 
@@ -660,26 +759,40 @@ impl Actor for CryptoActor {
                 let _ = reply.send(dropped);
             }
             CryptoMessage::GitCredential { name, host, reply } => {
-                let result = {
-                    let registry = state.registry.lock().await;
-                    match registry.get(&name) {
-                        None => Err(CryptoError::SecretNotRegistered(name)),
-                        Some(held) => registry::git_credential(&held.binding, &held.secret, &host)
-                            .map_err(CryptoError::Use),
-                    }
-                };
-                let _ = reply.send(result);
+                let _ = reply.send(git_credential_of(&state.registry, name, &host).await);
             }
             CryptoMessage::HttpCredential { name, host, reply } => {
-                let result = {
-                    let registry = state.registry.lock().await;
-                    match registry.get(&name) {
-                        None => Err(CryptoError::SecretNotRegistered(name)),
-                        Some(held) => registry::http_credential(&held.binding, &held.secret, &host)
-                            .map_err(CryptoError::Use),
+                let _ = reply.send(http_credential_of(&state.registry, name, &host).await);
+            }
+            CryptoMessage::UseCredential { pass, ask } => {
+                let passes = state
+                    .credential_pass
+                    .as_ref()
+                    .is_some_and(|ours| ours.is(&pass));
+                if !passes {
+                    // Nothing in the agent's own code asks this way: something is trying to.
+                    warn!(
+                        "a credential was asked for with a pass that is not the protocol handlers'"
+                    );
+                }
+                match ask {
+                    CredentialAsk::Http { name, host, reply } => {
+                        let result = if passes {
+                            http_credential_of(&state.registry, name, &host).await
+                        } else {
+                            Err(CryptoError::NotThePort)
+                        };
+                        let _ = reply.send(result);
                     }
-                };
-                let _ = reply.send(result);
+                    CredentialAsk::Git { name, host, reply } => {
+                        let result = if passes {
+                            git_credential_of(&state.registry, name, &host).await
+                        } else {
+                            Err(CryptoError::NotThePort)
+                        };
+                        let _ = reply.send(result);
+                    }
+                }
             }
             CryptoMessage::EncryptForRecipient {
                 recipient_identity,
@@ -1046,6 +1159,36 @@ async fn load_secret(shared: Shared, name: String, section: String) -> Result<bo
         },
     );
     Ok(true)
+}
+
+/// The credential git is given for `host`, from what is registered under `name`.
+async fn git_credential_of(
+    registry: &Registry,
+    name: String,
+    host: &str,
+) -> Result<registry::GitCredential, CryptoError> {
+    let registry = registry.lock().await;
+    match registry.get(&name) {
+        None => Err(CryptoError::SecretNotRegistered(name)),
+        Some(held) => {
+            registry::git_credential(&held.binding, &held.secret, host).map_err(CryptoError::Use)
+        }
+    }
+}
+
+/// The credential an HTTP request is given for `host`, from what is registered under `name`.
+async fn http_credential_of(
+    registry: &Registry,
+    name: String,
+    host: &str,
+) -> Result<registry::HttpCredential, CryptoError> {
+    let registry = registry.lock().await;
+    match registry.get(&name) {
+        None => Err(CryptoError::SecretNotRegistered(name)),
+        Some(held) => {
+            registry::http_credential(&held.binding, &held.secret, host).map_err(CryptoError::Use)
+        }
+    }
 }
 
 /// Opens an `EscrowedSecret` addressed to this identity, for `register_secret`: read the bytes as one, and open the
@@ -1572,6 +1715,8 @@ mod tests {
         stored: Option<StoreLog>,
         failing_stores: Option<Arc<std::sync::atomic::AtomicBool>>,
         store_script: Vec<StoreScript>,
+        /// The pass the actor is started with, for a test of the port.
+        credential_pass: Option<CredentialPass>,
     }
 
     /// pre_start now derives its own identity by reading a real,
@@ -1693,22 +1838,21 @@ mod tests {
             .unwrap_or_else(|| format!("test-agent-{}", uuid::Uuid::new_v4()));
         let own_cert_file = write_test_agent_certificate(&identity);
 
-        let (crypto_actor, _) = Actor::spawn(
-            None,
-            CryptoActor,
-            CryptoActorArgs::new(fake_agent, router)
-                .with_settings(environment::CryptoSettings {
-                    own_certificate_path: own_cert_file.path().to_string_lossy().into_owned(),
-                    custody_socket: config.custody_socket.clone(),
-                    ca_cert_path: test_ca_file().to_string_lossy().into_owned(),
-                })
-                .with_escrow_retry(
-                    std::time::Duration::from_millis(5),
-                    std::time::Duration::from_millis(20),
-                ),
-        )
-        .await
-        .unwrap();
+        let args = CryptoActorArgs::new(fake_agent, router)
+            .with_settings(environment::CryptoSettings {
+                own_certificate_path: own_cert_file.path().to_string_lossy().into_owned(),
+                custody_socket: config.custody_socket.clone(),
+                ca_cert_path: test_ca_file().to_string_lossy().into_owned(),
+            })
+            .with_escrow_retry(
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(20),
+            );
+        let args = match config.credential_pass.clone() {
+            Some(pass) => args.with_credential_pass(pass),
+            None => args,
+        };
+        let (crypto_actor, _) = Actor::spawn(None, CryptoActor, args).await.unwrap();
 
         // own_cert_file must outlive pre_start's own, real read of it
         // above -- explicitly kept alive until here, then dropped
@@ -2063,6 +2207,15 @@ mod tests {
         held: Vec<(&str, Vec<u8>)>,
         deny_retrieval: bool,
     ) -> Rig {
+        rig_configured(script, held, deny_retrieval, None).await
+    }
+
+    async fn rig_configured(
+        script: Vec<StoreScript>,
+        held: Vec<(&str, Vec<u8>)>,
+        deny_retrieval: bool,
+        credential_pass: Option<CredentialPass>,
+    ) -> Rig {
         let daemon = custody_daemon_holding_an_escrow_key();
         let public_pem = daemon.public_pem.clone();
         let identity = format!("test-agent-{}", uuid::Uuid::new_v4());
@@ -2082,6 +2235,7 @@ mod tests {
                 stored: Some(stored.clone()),
                 failing_stores: Some(failing.clone()),
                 store_script: script,
+                credential_pass,
                 ..Default::default()
             })
             .await;
@@ -2094,6 +2248,11 @@ mod tests {
             failing,
             key_queries,
         }
+    }
+
+    /// A rig whose actor was started with `pass`.
+    async fn rig_with_pass(pass: CredentialPass) -> Rig {
+        rig_configured(vec![], vec![], false, Some(pass)).await
     }
 
     fn escrowed_bytes(rig: &Rig, plaintext: &[u8], context: &[u8]) -> Vec<u8> {
@@ -2282,6 +2441,93 @@ mod tests {
             matches!(unknown, Err(CryptoError::SecretNotRegistered(_))),
             "{unknown:?}"
         );
+        stop_and_release_key(&r.actor).await;
+    }
+
+    /// The port the protocol handlers use (docs/architecture/protocol-handlers.md, "No way to the credential from domain
+    /// code"): with the pass this actor was started with it answers as `HttpCredential` and `GitCredential` do, binding and
+    /// all, and with any other pass it gives nothing, whoever asks and whatever they name.
+    #[tokio::test]
+    async fn the_port_with_the_actors_own_pass_is_given_a_credential_for_a_bound_host() {
+        let pass = CredentialPass::new();
+        let r = rig_with_pass(pass.clone()).await;
+        register(
+            &r,
+            "jira",
+            b"pat-token",
+            b"ctx-1",
+            token_binding("jira.example.org"),
+        )
+        .await
+        .unwrap();
+        let port = CredentialPort::new(r.actor.clone(), pass);
+
+        let Ok(registry::HttpCredential::Bearer(token)) = port
+            .http("jira".to_string(), "jira.example.org".to_string())
+            .await
+        else {
+            panic!("a bearer token");
+        };
+        assert_eq!(token.as_slice(), b"pat-token");
+        let git = port
+            .git("jira".to_string(), "jira.example.org".to_string())
+            .await
+            .unwrap();
+        assert_eq!(git.secret.as_slice(), b"pat-token");
+
+        for host in ["evil.example.org", "jira.example.org:443"] {
+            let refused = port.http("jira".to_string(), host.to_string()).await;
+            assert!(
+                matches!(refused, Err(CryptoError::Use(UseRefusal::HostNotBound))),
+                "{host}: {refused:?}"
+            );
+            let refused = port.git("jira".to_string(), host.to_string()).await;
+            assert!(
+                matches!(refused, Err(CryptoError::Use(UseRefusal::HostNotBound))),
+                "{host}: {refused:?}"
+            );
+        }
+        let unknown = port
+            .http("other".to_string(), "jira.example.org".to_string())
+            .await;
+        assert!(
+            matches!(unknown, Err(CryptoError::SecretNotRegistered(_))),
+            "{unknown:?}"
+        );
+        stop_and_release_key(&r.actor).await;
+    }
+
+    #[tokio::test]
+    async fn any_other_pass_is_refused_and_learns_nothing_of_the_credential() {
+        let r = rig_with_pass(CredentialPass::new()).await;
+        register(
+            &r,
+            "jira",
+            b"pat-token",
+            b"ctx-1",
+            token_binding("jira.example.org"),
+        )
+        .await
+        .unwrap();
+        let forged = CredentialPort::new(r.actor.clone(), CredentialPass::new());
+
+        // The same answer for a name that exists and one that does not, so a wrong pass cannot find out which.
+        for name in ["jira", "other"] {
+            let http = forged
+                .http(name.to_string(), "jira.example.org".to_string())
+                .await;
+            assert!(
+                matches!(http, Err(CryptoError::NotThePort)),
+                "{name}: {http:?}"
+            );
+            let git = forged
+                .git(name.to_string(), "jira.example.org".to_string())
+                .await;
+            assert!(
+                matches!(git, Err(CryptoError::NotThePort)),
+                "{name}: {git:?}"
+            );
+        }
         stop_and_release_key(&r.actor).await;
     }
 

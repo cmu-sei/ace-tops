@@ -77,6 +77,7 @@ pub use infrastructure::{
 pub mod message;
 pub use message::{Encrypted, Outbound, Plaintext};
 pub mod policy_authority;
+pub mod protocol;
 pub mod runtime;
 pub use runtime::{RuntimeChanged, RuntimeSection, RuntimeValue};
 pub mod selftest;
@@ -148,6 +149,8 @@ pub struct AgentResources {
     pub tcp_client: TcpClient,
     pub healthcheck: crate::health::HealthHandle,
     pub crypto: Option<crate::crypto::CryptoHandle>,
+    /// The agent's way to the outside, for one that declares operations or credentials ([`protocol::ProtocolHandle`]).
+    pub protocols: Option<protocol::ProtocolHandle>,
     /// The agent's way to its own soft state, for an agent with the `soft-state` capability (it declares a graph
     /// read): see [`state::StateClient`].
     pub state: Option<crate::state::StateHandle>,
@@ -196,6 +199,8 @@ pub struct AgentBuilder<M: ractor::Message> {
     declared_commands: &'static [CommandSpec],
     /// The runtime sections the agent declared (`PolarAgent::RUNTIME`).
     declared_runtime: &'static [&'static RuntimeSection],
+    /// The operations and credentials the agent declared (`PolarAgent::OPERATIONS`, `PolarAgent::CREDENTIALS`).
+    declared_protocols: protocol::ProtocolSetup,
     /// The agent's judge of a runtime section before it is replaced ([`with_section_judge`](Self::with_section_judge)).
     section_judge: Option<Arc<dyn runtime::SectionJudge>>,
     /// The agent's topics, from `PolarAgent`; with them the client checks each publish and subscribe.
@@ -260,6 +265,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
             commands: Vec::new(),
             declared_commands: &[],
             declared_runtime: &[],
+            declared_protocols: protocol::ProtocolSetup::default(),
             section_judge: None,
             topics: None,
         }
@@ -414,6 +420,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
         self.self_test = configured.self_test;
         self.declared_commands = configured.commands;
         self.declared_runtime = configured.runtime;
+        self.declared_protocols = configured.protocols;
         self.topics = Some(configured.topics.clone());
         ConfiguredAgent {
             builder: self,
@@ -519,6 +526,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 tcp_spawner: Arc::new(infrastructure::CassiniSpawner { gate }),
                 commands,
                 runtime_sections: this.declared_runtime,
+                protocols: this.declared_protocols,
                 section_judge: this.section_judge,
             },
             myself_cell,
@@ -665,6 +673,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 tcp_spawner: Arc::new(infrastructure::CassiniSpawner::default()),
                 commands: Vec::new(),
                 runtime_sections: &[],
+                protocols: protocol::ProtocolSetup::default(),
                 section_judge: None,
             },
             this.myself.get_cell(),
@@ -1053,6 +1062,7 @@ mod tests {
             self_test: false,
             commands: &BOTH,
             runtime: &[],
+            protocols: protocol::ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
@@ -1094,6 +1104,7 @@ mod tests {
             self_test: false,
             commands: &[],
             runtime: &[],
+            protocols: protocol::ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
@@ -1125,6 +1136,7 @@ mod tests {
             self_test: false,
             commands: &[],
             runtime: &[],
+            protocols: protocol::ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
