@@ -231,7 +231,9 @@ checks, with different jobs.
 
 *The document.* A `polar-signing` document in a signing domain of its own, signed by the `pipeline` certificate (P-256 since 2026-11-02, so it can be), chaining to the deployment CA and not Polar's. The configuration agent
 is not trusted: the attestation agent verifies the document itself, and trusts the deployment CA for this section alone, so the deployment PKI gains no authority over anything else. The CA's
-certificate reaches the agent through the signed render. Its version is the commit's height in the repository's history.
+certificate reaches the agent through the signed render. Its version is a counter in the record, which moves only when its facts do (`next_record`, for review; this first said the commit's height): a height would change with every publish, so publishing the same render could never leave the repository as it was.
+
+*Built so far (2026-11-02):* `deploy-repo.nu publish` writes it to `deployment-record.json`, signed by `polar-sign record` in the domain `polar-deployment-record-v1`, and run on u7s. It is not delivered or read yet.
 
 *What it says (proposed by the agent that wrote this, for review).* For each workload: its identity, its owner's kind and name, its service account, and each container's digest.
 These are the same facts the instance check needs for "the workload the catalog says this identity runs as", so one document carries them, computed from the rendered manifests

@@ -376,6 +376,23 @@ pub struct Identity {
     pub key_pem: String,
 }
 
+/// A deployment's record (`deploy-repo.nu publish`), signed with the pipeline's certificate and key, as the JSON that goes in
+/// the deployment repository. The record's shape is the attestation agent's to check, which reads it.
+pub fn sign_record(payload: &str, certificate_pem: &str, key_pem: &str) -> Result<String, String> {
+    let payload: Value =
+        serde_json::from_str(payload).map_err(|e| format!("the record is not JSON: {e}"))?;
+    let document = polar_signing::sign_in(
+        polar_signing::Domain::DEPLOYMENT_RECORD,
+        payload,
+        &split_pem(certificate_pem),
+        key_pem,
+    )
+    .map_err(|e| format!("cannot sign the record: {e}"))?;
+    serde_json::to_string_pretty(&document.to_value())
+        .map(|text| format!("{text}\n"))
+        .map_err(|e| e.to_string())
+}
+
 /// Reads `<user>.crt`, `<user>.key` and, if there is one, `<user>.chain.pem` (the CA certificates)
 /// from `dir`, where `just admin-claim` puts them.
 pub fn load_identity(dir: &std::path::Path, user: &str) -> Result<Identity, String> {
@@ -452,6 +469,34 @@ mod tests {
             .parse()
             .unwrap_or_else(|e| panic!("`{source}` does not evaluate: {e}"));
         assert_eq!(serde_json::to_value(&back).unwrap(), value, "{source}");
+    }
+
+    /// Verified as the attestation agent will, and not believed as configuration: the record has its own domain.
+    #[test]
+    fn a_record_is_signed_for_its_own_domain_and_reads_back_as_a_document() {
+        use polar_signing::testing;
+        let ca = testing::root("deployment-ca");
+        let pipeline = testing::signer(&ca, testing::Spec::default());
+        let text = sign_record(
+            r#"{"schema":1,"version":3,"workloads":[]}"#,
+            &pipeline.cert_pem,
+            &pipeline.key_pem,
+        )
+        .unwrap();
+        let document =
+            polar_signing::Document::from_value(&serde_json::from_str(&text).unwrap()).unwrap();
+        assert_eq!(document.payload["version"], 3);
+        let trust = polar_signing::Trust::from_pem(&[ca.pem]).unwrap();
+        polar_signing::verify_in(
+            polar_signing::Domain::DEPLOYMENT_RECORD,
+            &document,
+            &trust,
+            testing::now(),
+        )
+        .unwrap();
+        assert!(polar_signing::verify(&document, &trust, testing::now()).is_err());
+        assert!(sign_record("not json", &pipeline.cert_pem, &pipeline.key_pem).is_err());
+        assert!(sign_record("[1]", &pipeline.cert_pem, &pipeline.key_pem).is_err());
     }
 
     #[test]

@@ -164,6 +164,15 @@ enum Command {
         #[arg(long = "git-config", value_name = "KEY=VALUE")]
         git_config: Vec<String>,
     },
+    /// Sign a deployment's record with the pipeline's certificate and key, to standard output (`deploy-repo.nu publish`).
+    Record {
+        /// The record, as JSON.
+        payload: PathBuf,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+    },
     /// Check a signed document the way a receiver checks its signature: the layout, the chain to the
     /// CA, the signer's certificate and the signature. Says who signed it and what it asks for.
     Verify {
@@ -284,6 +293,15 @@ fn main() -> Result<()> {
                 out.as_deref(),
                 "fill it in, then `polar-sign sign` it",
             )?;
+        }
+        Command::Record { payload, cert, key } => {
+            let read = |path: &PathBuf| {
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("cannot read {}", path.display()))
+            };
+            let signed = polar_sign::sign_record(&read(&payload)?, &read(&cert)?, &read(&key)?)
+                .map_err(anyhow::Error::msg)?;
+            print!("{signed}");
         }
         Command::Sign {
             file,

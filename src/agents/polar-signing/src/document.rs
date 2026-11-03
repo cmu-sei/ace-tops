@@ -50,6 +50,8 @@ pub struct Domain(&'static [u8]);
 
 impl Domain {
     pub const CONFIGURATION: Domain = Domain::new(b"polar-config-document-v1\n");
+    /// What a deployment says it is made of, signed by the deployment PKI's pipeline (docs/architecture/runtime-attestation.md).
+    pub const DEPLOYMENT_RECORD: Domain = Domain::new(b"polar-deployment-record-v1\n");
 
     /// `line` is one line: something, then a newline, and no other newline. Then no domain's input is a prefix of
     /// another's, since a canonical payload starts with `{`. Checked when it is made, which for a constant is at
@@ -337,6 +339,15 @@ mod tests {
             value["signature"]["certificate_chain"] = chain;
             assert_eq!(Document::from_value(&value), Err(LayoutError::BadChain));
         }
+    }
+
+    #[test]
+    fn a_deployment_record_is_its_own_domain() {
+        assert_eq!(
+            Domain::DEPLOYMENT_RECORD.line(),
+            b"polar-deployment-record-v1\n"
+        );
+        assert_ne!(Domain::DEPLOYMENT_RECORD, Domain::CONFIGURATION);
     }
 
     #[test]

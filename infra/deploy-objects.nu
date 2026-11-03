@@ -219,6 +219,32 @@ export def annotate_config_hashes [texts: record] {
     } | reduce --fold {} {|r, acc| $acc | insert $r.f $r.text }
 }
 
+# What the deployment's manifests say each workload is, for the attestation agent to compare what it sees with (docs/architecture/runtime-attestation.md, "What the images are checked against"). In one order, so the same render gives the same record.
+export def deployment_facts [texts: list<string>] {
+    $texts
+    | each {|t| documents $t }
+    | flatten
+    | where {|d| ($d.kind? | default "") in ["Deployment" "StatefulSet" "Job"] }
+    | each {|d|
+        let pod = $d.spec.template.spec
+        let account = ($pod.serviceAccountName? | default "default")
+        {
+            identity: $"($account).($d.metadata.namespace).serviceaccount.cluster.local"
+            owner_kind: $d.kind
+            owner_name: $d.metadata.name
+            service_account: $account
+            containers: (($pod.initContainers? | default []) ++ ($pod.containers? | default []) | each {|c| { name: $c.name, image: $c.image } } | sort-by name)
+        }
+    }
+    | sort-by identity owner_name
+}
+
+# The record to sign for `facts`, given the last one's payload, or null when that one still says it. The version moves only with the facts, so a publish of the same render changes nothing, and an agent can refuse an older record.
+export def next_record [previous: any, facts: list, target: string] {
+    if $previous != null and ($previous.workloads? | default null) == $facts { return null }
+    { schema: 1, target: $target, version: (($previous.version? | default 0) + 1), workloads: $facts }
+}
+
 # What the published tree records about where it came from. Only facts that exist before the cluster does: nothing
 # here is read from a cluster, and the signature's trust is the deployment CA's, not Polar's.
 export def provenance [facts: record] {

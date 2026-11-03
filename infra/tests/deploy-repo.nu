@@ -24,7 +24,7 @@
 # The deployment git server's pure decisions: its PKI, its repository, its container arguments.
 
 use std/assert
-use ../deploy-objects.nu [is_handed_off, polar_git_repository]
+use ../deploy-objects.nu [deployment_facts, is_handed_off, next_record, polar_git_repository]
 use ../deploy-repo.nu [ensure_pki, restore_needed, deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
 
 def main [] {
@@ -181,6 +181,68 @@ def main [] {
                 let repo = (repos_json "t" | from json | get repos | first)
                 assert ("configuration-agent" in $repo.readers)
                 assert (not ("configuration-agent" in $repo.writers))
+            }
+        }
+        {
+            name: "the deployment's record says what each workload is, from the manifests, in one order whatever order they came in"
+            body: {
+                let deployment = "
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: the-app, namespace: polar }
+spec:
+  template:
+    spec:
+      serviceAccountName: the-app
+      initContainers: [ { name: polar-init, image: 'r/polar-init@sha256:aa' } ]
+      containers:
+        - { name: z-sidecar, image: 'r/side@sha256:cc' }
+        - { name: the-app, image: 'r/app@sha256:bb' }
+"
+                let others = "
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: not-a-workload, namespace: polar }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: a-store, namespace: polar-graph }
+spec: { template: { spec: { serviceAccountName: a-store, containers: [ { name: a-store, image: 'r/store@sha256:dd' } ] } } }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: a-job, namespace: polar }
+spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee' } ] } } }
+"
+                let facts = (deployment_facts [$deployment $others])
+                assert equal ($facts | get owner_name) ["a-store" "a-job" "the-app"] "ordered by identity: a-job, with no account, is default.polar"
+                assert equal $facts (deployment_facts [$others $deployment]) "the order of the files does not matter"
+                let app = ($facts | where owner_name == "the-app" | first)
+                assert equal $app.identity "the-app.polar.serviceaccount.cluster.local"
+                assert equal $app.owner_kind "Deployment"
+                assert equal $app.service_account "the-app"
+                assert equal $app.containers [
+                    { name: "polar-init", image: "r/polar-init@sha256:aa" }
+                    { name: "the-app", image: "r/app@sha256:bb" }
+                    { name: "z-sidecar", image: "r/side@sha256:cc" }
+                ] "an init container is pinned too, and the order is the names'"
+                let store = ($facts | where owner_name == "a-store" | first)
+                assert equal $store.owner_kind "StatefulSet"
+                assert equal $store.identity "a-store.polar-graph.serviceaccount.cluster.local"
+                assert equal ($facts | where owner_name == "a-job" | first).service_account "default" "no account named is Kubernetes' default"
+            }
+        }
+        {
+            name: "the record's version moves when its facts do and at no other time, so publishing the same render makes no new commit"
+            body: {
+                let facts = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:1" }] }]
+                let first = (next_record null $facts "t")
+                assert equal $first { schema: 1, target: "t", version: 1, workloads: $facts }
+                assert equal (next_record $first $facts "t") null "nothing to sign"
+                let changed = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:2" }] }]
+                assert equal (next_record $first $changed "t").version 2
+                assert equal (next_record { version: 7, workloads: $facts } $changed "t").version 8
+                assert equal (next_record { version: 7, workloads: $changed } $changed "t") null
             }
         }
         {

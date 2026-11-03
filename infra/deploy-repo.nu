@@ -51,10 +51,11 @@ use registry.nu [node_registry, push_registry]
 use digest.nu [registry_digest]
 use cluster-registry.nu [cluster_of]
 use forwards.nu [forward_live, stop, stop_stale]
+use tools.nu
 use layers.nu [layer_problems, to_apply]
 use cluster-inputs.nu
 use seed.nu [GIT_HOST, GIT_PORT, git_config]
-use deploy-objects.nu [AUTH_SECRET, FLUX_NS, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
+use deploy-objects.nu [AUTH_SECRET, FLUX_NS, deployment_facts, next_record, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
 
 # The port of the server's Service, and of this machine's end of the forward to it unless --port says otherwise.
 export const DEFAULT_PORT = 9443
@@ -505,6 +506,21 @@ def "main retire" [target: string] {
     print $"  ok: the bootstrap repository is gone from the cluster, and its history stays in Polar's git server and in ((mirror_dir (pki_dir $env.HOME $target)))(if $stopped > 0 { $'; stopped its forward' } else { '' })"
 }
 
+# The file the deployment's record goes in, beside what it describes.
+const RECORD_FILE = "deployment-record.json"
+
+# The signed record for `facts`, as the file's text: what `copy` holds already when that still says it, or a new one signed by the pipeline, in a signing domain of its own (`polar_signing::Domain::DEPLOYMENT_RECORD`).
+def record_text [pki: string, copy: string, facts: list, target: string] {
+    let file = ($copy | path join $RECORD_FILE)
+    let held = if ($file | path exists) { open --raw $file } else { null }
+    let next = (next_record (if $held == null { null } else { $held | from json | get payload }) $facts $target)
+    if $next == null { return $held }
+    let payload = ($copy | path dirname | path join "record-payload.json")
+    $next | to json | save --force $payload
+    let t = (tools command "polar-sign")
+    run_ok "signing the deployment's record" { ^($t | first) ...($t | skip 1) record $payload --cert ($pki | path join $"($WRITER).pem") --key ($pki | path join $"($WRITER).key") }
+}
+
 def "main publish" [
     target: string
     --port: int = 9443          # this machine's end of the forward to the deployment git server
@@ -568,8 +584,9 @@ def "main publish" [
         let result = (with-env { GNUPGHOME: $signing.home } {
             let tls = $push_tls
             run_ok (if $to_polar { $"cloning the deployment from Polar's git server \(is it running? if it cannot be brought back: nu infra/up.nu ($target) --bootstrap-again\)" } else { "cloning the deployment repository (is it running? nu infra/deploy-repo.nu ensure)" }) { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy }
+            let record = (record_text $pki $copy (deployment_facts ($files | where {|f| $f.path | str starts-with "layers/" } | get text)) $target)
             ls -a $copy | get name | where {|n| ($n | path basename) not-in [".git" "." ".."] } | each {|n| rm -rf $n } | ignore
-            for f in $files {
+            for f in ($files | append { path: $RECORD_FILE, text: $record }) {
                 let dest = ($copy | path join $f.path)
                 mkdir ($dest | path dirname)
                 $f.text | save --force $dest
