@@ -31,7 +31,13 @@ pub static NAMESPACES: Required<String> = Required::text(
     "the namespaces whose pods the attestation agent attests, comma-separated: Polar's own (docs/architecture/runtime-attestation.md)",
 );
 
-static VARIABLES: &[&dyn Described] = &[&NAMESPACES];
+/// The deployment CA's certificate, which the record is checked against. Trusted for that alone.
+pub static DEPLOYMENT_CA: Required<String> = Required::text(
+    "POLAR_ATTESTATION_DEPLOYMENT_CA",
+    "path to the deployment CA's certificate (PEM), which the signed record of the deployment chains to (docs/architecture/runtime-attestation.md); it has no other authority here",
+);
+
+static VARIABLES: &[&dyn Described] = &[&NAMESPACES, &DEPLOYMENT_CA];
 
 /// The section the attestation agent registers.
 pub static SECTION: Section = Section {
@@ -57,6 +63,11 @@ fn parse(raw: &str) -> Vec<String> {
         .filter(|n| !n.is_empty())
         .map(String::from)
         .collect()
+}
+
+/// Where the deployment CA's certificate is, from the agent's snapshot.
+pub fn deployment_ca(env: &dyn Env) -> Result<String, String> {
+    DEPLOYMENT_CA.read(env).map_err(|e| e.to_string())
 }
 
 /// The namespaces, from the agent's snapshot.

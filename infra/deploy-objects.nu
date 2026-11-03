@@ -232,6 +232,7 @@ export def deployment_facts [texts: list<string>] {
             identity: $"($account).($d.metadata.namespace).serviceaccount.cluster.local"
             owner_kind: $d.kind
             owner_name: $d.metadata.name
+            namespace: $d.metadata.namespace
             service_account: $account
             containers: (($pod.initContainers? | default []) ++ ($pod.containers? | default []) | each {|c| { name: $c.name, image: $c.image } } | sort-by name)
         }

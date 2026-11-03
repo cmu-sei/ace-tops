@@ -64,6 +64,8 @@
       # The git server announces every accepted push, so this is only a safety net for a missed
       # announcement.
       { name: "POLAR_SCHEDULER_SYNC_INTERVAL", value: "300" }
+      # Whose signed record it delivers to the attestation agent. It only reads here (git-server.nuon).
+      { name: "POLAR_SCHEDULER_DEPLOYMENT_URL", value: "https://{polar-git-server.addr}/deployment.git" }
     ]
   }
 ]

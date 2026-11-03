@@ -32,6 +32,7 @@
 
 pub mod agent;
 pub mod holdings;
+pub mod record;
 pub mod settings;
 pub mod supervisor;
 pub mod watch;

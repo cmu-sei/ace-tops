@@ -27,6 +27,11 @@ use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 /// Where the observer publishes each schedule change; the processor subscribes.
 pub const SCHEDULER_IN_TOPIC: &str = "scheduler.in";
 
+/// The deployment's signed record, as the configuration agent reads it from the deployment repository, for the attestation agent
+/// (docs/architecture/runtime-attestation.md). The payload is the document's JSON, signed by the pipeline. This agent is not
+/// trusted with it: the attestation agent verifies it itself.
+pub const DEPLOYMENT_RECORD_TOPIC: &str = "attestation-deployment-record";
+
 /// The kinds of signed document, as the `type` field of a payload says (see docs/architecture/scheduling-kinds.md).
 /// Every signed payload carries one, and a receiver accepts only the kind it expects.
 pub mod routing;

@@ -27,11 +27,16 @@
 //! platform backend turns what it sees into these facts.
 
 pub mod protocol;
+pub mod record;
 pub mod verdict;
 
 pub use protocol::{
     AGENT_NAME, Envelope, InstanceQuestion, REPLIES_FAMILY, REQUESTS_TOPIC, decode_question,
     decode_verdict, encode_question, encode_verdict, replies_topic,
+};
+pub use record::{
+    Deployed, DeploymentRecord, Drift, DriftChanges, DriftWatch, RecordedContainer,
+    RecordedWorkload, drift,
 };
 pub use verdict::{
     ContainerFacts, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts, digest_of,

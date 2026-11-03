@@ -53,6 +53,11 @@ impl PolarAgent for SchedulerObserver {
             Cause::Topic(polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC),
             Cause::Timer("pull"),
         ]),
+        TopicDecl::publish(
+            polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC,
+            "the deployment's signed record, as the deployment repository holds it",
+        )
+        .because(&[Cause::Timer("reading the deployment repository")]),
     ];
     const TOPIC_FAMILIES: &'static [FamilyDecl] = &[FamilyDecl::publish(
         "agent.{workload}.configuration",

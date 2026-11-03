@@ -35,7 +35,9 @@ use rkyv::{Archive, Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// What kind of thing owns a workload's pods.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Archive, Serialize, Deserialize, serde::Deserialize,
+)]
 pub enum OwnerKind {
     Deployment,
     StatefulSet,

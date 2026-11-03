@@ -45,8 +45,14 @@ kube.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true
+polar-scheduler-common.workspace = true
+polar-signing.workspace = true
 ractor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+polar-signing = { workspace = true, features = ["testing"] }
+proptest.workspace = true

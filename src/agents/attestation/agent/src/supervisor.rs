@@ -29,11 +29,12 @@
 //! the state agent's are.
 
 use crate::holdings::{Change, Holdings, Kind, Watch};
+use crate::record::{Arrival, arrival, read_record};
 use crate::settings;
 use crate::watch::{self, Source, WatchActor, WatchArgs};
 use attestation_common::{
-    AGENT_NAME, Envelope, InstanceQuestion, REQUESTS_TOPIC, Verdict, WorkloadFacts,
-    decode_question, encode_verdict, judge, replies_topic,
+    AGENT_NAME, DeploymentRecord, DriftWatch, Envelope, InstanceQuestion, REQUESTS_TOPIC, Verdict,
+    WorkloadFacts, decode_question, drift, encode_verdict, judge, replies_topic,
 };
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
@@ -42,10 +43,19 @@ use polar_agent_builder::{
     AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
     InfrastructureSupervisorMessage, Subscription,
 };
+use polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC;
+use polar_signing::Trust;
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+
+/// How often what is deployed is held to the record.
+const COMPARE_EVERY: Duration = Duration::from_secs(60);
+
+/// How long a difference has to last before it is reported. A record and what Flux applies from the same commit do not arrive together,
+/// and a later layer waits for the health of the ones before it.
+const DRIFT_GRACE_SECS: u64 = 600;
 
 /// What it holds is nothing it must save, so this is the handshake's margin.
 pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
@@ -82,6 +92,12 @@ pub enum AttestationMessage {
         published_by: Option<String>,
     },
     Seen(Change),
+    /// The deployment's signed record, as the configuration agent delivered it.
+    Record {
+        payload: Vec<u8>,
+    },
+    /// Time to hold what is deployed to the record.
+    Compare,
     PrepareShutdown,
 }
 
@@ -92,7 +108,19 @@ pub struct AttestationState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     held: Holdings,
+    /// The deployment CA, for the record alone.
+    deployment_ca: Trust,
+    record: Option<DeploymentRecord>,
+    namespaces: Vec<String>,
+    drift: DriftWatch,
     shutting_down: bool,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 #[async_trait]
@@ -118,8 +146,28 @@ impl Actor for AttestationSupervisor {
                 warn!("failed to hand a question to the supervisor: {e}");
             }
         });
+        let ca_path =
+            settings::deployment_ca(&**configured.config()).map_err(ActorProcessingErr::from)?;
+        let ca_pem = std::fs::read_to_string(&ca_path).map_err(|e| {
+            ActorProcessingErr::from(format!("cannot read the deployment CA at {ca_path}: {e}"))
+        })?;
+        let deployment_ca = Trust::from_pem(&[ca_pem]).map_err(|e| {
+            ActorProcessingErr::from(format!(
+                "the deployment CA at {ca_path} cannot be used: {e}"
+            ))
+        })?;
+
+        let deliver_record = myself.clone();
+        let records = Subscription::new(DEPLOYMENT_RECORD_TOPIC, move |incoming| {
+            if let Err(e) = deliver_record.cast(AttestationMessage::Record {
+                payload: incoming.payload,
+            }) {
+                warn!("failed to hand a deployment record to the supervisor: {e}");
+            }
+        });
         let resources = AgentBuilder::new(myself.clone(), AGENT_NAME)
             .with_subscription(questions)
+            .with_subscription(records)
             .with_lifecycle_handler(|event| Some(AttestationMessage::ClientEvent { event }))
             .into_configured(configured)
             .build()
@@ -162,11 +210,17 @@ impl Actor for AttestationSupervisor {
             }
         }
 
+        myself.send_interval(COMPARE_EVERY, || AttestationMessage::Compare);
+
         Ok(AttestationState {
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             held: Holdings::new(&namespaces),
+            deployment_ca,
+            record: None,
+            namespaces,
+            drift: DriftWatch::new(DRIFT_GRACE_SECS),
             shutting_down: false,
         })
     }
@@ -195,6 +249,48 @@ impl Actor for AttestationSupervisor {
                     info!(ready = !was_ready, "what it holds of the cluster changed");
                 }
             }
+            AttestationMessage::Record { payload } => {
+                let record = match read_record(&payload, &state.deployment_ca, now_secs()) {
+                    Ok(record) => record,
+                    Err(why) => {
+                        error!("refused a deployment record: {why}");
+                        return Ok(());
+                    }
+                };
+                match arrival(state.record.as_ref().map(|r| r.version), record.version) {
+                    Arrival::Same => {}
+                    Arrival::Older => error!(
+                        version = record.version,
+                        held = state.record.as_ref().map(|r| r.version),
+                        "refused an older deployment record than it holds"
+                    ),
+                    Arrival::Newer => {
+                        info!(
+                            version = record.version,
+                            workloads = record.workloads.len(),
+                            "holds a new deployment record"
+                        );
+                        state.record = Some(record);
+                    }
+                }
+            }
+            AttestationMessage::Compare => {
+                // What it does not hold yet is not missing, so nothing is compared until it has listed everything.
+                let Some(record) = state.record.as_ref().filter(|_| state.held.ready()) else {
+                    return Ok(());
+                };
+                let current = drift(record, &state.held.deployed(), &state.namespaces);
+                let changes = state.drift.observe(now_secs() as u64, &current);
+                for difference in &changes.lasting {
+                    error!(
+                        version = record.version,
+                        "what is deployed is not what the signed record says: {difference:?}"
+                    );
+                }
+                for difference in &changes.gone {
+                    info!("what is deployed is again what the signed record says: {difference:?}");
+                }
+            }
             AttestationMessage::Question {
                 payload,
                 published_by,
@@ -217,7 +313,12 @@ impl Actor for AttestationSupervisor {
                     }
                 };
                 // The signed record is the next step of slice A: until it is held, no identity is named.
-                let verdict = answer(&state.held, |_| None, &envelope.payload);
+                let record = state.record.as_ref();
+                let verdict = answer(
+                    &state.held,
+                    |identity| record.and_then(|r| r.facts_of(identity)),
+                    &envelope.payload,
+                );
                 match &verdict {
                     Verdict::NotGenuine(why) => warn!(
                         requester = published_by.as_deref(),

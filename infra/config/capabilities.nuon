@@ -192,6 +192,20 @@
     }
   }
 
+  # The deployment CA's certificate, which `deploy-repo.nu ensure` puts there: what the attestation agent checks the deployment's
+  # record with (docs/architecture/runtime-attestation.md). Public, and it has no other authority.
+  deployment-ca: {
+    pod: {
+      env: [ { name: "POLAR_ATTESTATION_DEPLOYMENT_CA", value: "/etc/polar-deploy-ca/ca.pem" } ]
+      volumes: [ { name: "polar-deploy-ca", config_map: "polar-deploy-ca" } ]
+      mounts: [ { name: "polar-deploy-ca", path: "/etc/polar-deploy-ca", read_only: true } ]
+    }
+    identity: {}
+    dependency: {}
+    init: {}
+    resources: {}
+  }
+
   # Copying the deployment from the bootstrap repository to Polar's git server, until the handoff is done (docs/architecture/cluster-bootstrap.md,
   # "Handing off to Polar's git server"). A client certificate of the deployment PKI, in a Secret `deploy-repo.nu ensure` makes.
   deployment-copy: {

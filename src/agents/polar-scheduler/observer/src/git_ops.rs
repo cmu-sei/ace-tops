@@ -129,6 +129,46 @@ pub fn copy_main(source: &Remote, target: &Remote, work: &Path) -> Result<String
     Ok(run(held, "rev-parse")?.trim().to_string())
 }
 
+/// The text of the file at `path` at the head of `remote`'s `main`, through a bare repository at `work`: None if the head does
+/// not hold it. Nothing here is believed for having been read: what reads it checks what it is.
+pub fn file_at_main(
+    remote: &Remote,
+    path: &str,
+    work: &Path,
+) -> Result<Option<String>, anyhow::Error> {
+    const HELD: &str = "refs/polar/read";
+    let in_work = |tls: &GitTls| {
+        let mut cmd = tls.command();
+        cmd.current_dir(work);
+        cmd
+    };
+    std::fs::create_dir_all(work).with_context(|| format!("cannot make {}", work.display()))?;
+    let mut init = in_work(&GitTls::default());
+    init.args(["init", "--quiet", "--bare", "."]);
+    run(init, "init")?;
+    let mut fetch = in_work(&remote.tls);
+    fetch.args([
+        "fetch",
+        "--quiet",
+        "--force",
+        &remote.url,
+        &format!("refs/heads/main:{HELD}"),
+    ]);
+    run(fetch, "fetch")?;
+    let object = format!("{HELD}:{path}");
+    let mut holds = in_work(&GitTls::default());
+    holds.args(["cat-file", "-e", &object]);
+    let held = holds
+        .status()
+        .with_context(|| "cannot run git cat-file".to_string())?;
+    if !held.success() {
+        return Ok(None);
+    }
+    let mut show = in_work(&GitTls::default());
+    show.args(["show", &object]);
+    run(show, "show").map(Some)
+}
+
 /// Whether a failed clone is the server refusing this identity, which trying again cannot change,
 /// rather than a server that does not answer yet (it is starting, or its pod was just replaced).
 pub fn clone_refused(error: &str) -> bool {

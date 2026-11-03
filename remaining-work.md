@@ -35,7 +35,7 @@ Each step is taken in bites, each reported before the next.
 
 1. **Runtime attestation, slice A: the agent answering from what it sees** (`docs/architecture/runtime-attestation.md`). In progress.
 2. ~~**Handing a cluster's deployment off to Polar's own git server.**~~ Done 2026-11-02 (`docs/architecture/cluster-bootstrap.md`), on u7s and u7c. The signed record of slice A travels this path.
-3. **Runtime attestation, the rest of slices A and B:** the signed record, the askers, then watching.
+3. **Runtime attestation, the rest of slices A and B:** ~~the signed record~~ (done 2026-11-02), the askers, then watching.
 4. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
    Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.

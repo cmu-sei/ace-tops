@@ -32,6 +32,7 @@
     pool: "core"
     image: "attestation-agent"
     config: "document"
+    provides: ["deployment-ca"]
     env: [
       { name: "POLAR_ATTESTATION_NAMESPACES", value: "{polar-namespaces}" }
     ]

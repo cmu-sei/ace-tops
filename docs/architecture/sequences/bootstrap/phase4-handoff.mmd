@@ -20,7 +20,7 @@
 %% DM26-0670
 
 %% Handing a cluster's deployment over to Polar's own git server (cluster-bootstrap.md, "Handing off to Polar's git server").
-%% Built and run, but for the last box's two last lines: the facts the configuration agent reads for the attestation agent (runtime-attestation.md).
+%% Built and run.
 sequenceDiagram
     autonumber
     actor Op as Operator (up.nu)
@@ -51,11 +51,11 @@ sequenceDiagram
     Op->>Git: a new deployment: a commit the pipeline signed, pushed as an administrator
     Git->>Git: verify the signature to the deployment CA, or refuse the push
     Flux->>Git: read it, and apply it
-    rect rgb(235, 219, 178)
-    Note over Cfg,Att: DESIGNED: slice A's signed record
-    Cfg->>Git: read it, as it reads polar-schedules
-    Cfg-)Att: the deployment's facts, as signed configuration
+    loop every 30 s
+        Cfg->>Git: read the deployment's signed record, with no write
+        Cfg-)Att: publish it as it is
     end
+    Att->>Att: verify it to the deployment CA, for this alone, and hold every Deployment to it
 
     Note over Op,Git: If the server lost its data
     Flux->>Git: bring it back, from the artifact Flux holds, empty

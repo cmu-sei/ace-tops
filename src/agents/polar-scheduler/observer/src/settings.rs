@@ -61,6 +61,11 @@ pub static GIT_CLIENT_KEY: Optional<String> = Optional::text(
     "path to the private key (PEM) for POLAR_SCHEDULER_GIT_CLIENT_CERT",
 );
 
+pub static DEPLOYMENT_URL: Optional<String> = Optional::text(
+    "POLAR_SCHEDULER_DEPLOYMENT_URL",
+    "the deployment repository on Polar's git server, read with this workload's certificate, whose signed record is delivered to the attestation agent (docs/architecture/runtime-attestation.md); unset, none is",
+);
+
 pub static DEPLOYMENT_SOURCE_URL: Optional<String> = Optional::text(
     "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL",
     "the bootstrap repository to copy the deployment from, until the handoff to Polar's git server is done (docs/architecture/cluster-bootstrap.md); unset, nothing is copied",
@@ -87,6 +92,7 @@ pub static DEPLOYMENT_TARGET_URL: Optional<String> = Optional::text(
 );
 
 static VARIABLES: &[&dyn Described] = &[
+    &DEPLOYMENT_URL,
     &DEPLOYMENT_SOURCE_URL,
     &DEPLOYMENT_SOURCE_CA,
     &DEPLOYMENT_SOURCE_CERT,
@@ -131,6 +137,8 @@ pub struct ObserverSettings {
     pub git_ca_cert: Option<String>,
     pub git_client_cert: Option<String>,
     pub git_client_key: Option<String>,
+    /// The deployment repository on Polar's git server, whose signed record is delivered.
+    pub deployment_url: Option<String>,
     /// The bootstrap repository to copy from, with the target: set only until the handoff is done.
     pub deployment_copy: Option<DeploymentCopy>,
 }
@@ -153,6 +161,7 @@ impl ObserverSettings {
             git_ca_cert: config.read(&GIT_CA_CERT)?,
             git_client_cert: config.read(&GIT_CLIENT_CERT)?,
             git_client_key: config.read(&GIT_CLIENT_KEY)?,
+            deployment_url: config.read(&DEPLOYMENT_URL)?,
             deployment_copy: match (
                 config.read(&DEPLOYMENT_SOURCE_URL)?,
                 config.read(&DEPLOYMENT_SOURCE_CA)?,

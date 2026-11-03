@@ -25,9 +25,10 @@
 //! (docs/architecture/runtime-attestation.md, "Slice A"): the genuine pod passes, and each difference, alone, does not.
 
 use attestation_common::{
-    ContainerFacts, Envelope, InstanceQuestion, NotGenuine, Owner, OwnerKind, PodFacts, Verdict,
-    WorkloadFacts, decode_question, decode_verdict, digest_of, encode_question, encode_verdict,
-    judge, replies_topic,
+    ContainerFacts, Deployed, DeploymentRecord, Drift, DriftWatch, Envelope, InstanceQuestion,
+    NotGenuine, Owner, OwnerKind, PodFacts, RecordedContainer, RecordedWorkload, Verdict,
+    WorkloadFacts, decode_question, decode_verdict, digest_of, drift, encode_question,
+    encode_verdict, judge, replies_topic,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -327,4 +328,138 @@ fn a_jobs_name_may_extend_its_workloads_and_a_deployments_may_not() {
         ),
         Verdict::NotGenuine(NotGenuine::AnotherOwner { .. })
     ));
+}
+
+// ── The deployment's record, against what is deployed ──────────────────────────────────────────────────────────────
+
+fn workload() -> impl Strategy<Value = RecordedWorkload> {
+    (
+        "[a-c]{1,2}",
+        prop_oneof![Just(OwnerKind::Deployment), Just(OwnerKind::StatefulSet)],
+        prop::collection::btree_map("[a-c]{1,2}", digest(), 1..4),
+    )
+        .prop_map(|(name, owner_kind, images)| RecordedWorkload {
+            identity: format!("{name}.polar.serviceaccount.cluster.local"),
+            owner_kind,
+            owner_name: name.clone(),
+            namespace: "polar".into(),
+            service_account: name,
+            containers: images
+                .into_iter()
+                .map(|(name, image)| RecordedContainer { name, image })
+                .collect(),
+        })
+}
+
+fn record() -> impl Strategy<Value = DeploymentRecord> {
+    prop::collection::btree_map("[a-c]{1,2}", workload(), 0..5).prop_map(|named| DeploymentRecord {
+        schema: 1,
+        target: "t".into(),
+        version: 1,
+        workloads: named.into_values().collect(),
+    })
+}
+
+/// What the cluster holds when it is exactly what `record` says.
+fn as_recorded(record: &DeploymentRecord) -> Vec<Deployed> {
+    record
+        .workloads
+        .iter()
+        .map(|w| Deployed {
+            kind: w.owner_kind,
+            namespace: w.namespace.clone(),
+            name: w.owner_name.clone(),
+            pins: w
+                .containers
+                .iter()
+                .map(|c| (c.name.clone(), c.image.clone()))
+                .collect(),
+        })
+        .collect()
+}
+
+/// Keeps one workload of each kind and name, which is all a cluster can hold.
+fn distinct(mut record: DeploymentRecord) -> DeploymentRecord {
+    let mut seen = std::collections::BTreeSet::new();
+    record
+        .workloads
+        .retain(|w| seen.insert((format!("{:?}", w.owner_kind), w.owner_name.clone())));
+    record
+}
+
+fn watched() -> Vec<String> {
+    vec!["polar".to_string()]
+}
+
+proptest! {
+    /// What is deployed as recorded differs in nothing, whatever order it is seen in.
+    #[test]
+    fn what_is_deployed_as_recorded_does_not_drift(record in record().prop_map(distinct)) {
+        let mut deployed = as_recorded(&record);
+        prop_assert!(drift(&record, &deployed, &watched()).is_empty());
+        deployed.reverse();
+        prop_assert!(drift(&record, &deployed, &watched()).is_empty());
+    }
+
+    /// Each way a workload can be changed is found, and is the only thing found.
+    #[test]
+    fn one_change_is_found_as_itself(record in record().prop_map(distinct), other in digest(), which in any::<prop::sample::Index>()) {
+        let deployed = as_recorded(&record);
+        prop_assume!(!deployed.is_empty());
+        let at = which.index(deployed.len());
+        let target = deployed[at].clone();
+        let workload = format!("{:?} {}/{}", target.kind, target.namespace, target.name);
+        let container = target.pins.keys().next().unwrap().clone();
+
+        let mut repinned = deployed.clone();
+        prop_assume!(repinned[at].pins[&container] != other);
+        repinned[at].pins.insert(container.clone(), other.clone());
+        let found = drift(&record, &repinned, &watched());
+        prop_assert_eq!(found.len(), 1);
+        let is_another_image = matches!(found.iter().next(), Some(Drift::AnotherImage { .. }));
+        prop_assert!(is_another_image);
+
+        let mut gone = deployed.clone();
+        gone.remove(at);
+        prop_assert_eq!(drift(&record, &gone, &watched()), [Drift::NotDeployed { workload: workload.clone() }].into_iter().collect());
+
+        let mut sidecar = deployed.clone();
+        sidecar[at].pins.insert("zz-added".into(), other.clone());
+        prop_assert_eq!(drift(&record, &sidecar, &watched()), [Drift::ContainerNotInRecord { workload: workload.clone(), container: "zz-added".into() }].into_iter().collect());
+
+        let mut made = deployed;
+        made.push(Deployed { kind: OwnerKind::Deployment, namespace: "polar".into(), name: "zz-by-hand".into(), pins: Default::default() });
+        prop_assert_eq!(drift(&record, &made, &watched()), [Drift::NotInRecord { workload: "Deployment polar/zz-by-hand".into() }].into_iter().collect());
+    }
+
+    /// Over any sequence of looks: nothing is reported before it has lasted the grace, nothing twice while it lasts, and only what was
+    /// reported is said to be gone.
+    #[test]
+    fn a_difference_is_reported_once_it_has_lasted_and_only_then(
+        looks in prop::collection::vec((1u64..120, prop::collection::btree_set(0u8..4, 0..4)), 1..40)
+    ) {
+        const GRACE: u64 = 300;
+        let as_drift = |n: u8| Drift::NotDeployed { workload: n.to_string() };
+        let mut watch = DriftWatch::new(GRACE);
+        let (mut now, mut began, mut open) = (0u64, std::collections::BTreeMap::new(), std::collections::BTreeSet::new());
+        for (step, present) in looks {
+            now += step;
+            began.retain(|n, _| present.contains(n));
+            for n in &present {
+                began.entry(*n).or_insert(now);
+            }
+            let current = present.iter().map(|n| as_drift(*n)).collect();
+            let changes = watch.observe(now, &current);
+            for d in &changes.gone {
+                prop_assert!(open.remove(d), "said to be gone without being reported");
+            }
+            for d in &changes.lasting {
+                prop_assert!(open.insert(d.clone()), "reported twice while it lasts");
+            }
+            for (n, at) in &began {
+                let due = now - at >= GRACE;
+                prop_assert_eq!(open.contains(&as_drift(*n)), due, "reported exactly once it has lasted");
+            }
+        }
+    }
 }

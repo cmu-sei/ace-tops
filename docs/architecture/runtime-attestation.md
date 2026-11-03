@@ -23,7 +23,7 @@
 
 # Runtime attestation
 
-Status, 2026-10-26: the shape, decided with the maintainer. Nothing here is built. 2026-10-28: the plan, for review
+Status, 2026-10-26: the shape, decided with the maintainer. Built so far: slice A's agent and its signed record; no one asks it yet. 2026-10-28: the plan, for review
 ("The plan"). What Polar already had on the topic
 (the original Attestation Service, cert-issuer's deferred "v2" items, the image attestation ladder) is in
 `core-restarts.md`, question 1, "Runtime attestation: what Polar has on it".
@@ -223,17 +223,20 @@ checks, with different jobs.
 
 - **At issuance, the pod against its Deployment.** Each container's `imageID` (the kubelet's) is the digest its owning Deployment pins. It is immediate, and it cannot
   deadlock a rollout. Flux applied that Deployment from the signed commit, and whoever can change it is inside the trust base.
-- **Continually, the Deployments against the signed record.** `deploy-repo.nu publish` writes the deployment's facts into the commit as a signed document. After the
-  handoff (`cluster-bootstrap.md`, "Handing off to Polar's git server"), the deployment repository is on Polar's own git server, and the configuration agent reads it as it reads
-  `polar-schedules`, and sends the document down the ordinary configuration path. The attestation agent compares every Deployment with it and reports a mismatch. A pin changed
-  behind Flux gets a certificate first and is caught at the next comparison: "attested after the fact", as cert-issuer's entries are. Before the handoff there is no record, so
-  every identity is answered `CannotSay`, and the first document attests what is running.
+- **Continually, the Deployments against the signed record.** `deploy-repo.nu publish` writes the deployment's facts into the commit as a signed document. The configuration agent
+  reads it from the deployment repository on Polar's own git server (`deployment_record.rs`) every 30 s and publishes it as it is on a topic of its own, again each time, so an agent that has just
+  started hears it. It does not go down the configuration path: nothing there may verify a document against another CA, and adding that for one section would be the first special case
+  of many (for review). The attestation agent compares every Deployment and StatefulSet with it each minute, and logs an ERROR for a difference that has lasted ten minutes, since a record and
+  what Flux applies from the same commit do not arrive together. A pin changed behind Flux gets a certificate first and is caught here: "attested after the fact", as cert-issuer's entries are.
+  Until the copy reaches Polar's git server there is no record, so every identity is answered `CannotSay`, and the first document attests what is running.
 
 *The document.* A `polar-signing` document in a signing domain of its own, signed by the `pipeline` certificate (P-256 since 2026-11-02, so it can be), chaining to the deployment CA and not Polar's. The configuration agent
 is not trusted: the attestation agent verifies the document itself, and trusts the deployment CA for this section alone, so the deployment PKI gains no authority over anything else. The CA's
 certificate reaches the agent through the signed render. Its version is a counter in the record, which moves only when its facts do (`next_record`, for review; this first said the commit's height): a height would change with every publish, so publishing the same render could never leave the repository as it was.
 
-*Built so far (2026-11-02):* `deploy-repo.nu publish` writes it to `deployment-record.json`, signed by `polar-sign record` in the domain `polar-deployment-record-v1`, and run on u7s. It is not delivered or read yet.
+*Built (2026-11-02):* `deploy-repo.nu publish` writes it to `deployment-record.json`, signed by `polar-sign record` in the domain `polar-deployment-record-v1`. The attestation agent believes it only if it verifies for that domain, its signer is `pipeline` (Flux's certificate is under the same CA), and its version is not older than the one held (`attestation/agent/src/record.rs`). What differs is `Drift` (`attestation/common/src/record.rs`). Run on u7s and u7c: on u7c, an image changed by hand with Flux suspended was reported after ten minutes, and as gone a minute after Flux put it back.
+
+*To decide later:* the report is a log line, and slice B is what acts on it. The agent holds its record in memory, so a restarted agent can be sent an older signed record once, by whoever can publish on that topic. That is `CannotSay` or a stale comparison until the next delivery, and not a way past the instance check, which holds a pod to its owner regardless.
 
 *What it says (proposed by the agent that wrote this, for review).* For each workload: its identity, its owner's kind and name, its service account, and each container's digest.
 These are the same facts the instance check needs for "the workload the catalog says this identity runs as", so one document carries them, computed from the rendered manifests

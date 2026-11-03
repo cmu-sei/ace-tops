@@ -219,6 +219,7 @@ spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee
                 assert equal $facts (deployment_facts [$others $deployment]) "the order of the files does not matter"
                 let app = ($facts | where owner_name == "the-app" | first)
                 assert equal $app.identity "the-app.polar.serviceaccount.cluster.local"
+                assert equal $app.namespace "polar"
                 assert equal $app.owner_kind "Deployment"
                 assert equal $app.service_account "the-app"
                 assert equal $app.containers [
@@ -256,6 +257,9 @@ spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee
                     assert equal (do $curve ($pki | path join $"($name).pem")) "ASN1 OID: prime256v1" $name
                 }
                 ensure_pki $pki "t" "server.example" | ignore
+                # polar_signing's verify takes a signature only from a certificate that says it may make one.
+                let usage = (^openssl x509 -in ($pki | path join "pipeline.pem") -noout -ext keyUsage)
+                assert ($usage | str contains "Digital Signature") $usage
                 let old = ($dir | path join "old")
                 mkdir $old
                 ^openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=old" -keyout ($old | path join "ca.key") -out ($old | path join "ca.pem") out+err>| ignore

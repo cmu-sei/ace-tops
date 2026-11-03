@@ -501,7 +501,10 @@ dependencies = [
  "polar",
  "polar-agent-builder",
  "polar-env",
+ "polar-scheduler-common",
  "polar-scudo",
+ "polar-signing",
+ "proptest",
  "ractor",
  "serde",
  "serde_json",
@@ -516,6 +519,8 @@ dependencies = [
  "polar",
  "proptest",
  "rkyv",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

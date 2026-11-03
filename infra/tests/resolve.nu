@@ -393,6 +393,15 @@ def main [] {
 
         # docs/architecture/runtime-attestation.md: the attestation agent reads pods and what owns them in Polar's namespaces,
         # and nothing else: no ClusterRole, and a Role in each namespace it is told to watch.
+        "the attestation agent is given the deployment CA to check the record with, read-only": {
+            let r = (resolve "attestation-agent")
+            assert equal (env_value $r "POLAR_ATTESTATION_DEPLOYMENT_CA") "/etc/polar-deploy-ca/ca.pem"
+            assert equal ($r.volumes | where name == "polar-deploy-ca" | first).config_map "polar-deploy-ca"
+            let mount = ($r.mounts | where name == "polar-deploy-ca" | first)
+            assert equal $mount.path "/etc/polar-deploy-ca"
+            assert $mount.read_only
+        }
+
         "the attestation agent gets a read-only Role in each of Polar's namespaces, and no ClusterRole": {
             let resources = (^nu $RESOLVER resources attestation-agent | from json)
             assert equal $resources.cluster_roles []
@@ -437,6 +446,7 @@ def main [] {
                 target_file $t "cluster-inputs.nuon" ({ cluster: null, handed_off: true, workloads: {} } | to nuon)
                 let observer = (resolve_for $t "polar-scheduler-observer")
                 assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" $t) null
+                assert (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_URL" $t | str ends-with "/deployment.git") "it still delivers the signed record"
                 assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" $t) null
                 assert ($observer.volumes | where name == "deployment-reader" | is-empty)
                 let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)

@@ -41,6 +41,7 @@
 //!    workload is restarted with fresh certificates.
 
 use crate::deployment_copy::{DeploymentCopyActor, DeploymentCopyArgs};
+use crate::deployment_record::{DeploymentRecordActor, DeploymentRecordArgs};
 use crate::git_ops::{GitTls, Remote, clone_refused, ensure_repo, repo_name};
 use crate::settings::ObserverSettings;
 use crate::sync_actor::{GitSyncActor, GitSyncArgs, SyncMessage};
@@ -219,6 +220,23 @@ impl Actor for SchedulerObserverSupervisor {
             sync = Some(actor);
         } else {
             info!("No remote URL configured; watching local directory only.");
+        }
+
+        if let Some(url) = &settings.deployment_url {
+            Actor::spawn_linked(
+                Some(format!("{SERVICE_NAME}.deployment_record")),
+                DeploymentRecordActor,
+                DeploymentRecordArgs {
+                    repository: Remote {
+                        url: url.clone(),
+                        tls: target_tls.clone(),
+                    },
+                    work: PathBuf::from(&settings.local_path).with_extension("deployment-record"),
+                    tcp_client: resources.tcp_client.as_actor_ref().clone(),
+                },
+                myself.get_cell(),
+            )
+            .await?;
         }
 
         if let Some(copy) = &settings.deployment_copy {

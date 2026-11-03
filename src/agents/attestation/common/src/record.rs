@@ -1,0 +1,329 @@
+/*
+   ACE Tool
+
+   Copyright 2026 Carnegie Mellon University.
+
+   NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+   FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+   EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+   PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+   MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+   TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+   Licensed under a MIT (SEI)-style license, please see license.txt or contact
+   permission@sei.cmu.edu for full terms.
+
+   [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+   distribution.  Please see Copyright notice for non-US Government use and distribution.
+
+   This Software includes and/or makes use of Third-Party Software each subject to its own license.
+
+   DM26-0670
+*/
+
+//! What the deployment's signed record says, and where what is deployed differs from it (docs/architecture/runtime-attestation.md,
+//! "What the images are checked against"). Whether a record is to be believed is the agent's to check, before it comes here.
+//!
+//! The instance check holds a pod to its owner, which cannot deadlock a rollout. This is the other half: every owner held to the
+//! record, continually. A pin changed behind Flux gets a certificate first and is caught here.
+
+use crate::verdict::{OwnerKind, WorkloadFacts};
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The only shape of record this reads.
+const SCHEMA: u64 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentRecord {
+    pub schema: u64,
+    pub target: String,
+    /// It moves when the facts do. An older one than is held is refused.
+    pub version: u64,
+    pub workloads: Vec<RecordedWorkload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedWorkload {
+    pub identity: String,
+    pub owner_kind: OwnerKind,
+    pub owner_name: String,
+    pub namespace: String,
+    pub service_account: String,
+    pub containers: Vec<RecordedContainer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedContainer {
+    pub name: String,
+    pub image: String,
+}
+
+impl DeploymentRecord {
+    /// Reads a verified document's payload.
+    pub fn from_payload(payload: &Value) -> Result<Self, String> {
+        let record: DeploymentRecord = serde_json::from_value(payload.clone())
+            .map_err(|e| format!("the record does not read: {e}"))?;
+        if record.schema != SCHEMA {
+            return Err(format!(
+                "a record of schema {}, and this reads {SCHEMA}",
+                record.schema
+            ));
+        }
+        Ok(record)
+    }
+
+    /// What it says of the workload `identity` runs as. An identity two workloads share says nothing about either: a catalog workload
+    /// has its own service account, so that is not one, and it cannot be told apart by asking.
+    pub fn facts_of(&self, identity: &str) -> Option<WorkloadFacts> {
+        let mut named = self.workloads.iter().filter(|w| w.identity == identity);
+        let workload = named.next()?;
+        if named.next().is_some() {
+            return None;
+        }
+        Some(WorkloadFacts {
+            owner_kind: workload.owner_kind,
+            owner_name: workload.owner_name.clone(),
+            service_account: workload.service_account.clone(),
+        })
+    }
+}
+
+/// What a Deployment or StatefulSet in the cluster pins, as the platform backend sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deployed {
+    pub kind: OwnerKind,
+    pub namespace: String,
+    pub name: String,
+    pub pins: BTreeMap<String, String>,
+}
+
+/// A way what is deployed differs from the record.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Drift {
+    /// In the cluster, and the record does not name it.
+    NotInRecord { workload: String },
+    /// The record names it, and the cluster does not hold it.
+    NotDeployed { workload: String },
+    /// A container the record does not name.
+    ContainerNotInRecord { workload: String, container: String },
+    /// A container the record names, which its owner does not have.
+    ContainerNotDeployed { workload: String, container: String },
+    /// A container whose image is not the one the record says.
+    AnotherImage {
+        workload: String,
+        container: String,
+        recorded: String,
+        found: String,
+    },
+}
+
+fn named(kind: OwnerKind, namespace: &str, name: &str) -> String {
+    format!("{kind:?} {namespace}/{name}")
+}
+
+/// Where `deployed` differs from `record`, in the namespaces it can see. A Job is not held to it: it finishes and goes, and the record
+/// names it only for who runs as it.
+pub fn drift(
+    record: &DeploymentRecord,
+    deployed: &[Deployed],
+    watched: &[String],
+) -> BTreeSet<Drift> {
+    let mut found = BTreeSet::new();
+    let recorded: BTreeMap<String, &RecordedWorkload> = record
+        .workloads
+        .iter()
+        .filter(|w| w.owner_kind != OwnerKind::Job && watched.contains(&w.namespace))
+        .map(|w| (named(w.owner_kind, &w.namespace, &w.owner_name), w))
+        .collect();
+    let held: BTreeMap<String, &Deployed> = deployed
+        .iter()
+        .filter(|d| d.kind != OwnerKind::Job)
+        .map(|d| (named(d.kind, &d.namespace, &d.name), d))
+        .collect();
+    for workload in held.keys().filter(|n| !recorded.contains_key(*n)) {
+        found.insert(Drift::NotInRecord {
+            workload: workload.clone(),
+        });
+    }
+    for (workload, wanted) in &recorded {
+        let Some(actual) = held.get(workload) else {
+            found.insert(Drift::NotDeployed {
+                workload: workload.clone(),
+            });
+            continue;
+        };
+        for container in &wanted.containers {
+            match actual.pins.get(&container.name) {
+                None => {
+                    found.insert(Drift::ContainerNotDeployed {
+                        workload: workload.clone(),
+                        container: container.name.clone(),
+                    });
+                }
+                Some(image) if *image != container.image => {
+                    found.insert(Drift::AnotherImage {
+                        workload: workload.clone(),
+                        container: container.name.clone(),
+                        recorded: container.image.clone(),
+                        found: image.clone(),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        for container in actual.pins.keys() {
+            if !wanted.containers.iter().any(|c| c.name == *container) {
+                found.insert(Drift::ContainerNotInRecord {
+                    workload: workload.clone(),
+                    container: container.clone(),
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Which differences have lasted. A record and what Flux applies from the same commit do not arrive together, so a difference is
+/// reported once it has lasted `grace_secs`, once, and again as gone only if it was reported.
+#[derive(Debug, Clone)]
+pub struct DriftWatch {
+    grace_secs: u64,
+    since: BTreeMap<Drift, u64>,
+    reported: BTreeSet<Drift>,
+}
+
+/// What to say after a look.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DriftChanges {
+    pub lasting: Vec<Drift>,
+    pub gone: Vec<Drift>,
+}
+
+impl DriftWatch {
+    pub fn new(grace_secs: u64) -> Self {
+        DriftWatch {
+            grace_secs,
+            since: BTreeMap::new(),
+            reported: BTreeSet::new(),
+        }
+    }
+
+    /// Takes what differs at `now`, in seconds.
+    pub fn observe(&mut self, now: u64, current: &BTreeSet<Drift>) -> DriftChanges {
+        self.since.retain(|d, _| current.contains(d));
+        for d in current {
+            self.since.entry(d.clone()).or_insert(now);
+        }
+        let gone: Vec<Drift> = self.reported.difference(current).cloned().collect();
+        for d in &gone {
+            self.reported.remove(d);
+        }
+        let lasting: Vec<Drift> = self
+            .since
+            .iter()
+            .filter(|(d, at)| {
+                now.saturating_sub(**at) >= self.grace_secs && !self.reported.contains(*d)
+            })
+            .map(|(d, _)| d.clone())
+            .collect();
+        self.reported.extend(lasting.iter().cloned());
+        DriftChanges { lasting, gone }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn payload() -> Value {
+        json!({
+            "schema": 1, "target": "t", "version": 4,
+            "workloads": [{
+                "identity": "the-app.polar.serviceaccount.cluster.local",
+                "owner_kind": "Deployment", "owner_name": "the-app", "namespace": "polar",
+                "service_account": "the-app",
+                "containers": [{ "name": "the-app", "image": "r/app@sha256:aa" }]
+            }]
+        })
+    }
+
+    #[test]
+    fn a_record_says_what_an_identity_runs_as() {
+        let record = DeploymentRecord::from_payload(&payload()).unwrap();
+        assert_eq!(record.version, 4);
+        assert_eq!(
+            record.facts_of("the-app.polar.serviceaccount.cluster.local"),
+            Some(WorkloadFacts {
+                owner_kind: OwnerKind::Deployment,
+                owner_name: "the-app".into(),
+                service_account: "the-app".into(),
+            })
+        );
+        assert_eq!(record.facts_of("someone-else"), None);
+    }
+
+    #[test]
+    fn two_workloads_on_one_identity_say_nothing_about_it() {
+        let mut record = DeploymentRecord::from_payload(&payload()).unwrap();
+        record.workloads.push(record.workloads[0].clone());
+        assert_eq!(record.facts_of(&record.workloads[0].identity.clone()), None);
+    }
+
+    #[test]
+    fn a_difference_is_reported_at_exactly_the_grace_and_not_a_second_before() {
+        let d: BTreeSet<Drift> = [Drift::NotDeployed {
+            workload: "w".into(),
+        }]
+        .into_iter()
+        .collect();
+        let mut watch = DriftWatch::new(600);
+        assert!(watch.observe(1000, &d).lasting.is_empty());
+        assert!(watch.observe(1599, &d).lasting.is_empty());
+        assert_eq!(watch.observe(1600, &d).lasting.len(), 1);
+    }
+
+    #[test]
+    fn a_job_that_has_finished_and_a_namespace_it_cannot_see_are_not_differences() {
+        let mut record = DeploymentRecord::from_payload(&payload()).unwrap();
+        let the_app = record.workloads[0].clone();
+        let mut job = the_app.clone();
+        job.owner_kind = OwnerKind::Job;
+        job.owner_name = "a-job".into();
+        let mut elsewhere = the_app.clone();
+        elsewhere.namespace = "not-watched".into();
+        elsewhere.owner_name = "elsewhere".into();
+        record.workloads.extend([job, elsewhere]);
+        let deployed = [Deployed {
+            kind: OwnerKind::Deployment,
+            namespace: "polar".into(),
+            name: "the-app".into(),
+            pins: [("the-app".to_string(), "r/app@sha256:aa".to_string())]
+                .into_iter()
+                .collect(),
+        }];
+        assert_eq!(
+            drift(&record, &deployed, &["polar".to_string()]),
+            BTreeSet::new()
+        );
+    }
+
+    #[test]
+    fn a_record_of_another_shape_is_refused() {
+        let mut other = payload();
+        other["schema"] = json!(2);
+        assert!(DeploymentRecord::from_payload(&other).is_err());
+        let mut extra = payload();
+        extra["surprise"] = json!(true);
+        assert!(DeploymentRecord::from_payload(&extra).is_err());
+        let mut kind = payload();
+        kind["workloads"][0]["owner_kind"] = json!("DaemonSet");
+        assert!(DeploymentRecord::from_payload(&kind).is_err());
+        assert!(DeploymentRecord::from_payload(&json!({})).is_err());
+    }
+}

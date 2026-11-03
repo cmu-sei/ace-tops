@@ -25,7 +25,7 @@
 //! (docs/architecture/runtime-attestation.md, "Slice A"): an answer is read from here, not a call to the API. A platform's backend, in
 //! the plan's terms: nothing Kubernetes-specific goes further than this file and the watches.
 
-use attestation_common::{ContainerFacts, Owner, OwnerKind, PodFacts};
+use attestation_common::{ContainerFacts, Deployed, Owner, OwnerKind, PodFacts};
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Pod, PodTemplateSpec};
@@ -159,6 +159,26 @@ impl Holdings {
             containers: pod.containers.clone(),
             ephemeral: pod.ephemeral.clone(),
         })
+    }
+
+    /// What each Deployment and StatefulSet it holds pins, to hold to the record. A Job finishes and goes, so it is not among them.
+    pub fn deployed(&self) -> Vec<Deployed> {
+        self.owners
+            .iter()
+            .filter_map(|((kind, namespace, name), held)| {
+                let kind = match kind {
+                    Kind::Deployment => OwnerKind::Deployment,
+                    Kind::StatefulSet => OwnerKind::StatefulSet,
+                    _ => return None,
+                };
+                Some(Deployed {
+                    kind,
+                    namespace: namespace.clone(),
+                    name: name.clone(),
+                    pins: held.pins.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Follows a pod's owner up to the workload, each step by the UID the owner really has, since anyone who can make a pod can write a
@@ -433,6 +453,22 @@ mod tests {
             held.apply(Change::Applied(Box::new(object)));
         }
         held
+    }
+
+    #[test]
+    fn what_is_deployed_is_its_deployments_and_not_what_they_roll_out_through() {
+        let mut held = Holdings::default();
+        held.apply(Change::Applied(Box::new(deployment("the-app", "d1"))));
+        held.apply(Change::Applied(Box::new(replica_set(
+            "the-app-1",
+            "r1",
+            "the-app",
+            "d1",
+        ))));
+        let deployed = held.deployed();
+        assert_eq!(deployed.len(), 1);
+        assert_eq!(deployed[0].kind, OwnerKind::Deployment);
+        assert_eq!(deployed[0].name, "the-app");
     }
 
     #[test]

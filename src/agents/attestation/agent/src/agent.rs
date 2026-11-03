@@ -39,10 +39,16 @@ impl PolarAgent for AttestationAgent {
         "Answers whether an instance is what the deployment made, from what it sees of the cluster";
     const NEEDS: &'static [Capability] = &[Capability::PodRead];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
-        REQUESTS_TOPIC,
-        "a question about an instance, from who vouches for certificates",
-    )];
+    const TOPICS: &'static [TopicDecl] = &[
+        TopicDecl::subscribe(
+            REQUESTS_TOPIC,
+            "a question about an instance, from who vouches for certificates",
+        ),
+        TopicDecl::subscribe(
+            polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC,
+            "the deployment's signed record, which it verifies itself",
+        ),
+    ];
     const TOPIC_FAMILIES: &'static [FamilyDecl] =
         &[
             FamilyDecl::publish(REPLIES_FAMILY, "the verdict, on the asker's own topic")

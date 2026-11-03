@@ -181,7 +181,7 @@ export def needs_reissue [have: list<string>, want: list<string>] {
 # The openssl extension text for one certificate.
 export def ext_text [cert: record] {
     let sans = ($cert.dns | each {|d| $"DNS:($d)" } | str join ",")
-    $"subjectAltName=($sans)\nextendedKeyUsage=($cert.usage)\n"
+    $"subjectAltName=($sans)\nkeyUsage=digitalSignature\nextendedKeyUsage=($cert.usage)\n"
 }
 
 def run_ok [what: string, cmd: closure] {

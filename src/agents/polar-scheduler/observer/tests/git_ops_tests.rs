@@ -21,7 +21,9 @@
    DM26-0670
 */
 
-use polar_scheduler_observer::git_ops::{GitTls, Remote, copy_main, ensure_repo, pull_repo};
+use polar_scheduler_observer::git_ops::{
+    GitTls, Remote, copy_main, ensure_repo, file_at_main, pull_repo,
+};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -156,6 +158,70 @@ fn head(repo: &git2::Repository) -> Option<git2::Oid> {
     repo.find_reference("refs/heads/main")
         .ok()
         .and_then(|r| r.target())
+}
+
+/// A commit on `main` of `repo` whose tree holds one file.
+fn commit_file(repo: &git2::Repository, name: &str, text: &str) {
+    let sig = git2::Signature::now("test", "test@test.com").unwrap();
+    let mut tree = repo.treebuilder(None).unwrap();
+    tree.insert(name, repo.blob(text.as_bytes()).unwrap(), 0o100644)
+        .unwrap();
+    let tree = repo.find_tree(tree.write().unwrap()).unwrap();
+    let parent = repo
+        .find_reference("refs/heads/main")
+        .ok()
+        .map(|r| r.peel_to_commit().unwrap());
+    let parents: Vec<&git2::Commit> = parent.iter().collect();
+    repo.commit(
+        Some("refs/heads/main"),
+        &sig,
+        &sig,
+        "a file",
+        &tree,
+        &parents,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_file_is_read_from_the_head_of_main_as_it_is_now() {
+    let (from, work) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = bare(from.path());
+    commit_file(&source, "record.json", "{\"version\":1}\n");
+    let read = || file_at_main(&remote(from.path()), "record.json", work.path());
+    assert_eq!(read().unwrap().as_deref(), Some("{\"version\":1}\n"));
+    commit_file(&source, "record.json", "{\"version\":2}\n");
+    assert_eq!(read().unwrap().as_deref(), Some("{\"version\":2}\n"));
+}
+
+#[test]
+fn a_file_the_head_does_not_hold_is_nothing_and_not_an_error() {
+    let (from, work) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let source = bare(from.path());
+    commit(&source, "before there was a record");
+    assert_eq!(
+        file_at_main(&remote(from.path()), "record.json", work.path()).unwrap(),
+        None
+    );
+    commit_file(&source, "record.json", "x");
+    assert!(
+        file_at_main(&remote(from.path()), "record.json", work.path())
+            .unwrap()
+            .is_some()
+    );
+    commit(&source, "the record is gone");
+    assert_eq!(
+        file_at_main(&remote(from.path()), "record.json", work.path()).unwrap(),
+        None,
+        "what the head says, not what was read before"
+    );
+}
+
+#[test]
+fn a_repository_that_cannot_be_read_is_an_error() {
+    let (work, gone) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let missing = gone.path().join("nothing-here");
+    assert!(file_at_main(&remote(&missing), "record.json", work.path()).is_err());
 }
 
 #[test]
