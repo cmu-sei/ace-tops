@@ -36,8 +36,8 @@ Each step is taken in bites, each reported before the next.
 1. **Runtime attestation, slice A: the agent answering from what it sees** (`docs/architecture/runtime-attestation.md`). In progress.
 2. ~~**Handing a cluster's deployment off to Polar's own git server.**~~ Done 2026-11-02 (`docs/architecture/cluster-bootstrap.md`), on u7s and u7c. The signed record of slice A travels this path.
 3. **Runtime attestation, the rest of slices A and B:** ~~the signed record~~ (done 2026-11-02), ~~the askers~~ (done 2026-11-03: refusing is on, and the agent proves itself first), ~~watching~~ (done 2026-11-03: it reports altered pods and crashes, and nothing acts). Attesting what was signed unattested is optional, not planned (`runtime-attestation.md`, "Optional features").
-4. **The HTTP protocol handler.** Below, under the builder; `docs/architecture/protocol-handlers.md`. Before what follows, so that the
-   Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
+4. **The protocol handlers, every service at once (the maintainer, 2026-11-03).** Below, under the builder; `docs/architecture/protocol-handlers.md`, its design
+   awaiting vetting. Before what follows, so that the Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.
 6. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.
 7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
@@ -585,8 +585,10 @@ Each step is taken in bites, each reported before the next.
   - polar-scheduler-observer and polar-scheduler-processor: Running on the cluster, 0 restarts (2026-10-14), and the checks of the
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
 - [ ] **PROTOCOL HANDLERS: AGENTS' I/O IN INFRASTRUCTURE** (decided by the maintainer, 2026-11-02; `docs/architecture/protocol-handlers.md`).
-  Generalized HTTP and git handlers in the builder's infrastructure, on behalf of the domain actor, which registers a callback. The handler
-  attaches the credential; a callback never sees it. Nothing built. The HTTP handler is step 4 of the order of work (the maintainer, 2026-11-02).
+  Handlers for HTTP (with the registry scheme), git and the Kubernetes API in the builder's infrastructure, for the domain side, on behalf of a domain actor
+  that declares its credential and registers its operations at load. The handler gets the credential from the `CryptoActor` itself and calls the callback with
+  what came back; nothing domain code can call answers with a credential. A request is judged and logged; an arbitrary one is a declared permission and carries no
+  credential. Not the credentials agent or cert-issuer. Nothing built. Step 4 of the order of work.
 - [ ] EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC (the maintainer, 2026-11-01: an agent whose own non-secret settings are
   Static "hasn't been properly migrated to the builder"). Control travels as signed configuration at run time, and only
   a Dynamic variable can be changed by a signed update (`polar-agent-builder/src/configuration.rs`), so a held agent
