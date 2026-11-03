@@ -28,6 +28,7 @@ authors.workspace = true
 
 [dependencies]
 polar-scudo.workspace = true
+attestation-common.workspace = true
 tokio = { workspace = true, features = ["test-util"]}
 x509-parser.workspace = true
 base64.workspace = true
@@ -63,6 +64,7 @@ cassini-client.workspace = true
 cassini-types.workspace = true
 
 [dev-dependencies]
+attestation-common = { workspace = true, features = ["testing"] }
 # The broker's test support, which these tests include, can give the broker the custody daemon's key.
 polar-custody.workspace = true
 proptest.workspace = true

@@ -33,8 +33,8 @@
 //!
 //! The rules ([`rule`]): a bootstrap service in the authority model, not this agent's own successor (vouched for by no
 //! one), bound to a pod, for a client or server certificate, and admitted by the renewal rule: not issued one of that
-//! type for that pod within the bound (docs/architecture/deployments.md, "The renewal rule"). The attestation agent's
-//! instance check joins them once it exists (step 6).
+//! type for that pod within the bound (docs/architecture/deployments.md, "The renewal rule"). The attestation agent is
+//! asked about the pod before the renewal rule, which records what it admits (docs/architecture/runtime-attestation.md).
 //!
 //! A request offered again is given its answer again. cert-issuer offers what it holds again each time it hears this
 //! agent, and lists it over mTLS while the session is lost, so an answer lost with a session that ended is asked for
@@ -130,6 +130,8 @@ pub struct HeldVoucherArgs {
     pub own_identity: String,
     /// cert-issuer over mTLS, presenting this agent's certificate.
     pub cert_issuer_http: HandshakeClient,
+    /// Asks the attestation agent about the pod an offer is for (docs/architecture/runtime-attestation.md, "Slice A, the askers").
+    pub instance_asker: Option<ActorRef<attestation_common::asker::InstanceAskerMessage>>,
 }
 
 pub struct HeldVoucherState {
@@ -151,6 +153,13 @@ impl HeldVoucherState {
             workload_cert_type(&offer.cert_type),
         ) {
             (HeldDecision::Vouch, Some(binding), Some(cert_type)) => {
+                attestation_common::asker::check_in_shadow(
+                    self.args.instance_asker.as_ref(),
+                    "held",
+                    &offer.identity,
+                    binding,
+                )
+                .await;
                 match ractor::call!(self.args.ledger, |reply| LedgerMessage::Admit {
                     identity: offer.identity.clone(),
                     instance_binding: binding.clone(),
@@ -415,6 +424,13 @@ mod tests {
     }
 
     async fn rig(cert_issuer_http: HandshakeClient) -> Rig {
+        rig_asking(cert_issuer_http, None).await
+    }
+
+    async fn rig_asking(
+        cert_issuer_http: HandshakeClient,
+        instance_asker: Option<ActorRef<attestation_common::asker::InstanceAskerMessage>>,
+    ) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let ledger =
             crate::ledger::tests::spawn_ledger(dir.path().join("events.jsonl").to_str().unwrap())
@@ -427,6 +443,7 @@ mod tests {
             None,
             HeldVoucher,
             HeldVoucherArgs {
+                instance_asker,
                 client,
                 ledger: ledger.clone(),
                 cert_issuer: CERT_ISSUER.to_string(),
@@ -483,6 +500,54 @@ mod tests {
         })
         .unwrap()
         .unwrap();
+    }
+
+    // docs/architecture/runtime-attestation.md, "Shadow first": what the rules would vouch for is asked about, and what it is told
+    // changes nothing yet; what the rules refuse has nobody to ask about.
+    #[tokio::test]
+    async fn an_offer_the_rules_allow_is_asked_about_and_vouched_for_whatever_the_answer() {
+        let (asker, asked) = attestation_common::asker::testing::answering(
+            attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
+        )
+        .await;
+        let rig = rig_asking(
+            HandshakeClient::new("http://127.0.0.1:1".to_string()),
+            Some(asker),
+        )
+        .await;
+        rig.voucher
+            .send_message(offered(
+                &offer(OBSERVER, Some("pod-1"), CertType::Client),
+                Some(CERT_ISSUER),
+            ))
+            .unwrap();
+        rig.voucher
+            .send_message(offered(
+                &offer(
+                    "a-stranger.polar.serviceaccount.cluster.local",
+                    Some("pod-2"),
+                    CertType::Client,
+                ),
+                Some(CERT_ISSUER),
+            ))
+            .unwrap();
+        settle().await;
+        let decisions: Vec<HeldDecision> = rig
+            .published
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, reply)| reply.decision.clone())
+            .collect();
+        assert_eq!(decisions[0], HeldDecision::Vouch);
+        assert!(matches!(decisions[1], HeldDecision::Refuse { .. }));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [attestation_common::InstanceQuestion {
+                identity: OBSERVER.to_string(),
+                pod_uid: "pod-1".to_string(),
+            }]
+        );
     }
 
     #[tokio::test]

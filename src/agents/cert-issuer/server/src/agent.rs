@@ -78,6 +78,16 @@ impl PolarAgent for CertIssuer {
             cert_issuer_common::ticket::SUCCESSOR_TICKETS_TOPIC,
             "the credentials agent's successor ticket, left as its orderly ending begins",
         ),
+        // Whether a pod it admits on a token alone is what the deployment made (docs/architecture/runtime-attestation.md).
+        TopicDecl::publish(
+            attestation_common::REQUESTS_TOPIC,
+            "a question about the pod behind a token it admits",
+        )
+        .because(&[Cause::Http("/issue")]),
+        TopicDecl::subscribe(
+            attestation_common::CERT_ISSUER_REPLIES_TOPIC,
+            "the attestation agent's verdict on a pod, from it alone",
+        ),
     ];
     const HELP: Option<&'static str> = Some(
         "cert-issuer signs Polar's certificates. A caller with only a service account token is signed what the floor \

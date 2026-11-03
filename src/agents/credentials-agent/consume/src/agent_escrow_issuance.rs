@@ -72,6 +72,8 @@ pub struct AgentEscrowIssuanceHandler {
     /// The identities whose escrow certificate is being signed now: the first escrow issuance of an identity is
     /// serialized, whoever asks and however the requests are interleaved.
     pub in_flight: InFlight,
+    /// Asks the attestation agent about the pod a request is for (docs/architecture/runtime-attestation.md, "Slice A, the askers").
+    pub instance_asker: Option<ActorRef<attestation_common::asker::InstanceAskerMessage>>,
 }
 
 /// The identities an escrow issuance is under way for (`AgentEscrowIssuanceHandler::in_flight`).
@@ -184,6 +186,15 @@ impl AgentEscrowIssuanceHandler {
             }
         };
         let identity = custodian.workload;
+
+        // ---- Step 1.5: the instance check, before a place is held for the issuance ----
+        attestation_common::asker::check_in_shadow(
+            self.instance_asker.as_ref(),
+            "agent-escrow",
+            &identity,
+            &custodian.instance_binding,
+        )
+        .await;
 
         // ---- Step 2: the first issuance of an identity, serialized; one escrow certificate per identity ----
         //
@@ -408,6 +419,7 @@ mod tests {
 
     fn handler(ledger: ActorRef<LedgerMessage>, server: &MockServer) -> AgentEscrowIssuanceHandler {
         AgentEscrowIssuanceHandler {
+            instance_asker: None,
             ledger,
             cert_issuer: HandshakeClient::new(server.uri()),
             escrow_keypair: crate::escrow::tests::test_keypair(),
@@ -426,6 +438,32 @@ mod tests {
             AgentEscrowIssuanceReply::Refused { reason } => Some(reason.clone()),
             _ => None,
         }
+    }
+
+    // docs/architecture/runtime-attestation.md, "Shadow first": it asks about the custodian's pod, as its service, and what it is told
+    // changes nothing yet.
+    #[tokio::test]
+    async fn an_escrow_issuance_is_asked_about_as_its_service_and_issued_whatever_the_answer() {
+        let ledger = ledger_with_custodian(&[CustodyPermission::Escrow], 0).await;
+        let server = cert_issuer_signing(&["p:s2s"]).await;
+        let (asker, asked) = attestation_common::asker::testing::answering(
+            attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
+        )
+        .await;
+        let mut handler = handler(ledger, &server);
+        handler.instance_asker = Some(asker);
+        let reply = handler.handle(request(), Some(CUSTODIAN.to_string())).await;
+        assert!(
+            matches!(reply, AgentEscrowIssuanceReply::Issued { .. }),
+            "{reply:?}"
+        );
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [attestation_common::InstanceQuestion {
+                identity: X.to_string(),
+                pod_uid: POD.to_string(),
+            }]
+        );
     }
 
     #[tokio::test]

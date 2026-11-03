@@ -26,6 +26,7 @@ license.workspace = true
 
 [dependencies]
 polar-scudo.workspace = true
+attestation-common.workspace = true
 cassini-backoff.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
@@ -54,6 +55,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+attestation-common = { workspace = true, features = ["testing"] }
 base64.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

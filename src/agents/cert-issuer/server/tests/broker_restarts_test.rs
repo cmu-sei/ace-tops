@@ -409,6 +409,7 @@ fn issuance_through_held_requests_survives_the_broker_restarting_again_and_again
             None,
             HeldVoucher,
             HeldVoucherArgs {
+                instance_asker: None,
                 client: client.clone(),
                 ledger,
                 cert_issuer: IDENTITY.to_string(),

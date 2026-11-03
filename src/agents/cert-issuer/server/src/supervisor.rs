@@ -48,6 +48,9 @@ use crate::record::{Record, RecordingCa};
 use crate::server::build_router;
 use crate::settings::Settings;
 use crate::tls::build_server_config;
+use attestation_common::asker::{
+    ANSWER_WAIT, InstanceAsker, InstanceAskerArgs, InstanceAskerMessage, agent_identity,
+};
 use cassini_types::ClientEvent;
 use cert_issuer_common::held::{HELD_REPLIES_TOPIC, HELD_REQUESTS_TOPIC, HeldOffer, HeldReply};
 use polar_agent_builder::{
@@ -108,6 +111,10 @@ pub struct CertIssuerSupervisorState {
     client: polar::cassini::TcpClient,
     /// The floor's gate, told what this supervisor hears and given the credentials agent's answers.
     gate: Arc<FloorGate>,
+    /// Asks the attestation agent about a pod, told when there is a session to ask over.
+    instance_asker: ActorRef<InstanceAskerMessage>,
+    /// The attestation agent's identity, from cert-issuer's own; none if its own names no workload, and then nothing is asked.
+    attestation_agent: Option<String>,
 }
 
 /// What a child's ending means: the infrastructure's is the end of the shutdown; the listener's, outside a shutdown,
@@ -241,6 +248,15 @@ impl Actor for CertIssuerSupervisor {
             )),
         )
         .with_max_token_lifetime(settings.max_token_lifetime);
+        // Spawned before the handler that asks it, and it says it cannot ask until it is told of a session: cert-issuer signs itself
+        // and the core before there is anyone to ask.
+        let (instance_asker, _) = InstanceAsker::spawn_linked(
+            None,
+            InstanceAsker,
+            InstanceAskerArgs { wait: ANSWER_WAIT },
+            myself.get_cell(),
+        )
+        .await?;
         let handler = Arc::new(Handler {
             validator: Arc::new(validator),
             ca: ca.clone(),
@@ -249,6 +265,7 @@ impl Actor for CertIssuerSupervisor {
             user_lifetime: config.ca.user_lifetime,
             service_lifetime: config.ca.service_lifetime,
             own_workload: Default::default(),
+            instance_asker: Some(instance_asker.clone()),
             gate: Some(gate.clone()),
             identity_lifetime_overrides: config.ca.identity_lifetime_overrides.clone(),
             internal_callers: config.mtls.internal_callers.clone(),
@@ -300,9 +317,14 @@ impl Actor for CertIssuerSupervisor {
         )?;
         info!("signed its own client certificate through its floor");
 
+        let attestation_agent = agent_identity(
+            &cert_issuer_common::permission::extract_own_identity(&own.certificate_pem)
+                .map_err(|e| format!("its own certificate names no identity: {e}"))?,
+        );
         let asked = myself.clone();
         let answered = myself.clone();
         let ticketed = myself.clone();
+        let verdicts = instance_asker.clone();
         let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
             .with_lifecycle_handler(|event| {
                 Some(CertIssuerSupervisorMessage::ClientEvent { event })
@@ -329,6 +351,15 @@ impl Actor for CertIssuerSupervisor {
                 cert_issuer_common::ticket::SUCCESSOR_TICKETS_TOPIC,
                 move |incoming| {
                     let _ = ticketed.send_message(CertIssuerSupervisorMessage::TicketLeft {
+                        payload: incoming.payload,
+                        published_by: incoming.published_by,
+                    });
+                },
+            ))
+            .with_subscription(polar_agent_builder::Subscription::new(
+                attestation_common::CERT_ISSUER_REPLIES_TOPIC,
+                move |incoming| {
+                    let _ = verdicts.send_message(InstanceAskerMessage::Answered {
                         payload: incoming.payload,
                         published_by: incoming.published_by,
                     });
@@ -372,6 +403,8 @@ impl Actor for CertIssuerSupervisor {
             internal_callers: config.mtls.internal_callers.clone(),
             client: resources.tcp_client,
             gate,
+            instance_asker,
+            attestation_agent,
         })
     }
 
@@ -389,6 +422,26 @@ impl Actor for CertIssuerSupervisor {
                     state
                         .gate
                         .hear(Heard::CassiniRegistered, std::time::Instant::now());
+                    if let Some(agent) = &state.attestation_agent {
+                        let client = state.client.as_actor_ref();
+                        let _ =
+                            state
+                                .instance_asker
+                                .send_message(InstanceAskerMessage::SessionUp {
+                                    publish: Arc::new(move |payload| {
+                                        client
+                                            .send_message(
+                                                cassini_client::TcpClientMessage::publish(
+                                                    attestation_common::REQUESTS_TOPIC.to_string(),
+                                                    payload,
+                                                    None,
+                                                ),
+                                            )
+                                            .map_err(|e| e.to_string())
+                                    }),
+                                    agent: agent.clone(),
+                                });
+                    }
                 }
                 ClientEvent::TransportError { reason } => {
                     warn!("Cassini is unreachable (cert-issuer does not depend on it): {reason}");
@@ -396,6 +449,9 @@ impl Actor for CertIssuerSupervisor {
                     state
                         .gate
                         .hear(Heard::CassiniLost, std::time::Instant::now());
+                    let _ = state
+                        .instance_asker
+                        .send_message(InstanceAskerMessage::SessionDown);
                 }
                 _ => {}
             },

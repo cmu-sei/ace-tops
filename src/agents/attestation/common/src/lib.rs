@@ -26,13 +26,15 @@
 //! be tested over every way a pod can differ from the genuine one, and so that nothing Kubernetes-specific is in it: the
 //! platform backend turns what it sees into these facts.
 
+pub mod asker;
 pub mod protocol;
 pub mod record;
 pub mod verdict;
 
 pub use protocol::{
-    AGENT_NAME, Envelope, InstanceQuestion, REPLIES_FAMILY, REQUESTS_TOPIC, decode_question,
-    decode_verdict, encode_question, encode_verdict, replies_topic,
+    AGENT_NAME, CERT_ISSUER_REPLIES_TOPIC, CREDENTIALS_AGENT_REPLIES_TOPIC, Envelope,
+    InstanceQuestion, REQUESTS_TOPIC, decode_question, decode_verdict, encode_question,
+    encode_verdict, replies_topic,
 };
 pub use record::{
     Deployed, DeploymentRecord, Drift, DriftChanges, DriftWatch, RecordedContainer,

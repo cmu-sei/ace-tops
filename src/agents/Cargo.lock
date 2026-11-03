@@ -516,11 +516,16 @@ dependencies = [
 name = "attestation-common"
 version = "1.0.0"
 dependencies = [
+ "cert-issuer-common",
  "polar",
  "proptest",
+ "ractor",
+ "rand 0.10.3",
  "rkyv",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1203,6 +1208,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "attestation-common",
  "axum 0.7.9",
  "base64 0.22.1",
  "cassini-broker",
@@ -1551,6 +1557,7 @@ dependencies = [
 name = "credentials-agent-consumer"
 version = "1.0.0"
 dependencies = [
+ "attestation-common",
  "base64 0.22.1",
  "cassini-backoff",
  "cassini-client",

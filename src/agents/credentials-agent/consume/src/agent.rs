@@ -129,6 +129,22 @@ impl PolarAgent for CredentialsConsumer {
             cert_issuer_common::held::HELD_REQUESTS_TOPIC,
             "a bootstrap service's request cert-issuer holds, from cert-issuer alone",
         ),
+        // Whether the pod a certificate is asked for is what the deployment made (docs/architecture/runtime-attestation.md).
+        TopicDecl::publish(
+            attestation_common::REQUESTS_TOPIC,
+            "a question about the pod a certificate is asked for",
+        )
+        .because(&[
+            Cause::Topic(credentials_agent_common::CREDENTIALS_ISSUANCE_REQUESTS_TOPIC),
+            Cause::Topic(credentials_agent_common::CREDENTIALS_WORKLOAD_ISSUANCE_REQUESTS_TOPIC),
+            Cause::Topic(credentials_agent_common::CREDENTIALS_CUSTODIAN_ISSUANCE_REQUESTS_TOPIC),
+            Cause::Topic(credentials_agent_common::CREDENTIALS_AGENT_ESCROW_ISSUANCE_REQUESTS_TOPIC),
+            Cause::Topic(cert_issuer_common::held::HELD_REQUESTS_TOPIC),
+        ]),
+        TopicDecl::subscribe(
+            attestation_common::CREDENTIALS_AGENT_REPLIES_TOPIC,
+            "the attestation agent's verdict on a pod, from it alone",
+        ),
         TopicDecl::publish(
             cert_issuer_common::held::HELD_REPLIES_TOPIC,
             "this agent's answer to a request cert-issuer holds: vouched for, or refused",

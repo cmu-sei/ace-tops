@@ -83,6 +83,7 @@ fn test_handler() -> Handler {
         user_lifetime: Duration::from_secs(43200),
         service_lifetime: Duration::from_secs(31_536_000),
         own_workload: Default::default(),
+        instance_asker: None,
         gate: None,
         identity_lifetime_overrides: HashMap::new(),
         internal_callers: vec![],

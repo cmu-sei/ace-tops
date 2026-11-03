@@ -89,6 +89,9 @@ pub struct Handler {
     /// The floor's gate on token-only requests: the floor state and the requests held (`gate`), fed by the
     /// supervisor; none in a handler that is not running as the agent, and then the floor alone decides.
     pub gate: Option<Arc<crate::gate::FloorGate>>,
+    /// Asks the attestation agent about the pod behind what it admits on a token alone
+    /// (docs/architecture/runtime-attestation.md, "Slice A, the askers"); none in a handler that is not running as the agent.
+    pub instance_asker: Option<ractor::ActorRef<attestation_common::asker::InstanceAskerMessage>>,
     pub identity_lifetime_overrides: std::collections::HashMap<String, Duration>,
     /// Peer identities (the SAN of the connection's verified mTLS
     /// client certificate) allowed to call `handle_internal_issue`.
@@ -507,6 +510,24 @@ impl Handler {
             Ok(gated) => gated,
             Err(response) => return response,
         };
+
+        // ---- Step 3.45: the instance check, of what is admitted on a token alone ----
+        //
+        // What the credentials agent vouches for, on the spot or held, it has asked about itself; and cert-issuer's own
+        // certificate is signed at its start, with nobody to ask.
+        if !own
+            && !self.vouched_for(peer_identity)
+            && !matches!(gated, Gated::Vouched(_))
+            && let Some(pod_uid) = &claims.instance_binding
+        {
+            attestation_common::asker::check_in_shadow(
+                self.instance_asker.as_ref(),
+                "token",
+                &dns_identity,
+                pod_uid,
+            )
+            .await;
+        }
 
         // ---- Steps 3.5-5: shared signing path ----
         //

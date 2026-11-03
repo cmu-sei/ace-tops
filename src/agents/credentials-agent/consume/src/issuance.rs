@@ -178,6 +178,8 @@ pub struct IssuanceHandler {
     /// certificates (docs/architecture/authority-model.md, slice 8); none when the render gave none, and then a
     /// certificate carries no topics or groups.
     pub authority_model: Option<Arc<credentials_agent_model::Model>>,
+    /// Asks the attestation agent about the pod a request is for (docs/architecture/runtime-attestation.md, "Slice A, the askers").
+    pub instance_asker: Option<ActorRef<attestation_common::asker::InstanceAskerMessage>>,
 }
 
 impl IssuanceHandler {
@@ -338,6 +340,19 @@ impl IssuanceHandler {
             // matching "no more privileged than any other agent gets."
             (CredentialKind::Kubernetes, grant) => grant.map(|g| g.permissions).unwrap_or_default(),
         };
+
+        // ---- Step 4.5: the instance check, before the renewal rule, which records what it admits ----
+        //
+        // An IdP's credential is a person's, with no pod behind it to ask about.
+        if kind == CredentialKind::Kubernetes {
+            attestation_common::asker::check_in_shadow(
+                self.instance_asker.as_ref(),
+                "issuance",
+                &identity,
+                &instance_binding,
+            )
+            .await;
+        }
 
         // ---- Step 5: the renewal rule (docs/architecture/deployments.md, "The renewal rule") ----
         //
@@ -581,6 +596,7 @@ pub(crate) mod tests {
             .await;
         let ledger = spawn_test_ledger().await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger: ledger.clone(),
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: None,
@@ -637,6 +653,7 @@ pub(crate) mod tests {
             .await;
 
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger: spawn_test_ledger().await,
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: None,
@@ -719,6 +736,7 @@ pub(crate) mod tests {
         )
         .await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             authority_model: model_with_kube_consumer(),
             ..handler_for(&server, spawn_test_ledger().await).await
         };
@@ -733,6 +751,7 @@ pub(crate) mod tests {
         let server =
             issuer_expecting("kube-consumer", &["kube-consumer.polar.svc.cluster.local"]).await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             authority_model: model_with_kube_consumer(),
             ..handler_for(&server, spawn_test_ledger().await).await
         };
@@ -755,6 +774,7 @@ pub(crate) mod tests {
         let server = issuer_expecting("kube-consumer", &names).await;
         let ledger = spawn_test_ledger().await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             authority_model: model_with_kube_consumer(),
             ..handler_for(&server, ledger.clone()).await
         };
@@ -814,6 +834,7 @@ pub(crate) mod tests {
             sans.extend(pod);
             let server = issuer_expecting("kube-consumer", &sans).await;
             let handler = IssuanceHandler {
+                instance_asker: None,
                 authority_model: model_with_kube_consumer_many(),
                 ..handler_for(&server, spawn_test_ledger().await).await
             };
@@ -826,6 +847,7 @@ pub(crate) mod tests {
         let server =
             issuer_expecting("kube-consumer", &["kube-consumer.polar.svc.cluster.local"]).await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             authority_model: model_with_kube_consumer_many(),
             ..handler_for(&server, spawn_test_ledger().await).await
         };
@@ -907,6 +929,7 @@ pub(crate) mod tests {
             .mount(&server)
             .await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             authority_model: model_with_kube_consumer_many(),
             ..handler_for(&server, spawn_test_ledger().await).await
         };
@@ -969,6 +992,7 @@ pub(crate) mod tests {
     async fn a_workload_the_model_does_not_have_this_agent_issue_carries_no_topics_or_groups() {
         let server = issuer_expecting("admin-tool", &[]).await;
         let handler = IssuanceHandler {
+            instance_asker: None,
             authority_model: model_with_kube_consumer(),
             ..handler_for(&server, spawn_test_ledger().await).await
         };
@@ -1039,7 +1063,12 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
+        // A person's credential has no pod behind it, so nothing is asked about it.
+        let (asker, asked) =
+            attestation_common::asker::testing::answering(attestation_common::Verdict::Genuine)
+                .await;
         let handler = IssuanceHandler {
+            instance_asker: Some(asker),
             ledger,
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: Some(IntrospectionClient::new(
@@ -1091,6 +1120,7 @@ pub(crate) mod tests {
                 .is_none(),
             "the raw claim must not find a certificate"
         );
+        assert!(asked.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1154,6 +1184,7 @@ pub(crate) mod tests {
             .await;
 
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger: spawn_test_ledger().await,
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: Some(IntrospectionClient::new(
@@ -1240,6 +1271,7 @@ pub(crate) mod tests {
             .unwrap();
 
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger,
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: None,
@@ -1286,6 +1318,7 @@ pub(crate) mod tests {
             .await;
 
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger: spawn_test_ledger().await,
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: Some(IntrospectionClient::new(
@@ -1323,6 +1356,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn missing_introspection_client_refuses_idp_credential() {
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger: spawn_test_ledger().await,
             cert_issuer: HandshakeClient::new("http://127.0.0.1:1".to_string()),
             introspection: None,
@@ -1502,6 +1536,7 @@ pub(crate) mod tests {
         ledger: ActorRef<LedgerMessage>,
     ) -> IssuanceHandler {
         IssuanceHandler {
+            instance_asker: None,
             ledger,
             cert_issuer: HandshakeClient::new(server.uri()),
             introspection: None,
@@ -1518,6 +1553,34 @@ pub(crate) mod tests {
             cert_type,
             names: names(names_),
         }
+    }
+
+    // docs/architecture/runtime-attestation.md, "Shadow first": it asks about the token's pod, and what it is told changes nothing yet.
+    #[tokio::test]
+    async fn a_pods_request_is_asked_about_and_issued_whatever_the_answer() {
+        let server = MockServer::start().await;
+        kubernetes_pod(&server, "pod-1").await;
+        Mock::given(method("POST"))
+            .and(path("/issue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fake_issue_response()))
+            .mount(&server)
+            .await;
+        let (asker, asked) = attestation_common::asker::testing::answering(
+            attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
+        )
+        .await;
+        let mut handler = handler_for(&server, spawn_test_ledger().await).await;
+        handler.instance_asker = Some(asker);
+
+        let reply = handler.handle(request_for(Client, &[])).await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [attestation_common::InstanceQuestion {
+                identity: "git-server.polar.serviceaccount.cluster.local".to_string(),
+                pod_uid: "pod-1".to_string(),
+            }]
+        );
     }
 
     #[tokio::test]

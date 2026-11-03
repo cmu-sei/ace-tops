@@ -110,6 +110,7 @@ fn rig(floor: Option<Vec<BootstrapIdentity>>) -> (Handler, Arc<RecordingCa>) {
         user_lifetime: Duration::from_secs(43200),
         service_lifetime: Duration::from_secs(31_536_000),
         own_workload: Default::default(),
+        instance_asker: None,
         gate: None,
         identity_lifetime_overrides: HashMap::new(),
         internal_callers: vec![CREDENTIALS_AGENT.to_string()],
@@ -572,6 +573,21 @@ fn gated(handler: &mut Handler, state: FloorState) -> (Arc<FloorGate>, Offers) {
     gate_with(handler, state, HeldRequests::default())
 }
 
+/// The pod `mint_default_token` is bound to.
+const POD_OF_THE_DEFAULT_TOKEN: &str = "11111111-2222-3333-4444-555555555555";
+
+/// Gives `handler` an asker the attestation agent answers "not genuine", and what it was asked.
+async fn not_genuine(
+    handler: &mut Handler,
+) -> Arc<Mutex<Vec<attestation_common::InstanceQuestion>>> {
+    let (asker, asked) = attestation_common::asker::testing::answering(
+        attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
+    )
+    .await;
+    handler.instance_asker = Some(asker);
+    asked
+}
+
 /// A cert-issuer restarted just now with a record, that has heard no one yet: nothing open.
 fn just_restarted() -> FloorState {
     FloorState::new(false, Instant::now())
@@ -728,6 +744,88 @@ async fn a_held_request_the_credentials_agent_refuses_is_refused_at_every_ask_af
         }
     }
     assert!(ca.asked.lock().unwrap().is_empty());
+}
+
+// docs/architecture/runtime-attestation.md, "Shadow first": what is admitted on a token alone is asked about, against that token's pod,
+// and what it is told changes nothing yet.
+#[tokio::test]
+async fn what_the_state_admits_on_a_token_is_asked_about_and_signed_whatever_the_answer() {
+    let (mut handler, ca) = rig(floor_with_this_workload());
+    gated(&mut handler, FloorState::new(true, Instant::now()));
+    let asked = not_genuine(&mut handler).await;
+    let response = handler
+        .handle(None, &mint_default_token(), request(CertType::Client, &[]))
+        .await;
+    assert_eq!(response.status, 200, "{response:?}");
+    assert_eq!(*ca.paths.lock().unwrap(), vec![IssuePath::TokenOnly]);
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [attestation_common::InstanceQuestion {
+            identity: IDENTITY.to_string(),
+            pod_uid: POD_OF_THE_DEFAULT_TOKEN.to_string(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn what_a_successor_ticket_admits_is_asked_about_too() {
+    let (mut handler, ca) = rig(floor_with_this_workload());
+    handler.internal_callers.push(IDENTITY.to_string());
+    let (gate, _) = gated(&mut handler, just_restarted());
+    let asked = not_genuine(&mut handler).await;
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    gate.install_ticket(&cert_issuer_common::record::TicketEntry {
+        log: "l".into(),
+        seq: 1,
+        identity: IDENTITY.into(),
+        instance_binding: POD_OF_THE_DEFAULT_TOKEN.into(),
+        taken_at: now,
+        expires_at: now + 300,
+        issued_at: now,
+    });
+    let response = handler
+        .handle(None, &mint_default_token(), request(CertType::Client, &[]))
+        .await;
+    assert_eq!(response.status, 200, "{response:?}");
+    assert_eq!(*ca.paths.lock().unwrap(), vec![IssuePath::Ticketed]);
+    assert_eq!(asked.lock().unwrap().len(), 1);
+}
+
+// The credentials agent has asked about what it vouches for, on the spot or held; cert-issuer does not ask again.
+#[tokio::test]
+async fn what_the_credentials_agent_vouches_for_is_not_asked_about_again() {
+    let (mut handler, _) = rig(floor_with_this_workload_vouched_only());
+    gated(&mut handler, just_restarted());
+    let asked = not_genuine(&mut handler).await;
+    let response = handler
+        .handle(
+            Some(CREDENTIALS_AGENT),
+            &mint_default_token(),
+            request(
+                CertType::Server,
+                &["polar-git-server.polar.svc.cluster.local"],
+            ),
+        )
+        .await;
+    assert_eq!(response.status, 200, "{response:?}");
+    assert!(asked.lock().unwrap().is_empty());
+
+    let (mut handler, _) = rig(floor_with_this_workload());
+    let (gate, offers) = gated(&mut handler, just_restarted());
+    let asked = not_genuine(&mut handler).await;
+    let csr = request(CertType::Client, &[]);
+    let held = handler
+        .handle(None, &mint_default_token(), csr.clone())
+        .await;
+    assert_eq!(held.status, 202);
+    let offer = offers.lock().unwrap()[0].clone();
+    assert!(gate.answer(&HeldReply {
+        id: offer.id,
+        decision: HeldDecision::Vouch
+    }));
+    let signed = handler.handle(None, &mint_default_token(), csr).await;
+    assert_eq!(signed.status, 200, "{signed:?}");
+    assert!(asked.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

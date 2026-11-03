@@ -35,12 +35,16 @@ pub const AGENT_NAME: &str = "attestation-agent";
 /// Where every asker publishes its questions, and the attestation agent subscribes.
 pub const REQUESTS_TOPIC: &str = "attestation-instance-requests";
 
-/// The family of reply topics, one for each asker.
-pub const REPLIES_FAMILY: &str = "attestation-instance-replies.{workload}";
+/// cert-issuer's reply topic. Those who vouch for certificates are the only askers, so the topics are named and not a family over every
+/// served workload, each of which would be a publish in the agent's certificate that nobody hears.
+pub const CERT_ISSUER_REPLIES_TOPIC: &str = "attestation-instance-replies.cert-issuer";
+
+/// The credentials agent's reply topic.
+pub const CREDENTIALS_AGENT_REPLIES_TOPIC: &str = "attestation-instance-replies.credentials-agent";
 
 /// The reply topic of the workload `workload`.
 pub fn replies_topic(workload: &str) -> String {
-    REPLIES_FAMILY.replacen("{workload}", workload, 1)
+    format!("attestation-instance-replies.{workload}")
 }
 
 /// Is the instance behind this token what the deployment made? It names what the token says: the identity it was issued for and the
@@ -79,4 +83,18 @@ pub fn decode_verdict(payload: &[u8]) -> Result<Envelope<Verdict>, String> {
     aligned.extend_from_slice(payload);
     rkyv::from_bytes::<Envelope<Verdict>, rkyv::rancor::Error>(&aligned)
         .map_err(|e| format!("not a verdict: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_askers_topic_is_the_one_it_is_answered_on() {
+        assert_eq!(replies_topic("cert-issuer"), CERT_ISSUER_REPLIES_TOPIC);
+        assert_eq!(
+            replies_topic("credentials-agent"),
+            CREDENTIALS_AGENT_REPLIES_TOPIC
+        );
+    }
 }

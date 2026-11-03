@@ -24,8 +24,9 @@
 //! What the attestation agent is, as the infrastructure asks to be told: see `polar_agent_builder::PolarAgent`.
 
 use crate::supervisor::{AttestationSupervisor, SHUTDOWN_BUDGET};
-use attestation_common::{AGENT_NAME, REPLIES_FAMILY, REQUESTS_TOPIC};
-use polar_agent_builder::topics::FamilyDecl;
+use attestation_common::{
+    AGENT_NAME, CERT_ISSUER_REPLIES_TOPIC, CREDENTIALS_AGENT_REPLIES_TOPIC, REQUESTS_TOPIC,
+};
 use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
@@ -48,12 +49,17 @@ impl PolarAgent for AttestationAgent {
             polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC,
             "the deployment's signed record, which it verifies itself",
         ),
+        TopicDecl::publish(
+            CERT_ISSUER_REPLIES_TOPIC,
+            "the verdict, on cert-issuer's own topic",
+        )
+        .because(&[Cause::Topic(REQUESTS_TOPIC)]),
+        TopicDecl::publish(
+            CREDENTIALS_AGENT_REPLIES_TOPIC,
+            "the verdict, on the credentials agent's own topic",
+        )
+        .because(&[Cause::Topic(REQUESTS_TOPIC)]),
     ];
-    const TOPIC_FAMILIES: &'static [FamilyDecl] =
-        &[
-            FamilyDecl::publish(REPLIES_FAMILY, "the verdict, on the asker's own topic")
-                .because(&[Cause::Topic(REQUESTS_TOPIC)]),
-        ];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
         "attestation-agent watches the pods of Polar's namespaces and what owns them, with get, list and watch and nothing else, and \
@@ -91,6 +97,22 @@ mod tests {
         let scaffold = polar_agent_builder::agent::scaffold_document::<AttestationAgent>();
         assert_eq!(scaffold.requires, ["cassini", "pod-read"]);
         assert!(scaffold.graph.is_empty());
-        assert_eq!(scaffold.topic_families[0].over, "POLAR_SERVED_WORKLOADS");
+    }
+
+    // docs/architecture/runtime-attestation.md: those who vouch are the only askers, so its certificate names their topics and no others.
+    #[test]
+    fn it_answers_on_the_topics_of_those_who_ask_and_no_others() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<AttestationAgent>();
+        assert!(scaffold.topic_families.is_empty());
+        for asker in ["cert-issuer", "credentials-agent"] {
+            let topic = attestation_common::replies_topic(asker);
+            assert!(
+                scaffold
+                    .topics
+                    .iter()
+                    .any(|t| t.name == topic && t.access == polar_agent_builder::Access::Publish),
+                "{asker} is answered"
+            );
+        }
     }
 }

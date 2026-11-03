@@ -245,13 +245,13 @@ without attestation, and attested once the document arrives. An identity it name
 
 ### Slice A, the askers: the plan (2026-11-02, for review)
 
-What makes a `NotGenuine` refuse a certificate. Nothing here is built.
+What makes a `NotGenuine` refuse a certificate. The shadow commit (1, below) is built; refusing is not.
 
 **Where the questions go in.** Item 3 above says three paths in the credentials agent. Reading the code, there are four entries, and cert-issuer:
 
 | Who | Where | What it asks about |
 |---|---|---|
-| Credentials agent | `IssuanceHandler::handle` (`issuance.rs`), which the sealed route (`workload_issuance.rs`) comes through too | the token's identity and pod |
+| Credentials agent | `IssuanceHandler::handle` (`issuance.rs`), which the sealed route (`workload_issuance.rs`) comes through too, for a Kubernetes credential. An IdP's is a person's, with no pod behind it to ask about | the token's identity and pod |
 | Credentials agent | `custodian.rs` | the pod the custodian's certificate names |
 | Credentials agent | `agent_escrow_issuance.rs` | the same |
 | Credentials agent | `HeldVoucher::decide` (`held_voucher.rs`), for what cert-issuer holds | the offer's identity and pod |
@@ -261,7 +261,7 @@ A custodian's identity is asked about as its service's (`custodian_of`), since t
 
 **Before the renewal rule.** The diagram has the renewal rule first. It has to be after: `LedgerMessage::Admit` records, so a refused pod would have used up its type for five minutes. `HeldVoucher::decide` already asks it last for that reason.
 
-**One way of asking.** An `InstanceAsker` actor in each asker, with the reply topic its workload already has by the family, says `Genuine`, `NotGenuine(why)` or `CouldNotAsk`:
+**One way of asking.** An `InstanceAsker` actor in each asker (`attestation/common/src/asker.rs`), with a reply topic of its own, says `Genuine`, `NotGenuine(why)` or `CouldNotAsk`:
 - A reply is taken only from the attestation agent's identity as the broker stamped it, with the question's correlation id.
 - `CouldNotAsk` is at once if the Cassini session is down, and otherwise after a wait of 2 s. So a first bring-up, when nothing can be asked, does not wait: cert-issuer signs the core as it does now. `CannotSay` is treated the same.
 - `CouldNotAsk` issues, as the maintainer decided (item 3 of "For the maintainer"), and records that it did: a new event in the credentials agent's ledger, and a field in cert-issuer's record entry. Both are additions, so an existing log still reads.
@@ -277,7 +277,13 @@ A custodian's identity is asked about as its service's (`custodian_of`), since t
 - *`NoSuchPod` while the agent is ready.* A pod's token can reach an asker before the watch event reaches the agent. `polar-init` starts seconds after the pod exists, so it should be rare, but a refusal there is false. If it is seen, the asker asks once more after a few seconds before it believes it.
 - *How long an answer takes.* In a release build, since a rollout asks about two dozen pods. The 2 s wait should be well over it.
 
+**The topics are named.** This first said the agent answers on a family over every served workload. Only those who vouch ask, so that family put a publish for every other agent in the attestation agent's certificate that nobody hears, each one-sided in the catalog's cross-check. The agent declares `attestation-instance-replies.cert-issuer` and `attestation-instance-replies.credentials-agent`, and an asker added later adds its name.
+
+**Why `CouldNotAsk` issues (the maintainer, 2026-11-03).** Refusing when the agent cannot be asked is how an admission webhook takes down the cluster it guards, and here it would deadlock, since the attestation agent needs a certificate itself. Failing open answers only the agent being unreachable: an agent that is up and wrongly says no is what the shadow run is for. `attestation-when-it-cannot-answer.md` has how Kubernetes, Gatekeeper, Kyverno, Anchore and Sigstore handle this, why there is no setting for the other answer, and a proposal for the agent to prove itself each time it starts.
+
 **What it does not change.** The floor's rules still apply to what the agent says is genuine, and a compromised attestation agent can refuse but cannot admit. Stopping the attestation agent turns the check off, recorded as unattested, which is the decision's cost and also the way out of a wrong verdict: whoever can do that is inside the trust base.
+
+**Pod-less requests.** What an account's path issues (`account.rs`) has no pod and does not come through here. A Kubernetes token with no pod claim is refused earlier, so what reaches the check always names one.
 
 **After it:** item 4, attesting what was signed while the agent was away, from cert-issuer's record and the ledger's new event.
 

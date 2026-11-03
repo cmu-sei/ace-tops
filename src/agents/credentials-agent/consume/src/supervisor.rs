@@ -32,6 +32,9 @@
 static NAMED_ACTOR_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---- External crates ----
+use attestation_common::asker::{
+    ANSWER_WAIT, InstanceAsker, InstanceAskerArgs, InstanceAskerMessage, agent_identity,
+};
 use cassini_types::ClientEvent;
 use cert_client::handshake::HandshakeClient;
 use polar::Supervisor;
@@ -215,6 +218,7 @@ pub(crate) fn drain_topics() -> Vec<&'static str> {
             credentials_agent_common::authority_update::AUTHORITY_SNAPSHOT_REQUESTS_TOPIC,
             cert_issuer_common::record::RECORD_REPLIES_TOPIC,
             cert_issuer_common::held::HELD_REQUESTS_TOPIC,
+            attestation_common::CREDENTIALS_AGENT_REPLIES_TOPIC,
         ])
         .collect()
 }
@@ -265,6 +269,10 @@ pub struct ConsumerSupervisorState {
     held_voucher: Option<ActorRef<crate::held_voucher::HeldVoucherMessage>>,
     /// Judges every request before its handler sees it (docs/architecture/authority-model.md, slice 9).
     request_gate: ActorRef<crate::request_gate::RequestGateMessage>,
+    /// Asks the attestation agent about a pod, told when there is a session to ask over.
+    instance_asker: ActorRef<InstanceAskerMessage>,
+    /// The attestation agent's identity, from this agent's own; none if its own names no workload, and then nothing is asked.
+    attestation_agent: Option<String>,
     /// The drain was started by `PrepareShutdown` (as opposed to a failure),
     /// so it ends by releasing the infrastructure and not by exiting.
     rejuvenating: bool,
@@ -721,6 +729,22 @@ impl ConsumerSupervisor {
         )
     }
 
+    /// The attestation agent's verdicts, each with who the broker says published it: the asker takes one only from that agent.
+    fn instance_verdict_subscription(asker: &ActorRef<InstanceAskerMessage>) -> Subscription {
+        let asker = asker.clone();
+        Subscription::new(
+            attestation_common::CREDENTIALS_AGENT_REPLIES_TOPIC,
+            move |incoming| {
+                if let Err(e) = asker.send_message(InstanceAskerMessage::Answered {
+                    payload: incoming.payload,
+                    published_by: incoming.published_by,
+                }) {
+                    warn!("could not pass on the attestation agent's verdict: {e}");
+                }
+            },
+        )
+    }
+
     /// Reads a replaced section and hands it to the publisher. A section that cannot be read says so and is
     /// left for the next republish; it is never published half-read.
     async fn pass_on_section(state: &ConsumerSupervisorState, section: &str) {
@@ -876,8 +900,18 @@ impl Actor for ConsumerSupervisor {
         // asking itself for its own keys (and its polar-init must never run the escrow
         // bootstrap against itself). The dependency endpoints (Cassini and Neo4j
         // certificates) come from POLAR_HEALTH_DEP_ENDPOINTS in the deployment.
+        // Spawned first, since a subscription below hands it what arrives. It says it cannot ask until it is told of a session.
+        let (instance_asker, _) = InstanceAsker::spawn_linked(
+            None,
+            InstanceAsker,
+            InstanceAskerArgs { wait: ANSWER_WAIT },
+            myself.get_cell(),
+        )
+        .await
+        .map_err(ActorProcessingErr::from)?;
         let mut builder = AgentBuilder::new(myself.clone(), SERVICE_NAME)
             .with_lifecycle_handler(|event| Some(ConsumerSupervisorMessage::ClientEvent { event }));
+        builder = builder.with_subscription(Self::instance_verdict_subscription(&instance_asker));
         builder = builder.with_subscription(Self::authority_request_subscription(&myself));
         builder = builder.with_subscription(Self::record_reply_subscription(&myself));
         builder = builder.with_subscription(Self::held_offer_subscription(&myself));
@@ -988,6 +1022,7 @@ impl Actor for ConsumerSupervisor {
         let issuing_model = authority_model.clone();
         let make_issuance_handler = || async {
             Ok::<_, ActorProcessingErr>(IssuanceHandler {
+                instance_asker: Some(instance_asker.clone()),
                 ledger: ledger.clone(),
                 cert_issuer: make_cert_issuer_client().await?,
                 // Introspection is genuinely optional at the deployment
@@ -1044,6 +1079,7 @@ impl Actor for ConsumerSupervisor {
         .map_err(ActorProcessingErr::from)?;
 
         let agent_escrow_issuance_handler = AgentEscrowIssuanceHandler {
+            instance_asker: Some(instance_asker.clone()),
             ledger: ledger.clone(),
             cert_issuer: make_cert_issuer_client().await?,
             escrow_keypair: escrow_keypair.clone(),
@@ -1057,6 +1093,7 @@ impl Actor for ConsumerSupervisor {
                 crate::custodian_issuance_actor::CustodianIssuanceActor,
                 crate::custodian_issuance_actor::CustodianIssuanceActorArgs {
                     handler: crate::custodian::CustodianIssuanceHandler {
+                        instance_asker: Some(instance_asker.clone()),
                         ledger: ledger.clone(),
                         cert_issuer: make_cert_issuer_client().await?,
                         escrow_keypair: escrow_keypair.clone(),
@@ -1384,6 +1421,7 @@ impl Actor for ConsumerSupervisor {
                     None,
                     crate::held_voucher::HeldVoucher,
                     crate::held_voucher::HeldVoucherArgs {
+                        instance_asker: Some(instance_asker.clone()),
                         client: resources.tcp_client.as_actor_ref(),
                         ledger: ledger.clone(),
                         cert_issuer,
@@ -1443,6 +1481,8 @@ impl Actor for ConsumerSupervisor {
             record_asker,
             held_voucher,
             request_gate,
+            instance_asker,
+            attestation_agent: agent_identity(&own_cert_identity),
             rejuvenating: false,
         })
     }
@@ -1609,6 +1649,26 @@ impl Actor for ConsumerSupervisor {
                         let _ = voucher
                             .send_message(crate::held_voucher::HeldVoucherMessage::CassiniUp);
                     }
+                    if let Some(agent) = &state.attestation_agent {
+                        let client = state.broker_client.as_actor_ref();
+                        let _ =
+                            state
+                                .instance_asker
+                                .send_message(InstanceAskerMessage::SessionUp {
+                                    publish: std::sync::Arc::new(move |payload| {
+                                        client
+                                            .send_message(
+                                                cassini_client::TcpClientMessage::publish(
+                                                    attestation_common::REQUESTS_TOPIC.to_string(),
+                                                    payload,
+                                                    None,
+                                                ),
+                                            )
+                                            .map_err(|e| e.to_string())
+                                    }),
+                                    agent: agent.clone(),
+                                });
+                    }
                     // As soon as the two can talk: the bootstrap certificates were signed before this agent ran.
                     if let Some(asker) = &state.record_asker {
                         let _ = asker.send_message(crate::record_asker::RecordAskerMessage::Ask);
@@ -1649,6 +1709,9 @@ impl Actor for ConsumerSupervisor {
                         let _ = voucher
                             .send_message(crate::held_voucher::HeldVoucherMessage::CassiniLost);
                     }
+                    let _ = state
+                        .instance_asker
+                        .send_message(InstanceAskerMessage::SessionDown);
                 }
                 _ => {}
             },
@@ -1967,6 +2030,7 @@ mod issuance_wiring_tests {
         .unwrap();
 
         let handler = IssuanceHandler {
+            instance_asker: None,
             ledger: ledger.clone(),
             cert_issuer: HandshakeClient::new(cert_issuer.uri()),
             introspection: None,
@@ -2151,6 +2215,7 @@ mod issuance_wiring_tests {
             WorkloadIssuanceActorArgs {
                 handler: WorkloadIssuanceHandler::new(
                     IssuanceHandler {
+                        instance_asker: None,
                         ledger: ledger.clone(),
                         cert_issuer: HandshakeClient::new(cert_issuer.uri()),
                         introspection: None,
@@ -2349,6 +2414,7 @@ mod agent_escrow_wiring_tests {
         .await
         .unwrap();
         let handler = AgentEscrowIssuanceHandler {
+            instance_asker: None,
             ledger: ledger.clone(),
             cert_issuer: HandshakeClient::new(cert_issuer.uri()),
             escrow_keypair: crate::escrow::tests::test_keypair(),

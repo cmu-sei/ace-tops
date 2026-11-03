@@ -161,6 +161,8 @@ pub struct CustodianIssuanceHandler {
     pub escrow_keypair: Arc<EscrowKeypair>,
     /// What each workload's client certificate carries, as on the token path.
     pub authority_model: Option<Arc<credentials_agent_model::Model>>,
+    /// Asks the attestation agent about the pod a request is for (docs/architecture/runtime-attestation.md, "Slice A, the askers").
+    pub instance_asker: Option<ActorRef<attestation_common::asker::InstanceAskerMessage>>,
 }
 
 impl CustodianIssuanceHandler {
@@ -223,6 +225,14 @@ impl CustodianIssuanceHandler {
             }
         };
         let identity = custodian.workload.clone();
+        // ---- Step 2.5: the instance check, before the renewal rule, which records what it admits ----
+        attestation_common::asker::check_in_shadow(
+            self.instance_asker.as_ref(),
+            "custodian",
+            &identity,
+            &custodian.instance_binding,
+        )
+        .await;
         // ---- Step 3: the renewal rule, for the workload's pod instance: once of each type, a request asked again, for
         // the same key, admitted again ----
         let admitted_at = polar::time::now_millis();
@@ -437,6 +447,7 @@ pub(crate) mod tests {
 
     fn handler(ledger: ActorRef<LedgerMessage>, server: &MockServer) -> CustodianIssuanceHandler {
         CustodianIssuanceHandler {
+            instance_asker: None,
             ledger,
             cert_issuer: HandshakeClient::new(server.uri()),
             escrow_keypair: crate::escrow::tests::test_keypair(),
@@ -457,6 +468,34 @@ pub(crate) mod tests {
             IssuanceReply::Refused { reason } => Some(reason.clone()),
             _ => None,
         }
+    }
+
+    // docs/architecture/runtime-attestation.md, "Shadow first": it asks about the custodian's pod, as its service, and what it is told
+    // changes nothing yet.
+    #[tokio::test]
+    async fn a_custodians_request_is_asked_about_as_its_service_and_issued_whatever_the_answer() {
+        let ledger = ledger_with_custodian(&[CustodyPermission::Client], 0).await;
+        let server = cert_issuer_signing_for(X).await;
+        let (asker, asked) = attestation_common::asker::testing::answering(
+            attestation_common::Verdict::NotGenuine(attestation_common::NotGenuine::NoOwner),
+        )
+        .await;
+        let mut handler = handler(ledger, &server);
+        handler.instance_asker = Some(asker);
+        let reply = handler
+            .handle(
+                asking(WorkloadCertType::Client),
+                Some(CUSTODIAN.to_string()),
+            )
+            .await;
+        assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [attestation_common::InstanceQuestion {
+                identity: X.to_string(),
+                pod_uid: POD.to_string(),
+            }]
+        );
     }
 
     #[tokio::test]
@@ -579,6 +618,7 @@ pub(crate) mod tests {
             .mount(&server)
             .await;
         let handler = CustodianIssuanceHandler {
+            instance_asker: None,
             authority_model: crate::issuance::tests::model_with_kube_consumer_many(),
             ..handler(ledger, &server)
         };
