@@ -288,6 +288,10 @@ place stands, for all of it. In bites, each reported before the next:
    (`remaining-work.md`).
 4. **Built, 2026-11-04.** git, and the git observer moves (above). Tested over real TLS against a stand-in that speaks the smart protocol (`testing::GitOrigin`), through libgit2 itself.
    `ProtocolKind` became what a protocol starts through, rather than a list, so that a protocol is linked only into an agent that names one: `git_libgit2_init` is in `git-repo-observer` and in neither `jira-observer` nor `oci-resolver` (`nm`, debug builds). Decided while building, to review; Kubernetes will want it too.
+   Checked live on u7s, 2026-11-04, **a credential presented for the first time**, against a throwaway git server in the cluster, TLS under a CA given by the target's `cluster.egress.ca_file`, with a login. A real signed `credentials` section went through `polar-sign`, the
+   custody daemon and the real `CredentialPort`. With the wrong token: the server saw a request with nothing, then one with the credential, once, and refused it; the agent held `Credentials` and did not try again. A new signed version with the right token: the hold cleared, the handler asked at once, the server accepted, and both commits are in the graph. The withdrawal
+   (`withdrawn=1`) and a public repository, `octocat/Hello-World` from `github.com`, recorded as arbitrary, work too. **Still not checked live: a credential presented over HTTP**, Jira's or a registry's. They share all of this but `CredentialPort::http` and the `Authorization` header.
+   Signing that credential found that **nothing could be sealed to an agent at all, since 2026-10-27** (`polar_signing::verify_escrow_certificate`, fixed), and that a signed list cannot hold entries with different fields (`remaining-work.md`).
 5. Kubernetes and the stream. The Kubernetes observer and the attestation agent move.
 6. The routes close (the table above), once nothing uses them. Docs and the diagram as built.
 
