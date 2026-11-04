@@ -388,6 +388,12 @@ with exit code 1 and a logged reason, never 137.
   phases, the liveness file, and the probe.
 - [`shutdown_pipeline.mmd`](sequences/general/shutdown_pipeline.mmd): the
   shutdown funnel, its triggers, and the watchdog.
+- [`pod_restart_in_place.mmd`](sequences/general/pod_restart_in_place.mmd): what
+  follows the exit, the start marker, and a container restarted alone.
+- [`held_agent_and_dynamic_setting.mmd`](sequences/general/held_agent_and_dynamic_setting.mmd):
+  a standing problem, which never becomes a verdict.
+- [`pulled_health.mmd`](sequences/general/pulled_health.mmd): the report, asked for
+  and written to the graph.
 
 See `sequences/assets/asset_regeneration.md` to re-render.
 

@@ -87,6 +87,8 @@ own, so one agent's state is not broadcast to the others (reply topics are other
 
 ## The Jira cursor (first user)
 
+Drawn as built: [`jira_cursor_soft_state`](sequences/general/jira_cursor_soft_state.mmd).
+
 - jira-processor writes `updated_ms` (epoch milliseconds, i64) on each `JiraIssue`, parsed from Jira's system field
   `updated`, which the observer finds by its `/field` schema (`schema.system`), not by its display name, and passes
   beside the fields as `polar_updated`. A number, so times written with different UTC offsets compare correctly. It
@@ -256,6 +258,8 @@ The first build's decisions are in "The as-built decisions, reviewed" above; its
 
 ## As built: pulled health (2026-11-01)
 
+Drawn as built: [`pulled_health`](sequences/general/pulled_health.mmd).
+
 Built in a worktree on main `2e76cc2d`, as decided in "Revised by the maintainer's review"; tested (unit, property,
 Neo4j container) and the images built, not yet run on a cluster. Paths relative to `src/agents/`.
 
@@ -320,6 +324,8 @@ Neo4j container) and the images built, not yet run on a cluster. Paths relative 
   command), `graph.nu` `health_agents`.
 
 ### A held agent tries again on a signed update (the maintainer, 2026-11-01)
+
+Drawn as built: [`held_agent_and_dynamic_setting`](sequences/general/held_agent_and_dynamic_setting.mmd).
 
 The rule, amended: a held agent does not only wait for its next rejuvenation; it tries again when a signed
 configuration update arrives. Polar's control travels as signed configuration at run time: the builder's
@@ -430,11 +436,11 @@ it (`polar-agent-builder/src/state.rs`, `ask_until_available`); a value or a ref
   everything (or from `QUERY_DATE`) once.
 - The rebuild has not run on a cluster: the seeded `schema`, the StateActor and the system field are tested and the
   images built, not deployed. The seed's `resolve.nu state-schema` has run from the workspace's scaffolds only.
-- Health in the graph is built ("As built: pulled health") and not yet seen on a cluster: the seeded `agents`, the
-  rounds, the request gate against the broker's stamped identity, the `AgentHealth` writes, jira-observer held on a
-  placeholder `JIRA_URL`, its observers' run-time holds, and a held agent mended by a signed update (neither the
-  supervisor's wiring of `ConfigChanged` and `RuntimeChanged` nor jira-observer's `TryAgain` closure is covered by a
-  test: they need the agent's built infrastructure). The state agent's reader now reports `Degraded` with reason `Graph` while the graph is down.
+- Health in the graph has been seen on a cluster: on u7c on 2026-11-01, with a run-time hold set and released by signed
+  versions (`jira.md`, "Seen on a cluster"), and on u7s on 2026-11-04, 16 workloads, every one healthy. Not yet seen: an agent
+  held at its start and mended through `TryAgain`. Neither the supervisor's wiring of `ConfigChanged` and
+  `RuntimeChanged` nor jira-observer's `TryAgain` closure is covered by a test: they need the agent's built
+  infrastructure. The state agent's reader now reports `Degraded` with reason `Graph` while the graph is down.
 - Self-state writes (`StateHandle::put`, `changes`) and the git checkpoints are not built.
 - The broker's own health cannot be asked over Cassini (it is not a client); remaining-work.md, "THE BROKER AS A USER
   OF SOFT STATE".

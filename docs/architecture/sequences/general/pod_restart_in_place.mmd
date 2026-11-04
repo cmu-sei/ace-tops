@@ -1,0 +1,62 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% A pod restarts in place, as built (2026-11-04, docs/architecture/deployments.md, steps 4 and 5). How a workload asks for its certificates is
+%% general/workload_certificate_issuance, how it ends is general/shutdown_pipeline, and what it asks for once it has registered is general/configuration_replay.
+%% The credentials agent's own restart has a ticket besides: general/core_restart_ticket.
+sequenceDiagram
+    autonumber
+    participant Kubelet
+    participant Agent as workload container
+    participant Daemon as custody daemon<br/>(a native sidecar)
+    participant Init as polar-init<br/>(init container)
+    participant CA as credentials agent
+
+    Note over Kubelet,Agent: A Deployment of one, Recreate.<br/>The workload container is restartPolicy Always, with one rule:<br/>RestartAllContainers on every exit (NotIn nothing).
+
+    Agent->>Agent: ends: a rejuvenation, a verdict or a signal through<br/>the shutdown pipeline, or a crash
+    Agent-->>Kubelet: exit non-zero, its last log lines as its termination message
+    Kubelet->>Kubelet: the rule matches.<br/>Same UID, IP and volumes.<br/>Each container's log<br/>goes with it
+    Kubelet->>Daemon: stopped. The keys it held were only in its memory
+    Kubelet->>Daemon: started again, empty
+    Kubelet->>Init: started again
+    Init->>Daemon: new keys, and a CSR for each
+    Init->>CA: its certificates, asked for as at the pod's first start
+    alt this pod was given one of that type within five minutes
+        CA-->>Init: TooSoon, which is temporary, so polar-init waits it out
+    else
+        CA-->>Init: a new certificate
+        CA->>CA: the old one is superseded,<br/>and published as revoked
+    end
+    Init->>Init: leave the one-use start marker (POLAR_INIT_START_MARKER)
+    Init-->>Kubelet: exit 0
+    Kubelet->>Agent: started
+    Agent->>Agent: take the marker (POLAR_START_MARKER), before anything else starts
+    Note over Agent: Then as at any start: configuration_startup,<br/>and the signed documents again
+
+    alt the liveness probe killed the process (it was wedged)
+        Note over Kubelet,Agent: The rule does not act on a liveness kill,<br/>so this container restarts alone,<br/>without polar-init
+        Kubelet->>Agent: started, alone
+        Agent->>Agent: no marker to take: "restarted without polar-init"
+        Agent-->>Kubelet: exit 1, which the rule does act on: the whole pod restarts, from step 3
+    end
+
+    Note over Kubelet,CA: A pod with no custody daemon (the scheduler observer, whose git reads its key from a file) has its key on a volume, which outlives the restart.<br/>polar-init keeps a bundle that is still valid and asks only when it is not. The rest is the same.

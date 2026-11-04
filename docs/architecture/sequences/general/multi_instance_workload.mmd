@@ -41,7 +41,7 @@ sequenceDiagram
         CA->>CI: /internal/issue
         CI-->>B: the same identity, i:uid:(B's UID) and i:pod:(B's name)
     end
-    Note over CA: A reissue revokes the certificate it supersedes per (identity, instance), so A's does not end B's. Nothing about an instance is self-reported.
+    Note over CA: A reissue revokes the certificate it supersedes per (identity, instance),<br/>so A's does not end B's. Nothing about an instance is self-reported.
 
     opt the workload has encryption: one key per workload, shared by its instances
         A->>CA: A's custodian: X's escrow key: none yet, so it is issued one and stores it
@@ -49,13 +49,13 @@ sequenceDiagram
         CA-->>B: BeingIssued: only one first issuance per identity, so it asks again
         B->>CA: asks again, once it is escrowed
         CA-->>B: the same key, sealed to B's ephemeral, into B's own custody slot
-        Note over A,B: A secret sealed to the workload opens in any instance. A reply for one pod is sealed to a key made for that one exchange.
+        Note over A,B: A secret sealed to the workload opens in any instance.<br/>A reply for one pod is sealed to a key made for that one exchange.
     end
 
     A->>Bk: register. The broker reads the instance from the leaf
     B->>Bk: register. Two sessions: supersede is by (identity, instance)
     A->>Bk: publish
-    Bk->>Sub: delivery, published_by the identity and published_instance A, both from the verified certificate
+    Bk->>Sub: delivery, published_by the identity and published_instance A,<br/>both from the verified certificate
 
     alt pod A restarts in place: the same UID, a new key
         A->>Bk: register under its own instance
@@ -66,4 +66,4 @@ sequenceDiagram
     else pod A dies uncleanly
         Bk->>Bk: its session is detached for the retention window, and no successor supersedes it
     end
-    Note over Bk,Sub: Pods are not a consumer group. A topic delivers to every subscriber, so this serves publishers and does not share work.
+    Note over Bk,Sub: Pods are not a consumer group. A topic delivers to every<br/>subscriber, so this serves publishers and does not share work.

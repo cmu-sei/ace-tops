@@ -1,0 +1,66 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% An agent asks for its signed documents each time it registers, as built (2026-11-04, docs/architecture/signed-configuration.md, docs/architecture/soft-state.md,
+%% polar-scheduler/observer/tests/replay.rs). Seen on u7s the same day: documents applied at each restart, and refused as stale when the same version came again.
+%% The first delivery of a document is general/signed_configuration_delivery.
+sequenceDiagram
+    autonumber
+    participant Config as ConfigurationActor<br/>(in the agent)
+    participant Infra as InfrastructureSupervisor<br/>(in the agent)
+    participant Cassini
+    participant Obs as Scheduler observer<br/>(supervisor)
+    participant Watch as GitWatcherActor
+    participant Proc as Scheduler processor
+    participant Graph as Neo4j
+
+    Note over Config: Started from the render's<br/>environment. Nothing signed yet,<br/>every version at zero
+    Cassini-->>Infra: Registered, at the first start and at each reconnect
+    Infra-)Cassini: polar-configuration-replay { agent }
+    Note over Infra,Cassini: Anyone may ask. What comes back is only what<br/>the agent would be sent anyway, signed,<br/>and idempotent by version
+    Cassini-)Obs: the request. It waits on the topic for up to 180 s for a subscriber,<br/>after which it is lost until the agent's next registration
+    alt the observer has not registered yet
+        Obs->>Obs: keep the name (waiting_replays)
+    else
+        Obs->>Watch: Replay { agent }
+    end
+    alt the initial scan has not finished
+        Note over Watch: The documents it holds are<br/>not yet the repository's word
+        Watch->>Watch: keep the name, and answer once when the scan has finished
+    else
+        Watch->>Watch: the documents for this agent, from what it read of the checkout,<br/>by section, oldest version first
+        loop each document
+            Watch-)Cassini: ConfigurationNotification on agent.NAME.configuration
+            Cassini-)Infra: the document, as it was read
+            Infra->>Config: Deliver(document)
+            Config->>Config: verify it like any other
+            alt the version is above the one in force
+                Config->>Config: apply, or replace the runtime section
+                Config-)Infra: ConfigChanged or RuntimeChanged, for whoever follows it
+            else it is the version in force, after a reconnect
+                Config->>Config: refused as stale, and nothing changes
+            end
+            Infra-)Cassini: ConfigurationOutcome on polar-configuration-outcome
+            Cassini-)Proc: the outcome, with who the broker says published it
+            Proc->>Graph: one more outcome node, linked to the item it names
+        end
+    end
+    Note over Watch,Graph: Replay goes from the observer straight to the agent,<br/>so the processor writes no new Configuration node,<br/>only the outcomes

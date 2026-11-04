@@ -1,0 +1,77 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% An agent holds a problem a restart would not help, and a signed update mends it, as built (2026-11-04, docs/architecture/soft-state.md, "A held agent tries
+%% again on a signed update", docs/architecture/jira.md, "What it does at start"). jira-observer is the one user. How the document gets there is
+%% general/signed_configuration_delivery, and after a restart general/configuration_replay. What the health actor answers is general/pulled_health.
+sequenceDiagram
+    autonumber
+    actor Author as Author (polar-sign)
+    participant Config as ConfigurationActor
+    participant Held as HeldSupervisor
+    participant Try as TryAgain<br/>(the agent's closure)
+    participant Work as the agent's work
+    participant Health as HealthCheckActor
+    participant Writer as soft-state-processor
+
+    Note over Held,Try: The render passed it, and the agent's own judgment refuses it<br/>(prepare: the placeholder address, a date that does not parse)
+    Held->>Held: held::stay_up: build the infrastructure, and no domain
+    Held->>Health: hold(Configuration, what to set)
+    Note over Health: A hold never becomes a verdict. The file says unhealthy,<br/>the probe judges only its age, and it rejuvenates<br/>as any agent does, so the pod's rule has no loop to run
+    Held->>Config: subscribe to changes()
+    Writer->>Health: asked, at each round
+    Health-->>Writer: Unhealthy, reason configuration, and the message
+
+    Author->>Config: a signed configuration document, by delivery or replay
+    Config->>Config: verify, then apply_overrides: only a Dynamic variable, all or none
+    alt nothing changed, or it was refused
+        Note over Config: No announcement. The outcome says why, and the hold stands
+    else a value changed
+        Config-)Held: ConfigChanged { version, changed }
+        Held->>Config: current()
+        Config-->>Held: the configuration in force
+        Held->>Try: Retry { config, resources, supervisor, cassini_registered }
+        alt it still cannot work
+            Try-->>Held: Err(why)
+            Held->>Health: hold(Configuration, why), the new message
+        else it can
+            Try->>Work: start, linked under the held supervisor, on the infrastructure already built
+            Try-->>Held: Ok
+            Held->>Health: release(Configuration)
+            Note over Held,Work: From here the work takes the agent's events and answers the shutdown,<br/>and its ending ends the agent
+        end
+    end
+
+    Note over Config,Work: Once the work runs, a Dynamic change goes to it (jira-observer's supervisor, for a setting that touches the observers)
+    Config-)Work: ConfigChanged { version, changed }
+    Work->>Config: current()
+    Work->>Work: prepare() on it
+    alt the settings work
+        Work->>Work: stop the observers, and start them with the new settings
+        Work->>Health: release every hold (an observer that meets it again holds it again)
+    else they cannot
+        Work->>Work: stop the observers
+        Work->>Health: hold(Configuration, why), until an update mends it
+    end
+
+    alt told to end while held, with no work running
+        Held->>Held: PrepareShutdown: nothing to finish, ProceedWithShutdown at once
+    end

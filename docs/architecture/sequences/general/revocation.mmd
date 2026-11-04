@@ -27,8 +27,8 @@ sequenceDiagram
     participant CA as Credentials agent (ledger, publisher)
     participant Bk as Cassini broker (authority, each Listener)
     participant Pod as The revoked pod's workload
-    participant Daemon as Its custody daemon (custodian session)
-    participant Other as Every other builder agent
+    participant Daemon as Its custody daemon<br/>(custodian session)
+    participant Other as Every other<br/>builder agent
 
     alt an administrator's revoke
         Admin->>CA: SignedAdminAction(Revoke serial), on credentials-admin-action-requests
@@ -46,7 +46,7 @@ sequenceDiagram
         Bk->>Bk: its session is detached and kept for the retention window, for the identity's next certificate to claim
     end
     Bk->>Other: the set, as a delivery
-    Other->>Other: verify it to the pinned key, and hold it: a revoked signer's documents are refused
+    Other->>Other: verify it to the pinned key,<br/>and hold it: a revoked<br/>signer's documents are refused
 
     Bk->>Daemon: the set, as a delivery
     Daemon->>Daemon: verify it to the key it pinned under the CA

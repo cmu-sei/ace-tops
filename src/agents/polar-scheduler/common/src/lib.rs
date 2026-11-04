@@ -68,8 +68,8 @@ pub struct ConfigurationNotification {
 }
 
 /// Where an agent that has just registered with Cassini asks for the signed configuration the scheduler
-/// holds for it. The scheduler processor subscribes and republishes the stored documents on the agent's
-/// own configuration topic. Anyone can ask, and what comes back is only what the agent would have been
+/// holds for it. The scheduler observer subscribes and sends the documents it read from its checkout on the
+/// agent's own configuration topic. Anyone can ask, and what comes back is only what the agent would have been
 /// sent anyway, signed and idempotent by version, so the request needs no authority.
 pub const CONFIGURATION_REPLAY_TOPIC: &str = "polar-configuration-replay";
 

@@ -82,7 +82,7 @@ imports they like. `polar-sign` then evaluates it to normal form, which has no i
 signs it, and writes the final single file. What is committed is that rendered file. The observer
 evaluates a file with nothing left to resolve, so the signer's and the observer's evaluations cannot
 differ, and the scheduler sends only a document that has already been verified once. A committed file
-that still contains an import is refused.
+that still contains an import is refused. *(Read against the code, 2026-11-04: neither that verification nor that refusal is built, below.)*
 
 **What is signed.** The canonical encoding of `payload` after evaluation: UTF-8 JSON, object keys
 sorted, no insignificant whitespace, preceded by the domain-separation line
@@ -140,7 +140,7 @@ signature and the revocation list fail closed.*
 
 ## How it fits together
 
-Three sequence diagrams, in `docs/architecture/sequences/general/` (rendered as `asset_regeneration.md` describes):
+Sequence diagrams, in `docs/architecture/sequences/general/` (rendered as `asset_regeneration.md` describes):
 
 - `signed_configuration_authoring.mmd` (and `.svg`): the author's side. A typed template from the agent's
   schema export, `check`, `sign`, the commit (signed through git's x509 support with the same key) and
@@ -150,17 +150,24 @@ Three sequence diagrams, in `docs/architecture/sequences/general/` (rendered as 
   verifying the whole document for itself before it applies anything.
 
 - `signed_configuration_secrets.mmd` (and `.svg`): a secret travelling in a document: the author's tool
-  gets the target agent's public escrow key and encrypts to it, the target decrypts through its
-  CryptoActor, closes the loop with the credentials agent, and retrieves the secret later.
+  gets the target agent's public escrow certificate and encrypts to it, the target registers it through its
+  CryptoActor and closes the loop with the credentials agent.
+- `escrowed_credential_lifecycle.mmd` (and `.svg`): all of a credential's life, as built: sealed, delivered, registered,
+  escrowed, presented by the protocol handler, opened again after a restart, withdrawn.
+- `configuration_replay.mmd` (and `.svg`): what an agent asks for each time it registers, and how the observer answers.
+- `held_agent_and_dynamic_setting.mmd` (and `.svg`): an agent that refuses its own settings, mended by a signed update.
 
 **The schema export** is what `<agent> --scaffold` prints (`polar-env`'s document module): every
 declared variable with its type, whether it is required, whether it is secret, its default, its
 `static` or `dynamic` mutability and its description, by section, plus what the agent requires and its
 minimum shutdown budget. A schedule may set only the `dynamic` ones, so the generated template lists
-only those. Today no variable in the workspace is declared dynamic outside tests, so a generated
-template would be empty until agents declare some.
+only those. jira-observer's settings are (`jira.md`); making every agent's non-secret settings so is a
+remaining-work item.
 
-**Verification happens twice, on purpose.** The observer checks a document early, with the same rules,
+**Verification happens twice, on purpose: designed, and not built.** *Read against the code, 2026-11-04: the observer
+evaluates each file and passes on what comes out, and verifies nothing (`polar-scheduler/observer/src/watcher.rs`; it has no
+`polar-signing` dependency), so a document is verified once, by the agent it is for. The delivery diagram shades the
+observer's part.* The design: the observer checks a document early, with the same rules,
 and drops and logs an invalid one, so the scheduler only ever carries documents that were good when they
 were read. The ConfigurationActor checks again, because it must not trust the relay. The two use the
 same library, so they cannot disagree about the rules.

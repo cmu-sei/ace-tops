@@ -849,13 +849,14 @@ Each step is taken in bites, each reported before the next.
   - *Bite 2, certificates and identity:* DONE 2026-11-04. New: `workload_certificate_issuance` (`polar-init` with custody), `multi_instance_workload`, `revocation`, `core_restart_ticket`,
     and `key_rotation`, all shaded as design. `admin_bootstrap_identity` redrawn as the two-phase claim. `attestation_and_issuance` was marked as the original design and the three attestation diagrams were drawn with slices A and B, so
     they stand. Not traced in this pass: `user_cert_issuance_and_usage` and `identity_normalization_query`, against an IdP (for bite 4).
-  - *Bite 3, configuration and health:* new, restart in place, held agent and retry with a Dynamic change, replay on registration, the
-    escrowed credential, pulled health, Jira's cursor. Fix health, shutdown and signed configuration.
+  - *Bite 3, configuration and health:* DONE 2026-11-04. New: `pod_restart_in_place`, `held_agent_and_dynamic_setting`, `configuration_replay`, `escrowed_credential_lifecycle`,
+    `pulled_health`, `jira_cursor_soft_state`. Redrawn: `health_rejuvenation`, `shutdown_pipeline`, `configuration_startup`, `signed_configuration_delivery`, `signed_configuration_secrets`.
+    Compared with the logs and graph on u7s: restart in place, replay, pulled health, the cursor. Not presented to a real site in this pass: a credential (u7s reads Jira anonymously).
   - *Bite 4, the rest:* new, authority catch-up, credentials requests, the git flow (fix `proposal_flow`, which names a Jira consumer as the proposer;
     only `discover_repo` proposes), image publish and release; shaded, the registry gate and the pod reaper. Link the unlinked.
   - *After the merge:* anything of GitLab, OpenAPI, build-processor, the orchestrator; the graph write path.
-  - *To read in the code, not only redraw:* `signed_configuration_delivery` has the scheduler observer refusing an import, and a search of its
-    source found no such check, while it does evaluate the Dhall files.
+  - *Read in the code, 2026-11-04:* `signed_configuration_delivery` had the scheduler observer refusing an import and verifying early. Neither is built: both are shaded now, and
+    `signed-configuration.md` says so. The target verifies regardless.
 - [ ] **Stale text** (`docs/` and comments that no longer say what is true):
   - `docs/architecture/git/agents.md` is conceptually sound but stale (2026-10-10): its tree shows `GitObserverRoot` owning the client, it
     omits the `GIT_REPO_CONFIG_EVENTS` configuration path (the README describes `GIT_AGENT_CONFIG` JSON instead), topics, shutdown and

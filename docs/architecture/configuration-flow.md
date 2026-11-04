@@ -74,6 +74,10 @@ and judges it, reporting every problem at once and exiting non-zero if there are
 the crypto actor). The same `Config` is handed back in `AgentResources`, and the domain code reads
 its settings from it with `config.read(&VAR)`; a variable nobody declared is refused.
 
+Each time it registers with Cassini the agent asks for its signed documents
+([`configuration_replay`](sequences/general/configuration_replay.mmd)). An agent whose own settings cannot work stays up
+and says so ([`held_agent_and_dynamic_setting`](sequences/general/held_agent_and_dynamic_setting.mmd)).
+
 ## 3. A worked example: kube-consumer
 
 The catalog entry (`infra/config/workloads/kube.nuon`):

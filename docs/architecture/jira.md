@@ -61,6 +61,8 @@ then not be the start-time one that pulled health reports.)
 
 ## The credential (since 3.0.0)
 
+Drawn as built: [`escrowed_credential_lifecycle`](sequences/general/escrowed_credential_lifecycle.mmd).
+
 jira-observer is the first agent on the protocol handler (`protocol-handlers.md`, 2026-11-03), and its code never has the token.
 It declares the credential (`PolarAgent::CREDENTIALS`, `jira/observe/src/credentials.rs`), which brings the `credentials` runtime
 section and encryption, so its pod escrows a key in init. The section holds one entry `{ name, host_pattern, kind, username, secret }`, called
@@ -124,6 +126,8 @@ pushed, and a run again tries again.
   credential is in jira-observer's health.
 
 ## What it does at start, and when Jira fails
+
+Drawn as built: [`held_agent_and_dynamic_setting`](sequences/general/held_agent_and_dynamic_setting.mmd), [`jira_cursor_soft_state`](sequences/general/jira_cursor_soft_state.mmd).
 
 1. Nothing calls Jira until the observer has registered with Cassini (`supervisor.rs`).
 2. **What the site is** (`lib.rs`, `ensure_site`, since 2026-11-01): the issue and user observers, whose requests

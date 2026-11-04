@@ -86,6 +86,8 @@ Each with a recommendation; to be taken one at a time.
 
 ## How the move is done (no decisions in it, only care)
 
+Drawn as built: [`pod_restart_in_place`](sequences/general/pod_restart_in_place.mmd).
+
 - **Each agent a Deployment of one, `Recreate`.** A rolling update starts the new pod before the old one ends, two
   agents of one identity at once; `Recreate` keeps the Job's one-at-a-time. The ledger lock stays the backstop.
 - **The restart rule.** The workload container's `restartPolicy: Always` and one rule, `RestartAllContainers` on every

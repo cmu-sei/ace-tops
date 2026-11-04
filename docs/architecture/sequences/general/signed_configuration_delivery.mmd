@@ -19,46 +19,66 @@
 %%
 %% DM26-0670
 
+%% The runtime side, as built (2026-11-04, docs/architecture/signed-configuration.md, "How it fits together"), read against polar-scheduler and polar-agent-builder/src/signed.rs.
+%% The shaded step is designed and not built: the observer verifies nothing today, and nothing refuses a file with an import. The target verifies regardless.
+%% An agent that has just registered asks for what is held for it: general/configuration_replay.
 sequenceDiagram
     participant Server as Polar git server
     participant Cassini
-    participant Observer as Scheduler observer
+    participant Sync as Scheduler observer<br/>(git sync)
+    participant Watch as Scheduler observer<br/>(watcher)
     participant Processor as Scheduler processor
-    participant Graph as Neo4j
     participant Target as Target agent
-    participant CA as ConfigurationActor (in the target)
+    participant CA as ConfigurationActor<br/>(in the target)
+    participant Graph as Neo4j
 
-    Server-)Cassini: RepoChanged
-    Cassini-)Observer: RepoChanged (for its repository)
-    Observer->>Server: git pull --ff-only (mTLS, workload certificate)
-    Observer->>Observer: evaluate the item, refuse an import
-    opt early check, same rules as the target's
-        Observer->>Observer: verify, drop and log if invalid
+    autonumber
+    Server-)Cassini: RepoChanged, after an accepted push
+    Cassini-)Sync: RepoChanged (for its repository)
+    Sync->>Server: git pull --ff-only (mTLS, workload certificate)
+    Note over Sync: It also pulls on its interval, and a failed pull waits for the next
+    Sync-->>Watch: the checkout changed, seen by the file watcher
+    Watch->>Watch: evaluate the .dhall under permanent, adhoc or ephemeral to JSON,<br/>and hold it for replay
+
+    rect rgb(235, 219, 178)
+    Note over Watch: DESIGNED (signed-configuration.md), not built
+    Watch->>Watch: refuse a file with an import
+    Watch->>Watch: verify with the target's rules, drop and log if invalid
     end
-    Observer-)Cassini: GitScheduleChange {whole document}
+
+    Watch-)Cassini: GitScheduleChange { path, whole document } on the scheduler's topic
     Cassini-)Processor: GitScheduleChange
     Processor->>Graph: write a Configuration node, document as received
-    Processor-)Cassini: ConfigurationNotification on agent.name.configuration
-    Cassini-)Target: ConfigurationNotification (every agent subscribes to its own)
-    Target->>CA: submit(document)
-
-    Note over Target,CA: verifies for itself, in order
-    CA->>CA: 1. two fields only, no import
-    CA->>CA: 2. chain to pinned CA, cert valid
-    CA->>CA: 3. signature over the payload, then read it
-    CA->>CA: 4. addressed to this agent
-    CA->>CA: 5. signer may update each variable: Cedar first (update-configuration on Variable "agent/NAME"),<br/>the signer's c:update-configuration where no policy speaks (built 2026-10-13)
-    CA->>CA: 6. the signer's certificate is not revoked (the authority's revoked serials)
-    CA->>CA: 7. version above the last
-    alt every check passes
-        CA->>CA: apply: all or none
-        CA-)Target: ConfigChanged {version, names}
-        Target->>CA: current() and use the new values
-        CA->>CA: record names, never values
-    else any check fails
-        CA->>CA: refuse whole, keep old values
+    alt its version is above the last this processor forwarded for that id
+        Processor-)Cassini: ConfigurationNotification on agent.NAME.configuration
+        Cassini-)Target: ConfigurationNotification (every agent subscribes to its own)
+        Target->>CA: Deliver(document)
+    else not newer, or no agent can be read from it
+        Note over Processor,Graph: Recorded and not forwarded. One that cannot be routed is written as unroutable, with why
     end
-    Note over CA,Processor: Either way it says what it did
-    CA-)Cassini: ConfigurationOutcome (status and why)
-    Cassini-)Processor: ConfigurationOutcome
+
+    Note over Target,CA: verifies for itself, in order, stopping at the first failure
+    CA->>CA: 1. two fields only
+    CA->>CA: 2. chain to pinned CA, cert valid, may sign,<br/>signature over the payload
+    CA->>CA: 3. only now read the payload:<br/>its shape, by its type
+    CA->>CA: 4. addressed to this agent
+    CA->>CA: 5. signer may make this change: Cedar first,<br/>the signer's capability where none speaks.<br/>A section made of policy: its capability only
+    CA->>CA: 6. the signer's certificate is not revoked<br/>(the authority's revoked serials)
+    CA->>CA: 7. version above the last: the document's,<br/>or for a runtime section, that section's
+    alt a configuration document passes
+        CA->>CA: apply the Dynamic variables: all or none
+        opt a value changed
+            CA-)Target: ConfigChanged { version, changed }
+            Target->>CA: current() and use the new values
+        end
+        CA->>CA: record names, never values
+    else a runtime document passes
+        CA->>CA: judge the body (the section's rule, and the<br/>agent's judge if it has one), replace it whole
+        CA-)Target: RuntimeChanged { section, version }
+    else any check fails
+        CA->>CA: refuse whole, keep old values.<br/>A refused body does not spend its version
+    end
+    Note over CA,Processor: Either way it says what it did: applied, unchanged, stale, invalid or unverified
+    CA-)Cassini: ConfigurationOutcome (status and why, no value)
+    Cassini-)Processor: ConfigurationOutcome, with who the broker says published it
     Processor->>Graph: write an outcome node, linked to the item

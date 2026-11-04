@@ -226,7 +226,7 @@ impl PolarAgent for JiraObserver {
             .await
             .map_err(|e| format!("{JIRA_OBSERVER_SUPERVISOR} task failed: {e}"))?;
 
-        // The supervisor stopping is never a success: this agent runs as a Job and only a
+        // The supervisor stopping is never a success: this agent's pod restarts on an exit, and only a
         // non-zero exit gets it restarted. `run` exits non-zero.
         Err(format!("{JIRA_OBSERVER_SUPERVISOR} stopped").into())
     }

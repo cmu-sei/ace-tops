@@ -19,7 +19,8 @@
 %%
 %% DM26-0670
 
-%% Built (health-and-shutdown.md); the authority branch is designed (policy-enforcement.md, stage 6), not built.
+%% Built (2026-11-04, docs/architecture/health-and-shutdown.md); the authority branch is designed (policy-enforcement.md, stage 6), not built. What ends the process
+%% is general/shutdown_pipeline, what happens after is general/pod_restart_in_place, and how the report is asked for is general/pulled_health.
 sequenceDiagram
     participant Kubelet
     participant Probe as polar-healthcheck
@@ -54,16 +55,22 @@ sequenceDiagram
     end
 
     alt hard deadline
-        Note over Health: own cert below 60s, graph or Cassini deadline
+        Note over Health: own cert below 60s, graph or Cassini 120s,<br/>three failed writes of the file, custody
         Health->>Infra: HealthVerdict::Unhealthy(reason)
         Note over Infra: begin_shutdown, same orderly path
+    end
+
+    alt a standing problem (Configuration or Credentials), which a restart would not help
+        Infra->>Health: hold(reason, message), from the agent's domain or its handler
+        Note over Health: Never a verdict. The file says unhealthy, the probe still judges only its age, and<br/>asked, it reports Unhealthy and why. It rejuvenates as above. See held_agent_and_dynamic_setting
+        Infra->>Health: release(reason), when an update mends it
     end
 
     rect rgb(235, 219, 178)
     alt DESIGNED (policy-enforcement.md, stage 6): the authority aged out
         Note over Health: no verified message from the credentials agent for POLAR_AUTHORITY_MAX_AGE_SECS (90 min),<br/>after the degraded window in which the cached policy kept applying
         Health->>Infra: HealthVerdict::Unhealthy("no authority update heard for 90 minutes")
-        Note over Infra: begin_shutdown, exit 1: the Job's new pod waits in init for the credentials agent
+        Note over Infra: begin_shutdown, exit 1: the pod restarts<br/>in place, and polar-init waits<br/>for the credentials agent
     end
     end
 
@@ -72,5 +79,5 @@ sequenceDiagram
         Kubelet->>Probe: exec
         Probe->>File: read
         Probe-->>Kubelet: exit 1 (stale)
-        Note over Kubelet: after 2 failures: SIGTERM,<br/>then SIGKILL after the grace period
+        Note over Kubelet: after 2 failures: SIGTERM,<br/>then SIGKILL after grace.<br/>It restarts alone, finds<br/>no start marker, and exits:<br/>pod_restart_in_place
     end

@@ -31,7 +31,7 @@ sequenceDiagram
     participant CI as cert-issuer
 
     alt the first admin (bootstrap): someone has to be first, with nothing yet to vouch for them
-        Note over Admin,Tool: A Kubernetes ServiceAccount token: controlling the cluster is what proves it.
+        Note over Admin,Tool: A Kubernetes ServiceAccount token:<br/>controlling the cluster is what proves it.
     else anyone after (claim)
         Note over Admin,CA: An admin's signed action provisioned the account first (ProvisionAccount), by username and email.
     end
@@ -54,7 +54,7 @@ sequenceDiagram
     Obs->>Bk: relayed
     Bk->>CA: delivered
     CA->>CA: proves who it is again
-    CA->>CI: /internal/issue: an ordinary client certificate, nothing more privileged than an agent's
+    CA->>CI: /internal/issue: an ordinary client certificate,<br/>nothing more privileged than an agent's
     CI-->>CA: signed
     CA->>CA: AccountCertificateIssued, which consumes the pending record: a claim succeeds exactly once
     CA-->>Tool: the certificate, through the broker and observer

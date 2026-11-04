@@ -19,16 +19,18 @@
 %%
 %% DM26-0670
 
-%% Built (configuration-flow.md); the shaded part is designed (policy-enforcement.md, stages 0, 1, 6), not built.
+%% Built (2026-11-04, configuration-flow.md, policy-enforcement.md); the shaded part is designed (policy-enforcement.md, stage 6), not built. polar-init's part is
+%% general/workload_certificate_issuance. What the agent asks for next is general/configuration_replay. An agent that refuses its own settings is
+%% general/held_agent_and_dynamic_setting.
 sequenceDiagram
     autonumber
     participant KL as Kubelet
     participant PI as polar-init (init container)
-    participant AG as Agent process
-    participant AB as AgentBuilder
+    participant AG as Agent process (run)
     participant PE as polar-env (Config)
-    participant IS as InfrastructureSupervisor
     participant DS as Domain supervisor
+    participant AB as AgentBuilder
+    participant IS as InfrastructureSupervisor
 
     KL->>PI: start, with --cert and --check-dep-cert arguments
     PI->>PI: wait for the dependencies' certificates, get the custody daemon's custodian its certificate
@@ -36,27 +38,31 @@ sequenceDiagram
     opt the agent needs encryption (POLAR_INIT_ESCROW_BOOTSTRAP)
         PI->>PI: the custodian also fetches the escrow key, which the daemon keeps
     end
+    PI->>PI: leave the start marker, for a pod that restarts in place
     PI-->>KL: exit 0
     KL->>AG: start, with the environment the resolver derived
-    AG->>DS: spawn the domain supervisor
-    DS->>AB: new(...).with_...().configure()
-    AB->>PE: snapshot of the process environment, declared variables only
-    PE-->>AB: values with their sources: env, default, unset
-    AB->>AB: judge it: capabilities the code requires against POLAR_CAPABILITIES, each section's variables and relations
+    AG->>PE: a snapshot of the process environment, declared variables only
+    PE-->>AG: values with their sources: env, default, unset
+    AG->>AG: judge it: capabilities the code requires against POLAR_CAPABILITIES, each section's variables and relations
     alt any problem
-        AB-->>AG: every problem together, process exits non-zero
-    else all well
-        AB-->>DS: ConfiguredAgent, with the Config
+        AG-->>KL: every problem together, exit 1
     end
+    AG->>AG: take the start marker. None there: restarted alone, exit 1 (pod_restart_in_place)
+    AG->>AG: judge its declared commands, and the workloads it serves
+    AG->>AG: the topic set: TOPICS declared, plus implied (the builder's own topics, those NEEDS bring),<br/>the same set --scaffold prints, each implied topic with its rule
+    AG->>DS: start(Configured), with the Config
     DS->>DS: read its own settings from the snapshot
+    alt they cannot work, and a restart would not help
+        DS->>DS: held::stay_up instead, infrastructure only
+    end
     DS->>AB: build()
-    AB->>IS: spawn: health, router, subscriptions, Cassini client, crypto
+    AB->>AB: the service name must be the workload its certificate names, else refuse to start
+    AB->>IS: spawn: health, configuration, authority, router, subscriptions, Cassini client,<br/>crypto, state, protocol handlers, commands, as the agent needs them
     IS-->>DS: AgentResources, including the same Config
+    Note over IS: Every subscribe and publish is judged<br/>before it leaves: Cedar first,<br/>then the topic set (topic_gate)
+    IS->>IS: on each Registered: tell crypto<br/>and the authority, ask for<br/>the signed documents<br/>(configuration_replay)
 
     rect rgb(235, 219, 178)
-    Note over AB,IS: DESIGNED (policy-enforcement.md, stages 0, 1 and 6), not built
-    AB->>AB: the service name must be the workload name (POLAR_WORKLOAD), else refuse to start
-    AB->>AB: the topic set: TOPICS declared, plus implied (the builder's own topics, those NEEDS bring),<br/>the same set --scaffold prints, each implied topic with its rule
-    IS->>IS: every subscribe and publish outside the set is refused here, in the agent's log
-    IS->>IS: not healthy until a snapshot from the credentials agent is verified<br/>(a bootstrap service is: it runs on the certificate floor until its first)
+    Note over AB,IS: DESIGNED (policy-enforcement.md, stage 6), not built
+    IS->>IS: not healthy until a snapshot from<br/>the credentials agent is verified<br/>(a bootstrap service is: it runs on<br/>the certificate floor until its first)
     end

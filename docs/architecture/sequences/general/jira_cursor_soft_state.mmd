@@ -1,0 +1,64 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Where jira-observer's first pull starts, read back through the state agent, as built (2026-11-04, docs/architecture/soft-state.md, "The Jira cursor",
+%% docs/architecture/jira.md). Seen on u7s the same day: "the graph's newest issue was updated at ... ms; the first pull starts there". It is a hint, kept apart from what is signed.
+sequenceDiagram
+    autonumber
+    participant Proc as jira-processor
+    participant Graph as Neo4j
+    participant Issues as Jira issue observer
+    participant State as StateActor<br/>(in jira-observer)
+    participant Cassini
+    participant Reader as soft-state-observer
+    participant Jira as Jira, through the protocol handler
+
+    Proc->>Graph: each JiraIssue with updated_ms, read from the system field updated
+    Note over Issues: Started, or told the broker ended its session<br/>(Resync), which forgets where it was
+    Issues->>State: get Max { JiraIssue, updated_ms }
+
+    loop until an answer, each attempt with a fresh correlation id
+        State-)Cassini: soft-state-requests, stamped with its identity
+        Cassini-)Reader: the request, with the identity the broker stamped
+        Reader->>Reader: a verified asker, and plain identifiers. Then Cedar, Action read-state on the label,<br/>then the floor, its signed runtime section schema
+        alt admitted
+            Reader->>Graph: MATCH (n:`JiraIssue`) WHERE n.`updated_ms` IS NOT NULL RETURN max(n.`updated_ms`)
+            Graph-->>Reader: the largest, or none
+            Reader-)Cassini: Value, on soft-state-replies.jira-observer
+        else not admitted
+            Reader-)Cassini: Refused, naming only what the asker sent
+        else no schema yet, or the graph or policy could not answer
+            Reader-)Cassini: Unavailable
+        end
+        Cassini-)State: the reply. Counted only if the broker says the state agent published it
+        Note over State: No reply in 8 s is a new attempt, 3 in all.<br/>Unavailable is asked again every 10 s, for up to 120 s
+    end
+    State-->>Issues: the value, or why there is none
+
+    alt Value(Some(t))
+        Issues->>Jira: updated >= -Nm, N the minutes back to t plus the 300 s overlap, rounded up
+    else Value(None): the graph has no issue
+        Issues->>Jira: a full pull, or from QUERY_DATE, which applies only here
+    else Refused, Unavailable or no reply
+        Note over Issues: Asked again on the observer's backoff. Never taken for an empty graph,<br/>since a full pull is what the cursor is there to avoid
+    end
+    Note over Issues,Jira: Every pull orders by updated ASC, so a pull cut short leaves the graph's newest meaning everything older was written.<br/>Relative, so the Jira user's time zone does not enter, and the overlap covers the skew between the clocks
+    Jira-->>Issues: pages of issues, published for jira-processor

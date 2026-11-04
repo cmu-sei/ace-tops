@@ -473,7 +473,7 @@ impl InfrastructureSupervisor {
     }
 
     /// The last resort: if the process is still alive when the budget runs out, the
-    /// domain supervisor never finished, so exit 1 and let the Job replace the pod.
+    /// domain supervisor never finished, so exit 1 and let the pod's rule restart it.
     ///
     /// A detached task, not a message to this actor, so it does not depend on the
     /// actor still being alive. Without it, a domain supervisor that never answers

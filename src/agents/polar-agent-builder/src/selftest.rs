@@ -29,7 +29,7 @@
 //! itself: it publishes a probe on a topic it subscribes to, and expects to hear it come back. A
 //! probe unheard for too long means the agent is deaf, and the health check is told the Cassini
 //! connection is lost, which the health actor already knows how to act on (a deadline, then an
-//! orderly shutdown, and the Job replaces the pod).
+//! orderly shutdown, and the pod restarts in place).
 //!
 //! What it proves: the whole path out and back works now, through the same session, client and
 //! router the agent's topics use. What it does not prove: that each of the agent's own topics is

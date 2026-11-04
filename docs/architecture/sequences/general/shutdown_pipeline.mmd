@@ -19,29 +19,40 @@
 %%
 %% DM26-0670
 
+%% Built (2026-11-04, docs/architecture/health-and-shutdown.md, section 4). What follows the exit is general/pod_restart_in_place.
 sequenceDiagram
     participant Trigger
     participant Infra as InfrastructureSupervisor
     participant Domain as domain supervisor
     participant Children as domain children
     participant InfraChildren as infra children
+    participant Broker as Cassini broker
     participant Process as process
 
     autonumber
     Note over Trigger,Domain: Triggers: health verdict (rejuvenation or hard deadline),<br/>unexpected death of health, router, Cassini client or crypto,<br/>SIGTERM or SIGINT from the kubelet
     Trigger->>Infra: reason
     Note over Infra: begin_shutdown(reason)<br/>log the reason, ignore repeats
-    Infra->>Infra: start watchdog (bounded budget)
+    Infra->>InfraChildren: asked about its health from now on, the agent says draining
+    Infra->>Infra: start watchdog (the shutdown budget)
+    Infra->>InfraChildren: no new signed command is started
     Infra->>Domain: InfrastructureEvent::PrepareShutdown
 
     Domain->>Children: stop and drain (bounded)
     Children-->>Domain: stopped
     Domain->>Infra: ProceedWithShutdown
+    Note over Domain,Infra: A held agent with no work running has nothing to drain, and answers at once
 
-    Infra->>InfraChildren: stop (bounded)<br/>health, router, tcp client, crypto
+    opt its certificate names an instance: one pod of a multi-instance workload
+        Infra->>Broker: Disconnect. No successor of this instance will supersede its session,<br/>which would wait out the retention window as unresponsive
+    end
+    Note over Infra,Broker: A single-instance workload's session is kept for its successor
+
+    Infra->>InfraChildren: stop (bounded, 10 s)<br/>health, router, tcp client, crypto, and the rest
     InfraChildren-->>Infra: terminated
-    Infra->>Process: exit non-zero (never 0)
-    Note over Infra,Process: Job replaces the pod,<br/>polar-init issues fresh certs
+    Infra-->>Domain: ended
+    Domain->>Process: exit non-zero (never 0)
+    Note over Domain,Process: The pod's rule restarts all its containers,<br/>and polar-init runs again
 
     alt domain supervisor never answers
         Note over Infra: watchdog expires
