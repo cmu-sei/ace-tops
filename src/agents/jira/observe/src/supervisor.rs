@@ -75,7 +75,6 @@ pub struct ObserverSupervisor;
 pub struct ObserverSupervisorState {
     /// The settings the observers are started with.
     prepared: Prepared,
-    base_interval: u64,
     /// The agent's way to the site.
     protocols: ProtocolHandle,
     tcp_client: TcpClient,
@@ -113,7 +112,6 @@ pub enum Infrastructure {
 pub struct ObserverSupervisorArgs {
     /// The agent's infrastructure, to build or already built.
     pub infrastructure: Infrastructure,
-    pub base_interval: u64,
 }
 
 /// What the supervisor holds when it has no credential to start the observers with.
@@ -160,7 +158,8 @@ impl ObserverSupervisorState {
             deployment: self.prepared.deployment,
             tcp_client: self.tcp_client.clone(),
             protocols: self.protocols.clone(),
-            base_interval: self.base_interval,
+            base_interval: self.prepared.poll_secs,
+            page_size: self.prepared.page_size,
             query_date: self.prepared.query_date.clone(),
             retry: RETRY,
             clock: std::time::Instant::now,
@@ -387,7 +386,6 @@ impl Actor for ObserverSupervisor {
 
         Ok(ObserverSupervisorState {
             prepared,
-            base_interval: args.base_interval,
             protocols,
             tcp_client: resources.tcp_client,
             state: resources
@@ -591,8 +589,9 @@ mod tests {
                 anonymous,
                 deployment: crate::JiraDeployment::ServerOrDataCenter,
                 query_date: None,
+                poll_secs: 3600,
+                page_size: 50,
             },
-            base_interval: 3600,
             protocols: site.handle.clone(),
             tcp_client: TcpClient::from_actor_ref(sink().await),
             state: None,
@@ -772,6 +771,25 @@ mod tests {
                 .unwrap(),
             Vec::<String>::new()
         );
+    }
+
+    /// The observers start with what the settings say of the poll and the page.
+    #[tokio::test]
+    async fn the_observers_are_given_the_poll_and_the_page_in_force() {
+        let (health, _) = health_recorder().await;
+        let (mut state, _site) = supervisor_state(
+            "http://jira.invalid".into(),
+            true,
+            false,
+            FakeCrypto::giving(Gives::NotRegistered),
+            health,
+        )
+        .await;
+        state.prepared.poll_secs = 90;
+        state.prepared.page_size = 7;
+        let args = state.observer_args(JiraAuth::Anonymous);
+        assert_eq!(args.base_interval, 90);
+        assert_eq!(args.page_size, 7);
     }
 
     /// New settings start the observers again, whatever they held released, and they ask the site now in force.

@@ -25,7 +25,7 @@
 //! registered, in their own actor, since waiting to publish must not hold what hears of the client and of shutting down.
 
 use crate::TCP_CLIENT_NAME;
-use crate::watches::{ClusterWatcher, ClusterWatcherArgs, WAITS, WatcherMsg};
+use crate::watches::{ClusterWatcher, ClusterWatcherArgs, WaitsFrom, WatcherMsg};
 use cassini_types::ClientEvent;
 use polar::cassini::TcpClient;
 use polar_agent_builder::protocol::ProtocolHandle;
@@ -70,6 +70,8 @@ pub struct ClusterObserverSupervisor;
 
 pub struct ClusterObserverSupervisorState {
     protocols: ProtocolHandle,
+    /// What the watcher follows its waits from.
+    configuration: polar_agent_builder::ConfigurationHandle,
     tcp_client: TcpClient,
     healthcheck: HealthHandle,
     /// Sent InfrastructureSupervisorMessage::ProceedWithShutdown once
@@ -122,6 +124,7 @@ impl Actor for ClusterObserverSupervisor {
         )?;
         Ok(ClusterObserverSupervisorState {
             protocols,
+            configuration: resources.configuration,
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
@@ -210,7 +213,7 @@ impl Actor for ClusterObserverSupervisor {
                             ClusterWatcherArgs {
                                 protocols: state.protocols.clone(),
                                 publisher: Arc::new(state.tcp_client.clone()),
-                                waits: WAITS,
+                                waits: WaitsFrom::Followed(state.configuration.clone()),
                             },
                             myself.get_cell(),
                         )

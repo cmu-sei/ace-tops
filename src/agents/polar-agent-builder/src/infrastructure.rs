@@ -645,6 +645,7 @@ impl InfrastructureSupervisor {
                         router: replies,
                         settings: crate::state::StateSettings::from_env(&*setup.config)
                             .map_err(ActorProcessingErr::from)?,
+                        configuration: Some(setup.configuration.clone()),
                     },
                     myself.get_cell(),
                 )

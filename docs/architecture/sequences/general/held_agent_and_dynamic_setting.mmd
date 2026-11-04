@@ -60,8 +60,8 @@ sequenceDiagram
         end
     end
 
-    Note over Config,Work: Once the work runs, whoever holds a value follows it (dynamic-settings.md).<br/>jira-observer's supervisor follows the four settings as one value, made by prepare
-    Work->>Config: follow_group(the four, prepare), from its pre_start
+    Note over Config,Work: Once the work runs, whoever holds a value follows it (dynamic-settings.md).<br/>jira-observer's supervisor follows its six settings as one value, made by prepare
+    Work->>Config: follow_group(the six, prepare), from its pre_start
     Config-->>Work: the configuration in force, so no update falls in between
     Author->>Config: another signed document
     Config->>Config: the agent's judge, prepare, on what is in force and on the candidate

@@ -40,9 +40,6 @@ use tracing::info;
 
 const JIRA_OBSERVER_SUPERVISOR: &str = "jira.supervisor.observer";
 
-/// How often the observers poll Jira, in seconds. Not configurable yet.
-const BASE_INTERVAL_SECS: u64 = 1800;
-
 pub struct JiraObserver;
 
 /// What the observers are started with, made from the configuration. The credential is not here: it is the signed
@@ -54,6 +51,10 @@ pub struct Prepared {
     pub anonymous: bool,
     pub deployment: JiraDeployment,
     pub query_date: Option<String>,
+    /// Between two pulls.
+    pub poll_secs: u64,
+    /// How many items one request asks for.
+    pub page_size: usize,
 }
 
 /// The observers' settings from `config`, or why they cannot work: an address that cannot be the site's (the
@@ -87,6 +88,8 @@ pub fn prepare(config: &polar_env::Config) -> Result<Prepared, String> {
         deployment: JiraDeployment::resolve(deployment, &jira_url),
         jira_url,
         query_date,
+        poll_secs: settings.poll_secs,
+        page_size: settings.page_size,
     })
 }
 
@@ -118,7 +121,6 @@ fn try_again(
             Some(JIRA_OBSERVER_SUPERVISOR.to_string()),
             ObserverSupervisor,
             ObserverSupervisorArgs {
-                base_interval: BASE_INTERVAL_SECS,
                 infrastructure: Infrastructure::Built {
                     resources: retry.resources,
                     registered: retry.cassini_registered,
@@ -214,8 +216,6 @@ impl PolarAgent for JiraObserver {
         };
         log_anonymous(&prepared);
         let args = ObserverSupervisorArgs {
-            // TODO: read this from configuration
-            base_interval: BASE_INTERVAL_SECS,
             infrastructure: Infrastructure::Build(configured),
         };
 

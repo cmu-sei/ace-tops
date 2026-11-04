@@ -84,6 +84,8 @@ pub enum WriterMessage {
     },
     /// The histories read back from the graph, or why they could not be.
     Loaded(Result<BTreeMap<String, History>, String>),
+    /// A signed update changed how often it asks, or how long it waits.
+    TimingChanged(Timing),
     PrepareShutdown,
 }
 
@@ -161,6 +163,8 @@ pub struct WriterState {
     /// The deployed family: a workload outside it cannot be asked.
     topics: Arc<TopicSet>,
     timing: Timing,
+    /// The one timer: the writer's rounds.
+    asking: ractor::concurrency::JoinHandle<()>,
     /// The `agents` section in force; `None` until a version has arrived.
     expected: Option<Expected>,
     round: Option<Round>,
@@ -172,6 +176,22 @@ pub struct WriterState {
 }
 
 impl WriterSupervisor {
+    /// The writer holds its timing, so it follows it, as one value: the wait stays below the interval only together.
+    /// The answer is the timing in force.
+    async fn follow_timing(
+        configuration: &ConfigurationHandle,
+        myself: &ActorRef<WriterMessage>,
+    ) -> Result<Timing, polar_agent_builder::configuration::FollowError> {
+        configuration
+            .follow_group(
+                crate::settings::VARIABLES,
+                |config: &polar_env::Config| Timing::from_env(config),
+                myself,
+                WriterMessage::TimingChanged,
+            )
+            .await
+    }
+
     fn reachable(topics: &TopicSet) -> impl Fn(&str) -> bool + '_ {
         |workload| topics.allows(&report::health_topic(workload), Access::Publish)
     }
@@ -312,7 +332,6 @@ impl Actor for WriterSupervisor {
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
         // Judged with the rest of the configuration before the agent started, so it reads.
-        let timing = Timing::from_env(&**configured.config()).map_err(ActorProcessingErr::from)?;
         let topics = configured.topics().clone();
 
         let deliver_to = myself.clone();
@@ -354,8 +373,9 @@ impl Actor for WriterSupervisor {
             WriterMessage::Graph,
         )
         .await?;
+        let timing = Self::follow_timing(&resources.configuration, &myself).await?;
         // The one timer: the writer's rounds. No agent it asks keeps one.
-        drop(myself.send_interval(timing.interval, || WriterMessage::Ask));
+        let asking = myself.send_interval(timing.interval, || WriterMessage::Ask);
 
         let mut state = WriterState {
             tcp_client: resources.tcp_client,
@@ -365,6 +385,7 @@ impl Actor for WriterSupervisor {
             configuration: resources.configuration,
             topics,
             timing,
+            asking,
             expected: None,
             round: None,
             next_round: 0,
@@ -440,6 +461,14 @@ impl Actor for WriterSupervisor {
                         )
                     }
                 }
+            }
+            // A round in flight closes by the wait it began with.
+            WriterMessage::TimingChanged(timing) => {
+                if timing.interval != state.timing.interval {
+                    state.asking.abort();
+                    state.asking = myself.send_interval(timing.interval, || WriterMessage::Ask);
+                }
+                state.timing = timing;
             }
             WriterMessage::Ask => {
                 if !state.shutting_down {
@@ -621,5 +650,134 @@ mod tests {
             .collect();
         assert_eq!(b, ["unresponsive", "degraded"]);
         assert_eq!(histories["gone"].len(), 1);
+    }
+
+    /// The timing is followed, and a new interval takes over from the old timer, which stops.
+    #[tokio::test]
+    async fn the_timing_is_followed_and_a_new_interval_replaces_the_timer() {
+        struct Nothing<M>(std::marker::PhantomData<fn() -> M>);
+        #[async_trait]
+        impl<M: ractor::Message> Actor for Nothing<M> {
+            type Msg = M;
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<M>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        async fn nothing<M: ractor::Message>() -> ActorRef<M> {
+            Actor::spawn(None, Nothing(std::marker::PhantomData), ())
+                .await
+                .unwrap()
+                .0
+        }
+        struct Counter;
+        #[async_trait]
+        impl Actor for Counter {
+            type Msg = WriterMessage;
+            type State = Arc<std::sync::atomic::AtomicUsize>;
+            type Arguments = Arc<std::sync::atomic::AtomicUsize>;
+            async fn pre_start(
+                &self,
+                _: ActorRef<Self::Msg>,
+                count: Self::Arguments,
+            ) -> Result<Self::State, ActorProcessingErr> {
+                Ok(count)
+            }
+            async fn handle(
+                &self,
+                _: ActorRef<Self::Msg>,
+                message: Self::Msg,
+                count: &mut Self::State,
+            ) -> Result<(), ActorProcessingErr> {
+                if matches!(message, WriterMessage::Ask) {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(())
+            }
+        }
+        use std::sync::atomic::Ordering::SeqCst;
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (myself, _) = Actor::spawn(None, Counter, asked.clone()).await.unwrap();
+        let env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let configuration = ConfigurationHandle::spawn(
+            None,
+            PROCESSOR_NAME,
+            polar_env::Config::builder(&env)
+                .register(&crate::settings::SECTION)
+                .build(),
+            None,
+            myself.get_cell(),
+        )
+        .await
+        .unwrap();
+        let timing = WriterSupervisor::follow_timing(&configuration, &myself)
+            .await
+            .unwrap();
+        assert_eq!(timing.interval, Duration::from_secs(60));
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&crate::settings::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+
+        let mut state = WriterState {
+            tcp_client: TcpClient::from_actor_ref(nothing().await),
+            healthcheck: HealthHandle::new(nothing().await),
+            infrastructure: nothing().await,
+            graph: None,
+            configuration,
+            topics: Arc::new(TopicSet::default()),
+            timing,
+            asking: myself.send_interval(timing.interval, || WriterMessage::Ask),
+            expected: None,
+            round: None,
+            next_round: 0,
+            histories: None,
+            loading: false,
+            shutting_down: false,
+        };
+        let change = |interval, timeout| WriterMessage::TimingChanged(Timing { interval, timeout });
+
+        // A new wait alone leaves the timer.
+        WriterSupervisor
+            .handle(
+                myself.clone(),
+                change(Duration::from_secs(60), Duration::from_secs(3)),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.timing.timeout, Duration::from_secs(3));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(asked.load(SeqCst), 0);
+
+        // A short interval is heard soon, not after the old one.
+        WriterSupervisor
+            .handle(
+                myself.clone(),
+                change(Duration::from_millis(10), Duration::from_millis(5)),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(asked.load(SeqCst) > 1);
+
+        // And a long one stops the short one going.
+        WriterSupervisor
+            .handle(
+                myself,
+                change(Duration::from_secs(3600), Duration::from_secs(10)),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let then = asked.load(SeqCst);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(asked.load(SeqCst), then);
     }
 }

@@ -39,7 +39,7 @@ Each step is taken in bites, each reported before the next.
 4. **The protocol handlers, every service at once (the maintainer, 2026-11-03).** Below, under the builder; `docs/architecture/protocol-handlers.md`. DONE, in six bites, 2026-11-04: the framework, HTTP, the registry scheme, git and the Kubernetes API, five agents on them, and the old routes closed. GitLab and OpenAPI move at step 7, where `domain_has_no_way_out.rs` starts holding them as they reach the builder. Still not checked live: a credential presented over HTTP, Jira's or a registry's.
    Before what follows, so that the Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.
-6. **Every builder agent's non-secret settings Dynamic.** Below, under the builder; `docs/architecture/dynamic-settings.md`. In bites: the builder's half is done (2026-11-04), with Jira, the git controller and logging on it. Next, the new variables and the constants; then live on u7s.
+6. **Every builder agent's non-secret settings Dynamic.** Below, under the builder; `docs/architecture/dynamic-settings.md`. In bites: the builder's half, and the new variables and constants, are done (2026-11-04). Next, live on u7s.
 7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
 8. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 7.
 9. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
@@ -608,7 +608,7 @@ Each step is taken in bites, each reported before the next.
   and the trust settings, `CERT_ISSUER_ISSUERS`, `CERT_ISSUER_INTERNAL_CALLERS`, `POLAR_GIT_SERVER_ADMINS`,
   `CREDENTIALS_AGENT_BOOTSTRAP_IDENTITY`. Designed and cleared 2026-11-04, `docs/architecture/dynamic-settings.md`: the actor that holds a value follows it (`ConfigurationHandle::follow`,
   `follow_group`), an update nothing follows says so in its outcome, `dynamic_settings_problems` is the shared check, and `PolarAgent::SETTINGS_JUDGE` refuses an update that would break working settings.
-  Left: which variables and constants, in that document's tables, and the live check. The broker has no way to hear an update (the subscription exists only for a Cassini client, `infrastructure.rs`), so its tunables stay Static until that is its own change. Its logging would not reload anyway: it starts `cassini_tracing`, not `polar::logging`.
+  Left: the live check. The broker has no way to hear an update (the subscription exists only for a Cassini client, `infrastructure.rs`), so its tunables stay Static until that is its own change. Its logging would not reload anyway: it starts `cassini_tracing`, not `polar::logging`.
   Seen on the way: `CASSINI_QUEUE_PATH` is read from the process, not the snapshot (`cassini/client/src/lib.rs:128`).
 - [ ] Builder: graph controller as infrastructure via `.with_graph_write()` (builder owns the spawn, `GraphSignal` wiring and flush), builder-owned shutdown handshake boilerplate so a migrated agent cannot forget its half; then migrate kube-consumer, jira-processor and credentials-agent to it
   Since 2026-10-12 the graph start, stop and drain are shared in polar-agent-builder (`graph.rs`).

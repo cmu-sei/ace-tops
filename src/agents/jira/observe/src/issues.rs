@@ -37,8 +37,6 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 const ISSUES_OP: &str = "/rest/api/2/search";
-const PAGE_SIZE: usize = 50;
-
 /// An incremental pull asks for everything updated since the last completed
 /// pull started plus this much, so that clock skew between here and Jira
 /// does not lose an update that landed between two windows. The processor
@@ -223,7 +221,7 @@ impl JiraIssueObserver {
             let jql = walk.jql((state.clock)(), state.deployment);
             let params = vec![
                 ("startAt", walk.start_at.to_string()),
-                ("maxResults", PAGE_SIZE.to_string()),
+                ("maxResults", state.page_size.to_string()),
                 ("expand", "changelog".to_string()),
                 ("jql", jql),
             ];
@@ -265,7 +263,7 @@ impl JiraIssueObserver {
             // fields are asked for.
             let mut params = vec![
                 ("jql", walk.jql((state.clock)(), state.deployment)),
-                ("maxResults", PAGE_SIZE.to_string()),
+                ("maxResults", state.page_size.to_string()),
                 ("expand", "changelog".to_string()),
                 ("fields", "*all".to_string()),
             ];
@@ -357,6 +355,7 @@ impl Actor for JiraIssueObserver {
             args.tcp_client,
             Duration::from_secs(args.base_interval),
         )
+        .with_page_size(args.page_size)
         .with_query_date(args.query_date)
         .with_retry(args.retry, args.clock)
         .with_cursor(args.cursor, args.wall_clock)

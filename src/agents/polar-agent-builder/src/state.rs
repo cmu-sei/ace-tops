@@ -54,7 +54,8 @@ pub static REPLY_TIMEOUT_SECS: Defaulted<u64> = Defaulted::seconds(
     "how long the agent's state actor waits for the state agent to answer one question, in seconds; an attempt not \
      answered by then is tried again with a fresh correlation id (docs/architecture/soft-state.md)",
     "8",
-);
+)
+.dynamic();
 
 /// How many attempts one question gets before the asker is told nothing came back.
 pub static ATTEMPTS: Defaulted<u64> = Defaulted::number(
@@ -62,7 +63,8 @@ pub static ATTEMPTS: Defaulted<u64> = Defaulted::number(
     "how many times the agent's state actor asks the state agent one question, each with a fresh correlation id, \
      before it says no answer came; an answer (a value, a refusal, an unavailable graph) is never asked again",
     "3",
-);
+)
+.dynamic();
 
 /// How soon an `Unavailable` (the graph down, no schema yet) is asked again, by the state actor itself.
 pub static UNAVAILABLE_RETRY_SECS: Defaulted<u64> = Defaulted::seconds(
@@ -71,7 +73,8 @@ pub static UNAVAILABLE_RETRY_SECS: Defaulted<u64> = Defaulted::seconds(
      is down, it has no schema yet), in seconds; the agent hears nothing until a value or a refusal comes, or \
      POLAR_STATE_UNAVAILABLE_LIMIT_SECS has passed",
     "10",
-);
+)
+.dynamic();
 
 /// For how long the state actor keeps asking again after `Unavailable` before the agent is told.
 pub static UNAVAILABLE_LIMIT_SECS: Defaulted<u64> = Defaulted::seconds(
@@ -79,7 +82,8 @@ pub static UNAVAILABLE_LIMIT_SECS: Defaulted<u64> = Defaulted::seconds(
     "for how long, in seconds, the agent's state actor keeps asking again while the state agent cannot answer yet, \
      before the agent hears that it is unavailable; 0 tells the agent at once",
     "120",
-);
+)
+.dynamic();
 
 static VARIABLES: &[&dyn Described] = &[
     &REPLY_TIMEOUT_SECS,
@@ -219,6 +223,8 @@ pub enum StateMessage {
         query: StateQuery,
         reply: RpcReplyPort<Result<SoftValue, StateError>>,
     },
+    /// A signed update changed the settings.
+    SettingsChanged(StateSettings),
 }
 
 /// The agent's way to its state actor.
@@ -358,7 +364,10 @@ pub async fn ask_until_available(
 pub struct StateArgs {
     pub client: TcpClient,
     pub router: Arc<ReplyRouter<StateReply>>,
+    /// The settings to start on, until the configuration gives others.
     pub settings: StateSettings,
+    /// What the actor follows its settings from. `None` only in a test whose waits are shorter than a setting can say.
+    pub configuration: Option<crate::ConfigurationHandle>,
 }
 
 pub struct StateActor;
@@ -371,9 +380,19 @@ impl Actor for StateActor {
 
     async fn pre_start(
         &self,
-        _myself: ActorRef<Self::Msg>,
-        args: StateArgs,
+        myself: ActorRef<Self::Msg>,
+        mut args: StateArgs,
     ) -> Result<Self::State, ActorProcessingErr> {
+        if let Some(configuration) = &args.configuration {
+            args.settings = configuration
+                .follow_group(
+                    VARIABLES,
+                    |config: &polar_env::Config| StateSettings::from_env(config),
+                    &myself,
+                    StateMessage::SettingsChanged,
+                )
+                .await?;
+        }
         Ok(args)
     }
 
@@ -383,7 +402,14 @@ impl Actor for StateActor {
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        let StateMessage::Get { query, reply } = message;
+        let (query, reply) = match message {
+            StateMessage::Get { query, reply } => (query, reply),
+            // The question asked next goes by these; one already waiting keeps what it started with.
+            StateMessage::SettingsChanged(settings) => {
+                state.settings = settings;
+                return Ok(());
+            }
+        };
         // Each question waits in a task of its own, so one that waits does not hold up the next.
         let router = state.router.clone();
         let client = state.client.clone();
@@ -529,6 +555,7 @@ mod tests {
                 client: TcpClient::from_actor_ref(broker),
                 router,
                 settings,
+                configuration: None,
             },
         )
         .await
@@ -711,5 +738,91 @@ mod tests {
         let zero = |name: &str| (name == "POLAR_STATE_ATTEMPTS").then(|| "0".to_string());
         assert_eq!(relations(&zero).len(), 1);
         assert!(relations(&none).is_empty());
+    }
+
+    /// The actor follows its four settings, and the question asked after an update goes by it: one attempt, not three.
+    #[tokio::test]
+    async fn the_settings_are_followed_and_the_next_question_goes_by_them() {
+        struct Parent;
+        #[ractor::async_trait]
+        impl Actor for Parent {
+            type Msg = ();
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<()>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let (parent, _) = Actor::spawn(None, Parent, ()).await.unwrap();
+        let env: std::collections::HashMap<String, String> = [(
+            "POLAR_STATE_REPLY_TIMEOUT_SECS".to_string(),
+            "1".to_string(),
+        )]
+        .into();
+        let configuration = crate::ConfigurationHandle::spawn(
+            None,
+            "asker",
+            polar_env::Config::builder(&env).register(&SECTION).build(),
+            None,
+            parent.get_cell(),
+        )
+        .await
+        .unwrap();
+
+        let sent: Sent = Arc::new(Mutex::new(Vec::new()));
+        let subscription = replies_subscription(
+            "asker",
+            STATE_AGENT.to_string(),
+            Arc::new(ReplyRouter::new()),
+        );
+        let (broker, _) = Actor::spawn(
+            None,
+            Broker {
+                sent: sent.clone(),
+                script: Vec::new(),
+                publisher: None,
+                deliver: Arc::from(subscription.deliver),
+            },
+            (),
+        )
+        .await
+        .unwrap();
+        let (state, _) = Actor::spawn(
+            None,
+            StateActor,
+            StateArgs {
+                client: TcpClient::from_actor_ref(broker),
+                router: Arc::new(ReplyRouter::new()),
+                settings: settings(3, Duration::ZERO),
+                configuration: Some(configuration.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+
+        configuration
+            .apply_unchecked(
+                1,
+                vec![("POLAR_STATE_ATTEMPTS".to_string(), "1".to_string())],
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let handle = StateHandle::new(state);
+        let answer = handle
+            .get(StateQuery::Max {
+                label: "JiraIssue".into(),
+                property: "updated_ms".into(),
+            })
+            .await;
+        assert!(answer.is_err(), "{answer:?}");
+        assert_eq!(sent.lock().unwrap().len(), 1);
     }
 }

@@ -49,7 +49,8 @@ pub static PUBLISH_BATCH: Defaulted<u64> = Defaulted::number(
     "how many commits a repository worker publishes at once, oldest first, before it moves the ref's checkpoint; \
      what it holds at once is one batch, not a whole walk",
     "32",
-);
+)
+.dynamic();
 
 static VARIABLES: &[&dyn Described] = &[&CACHE_ROOT, &PUBLISH_BATCH];
 
@@ -62,14 +63,20 @@ pub static SECTION: Section = Section {
 
 pub struct ObserverSettings {
     pub cache_root: PathBuf,
-    pub publish_batch: usize,
+}
+
+/// The batch in force: at least one.
+pub fn publish_batch(config: &Config) -> Result<usize, String> {
+    config
+        .read(&PUBLISH_BATCH)
+        .map(|batch| (batch as usize).max(1))
+        .map_err(|e| e.to_string())
 }
 
 impl ObserverSettings {
     pub fn read(config: &Config) -> Result<Self, ConfigError> {
         Ok(Self {
             cache_root: PathBuf::from(config.read(&CACHE_ROOT)?),
-            publish_batch: (config.read(&PUBLISH_BATCH)? as usize).max(1),
         })
     }
 

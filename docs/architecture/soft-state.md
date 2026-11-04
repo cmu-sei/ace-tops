@@ -348,14 +348,14 @@ properly migrated to the builder"), and making them so for every agent is a rema
   observer holds a `Credentials` or `Configuration` failure through the agent's `HealthHandle` (given in
   `JiraObserverArgs` by `observer_args`), one line (`<observer>: <what failed>; <what to set>`, never a secret), and
   schedules no pull; a success releases the hold its observer placed; a transient failure keeps the backoff and never
-  holds. Its settings (`JIRA_URL`, `JIRA_ANONYMOUS`, `JIRA_DEPLOYMENT`, `QUERY_DATE`) are Dynamic: the supervisor follows them
+  holds. Its settings (`JIRA_URL`, `JIRA_ANONYMOUS`, `JIRA_DEPLOYMENT`, `QUERY_DATE`, `JIRA_POLL_SECS`, `JIRA_PAGE_SIZE`) are Dynamic: the supervisor follows them
   as one value (`dynamic-settings.md`), and a new value starts the observers again, which releases every hold (an observer
   that meets the problem again holds it again). An update that could not work is refused, and they run on (revised
   2026-11-04; it used to stop them and hold `Configuration` with why). Its credential is a
   signed runtime section (`credentials`), so a new token is a new version: the supervisor registers it with the
   CryptoActor and starts the observers again, clearing a `Credentials` hold without a restart. Egress stays Static (the
   cluster's setting; the CA is a mounted file).
-- **Which variables an update can change today:** jira-observer's four, git-repo-controller's three, and every agent's logging (`RUST_LOG`,
+- **Which variables an update can change today:** the tables in `dynamic-settings.md`, and every agent's logging (`RUST_LOG`,
   `POLAR_TRACE_FILTER`); `held::stay_up` retries on a change to any of them. The token is not a variable: it is the
   `credentials` runtime section (`RuntimeChanged`).
 

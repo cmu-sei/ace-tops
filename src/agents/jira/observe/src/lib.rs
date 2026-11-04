@@ -429,6 +429,8 @@ pub struct JiraObserverState {
     pub tcp_client: TcpClient,
     /// Time between polls of Jira
     pub base_interval: Duration,
+    /// How many items one request asks for (`settings::PAGE_SIZE`).
+    pub page_size: usize,
     /// Set by the issue observer once a full pull has completed, after
     /// which it only pulls what changed. The other observers ignore it.
     pub full_pull_done: bool,
@@ -491,6 +493,7 @@ impl JiraObserverState {
             protocols,
             tcp_client,
             base_interval,
+            page_size: 50,
             full_pull_done: false,
             query_date: None,
             last_pull_started: None,
@@ -535,6 +538,12 @@ impl JiraObserverState {
     }
 
     /// The backoff a failed pull is retried on, and the clock.
+    /// How many items one request asks for.
+    pub fn with_page_size(mut self, page_size: usize) -> Self {
+        self.page_size = page_size;
+        self
+    }
+
     pub fn with_retry(mut self, backoff: Backoff, clock: fn() -> Instant) -> Self {
         self.retry = Retry::new(backoff);
         self.clock = clock;
@@ -946,6 +955,8 @@ pub struct JiraObserverArgs {
     /// The agent's way to the site.
     pub protocols: ProtocolHandle,
     pub base_interval: u64,
+    /// How many items one request asks for.
+    pub page_size: usize,
     pub query_date: Option<String>,
     /// The wait before a failed pull is tried again: [`RETRY`], or a short one in a test.
     pub retry: Backoff,

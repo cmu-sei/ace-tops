@@ -73,6 +73,8 @@ pub enum StateSupervisorMessage {
     RuntimeChanged {
         section: String,
     },
+    /// A signed update changed how long the graph is waited for.
+    GraphTimeoutChanged(Duration),
     PrepareShutdown,
 }
 
@@ -161,6 +163,21 @@ pub fn report_graph(health: &dyn HealthClient, signal: &GraphSignal) {
     };
 }
 
+/// The supervisor holds the wait, and hands it to each read, so it follows it. The answer is the wait in force.
+async fn follow_graph_timeout(
+    configuration: &ConfigurationHandle,
+    myself: &ActorRef<StateSupervisorMessage>,
+) -> Result<Duration, polar_agent_builder::configuration::FollowError> {
+    configuration
+        .follow_group(
+            settings::VARIABLES,
+            |config: &polar_env::Config| settings::graph_timeout(config),
+            myself,
+            StateSupervisorMessage::GraphTimeoutChanged,
+        )
+        .await
+}
+
 pub struct StateSupervisor;
 
 pub struct StateSupervisorState {
@@ -188,10 +205,6 @@ impl Actor for StateSupervisor {
         configured: Configured,
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
-        // Judged with the rest of the configuration before the agent started, so it reads.
-        let graph_timeout =
-            settings::graph_timeout(&**configured.config()).map_err(ActorProcessingErr::from)?;
-
         let deliver_to = myself.clone();
         let requests = Subscription::new(REQUESTS_TOPIC, move |incoming| {
             if let Err(e) = deliver_to.cast(StateSupervisorMessage::Request {
@@ -207,6 +220,7 @@ impl Actor for StateSupervisor {
             .into_configured(configured)
             .build()
             .await?;
+        let graph_timeout = follow_graph_timeout(&resources.configuration, &myself).await?;
         resources
             .infrastructure_events
             .subscribe(myself.clone(), |event| match event {
@@ -365,6 +379,9 @@ impl Actor for StateSupervisor {
                         },
                     );
                 });
+            }
+            StateSupervisorMessage::GraphTimeoutChanged(timeout) => {
+                state.graph_timeout = timeout;
             }
             StateSupervisorMessage::PrepareShutdown => {
                 info!("PrepareShutdown received, stopping the graph controller");
@@ -573,5 +590,69 @@ mod tests {
         assert_eq!(reply_topic_for(None), None);
         // A person's identity names no workload, so there is nowhere to answer.
         assert_eq!(reply_topic_for(Some("2f0c6a1e-alice")), None);
+    }
+
+    /// The wait is followed, and each read after a change goes by it.
+    #[tokio::test]
+    async fn the_wait_for_the_graph_is_followed_and_the_next_read_goes_by_it() {
+        struct Nothing<M>(std::marker::PhantomData<fn() -> M>);
+        #[async_trait]
+        impl<M: ractor::Message> Actor for Nothing<M> {
+            type Msg = M;
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<M>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        async fn nothing<M: ractor::Message>() -> ActorRef<M> {
+            Actor::spawn(None, Nothing(std::marker::PhantomData), ())
+                .await
+                .unwrap()
+                .0
+        }
+        let myself = nothing::<StateSupervisorMessage>().await;
+        let env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let configuration = ConfigurationHandle::spawn(
+            None,
+            OBSERVER_NAME,
+            polar_env::Config::builder(&env)
+                .register(&settings::SECTION)
+                .build(),
+            None,
+            myself.get_cell(),
+        )
+        .await
+        .unwrap();
+        let graph_timeout = follow_graph_timeout(&configuration, &myself).await.unwrap();
+        assert_eq!(graph_timeout, Duration::from_secs(10));
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&settings::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+
+        let mut state = StateSupervisorState {
+            tcp_client: TcpClient::from_actor_ref(nothing().await),
+            healthcheck: HealthHandle::new(nothing().await),
+            infrastructure: nothing().await,
+            graph: None,
+            graph_timeout,
+            configuration,
+            floor: None,
+            policy: PolicyLookup::named("no-such-policy-actor"),
+            shutting_down: false,
+        };
+        StateSupervisor
+            .handle(
+                myself,
+                StateSupervisorMessage::GraphTimeoutChanged(Duration::from_secs(3)),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.graph_timeout, Duration::from_secs(3));
     }
 }

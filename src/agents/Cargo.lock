@@ -4342,6 +4342,7 @@ dependencies = [
  "kube-common",
  "polar",
  "polar-agent-builder",
+ "polar-env",
  "polar-scudo",
  "proptest",
  "ractor",

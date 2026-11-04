@@ -233,6 +233,7 @@ impl Actor for SchedulerObserverSupervisor {
                     },
                     work: PathBuf::from(&settings.local_path).with_extension("deployment-record"),
                     tcp_client: resources.tcp_client.as_actor_ref().clone(),
+                    configuration: resources.configuration.clone(),
                 },
                 myself.get_cell(),
             )
@@ -258,6 +259,7 @@ impl Actor for SchedulerObserverSupervisor {
                         tls: target_tls,
                     },
                     work: PathBuf::from(&settings.local_path).with_extension("deployment-copy"),
+                    configuration: resources.configuration.clone(),
                 },
                 myself.get_cell(),
             )

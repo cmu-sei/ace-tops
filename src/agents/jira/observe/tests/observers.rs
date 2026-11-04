@@ -189,6 +189,7 @@ async fn args(server: &MockServer, client: ActorRef<TcpClientMessage>) -> JiraOb
         protocols: site.handle,
         // Long enough that only a retry pulls again within a test.
         base_interval: 3600,
+        page_size: 50,
         query_date: None,
         retry: Backoff {
             first: Duration::from_millis(20),
@@ -405,6 +406,51 @@ async fn paths(server: &MockServer) -> Vec<String> {
         .iter()
         .map(|r| r.url.path().to_string())
         .collect()
+}
+
+/// What each observer that pages asks for is the page size it was started with, for the three that page.
+async fn asks_for_the_page_size<A>(observer: A, endpoint: &str)
+where
+    A: Actor<Msg = JiraObserverMessage, Arguments = JiraObserverArgs>,
+{
+    let server = MockServer::start().await;
+    mount_site(&server).await;
+    let (client, _topics) = recorder().await;
+    let mut args = args(&server, client).await;
+    args.page_size = 7;
+    let (running, _) = Actor::spawn(None, observer, args).await.unwrap();
+    for _ in 0..100 {
+        if !asked(&server, endpoint).await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let requests = asked(&server, endpoint).await;
+    assert!(!requests.is_empty(), "{endpoint} was never asked");
+    for request in requests {
+        let max = request
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "maxResults")
+            .map(|(_, v)| v.to_string());
+        assert_eq!(max.as_deref(), Some("7"), "{}", request.url);
+    }
+    running.stop(None);
+}
+
+#[tokio::test]
+async fn the_issue_observer_asks_for_the_page_size() {
+    asks_for_the_page_size(JiraIssueObserver, SEARCH).await;
+}
+
+#[tokio::test]
+async fn the_group_observer_asks_for_the_page_size() {
+    asks_for_the_page_size(JiraGroupObserver, GROUPS).await;
+}
+
+#[tokio::test]
+async fn the_user_observer_asks_for_the_page_size() {
+    asks_for_the_page_size(JiraUserObserver, USER_SEARCH).await;
 }
 
 #[tokio::test]

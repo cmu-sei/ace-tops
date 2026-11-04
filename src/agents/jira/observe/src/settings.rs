@@ -70,13 +70,56 @@ pub static QUERY_DATE: Optional<String> = Optional::text(
 .example("2026-01-01")
 .dynamic();
 
-pub static VARIABLES: &[&dyn Described] =
-    &[&JIRA_URL, &JIRA_ANONYMOUS, &JIRA_DEPLOYMENT, &QUERY_DATE];
+/// The shortest time between two pulls, in seconds.
+pub const MIN_POLL_SECS: u64 = 60;
 
-/// Nothing holds between the variables: the credential is not a variable but the signed `credentials` runtime
-/// section (`crate::credentials`), which reading anonymously does without.
-fn relations(_env: &dyn Env) -> Vec<String> {
-    Vec::new()
+pub static POLL_SECS: Defaulted<u64> = Defaulted::seconds(
+    "JIRA_POLL_SECS",
+    "seconds between two pulls of the site, at least 60",
+    "1800",
+)
+.dynamic();
+
+/// The most a page may ask for. A site answers with what it allows, which may be fewer.
+pub const MAX_PAGE_SIZE: u64 = 1000;
+
+pub static PAGE_SIZE: Defaulted<u64> = Defaulted::number(
+    "JIRA_PAGE_SIZE",
+    "how many items one request to the site asks for, from 1 to 1000; a site answers with what it allows, which may \
+     be fewer",
+    "50",
+)
+.dynamic();
+
+pub static VARIABLES: &[&dyn Described] = &[
+    &JIRA_URL,
+    &JIRA_ANONYMOUS,
+    &JIRA_DEPLOYMENT,
+    &QUERY_DATE,
+    &POLL_SECS,
+    &PAGE_SIZE,
+];
+
+/// The bounds of the two numbers. Nothing holds between the variables: the credential is not a variable but the signed
+/// `credentials` runtime section (`crate::credentials`), which reading anonymously does without.
+fn relations(env: &dyn Env) -> Vec<String> {
+    let mut problems = Vec::new();
+    if POLL_SECS.read(env).is_ok_and(|secs| secs < MIN_POLL_SECS) {
+        problems.push(format!(
+            "{} must be at least {MIN_POLL_SECS}",
+            POLL_SECS.name()
+        ));
+    }
+    if PAGE_SIZE
+        .read(env)
+        .is_ok_and(|size| size == 0 || size > MAX_PAGE_SIZE)
+    {
+        problems.push(format!(
+            "{} must be from 1 to {MAX_PAGE_SIZE}",
+            PAGE_SIZE.name()
+        ));
+    }
+    problems
 }
 
 /// The section the Jira observer registers.
@@ -93,6 +136,8 @@ pub struct JiraSettings {
     pub anonymous: bool,
     pub deployment: Option<String>,
     pub query_date: Option<String>,
+    pub poll_secs: u64,
+    pub page_size: usize,
 }
 
 impl JiraSettings {
@@ -102,6 +147,8 @@ impl JiraSettings {
             anonymous: config.read(&JIRA_ANONYMOUS)?,
             deployment: config.read(&JIRA_DEPLOYMENT)?,
             query_date: config.read(&QUERY_DATE)?,
+            poll_secs: config.read(&POLL_SECS)?,
+            page_size: config.read(&PAGE_SIZE)? as usize,
         })
     }
 }
@@ -463,6 +510,53 @@ mod tests {
             assert!(
                 error.contains("QUERY_DATE") && error.contains("YYYY-MM-DD"),
                 "{raw:?}: {error}"
+            );
+        }
+    }
+
+    /// The two numbers have bounds, and a value outside them is refused, at start and in an update alike.
+    #[test]
+    fn the_poll_and_the_page_have_bounds() {
+        let problems = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("JIRA_URL", "https://jira.example.org")];
+            all.extend_from_slice(pairs);
+            config(&all).check()
+        };
+        assert_eq!(problems(&[]), Vec::<String>::new());
+        assert_eq!(
+            problems(&[("JIRA_POLL_SECS", "60"), ("JIRA_PAGE_SIZE", "1")]),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            problems(&[("JIRA_PAGE_SIZE", "1000")]),
+            Vec::<String>::new()
+        );
+        for (name, value) in [
+            ("JIRA_POLL_SECS", "59"),
+            ("JIRA_PAGE_SIZE", "0"),
+            ("JIRA_PAGE_SIZE", "1001"),
+        ] {
+            let said = problems(&[(name, value)]);
+            assert_eq!(said.len(), 1, "{name}={value}: {said:?}");
+            assert!(said[0].contains(name), "{said:?}");
+        }
+    }
+
+    proptest::proptest! {
+        /// Whatever the two numbers are, they are refused exactly when they are outside their bounds.
+        #[test]
+        fn the_bounds_decide_for_every_number(poll in 0u64..200, page in 0u64..2000) {
+            let (poll_text, page_text) = (poll.to_string(), page.to_string());
+            let said = config(&[
+                ("JIRA_URL", "https://jira.example.org"),
+                ("JIRA_POLL_SECS", &poll_text),
+                ("JIRA_PAGE_SIZE", &page_text),
+            ])
+            .check();
+            proptest::prop_assert_eq!(said.iter().any(|p| p.contains("JIRA_POLL_SECS")), poll < MIN_POLL_SECS);
+            proptest::prop_assert_eq!(
+                said.iter().any(|p| p.contains("JIRA_PAGE_SIZE")),
+                page == 0 || page > MAX_PAGE_SIZE
             );
         }
     }

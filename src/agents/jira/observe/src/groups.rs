@@ -98,7 +98,7 @@ impl JiraGroupObserver {
         loop {
             let mut params = vec![
                 ("query".to_string(), String::new()),
-                ("maxResults".to_string(), PAGE_SIZE.to_string()),
+                ("maxResults".to_string(), state.page_size.to_string()),
             ];
             params.extend(
                 walk.groups
@@ -157,9 +157,6 @@ pub struct GroupWalk {
     warned_no_total: bool,
 }
 
-/// How many groups a page asks for; the picker answers at most its autocomplete limit, which may be fewer.
-const PAGE_SIZE: usize = 50;
-
 /// The longest request the group walk sends, in bytes: within the 8 KiB request line and headers a Tomcat (and so a
 /// Data Center) accepts by default, with room for the headers.
 pub const MAX_URL_LEN: usize = 6 * 1024;
@@ -185,6 +182,7 @@ impl Actor for JiraGroupObserver {
             args.tcp_client,
             Duration::from_secs(args.base_interval),
         )
+        .with_page_size(args.page_size)
         .with_retry(args.retry, args.clock)
         .with_health(args.health))
     }

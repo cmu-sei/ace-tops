@@ -799,10 +799,10 @@ impl ConfigurationHandle {
         }
     }
 
-    /// Applies an update without checking who sent it. Only for this crate's own tests: nothing
-    /// outside may change the configuration without a verified signature.
-    #[cfg(test)]
-    pub(crate) async fn apply_unchecked(
+    /// Applies an update without checking who sent it. Only for tests, this crate's and, with the `testing` feature, an
+    /// agent's: nothing else may change the configuration without a verified signature.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn apply_unchecked(
         &self,
         version: u64,
         changes: Vec<(String, String)>,

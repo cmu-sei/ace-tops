@@ -36,6 +36,7 @@ use kube_common::{
     RESOURCE_DELETED_ACTION, RawKubeEvent,
 };
 use polar::cassini::TcpClient;
+use polar_agent_builder::ConfigurationHandle;
 use polar_agent_builder::protocol::kubernetes::{self, Kubernetes, Resource};
 use polar_agent_builder::protocol::{
     Delivery, Failure, Location, Operation, OperationDecl, ProtocolHandle, ProtocolKind,
@@ -228,7 +229,7 @@ impl Publisher for TcpClient {
 }
 
 /// How long a watch that ended waits before it is asked for again.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Waits {
     /// When it lost the API.
     pub lost: Duration,
@@ -236,17 +237,14 @@ pub struct Waits {
     pub refused: Duration,
 }
 
-pub const WAITS: Waits = Waits {
-    lost: Duration::from_secs(5),
-    refused: Duration::from_secs(300),
-};
-
 pub enum WatcherMsg {
     /// What a watch said, or that it has ended.
     Seen {
         watched: Watched,
         delivery: Delivery<Seen>,
     },
+    /// A signed update changed how long a watch waits.
+    WaitsChanged(Waits),
     /// Time to ask for a watch again.
     Again(Watched),
 }
@@ -254,7 +252,15 @@ pub enum WatcherMsg {
 pub struct ClusterWatcherArgs {
     pub protocols: ProtocolHandle,
     pub publisher: Arc<dyn Publisher>,
-    pub waits: Waits,
+    pub waits: WaitsFrom,
+}
+
+/// Where the watcher has its waits.
+pub enum WaitsFrom {
+    /// The configuration, which it follows.
+    Followed(ConfigurationHandle),
+    /// As given: a test whose waits are shorter than a setting can say.
+    Fixed(Waits),
 }
 
 pub struct ClusterWatcherState {
@@ -264,6 +270,21 @@ pub struct ClusterWatcherState {
     namespaces: Namespaces,
     /// Each watch in progress, which ends when it is dropped from here.
     streams: BTreeMap<Watched, Streaming>,
+}
+
+/// The watcher holds the waits, so it follows them. The answer is the waits in force.
+pub async fn follow_waits(
+    configuration: &ConfigurationHandle,
+    myself: &ActorRef<WatcherMsg>,
+) -> Result<Waits, polar_agent_builder::configuration::FollowError> {
+    configuration
+        .follow_group(
+            crate::settings::VARIABLES,
+            crate::settings::waits,
+            myself,
+            WatcherMsg::WaitsChanged,
+        )
+        .await
 }
 
 /// Every watch, and what publishes what they see. Waiting to publish holds this actor, and through its one mailbox every watch: the
@@ -397,10 +418,14 @@ impl Actor for ClusterWatcher {
         myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        let waits = match &args.waits {
+            WaitsFrom::Followed(configuration) => follow_waits(configuration, &myself).await?,
+            WaitsFrom::Fixed(waits) => *waits,
+        };
         let mut state = ClusterWatcherState {
             protocols: args.protocols,
             publisher: args.publisher,
-            waits: args.waits,
+            waits,
             namespaces: Namespaces::default(),
             streams: BTreeMap::new(),
         };
@@ -428,6 +453,8 @@ impl Actor for ClusterWatcher {
                 Ok(seen) => state.seen(&myself, &watched, seen).await?,
                 Err(why) => state.ended(&myself, watched, &why),
             },
+            // A watch already waiting keeps what it was told.
+            WatcherMsg::WaitsChanged(waits) => state.waits = waits,
             WatcherMsg::Again(watched) => {
                 if state.wants(&watched) {
                     state.start(&myself, watched)?;
@@ -659,7 +686,7 @@ mod tests {
             ClusterWatcherArgs {
                 protocols: site.handle.clone(),
                 publisher: kept.clone(),
-                waits,
+                waits: WaitsFrom::Fixed(waits),
             },
         )
         .await
@@ -1042,5 +1069,48 @@ mod tests {
         let asked = api.asked_of(NAMESPACES).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(api.asked_of(NAMESPACES).await, asked);
+    }
+
+    /// The watcher follows its waits, and a new one is what the next ended watch goes by.
+    #[tokio::test]
+    async fn the_waits_are_followed_and_the_next_ended_watch_goes_by_them() {
+        let api = KubeApi::start().await;
+        let (_site, mut state, deaf) = state_over(&api).await;
+        let env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let configuration = ConfigurationHandle::spawn(
+            None,
+            crate::TCP_CLIENT_NAME,
+            polar_env::Config::builder(&env)
+                .register(&crate::settings::SECTION)
+                .build(),
+            None,
+            deaf.get_cell(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            follow_waits(&configuration, &deaf).await.unwrap(),
+            Waits {
+                lost: Duration::from_secs(5),
+                refused: Duration::from_secs(300)
+            }
+        );
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&crate::settings::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+
+        let new = Waits {
+            lost: Duration::from_secs(7),
+            refused: Duration::from_secs(70),
+        };
+        ClusterWatcher
+            .handle(deaf, WatcherMsg::WaitsChanged(new), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(state.waits, new);
     }
 }

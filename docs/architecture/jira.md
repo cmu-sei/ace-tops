@@ -33,7 +33,7 @@ step that failed there was fixed; the fixes are in the sections below.
 
 ## What the observer reads
 
-Four polar-env variables, section `jira` (`jira/observe/src/settings.rs`), every one Dynamic since 2026-11-01 (a signed
+Six polar-env variables, section `jira` (`jira/observe/src/settings.rs`), every one Dynamic since 2026-11-01 (a signed
 update changes it while the agent runs, below), the `egress` section, Static (`POLAR_EGRESS_PROXY`,
 `POLAR_EGRESS_NO_PROXY`, `POLAR_EGRESS_CA_CERT`; egress.md: the cluster's setting, its CA a mounted file), and one
 runtime section, `credentials` (below, "The credential"):
@@ -44,6 +44,8 @@ runtime section, `credentials` (below, "The credential"):
 | `JIRA_ANONYMOUS` | default `false` | `true` reads the site without a credential, only what it shows the public: no `Authorization` header, no `/myself` check, no `credentials` section needed, and the users observer is not started (below) |
 | `JIRA_DEPLOYMENT` | optional | `cloud`, `server` or `datacenter` (any case), anything else refused (`parse_deployment`); used only where the site's `serverInfo` does not say its `deploymentType`; unset too, Cloud only for an `.atlassian.net` address |
 | `QUERY_DATE` | optional | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM` (or with `/`), anything else refused (`parse_query_date`); when the graph has no issue yet, the first issue pull asks only for `updated > "QUERY_DATE"`, quoted; once it has one, the first pull starts from the graph instead (below) |
+
+`JIRA_POLL_SECS` (default 1800, at least 60) is the seconds between two pulls, and `JIRA_PAGE_SIZE` (default 50, from 1 to 1000) how many items one request asks for; a site answers with what it allows, which may be fewer.
 
 `JIRA_TOKEN` and `JIRA_EMAIL` are gone since 3.0.0 (`96ddd517`): a document that still gives either is refused by name,
 as any variable the agent does not declare.
@@ -143,7 +145,7 @@ Drawn as built: [`held_agent_and_dynamic_setting`](sequences/general/held_agent_
 4. A token that decodes from base64 to printable text is warned about when the token is checked (`settings.rs`,
    `token_looks_base64`, on what the CryptoActor gives); a Data Center token, itself base64-looking, decodes to binary
    and does not trip it.
-5. Projects, groups, users and issues each pull at once and then every 1800 s (`agent.rs:39`). **Before its first
+5. Projects, groups, users and issues each pull at once and then every `JIRA_POLL_SECS`, 1800 s by default. **Before its first
    issue pull** the issue observer asks the state agent (`soft-state.md`) for the newest `updated_ms` of a `JiraIssue`
    in the graph, which jira-processor writes for every issue from Jira's system field `updated` (found by its `/field`
    schema, not by its display name, and passed as `polar_updated`): `Max { JiraIssue, updated_ms }`, through the state
@@ -190,7 +192,7 @@ Drawn as built: [`held_agent_and_dynamic_setting`](sequences/general/held_agent_
      placed. Several observers may hold at once (DECIDED, to review): each releases only its own, so one observer's
      success never ends another's hold; the health actor keeps one standing problem, the latest, and each is logged at
      error by its observer.
-   - **Settings change at run time** (`e0901170`, revised 2026-11-04, `dynamic-settings.md`): the supervisor follows the four
+   - **Settings change at run time** (`e0901170`, revised 2026-11-04, `dynamic-settings.md`): the supervisor follows the six
      settings as one value, made by `prepare`. A new value replaces the one in force and the observers start again. An
      update that could not work is refused by the agent's judge, also `prepare`: the values in force stay, the observers
      run on, and the outcome says why. It used to stop them and hold `Configuration`. The scheduler replays the signed documents to an agent
@@ -351,7 +353,7 @@ Decided where the review and the design principles were silent, by the agent tha
 1. **A 400 is `Configuration`** beside 404 and 410: the same request cannot succeed (a JQL Jira refuses).
 2. **"A configuration endpoint" is one that describes the site:** `/myself`, `/serverInfo`, `/field`. A body that does
    not decode from a search or a picker is `Transient`.
-3. **`Retry-After` is capped at the base interval** (1800 s): a site asking for longer is asked again at the next
+3. **`Retry-After` is capped at the base interval** (`JIRA_POLL_SECS`): a site asking for longer is asked again at the next
    ordinary pull, and a hostile header cannot pause the observer for days. Seconds and HTTP dates are both read
    (chrono, added to jira-observer).
 4. **An issue walk re-anchors its relative window per page** (by the time since it began), rather than freezing the

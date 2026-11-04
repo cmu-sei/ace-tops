@@ -25,8 +25,7 @@
 
 Step 6 of the order of work (`remaining-work.md`, "EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC"). The maintainer asked for one
 reaction in the builder rather than Jira's by hand in every agent, and a shared test that fails a Dynamic setting nothing
-reacts to. Designed and cleared 2026-11-04. **The builder's half is built, with Jira, the git controller and logging on it;
-the other agents are not yet** ("The order", below).
+reacts to. Designed and cleared 2026-11-04. **Built: the builder's half and every variable in the tables below. Not yet seen on a cluster** ("The order", below).
 
 ## What holds it together
 
@@ -104,26 +103,29 @@ All following now. Logging, `RUST_LOG`, `POLAR_TRACE_FILTER` (the infrastructure
 `_PROPOSAL_TTL_SECS`, `_WARMUP_SECS` (one group, the controller's supervisor, where they had been read with `current()` at each
 use with a fallback written out each time).
 
-### Dynamic, new (step 2)
+### Dynamic, new (built 2026-11-04)
 
-| Variable | Agent | Reaction |
+Each follows in the actor that holds it, which also means each is read through `follow` at its start.
+
+| Variable | Agent | Who follows it, and what a new value does |
 |---|---|---|
-| `POLAR_GIT_PUBLISH_BATCH` | git-repo-observer | restart its workers |
-| `POLAR_STATE_GRAPH_TIMEOUT_SECS` | soft-state observer | next use |
-| `POLAR_HEALTH_ASK_INTERVAL_SECS` | soft-state processor | replace the timer |
-| `POLAR_HEALTH_ANSWER_TIMEOUT_SECS` | soft-state processor | next use (the check that it stays below the interval is there) |
-| `POLAR_STATE_REPLY_TIMEOUT_SECS`, `_ATTEMPTS`, `_UNAVAILABLE_RETRY_SECS`, `_UNAVAILABLE_LIMIT_SECS` | every agent that reads state, the builder's own | next use |
+| `POLAR_GIT_PUBLISH_BATCH` | git-repo-observer | each worker; its next batch is that size. The first design restarted the workers; with the actor following it they need no restart |
+| `POLAR_STATE_GRAPH_TIMEOUT_SECS` | soft-state observer | the supervisor; the next read goes by it |
+| `POLAR_HEALTH_ASK_INTERVAL_SECS`, `POLAR_HEALTH_ANSWER_TIMEOUT_SECS` | soft-state processor | the supervisor, as one group: the check that the wait stays below the interval holds only together. A new interval replaces the timer; a round in flight closes by the wait it began with |
+| `POLAR_STATE_REPLY_TIMEOUT_SECS`, `_ATTEMPTS`, `_UNAVAILABLE_RETRY_SECS`, `_UNAVAILABLE_LIMIT_SECS` | every agent that reads state, the builder's own | the state actor, as one group; the next question goes by them, and one already waiting keeps what it started with |
 
-### Constants that become variables (cleared 2026-11-04)
+### Constants that became variables (cleared and built 2026-11-04)
 
-The list above is short. Most of what an operator would want to tune was not a variable:
+The list above is short. Most of what an operator would want to tune was not a variable. Their defaults are what the constants were.
 
-| Constant | Where | Now |
-|---|---|---|
-| `BASE_INTERVAL_SECS` | `jira/observe/src/agent.rs:44` (`TODO: read this from configuration`) | 1800 |
-| `PAGE_SIZE` (three) | `jira/observe/src/{groups,issues,users}.rs` | 50 |
-| `INTERVAL` (two) | `polar-scheduler/observer/src/{deployment_copy,deployment_record}.rs` | 10 s, 30 s |
-| `lost`, `refused` | `kubernetes/observe/src/watches.rs:240` | 5 s, 300 s |
+| Variable | Default | Agent | Who follows it, and what a new value does |
+|---|---|---|---|
+| `JIRA_POLL_SECS` | 1800, at least 60 | jira-observer | the supervisor, in the group with the other settings; the observers start again with it |
+| `JIRA_PAGE_SIZE` | 50, from 1 to 1000 | jira-observer | the same |
+| `POLAR_SCHEDULER_DEPLOYMENT_COPY_SECS` | 10, a 0 taken as 1 | scheduler observer | the copy actor, which replaces its timer. Only while the copy runs: nothing follows it after the handoff, and an update says so |
+| `POLAR_SCHEDULER_DEPLOYMENT_RECORD_SECS` | 30, a 0 taken as 1 | scheduler observer | the record actor, which replaces its timer |
+| `POLAR_KUBE_WATCH_LOST_SECS` | 5, at least 1 | kube-observer | the watcher, once it has started (at the first registration); the next ended watch goes by it, and one already waiting keeps what it was told |
+| `POLAR_KUBE_WATCH_REFUSED_SECS` | 300, at least 1 | kube-observer | the same |
 
 Left as constants: the git controller's admission limits (`MAX_ENTRIES` and the like, bounds on what proposers can do), the
 drain windows (the shutdown budget is computed from them), and `DRIFT_GRACE_SECS` (a detection window, for slice C to settle).
@@ -183,7 +185,7 @@ so a value given in the `POLAR_CONFIG` document is missed. Not part of this.
    the shared check. Jira and the git controller moved onto them, and the infrastructure supervisor's logging. Jira's
    stop-and-hold went, and so did its filter of what changed (`touches_the_observers`), which held a branch that could never
    fire (egress is Static).
-2. **The new variables and the constants** above, each with a test of its `handle` and the shared check.
+2. **The new variables and the constants above. Built 2026-11-04**, each with a test of its `handle` and the shared check.
 3. **Live on u7s:** a signed update to one variable of each reaction, an update that is refused, and a restart to see the
    replay put the value back.
 

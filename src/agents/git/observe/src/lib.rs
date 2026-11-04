@@ -32,6 +32,7 @@ use git2::{Oid, Repository};
 use polar::cassini::TcpClient;
 use polar::graph::nodes::git::RepoId;
 use polar::topics::GIT_REPOSITORY_EVENTS;
+use polar_agent_builder::ConfigurationHandle;
 use polar_agent_builder::protocol::ProtocolHandle;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SpawnErr, SupervisionEvent, async_trait};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -129,8 +130,8 @@ struct RunningWorker {
 
 pub struct GitRepoSupervisorState {
     cache_root: PathBuf,
-    /// How many events each worker publishes at once (`settings::PUBLISH_BATCH`).
-    publish_batch: usize,
+    /// What each worker follows its settings from.
+    configuration: ConfigurationHandle,
     workers: HashMap<RepoId, RunningWorker>,
     tcp_client: TcpClient,
     protocols: ProtocolHandle,
@@ -138,8 +139,8 @@ pub struct GitRepoSupervisorState {
 
 pub struct GitRepoSupervisorArgs {
     cache_root: PathBuf,
-    /// How many events each worker publishes at once (`settings::PUBLISH_BATCH`).
-    pub publish_batch: usize,
+    /// What each worker follows its settings from.
+    pub configuration: ConfigurationHandle,
     tcp_client: TcpClient,
     /// Where each worker asks for its repository.
     protocols: ProtocolHandle,
@@ -221,7 +222,7 @@ impl GitRepoSupervisor {
             protocols: state.protocols.clone(),
             repo_path: state.cache_root.join(repo_id.to_string()),
             tcp_client: state.tcp_client.clone(),
-            publish_batch: state.publish_batch,
+            configuration: state.configuration.clone(),
         };
 
         match Actor::spawn_linked(
@@ -268,7 +269,7 @@ impl Actor for GitRepoSupervisor {
 
         Ok(GitRepoSupervisorState {
             cache_root: args.cache_root,
-            publish_batch: args.publish_batch,
+            configuration: args.configuration,
             tcp_client: args.tcp_client,
             protocols: args.protocols,
             workers: HashMap::new(),
@@ -362,6 +363,8 @@ pub enum GitRepoWorkerMsg {
     /// The `credentials` section was replaced. A worker waiting for its credential tries at once; any other
     /// ignores it, since it asks for its credential again at every fetch.
     CredentialsChanged,
+    /// A signed update changed the batch: the next one published is this size.
+    PublishBatchChanged(usize),
 }
 
 pub struct GitRepoWorker;
@@ -392,8 +395,8 @@ pub struct GitRepoWorkerArgs {
     repo_path: PathBuf,
     tcp_client: TcpClient,
     protocols: ProtocolHandle,
-    /// How many events are published at once (`settings::PUBLISH_BATCH`).
-    publish_batch: usize,
+    /// What the worker follows its batch from (`settings::PUBLISH_BATCH`).
+    configuration: ConfigurationHandle,
 }
 
 /// The event a commit found on `ref_name` is published as.
@@ -828,6 +831,24 @@ impl GitRepoWorker {
     }
 }
 
+impl GitRepoWorker {
+    /// The worker holds the batch, so it follows it. The answer is the batch in force.
+    async fn follow_batch(
+        configuration: &ConfigurationHandle,
+        myself: &ActorRef<GitRepoWorkerMsg>,
+    ) -> Result<usize, polar_agent_builder::configuration::FollowError> {
+        let names: [&dyn polar_env::Described; 1] = [&settings::PUBLISH_BATCH];
+        configuration
+            .follow_group(
+                &names,
+                settings::publish_batch,
+                myself,
+                GitRepoWorkerMsg::PublishBatchChanged,
+            )
+            .await
+    }
+}
+
 #[async_trait]
 impl Actor for GitRepoWorker {
     type Msg = GitRepoWorkerMsg;
@@ -842,6 +863,7 @@ impl Actor for GitRepoWorker {
         debug!("{myself:?} starting");
         // Nothing is cloned here: the repository may name a credential that has not arrived, and the first
         // attempt (post_start) is the one that finds out.
+        let publish_batch = Self::follow_batch(&args.configuration, &myself).await?;
         let mut config = args.config;
         config.refs = tracked_refs(&config.remotes, &config.refs);
         Ok(GitRepoWorkerState {
@@ -850,7 +872,7 @@ impl Actor for GitRepoWorker {
             protocols: args.protocols,
             repo: None,
             checkpoints: HashMap::new(),
-            publish_batch: args.publish_batch,
+            publish_batch,
             waiting: false,
             status: StatusTracker::new(config.repo_id.clone()),
             config,
@@ -887,6 +909,9 @@ impl Actor for GitRepoWorker {
                     std::time::Duration::from_secs(state.config.frequency),
                     || GitRepoWorkerMsg::Observe,
                 ));
+            }
+            GitRepoWorkerMsg::PublishBatchChanged(batch) => {
+                state.publish_batch = batch;
             }
             GitRepoWorkerMsg::CredentialsChanged => {
                 if state.waiting {
@@ -1025,7 +1050,7 @@ mod tests {
                 config,
                 tcp_client: TcpClient::from_actor_ref(sink),
                 protocols: site.handle.clone(),
-                publish_batch: crate::settings::DEFAULT_PUBLISH_BATCH,
+                configuration: configuration().await,
             },
         )
         .await
@@ -1421,7 +1446,7 @@ mod tests {
             GitRepoSupervisor,
             GitRepoSupervisorArgs {
                 cache_root: cache.path().to_path_buf(),
-                publish_batch: crate::settings::DEFAULT_PUBLISH_BATCH,
+                configuration: configuration().await,
                 tcp_client: TcpClient::from_actor_ref(sink),
                 protocols: site.handle.clone(),
             },
@@ -1910,5 +1935,109 @@ mod tests {
         reconcile(&rig, set(&[url], true));
         assert_eq!(workers_in(&rig).await, 1);
         rig.supervisor.stop(None);
+    }
+
+    /// The live configuration, as the builder gives it, with the observer's defaults.
+    async fn configuration() -> ConfigurationHandle {
+        struct Parent;
+        #[async_trait]
+        impl Actor for Parent {
+            type Msg = ();
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<()>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let (parent, _) = Actor::spawn(None, Parent, ()).await.unwrap();
+        let env: HashMap<String, String> = HashMap::new();
+        ConfigurationHandle::spawn(
+            None,
+            crate::agent::AGENT_NAME,
+            polar_env::Config::builder(&env)
+                .register(&settings::SECTION)
+                .build(),
+            None,
+            parent.get_cell(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A worker follows the batch while it runs, and a new one is what the next publish goes by. At least one.
+    #[tokio::test]
+    async fn a_worker_follows_the_batch_and_the_next_publish_goes_by_it() {
+        struct Deaf;
+        #[async_trait]
+        impl Actor for Deaf {
+            type Msg = GitRepoWorkerMsg;
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(
+                &self,
+                _: ActorRef<Self::Msg>,
+                _: (),
+            ) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let configuration = configuration().await;
+        let (myself, _) = Actor::spawn(None, Deaf, ()).await.unwrap();
+        assert_eq!(
+            GitRepoWorker::follow_batch(&configuration, &myself)
+                .await
+                .unwrap(),
+            settings::DEFAULT_PUBLISH_BATCH
+        );
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&settings::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+        // A new one is what the next publish goes by.
+        let (site, _crypto) = handler().await;
+        let url = "https://nowhere.invalid/a.git";
+        let mut state = GitRepoWorkerState {
+            config: RepoObservationConfig::new(
+                RepoId::from_url(url),
+                url.to_string(),
+                vec!["origin".to_string()],
+                None,
+                Vec::new(),
+            ),
+            repo_path: PathBuf::from("/nowhere"),
+            tcp_client: TcpClient::from_actor_ref(
+                Actor::spawn(
+                    None,
+                    Sink {
+                        received: Arc::new(Mutex::new(Vec::new())),
+                    },
+                    (),
+                )
+                .await
+                .unwrap()
+                .0,
+            ),
+            protocols: site.handle.clone(),
+            repo: None,
+            checkpoints: HashMap::new(),
+            publish_batch: settings::DEFAULT_PUBLISH_BATCH,
+            waiting: false,
+            status: StatusTracker::new(RepoId::from_url(url)),
+            next: None,
+        };
+        GitRepoWorker
+            .handle(myself, GitRepoWorkerMsg::PublishBatchChanged(3), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(state.publish_batch, 3);
+
+        // Zero is taken as one, so it does not stop a worker.
+        let mut zero = (*configuration.current().await.unwrap()).clone();
+        zero.apply_overrides(&[("POLAR_GIT_PUBLISH_BATCH", "0")])
+            .unwrap();
+        assert_eq!(settings::publish_batch(&zero).unwrap(), 1);
     }
 }

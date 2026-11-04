@@ -32,7 +32,8 @@ pub static ASK_INTERVAL_SECS: Defaulted<u64> = Defaulted::seconds(
     "how often the state agent's writer asks every workload its `agents` section names about its health, in \
      seconds (docs/architecture/soft-state.md)",
     "60",
-);
+)
+.dynamic();
 
 /// How long a round waits for the answers: a workload that has not answered by then is unresponsive.
 pub static ANSWER_TIMEOUT_SECS: Defaulted<u64> = Defaulted::seconds(
@@ -40,9 +41,10 @@ pub static ANSWER_TIMEOUT_SECS: Defaulted<u64> = Defaulted::seconds(
     "how long the state agent's writer waits for each workload's answer in one round, in seconds; a workload that \
      has not answered by then is written as unresponsive. Less than POLAR_HEALTH_ASK_INTERVAL_SECS",
     "10",
-);
+)
+.dynamic();
 
-static VARIABLES: &[&dyn Described] = &[&ASK_INTERVAL_SECS, &ANSWER_TIMEOUT_SECS];
+pub static VARIABLES: &[&dyn Described] = &[&ASK_INTERVAL_SECS, &ANSWER_TIMEOUT_SECS];
 
 /// The section the writer registers.
 pub static SECTION: Section = Section {

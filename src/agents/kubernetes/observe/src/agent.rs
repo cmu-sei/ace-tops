@@ -36,6 +36,7 @@ impl PolarAgent for KubeObserver {
     const PURPOSE: &'static str =
         "Watches the Kubernetes API and publishes what it sees to Cassini";
     const NEEDS: &'static [Capability] = &[Capability::KubeApiRead];
+    const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
     const OPERATIONS: &'static [OperationDecl] = &[crate::watches::WATCH];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
@@ -47,8 +48,8 @@ impl PolarAgent for KubeObserver {
         "kube-observer watches the cluster's resources through the Kubernetes API, with the \
          service account the deployment gives it (read access to everything, nothing else), and \
          publishes each change on Cassini for kube-consumer to project into the graph. The \
-         cluster API address and its token are the ones Kubernetes gives every pod, so it reads \
-         no variables of its own.",
+         cluster API address and its token are the ones Kubernetes gives every pod. Its own \
+         variables are how long a watch that ended waits before it is asked for again.",
     );
 
     async fn start(configured: Configured) -> Result<(), StartError> {

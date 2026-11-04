@@ -29,6 +29,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod agent;
+pub mod settings;
 pub mod supervisor;
 pub mod watches;
 

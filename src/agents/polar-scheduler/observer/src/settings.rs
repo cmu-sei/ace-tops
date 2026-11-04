@@ -91,6 +91,35 @@ pub static DEPLOYMENT_TARGET_URL: Optional<String> = Optional::text(
     "the deployment repository on Polar's git server, which the copy goes to with this agent's own certificate",
 );
 
+/// How often the deployment's record is looked for.
+pub static DEPLOYMENT_RECORD_SECS: Defaulted<u64> = Defaulted::seconds(
+    "POLAR_SCHEDULER_DEPLOYMENT_RECORD_SECS",
+    "how often, in seconds, the observer looks in the deployment repository for the signed record to deliver to the \
+     attestation agent; at least 1",
+    "30",
+)
+.dynamic();
+
+/// How often the deployment is copied to Polar's git server, until the handoff.
+pub static DEPLOYMENT_COPY_SECS: Defaulted<u64> = Defaulted::seconds(
+    "POLAR_SCHEDULER_DEPLOYMENT_COPY_SECS",
+    "how often, in seconds, the observer looks for what is new to copy to Polar's git server, until the handoff is \
+     done; at least 1",
+    "10",
+)
+.dynamic();
+
+/// A number of seconds in force, as the timer it sets: at least one.
+pub fn seconds<V>(config: &Config, variable: &V) -> Result<std::time::Duration, String>
+where
+    V: polar_env::Readable<Out = u64>,
+{
+    config
+        .read(variable)
+        .map(|secs| std::time::Duration::from_secs(secs.max(1)))
+        .map_err(|e| e.to_string())
+}
+
 static VARIABLES: &[&dyn Described] = &[
     &DEPLOYMENT_URL,
     &DEPLOYMENT_SOURCE_URL,
@@ -98,6 +127,8 @@ static VARIABLES: &[&dyn Described] = &[
     &DEPLOYMENT_SOURCE_CERT,
     &DEPLOYMENT_SOURCE_KEY,
     &DEPLOYMENT_TARGET_URL,
+    &DEPLOYMENT_RECORD_SECS,
+    &DEPLOYMENT_COPY_SECS,
     &LOCAL_PATH,
     &REMOTE_URL,
     &SYNC_INTERVAL,

@@ -32,9 +32,10 @@ pub static GRAPH_TIMEOUT_SECS: Defaulted<u64> = Defaulted::seconds(
     "how long the state agent waits for the graph to answer one read, in seconds; a read not answered by then is \
      answered as unavailable, and the asker tries again (docs/architecture/soft-state.md)",
     "10",
-);
+)
+.dynamic();
 
-static VARIABLES: &[&dyn Described] = &[&GRAPH_TIMEOUT_SECS];
+pub static VARIABLES: &[&dyn Described] = &[&GRAPH_TIMEOUT_SECS];
 
 /// The section the state agent registers.
 pub static SECTION: Section = Section {

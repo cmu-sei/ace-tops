@@ -104,7 +104,7 @@ impl JiraUserObserver {
                 JiraDeployment::Cloud => (op, vec![("query", "''".to_string())]),
             };
             params.push(("startAt", walk.start_at.to_string()));
-            params.push(("maxResults", PAGE_SIZE.to_string()));
+            params.push(("maxResults", state.page_size.to_string()));
             let url = Url::parse_with_params(&format!("{}{endpoint}", state.jira_url), params)?;
             debug!("{url}");
 
@@ -157,9 +157,6 @@ pub struct UserWalk {
 /// A Data Center's and Server's search for users by name, paged by `startAt`.
 const USER_SEARCH_OP: &str = "/rest/api/2/user/search";
 
-/// How many users a page asks for.
-const PAGE_SIZE: usize = 50;
-
 #[async_trait]
 impl Actor for JiraUserObserver {
     type Msg = JiraObserverMessage;
@@ -181,6 +178,7 @@ impl Actor for JiraUserObserver {
             args.tcp_client,
             Duration::from_secs(args.base_interval),
         )
+        .with_page_size(args.page_size)
         .with_retry(args.retry, args.clock)
         .with_health(args.health))
     }
