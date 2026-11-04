@@ -866,8 +866,6 @@ Each step is taken in bites, each reported before the next.
   - *No target renders `CREDENTIALS_AGENT_INTROSPECTION_*`,* so an IdP token is refused at introspection everywhere. `user-cert-fetcher` reads a token from a file; nothing in the code uses the `browser-cert-fetcher` client Keycloak is given.
   - *The release flow has no signature and no comparison:* a tag is annotated and unsigned, `images.nu publish` is not tied to the tag or the lock, and `images.nu import` records what it copied without comparing it with the committed lock.
   - *Stale comments and text:* `infra/targets/sandbox-local/target.nu:64`, `infra/up.nu:309-312` and `:847`, the retrieve comment in `credentials-agent/common/src/lib.rs`, `policy-enforcement.md:267`.
-- [ ] **The scheduler observer restarts about five times per certificate** (seen on u7s, 2026-11-04; `deployments.md`, item 4). It has no custody daemon, so `polar-init` keeps a bundle that is
-  still valid (`keeps_existing_bundle`), which brings it back into the certificate it is rejuvenating away from, until that expires. A first thought, not decided: keep a bundle only with more left than the rejuvenation threshold.
 - [ ] **Stale text** (`docs/` and comments that no longer say what is true):
   - `docs/architecture/git/agents.md` is conceptually sound but stale (2026-10-10): its tree shows `GitObserverRoot` owning the client, it
     omits the `GIT_REPO_CONFIG_EVENTS` configuration path (the README describes `GIT_AGENT_CONFIG` JSON instead), topics, shutdown and

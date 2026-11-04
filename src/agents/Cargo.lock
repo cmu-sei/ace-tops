@@ -1184,6 +1184,7 @@ dependencies = [
  "polar-custody",
  "polar-scudo",
  "polar-version",
+ "proptest",
  "rand 0.10.3",
  "rcgen",
  "reqwest 0.12.28",

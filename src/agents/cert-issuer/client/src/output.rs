@@ -112,6 +112,9 @@ pub enum ExistingBundle {
 /// duplicate, so using it again issues nothing new. Anything short of a complete, matching, valid bundle is
 /// `Unusable`, and the caller asks for a new certificate as before.
 ///
+/// So is one that has no more than `must_outlast` left: a pod restarted to rejuvenate must not come back to the
+/// certificate it is leaving (docs/architecture/deployments.md, item 4).
+///
 /// With `pinned_ca`, the CA the pod was given, the certificate is judged against it and not against the `ca.pem`
 /// beside it, which came with the certificate and so vouches for nothing.
 pub fn existing_bundle(
@@ -121,6 +124,7 @@ pub fn existing_bundle(
     names: &[String],
     usage: Usage,
     now: std::time::SystemTime,
+    must_outlast: std::time::Duration,
 ) -> ExistingBundle {
     let read = |name: &str| std::fs::read(dir.join(name));
     let cert_pem = match read("cert.pem") {
@@ -139,17 +143,31 @@ pub fn existing_bundle(
             Err(e) => return ExistingBundle::Unusable(format!("ca.pem cannot be read: {e}")),
         },
     };
-    match judge(
-        &cert_pem,
-        Key::File(&key_pem),
-        &ca_pem,
-        ca_name,
-        identity,
-        names,
-        usage,
-        now,
-    ) {
-        Ok(not_after) => ExistingBundle::Reusable { not_after },
+    let judged_at = |at| {
+        judge(
+            &cert_pem,
+            Key::File(&key_pem),
+            &ca_pem,
+            ca_name,
+            identity,
+            names,
+            usage,
+            at,
+        )
+    };
+    match judged_at(now) {
+        Ok(not_after) => {
+            // An agent rejuvenates with the threshold left, so more than that is what it takes.
+            let past_it = now + must_outlast + std::time::Duration::from_secs(1);
+            if !must_outlast.is_zero() && judged_at(past_it).is_err() {
+                ExistingBundle::Unusable(format!(
+                    "the certificate, valid until {not_after}, has no more than {} seconds left",
+                    must_outlast.as_secs()
+                ))
+            } else {
+                ExistingBundle::Reusable { not_after }
+            }
+        }
         Err(why) => ExistingBundle::Unusable(why),
     }
 }
