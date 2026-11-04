@@ -490,6 +490,15 @@ def main [] {
             assert equal (init_env_value $job "POLAR_INIT_START_MARKER") null
         }
 
+        # A kept certificate must outlast the point the agent rejuvenates at, so polar-init is told the same number.
+        "polar-init is told the threshold its workload rejuvenates at, in a Deployment's pod alone": {
+            let r = (resolve "polar-scheduler-observer")
+            assert equal (init_env_value $r "POLAR_HEALTH_REJUVENATION_SECS") (env_value $r "POLAR_HEALTH_REJUVENATION_SECS")
+            assert ((init_env_value $r "POLAR_HEALTH_REJUVENATION_SECS") != null)
+            let job = (resolve_for sandbox-local "harness-sink")
+            assert equal (init_env_value $job "POLAR_HEALTH_REJUVENATION_SECS") null
+        }
+
         "a target with custody off renders every pod with key files, as before": {
             with_target { cluster: { custody: { enabled: false } }, workloads: {} } {|t|
                 let r = (resolve_for $t "kube-observer")

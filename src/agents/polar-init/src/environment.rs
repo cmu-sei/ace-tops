@@ -103,6 +103,7 @@ static VARIABLES: &[&dyn Described] = &[
     &CREDENTIALS_AGENT_IDENTITY,
     &ESCROW_BOOTSTRAP,
     &START_MARKER,
+    &polar_health::vars::REJUVENATION_SECS,
 ];
 
 /// What polar-init reads of its own.
@@ -176,6 +177,9 @@ pub struct InitSettings {
     pub custody_socket: Option<String>,
     /// Where to leave the start marker at the end of every run, if anywhere (docs/architecture/deployments.md, step 4).
     pub start_marker: Option<String>,
+    /// What a certificate left here by an earlier run must outlast to be kept: the point its agent rejuvenates at. One
+    /// that would not has the agent come back to the certificate it is leaving (docs/architecture/deployments.md, item 4).
+    pub must_outlast: std::time::Duration,
 }
 
 /// The one snapshot of the process polar-init runs on: its own variables and the Cassini
@@ -227,6 +231,23 @@ impl InitSettings {
             &mut note,
         );
         let start_marker = optional(START_MARKER.read(env), &mut note);
+        let threshold = match polar_health::vars::REJUVENATION_SECS.read(env) {
+            Ok(threshold) => {
+                threshold.unwrap_or(polar_health::vars::DEFAULT_REJUVENATION_THRESHOLD_SECS)
+            }
+            Err(e) => {
+                note(e.to_string());
+                polar_health::vars::DEFAULT_REJUVENATION_THRESHOLD_SECS
+            }
+        };
+        let must_outlast = u64::try_from(threshold).unwrap_or_else(|_| {
+            note(format!(
+                "{} must not be negative",
+                polar_health::vars::REJUVENATION_SECS.name()
+            ));
+            0
+        });
+        let must_outlast = std::time::Duration::from_secs(must_outlast);
         // Said once, whatever else is wrong: which address a mode needs.
         for problem in issuer_is_consistent(env) {
             note(problem);
@@ -259,6 +280,7 @@ impl InitSettings {
             escrow,
             custody_socket,
             start_marker,
+            must_outlast,
         })
     }
 }
@@ -291,6 +313,25 @@ mod tests {
 
     /// Asks for the bootstrap, as the `encryption` capability's init footprint does.
     const ESCROW: &[(&str, &str)] = &[("POLAR_INIT_ESCROW_BOOTSTRAP", "true")];
+
+    /// A kept certificate must outlast the point its agent rejuvenates at: what the deployment says, the agents' default otherwise.
+    #[test]
+    fn a_kept_certificate_must_outlast_the_rejuvenation_threshold() {
+        let s = InitSettings::from_env(&with(&[OWN])).unwrap();
+        assert_eq!(
+            s.must_outlast,
+            std::time::Duration::from_secs(
+                polar_health::vars::DEFAULT_REJUVENATION_THRESHOLD_SECS as u64
+            )
+        );
+        let s = InitSettings::from_env(&with(&[OWN, &[("POLAR_HEALTH_REJUVENATION_SECS", "450")]]))
+            .unwrap();
+        assert_eq!(s.must_outlast, std::time::Duration::from_secs(450));
+        assert!(
+            InitSettings::from_env(&with(&[OWN, &[("POLAR_HEALTH_REJUVENATION_SECS", "-1")]]))
+                .is_err()
+        );
+    }
 
     /// docs/architecture/deployments.md, step 4: where polar-init leaves the marker its workload takes as it starts.
     #[test]

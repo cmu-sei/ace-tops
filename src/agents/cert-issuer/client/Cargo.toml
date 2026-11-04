@@ -51,6 +51,7 @@ rand.workspace = true
 rustls.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tokio-rustls.workspace = true
 
 

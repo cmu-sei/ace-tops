@@ -361,6 +361,7 @@ async fn main() {
                     req,
                     pinned_ca.as_deref().map(str::as_bytes),
                     custody.as_ref(),
+                    settings.must_outlast,
                 )
                 .await;
             }
@@ -419,6 +420,7 @@ async fn main() {
                     &pinned_ca,
                     &offers,
                     custody.as_ref(),
+                    settings.must_outlast,
                 )
                 .await
                 {
@@ -535,11 +537,17 @@ fn stop(why: String) -> ! {
 /// Whether this pod already holds a usable certificate for `req`, so nothing is requested.
 ///
 /// It does when its init container ran before and the pod was not replaced: its sandbox recreated after a node
-/// restart, or a StatefulSet's pod restarted in place. Such a pod keeps its UID, and with it its instance binding, and
-/// the credentials agent refuses it a second certificate while the first is valid (`AlreadyHasValidCertificate`): the
-/// one in its own emptyDir is used again (2026-10-25: Neo4j's pod never started after its node restarted). Anything
-/// short of a complete, valid bundle for this identity, these names and this use is requested again, as before.
-fn keeps_existing_bundle(req: &CertRequest, dns_identity: &str, pinned_ca: Option<&[u8]>) -> bool {
+/// restart, or a pod restarted in place. The one in its own emptyDir is used again (2026-10-25: Neo4j's pod never started
+/// after its node restarted). Anything short of a complete, valid bundle for this identity, these names and this use is
+/// requested again, and so is one with no more than `must_outlast` left: a workload with a key file restarted to rejuvenate
+/// would otherwise come back to the certificate it is leaving, and go on restarting until that expires (docs/architecture/
+/// deployments.md, item 4; a certificate whose key is the daemon's never gets here).
+fn keeps_existing_bundle(
+    req: &CertRequest,
+    dns_identity: &str,
+    pinned_ca: Option<&[u8]>,
+    must_outlast: Duration,
+) -> bool {
     let Some(usage) = usage_of(&req.cert_type) else {
         return false;
     };
@@ -550,6 +558,7 @@ fn keeps_existing_bundle(req: &CertRequest, dns_identity: &str, pinned_ca: Optio
         &req.extra_sans,
         usage,
         std::time::SystemTime::now(),
+        must_outlast,
     ) {
         output::ExistingBundle::Reusable { not_after } => {
             tracing::info!(
@@ -577,6 +586,7 @@ async fn issue_cert(
     req: &CertRequest,
     pinned_ca: Option<&[u8]>,
     custody: Option<&Arc<CustodyClient>>,
+    must_outlast: Duration,
 ) {
     let algorithm = match (&req.key, custody) {
         (KeyMaker::Here(algorithm), _) => algorithm,
@@ -599,7 +609,7 @@ async fn issue_cert(
         }
         (KeyMaker::Custody, None) => stop(no_daemon(req)),
     };
-    if keeps_existing_bundle(req, dns_identity, pinned_ca) {
+    if keeps_existing_bundle(req, dns_identity, pinned_ca, must_outlast) {
         return;
     }
     tracing::info!(
@@ -1126,6 +1136,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn issue_cert_via_observer(
     observer: &credentials_agent_client::ObserverClient,
     sa_token: &str,
@@ -1134,6 +1145,7 @@ async fn issue_cert_via_observer(
     pinned_ca: &str,
     offers: &credentials_agent_common::session_offer::OfferCheck,
     custody: Option<&Arc<CustodyClient>>,
+    must_outlast: Duration,
 ) -> Result<(), String> {
     let Some(cert_type) = workload_cert_type(&req.cert_type) else {
         return Err(format!(
@@ -1152,7 +1164,7 @@ async fn issue_cert_via_observer(
         }
         (KeyMaker::Custody, None) => return Err(no_daemon(req)),
     };
-    if keeps_existing_bundle(req, dns_identity, Some(pinned_ca.as_bytes())) {
+    if keeps_existing_bundle(req, dns_identity, Some(pinned_ca.as_bytes()), must_outlast) {
         return Ok(());
     }
     tracing::info!(
@@ -1545,9 +1557,46 @@ mod tests {
             .parse()
             .unwrap();
         // Without a pinned CA the bundle agrees with itself,
-        assert!(keeps_existing_bundle(&req, ME, None));
+        assert!(keeps_existing_bundle(&req, ME, None, Duration::ZERO));
         // and the pinned CA did not sign it.
-        assert!(!keeps_existing_bundle(&req, ME, Some(ours.pem.as_bytes())));
+        assert!(!keeps_existing_bundle(
+            &req,
+            ME,
+            Some(ours.pem.as_bytes()),
+            Duration::ZERO
+        ));
+    }
+
+    /// A pod restarted to rejuvenate must not come back to the certificate it is leaving, or it rejuvenates again at
+    /// once, until that one expires: seen on u7s, five restarts for one certificate (docs/architecture/deployments.md, item 4).
+    #[test]
+    fn a_bundle_that_would_rejuvenate_at_once_is_not_kept() {
+        let ca = test_ca();
+        let (cert, key) = signed_by(&ca, &[ME]);
+        let dir = tempfile::TempDir::new().unwrap();
+        output::write_bundle(
+            dir.path(),
+            &output::OutputBundle {
+                cert_pem: &cert,
+                key_pem: &key,
+                ca_pem: &ca.pem,
+            },
+        )
+        .unwrap();
+        let req = a_request_into(&dir);
+        let pinned = Some(ca.pem.as_bytes());
+        assert!(keeps_existing_bundle(
+            &req,
+            ME,
+            pinned,
+            Duration::from_secs(300)
+        ));
+        assert!(!keeps_existing_bundle(
+            &req,
+            ME,
+            pinned,
+            Duration::from_secs(100 * 365 * 24 * 3600)
+        ));
     }
 
     #[test]
@@ -1816,6 +1865,7 @@ mod tests {
             &pinned,
             &offers,
             None,
+            Duration::ZERO,
         )
         .await
         .unwrap();
@@ -1826,7 +1876,8 @@ mod tests {
         assert!(keeps_existing_bundle(
             &a_request_into(&dir),
             ME,
-            Some(pinned.as_bytes())
+            Some(pinned.as_bytes()),
+            Duration::ZERO
         ));
     }
 
@@ -1847,6 +1898,7 @@ mod tests {
             &ours.pem,
             &offers_under(&ours),
             None,
+            Duration::ZERO,
         )
         .await
         .unwrap_err();
@@ -1881,6 +1933,7 @@ mod tests {
                 &ours.pem,
                 &offers_under(&ours),
                 None,
+                Duration::ZERO,
             )
             .await
             .unwrap_err();

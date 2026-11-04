@@ -226,7 +226,15 @@ mod existing {
 
     fn judge(dir: &TempDir, names: &[&str], usage: Usage) -> ExistingBundle {
         let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
-        existing_bundle(dir.path(), None, IDENTITY, &names, usage, SystemTime::now())
+        existing_bundle(
+            dir.path(),
+            None,
+            IDENTITY,
+            &names,
+            usage,
+            SystemTime::now(),
+            Duration::ZERO,
+        )
     }
 
     fn unusable_because(result: ExistingBundle, words: &str) {
@@ -281,9 +289,67 @@ mod existing {
         let dir = written(&cert, &key, &ca.pem);
         let later = SystemTime::now() + Duration::from_secs(2 * 24 * 3600);
         unusable_because(
-            existing_bundle(dir.path(), None, IDENTITY, &[], Usage::Server, later),
+            existing_bundle(
+                dir.path(),
+                None,
+                IDENTITY,
+                &[],
+                Usage::Server,
+                later,
+                Duration::ZERO,
+            ),
             "not valid now",
         );
+    }
+
+    /// A pod restarted to rejuvenate must not come back to the certificate it is leaving, so one that will not last
+    /// `must_outlast` is not used, however good it is otherwise (docs/architecture/deployments.md, item 4).
+    #[test]
+    fn a_certificate_with_too_little_left_is_not_used() {
+        let ca = ca();
+        let (cert, key) = leaf(&ca, &[IDENTITY], server_and_client(), 1);
+        let dir = written(&cert, &key, &ca.pem);
+        let with = |must_outlast| {
+            existing_bundle(
+                dir.path(),
+                None,
+                IDENTITY,
+                &[],
+                Usage::Client,
+                SystemTime::now(),
+                must_outlast,
+            )
+        };
+        assert!(matches!(
+            with(Duration::from_secs(3600)),
+            ExistingBundle::Reusable { .. }
+        ));
+        unusable_because(with(Duration::from_secs(2 * 24 * 3600)), "seconds left");
+    }
+
+    proptest::proptest! {
+        /// Used exactly when it lasts as long as is asked. The margin around its end leaves out the time the test takes.
+        #[test]
+        fn a_certificate_is_used_exactly_when_it_lasts_long_enough(minutes in 0u64..4 * 24 * 60) {
+            static BUNDLE: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+            let dir = BUNDLE.get_or_init(|| {
+                let ca = ca();
+                let (cert, key) = leaf(&ca, &[IDENTITY], server_and_client(), 2);
+                written(&cert, &key, &ca.pem)
+            });
+            let life = 2 * 24 * 60;
+            proptest::prop_assume!(minutes.abs_diff(life) > 10);
+            let found = existing_bundle(
+                dir.path(),
+                None,
+                IDENTITY,
+                &[],
+                Usage::Client,
+                SystemTime::now(),
+                Duration::from_secs(minutes * 60),
+            );
+            proptest::prop_assert_eq!(matches!(found, ExistingBundle::Reusable { .. }), minutes < life);
+        }
     }
 
     #[test]
@@ -359,6 +425,7 @@ mod existing {
                 &[],
                 Usage::Client,
                 SystemTime::now(),
+                Duration::ZERO,
             ),
             "not signed by the pinned CA",
         );

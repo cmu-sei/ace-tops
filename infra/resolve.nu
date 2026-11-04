@@ -542,6 +542,8 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         let marker = $"($h.dir)/($START_MARKER_FILE)"
         $env_list = ($env_list | append (env_entry { name: "POLAR_START_MARKER", value: $marker } $vars "kind" $name))
         $init_env = ($init_env | append (env_entry { name: "POLAR_INIT_START_MARKER", value: $marker } $vars "kind" $name))
+        # A kept certificate must outlast the point the workload rejuvenates at, or it comes back to the one it is leaving.
+        $init_env = ($init_env | append (env_entry { name: "POLAR_HEALTH_REJUVENATION_SECS", value: ($h.rejuvenation_secs | into string) } $vars "kind" $name))
         $init_mounts = ($init_mounts | append { name: $h.volume, path: $h.dir, from: "kind" })
     }
     let cert_files = ($cert_dirs | str join ",")

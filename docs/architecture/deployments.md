@@ -76,6 +76,12 @@ Each with a recommendation; to be taken one at a time.
    an old bundle already (`issue_custody_cert_from_cert_issuer`, `polar-init/src/main.rs`; through the observer the
    custodian fetches it); a key-file certificate still does, and still needs to: Neo4j's StatefulSet, the `ace` job and
    the unrendered agent charts, none of which rejuvenates, and Neo4j is the case it was written for (2026-10-25).
+   *Corrected 2026-11-04, seen on u7s:* one workload with a key file does rejuvenate, the scheduler observer
+   (`custody: false`, `infra/config/workloads/scheduler.nuon`: git reads its key from a file). So what this item
+   foresaw happens to it: from the rejuvenation threshold on, each restart keeps the certificate it is rejuvenating
+   away from and rejuvenates again, five restarts for the 19:02:38 expiry (18:59:40 to 19:02:48), the last one ten seconds after the
+   certificate had expired. Fixed the same day: `polar-init` keeps a bundle only with more left than the threshold, the
+   render telling it the workload's (`POLAR_HEALTH_REJUVENATION_SECS`, 300 where nothing says), so one restart renews it.
    **Decided (the maintainer, 2026-10-27): the custody daemon first, then the move.**
 5. **The ticket (`core-restarts.md`, step 5).** A credentials agent restarted in place is its own successor, under the
    same UID, so the outgoing one can name it: a one-use ticket for its identity and its UID, published before it exits.
