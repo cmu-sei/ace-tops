@@ -36,7 +36,7 @@ Each step is taken in bites, each reported before the next.
 1. **Runtime attestation, slice A: the agent answering from what it sees** (`docs/architecture/runtime-attestation.md`). In progress.
 2. ~~**Handing a cluster's deployment off to Polar's own git server.**~~ Done 2026-11-02 (`docs/architecture/cluster-bootstrap.md`), on u7s and u7c. The signed record of slice A travels this path.
 3. **Runtime attestation, the rest of slices A and B:** ~~the signed record~~ (done 2026-11-02), ~~the askers~~ (done 2026-11-03: refusing is on, and the agent proves itself first), ~~watching~~ (done 2026-11-03: it reports altered pods and crashes, and nothing acts). Attesting what was signed unattested is optional, not planned (`runtime-attestation.md`, "Optional features").
-4. **The protocol handlers, every service at once (the maintainer, 2026-11-03).** Below, under the builder; `docs/architecture/protocol-handlers.md`. In bites; the framework is built.
+4. **The protocol handlers, every service at once (the maintainer, 2026-11-03).** Below, under the builder; `docs/architecture/protocol-handlers.md`. In bites; the framework, HTTP, the registry scheme, git and the Kubernetes API are built, and five agents are on them. Bite 6 is next: the old routes close, with a lint against `Remote::fetch` in the git observer, and the docs and the diagram as built.
    Before what follows, so that the Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.
 6. **Every builder agent's non-secret settings Dynamic.** Below, under the builder.

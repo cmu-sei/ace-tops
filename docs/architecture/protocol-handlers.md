@@ -311,7 +311,12 @@ place stands, for all of it. In bites, each reported before the next:
    (`withdrawn=1`) and a public repository, `octocat/Hello-World` from `github.com`, recorded as arbitrary, work too. **Still not checked live: a credential presented over HTTP**, Jira's or a registry's. They share all of this but `CredentialPort::http` and the `Authorization` header.
    Signing that credential found that **nothing could be sealed to an agent at all, since 2026-10-27** (`polar_signing::verify_escrow_certificate`, fixed), and that a signed list cannot hold entries with different fields (`remaining-work.md`).
 5. **Built, 2026-11-04.** Kubernetes and the stream, and the Kubernetes observer and the attestation agent move (above). Tested over real TLS against a stand-in API (`testing::KubeApi`), through `kube`'s watcher.
-   Not yet checked live.
+   `kube` is linked into those two agents and no other, by `nm` on debug builds: `problems()` first compared against `ProtocolKind::KUBERNETES`, whose function pointer would have linked it into every agent, so it asks the kind instead (`to_the_cluster`).
+   Checked live on u7s, 2026-11-04. `kube-observer` makes 47 watches (3 across the cluster, 4 in each of 11 namespaces), and `attestation-agent` 15 (5 in each of 3), each on the record with the API's address and `service-account`. The attestation agent listed everything and proved itself, 23 judged and none condemned; pods, containers and replica sets kept arriving in the graph.
+   A namespace coming and going: 4 more watches, its pod in the graph, and a Flux `OCIRepository`, the first on this cluster, in the graph as `FluxOCIRepository` by way of the raw object. Deleted, it asked for nothing more; made again, 4 new ones, so it had been let go.
+   The API refusing, by taking away a binding and restarting the pod: the attestation agent's 5 watches in `polar-graph` said 403 and were asked for again every 5 s, and with the binding back it was ready and had proved itself within 5 s, with no restart. The observer's 3 cluster-wide watches said the same, and came back at their 5 minutes (47 watches and those 3 asked again), with no restart.
+   A real shutdown of the observer: `PrepareShutdown` to the end of the infrastructure in under a millisecond, the pod gone in 1 s.
+   **Not checked live:** a watch lost to something other than a refusal, an API server restarting say (only against the stand-in), and a broker falling behind slowing a watch (only with a stand-in for the client). No credential of the CryptoActor's goes this way, so bite 4's open item, a credential presented over HTTP, stays open.
 6. The routes close (the table above), once nothing uses them. Docs and the diagram as built.
 
 ## Open
