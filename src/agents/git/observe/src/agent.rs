@@ -26,7 +26,10 @@
 
 use crate::settings;
 use crate::supervisor::{RootSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::protocol::OperationDecl;
+use polar_agent_builder::{
+    Capability, Cause, Configured, PolarAgent, RuntimeSection, StartError, TopicDecl,
+};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -40,7 +43,7 @@ impl PolarAgent for GitObserver {
     const NAME: &'static str = AGENT_NAME;
     const PURPOSE: &'static str =
         "Watches git repositories it is told of and publishes their commits and ref updates";
-    const NEEDS: &'static [Capability] = &[Capability::Encryption];
+    const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -64,9 +67,9 @@ impl PolarAgent for GitObserver {
             Cause::Timer("observe"),
         ]),
     ];
-    const SECTIONS: &'static [&'static Section] = &[&settings::SECTION, &polar::egress::SECTION];
-    const RUNTIME: &'static [&'static polar_agent_builder::RuntimeSection] =
-        &[&crate::credentials::CREDENTIALS];
+    const SECTIONS: &'static [&'static Section] = &[&settings::SECTION];
+    const CREDENTIALS: Option<&'static RuntimeSection> = Some(&crate::credentials::CREDENTIALS);
+    const OPERATIONS: &'static [OperationDecl] = crate::fetch::OPERATIONS;
     const HELP: Option<&'static str> = Some(
         "The git observer subscribes to repository configuration events on Cassini. For each \
          repository it is told of it clones the repository into its cache, and on the frequency \

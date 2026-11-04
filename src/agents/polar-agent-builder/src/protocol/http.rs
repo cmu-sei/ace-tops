@@ -28,7 +28,9 @@
 //! of authenticating ([`Request::at_a_registry`]): the login goes only where a judged challenge sends it, and what comes
 //! back goes only to the registry.
 
-use super::{CredentialSource, Exchange, Failure, Protocol, ProtocolKind, Target};
+use super::{
+    CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
+};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
@@ -285,7 +287,7 @@ fn locate(at: &At, base: Option<&str>) -> Result<Url, String> {
 
 /// What a judgment reads of an address. One that carries a login of its own, or is not http or https, goes nowhere: what
 /// it presents is the handler's.
-fn target_of(url: &Url) -> Result<Target, String> {
+pub(super) fn target_of(url: &Url) -> Result<Target, String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("the address carries a login of its own".to_string());
     }
@@ -301,21 +303,22 @@ fn target_of(url: &Url) -> Result<Target, String> {
     })
 }
 
+/// The client for what `config` says of the way out: a CA that cannot be used stops the agent, before it does anything,
+/// with the variable and the path.
+pub(crate) fn start(config: &polar_env::Config) -> Pending<Result<Started, String>> {
+    let egress = polar::egress::Egress::read(config).map_err(|e| e.to_string());
+    Box::pin(async move {
+        let client = Http::client(&egress?, CONNECT_TIMEOUT, REQUEST_TIMEOUT).await?;
+        Ok(Arc::new(Http { client }) as Started)
+    })
+}
+
 /// The HTTP protocol, with its client: one, shared, for the agent.
 pub struct Http {
     client: Client,
 }
 
 impl Http {
-    /// The client for what `config` says of the way out: a CA that cannot be used stops the agent, before it does
-    /// anything, with the variable and the path.
-    pub(crate) async fn start(config: &polar_env::Config) -> Result<Self, String> {
-        let egress = polar::egress::Egress::read(config).map_err(|e| e.to_string())?;
-        Ok(Self {
-            client: Self::client(&egress, CONNECT_TIMEOUT, REQUEST_TIMEOUT).await?,
-        })
-    }
-
     /// The client: the way out of the cluster the egress settings give, with a bound on opening a connection and on each
     /// request.
     async fn client(
@@ -421,15 +424,11 @@ impl super::sealed::Sealed for Http {}
 
 #[async_trait]
 impl Protocol for Http {
-    const KIND: ProtocolKind = ProtocolKind::Http;
+    const KIND: ProtocolKind = ProtocolKind::HTTP;
     const BUDGET: Duration = Duration::from_secs(30);
     type Request = Request;
     type Credential = HttpCredential;
     type Reply = Reply;
-
-    fn instance(instances: &super::Instances) -> Option<Arc<Self>> {
-        instances.http.clone()
-    }
 
     fn configured_host(base: &str) -> Result<String, String> {
         let url = Url::parse(base.trim()).map_err(|_| "the address cannot be read".to_string())?;
@@ -629,7 +628,7 @@ mod tests {
     const CONFIGURED: OperationDecl = OperationDecl {
         name: "site.read",
         doc: "",
-        protocol: ProtocolKind::Http,
+        protocol: ProtocolKind::HTTP,
         location: Location::Configured {
             variable: "SITE_URL",
             credential: Some(Credential::Named("site")),
@@ -638,7 +637,7 @@ mod tests {
     const OPEN: OperationDecl = OperationDecl {
         name: "site.read-openly",
         doc: "",
-        protocol: ProtocolKind::Http,
+        protocol: ProtocolKind::HTTP,
         location: Location::Configured {
             variable: "SITE_URL",
             credential: None,
@@ -647,13 +646,13 @@ mod tests {
     const ANYWHERE: OperationDecl = OperationDecl {
         name: "anywhere.read",
         doc: "",
-        protocol: ProtocolKind::Http,
+        protocol: ProtocolKind::HTTP,
         location: Location::Arbitrary,
     };
     const LEARNED: OperationDecl = OperationDecl {
         name: "learned.read",
         doc: "",
-        protocol: ProtocolKind::Http,
+        protocol: ProtocolKind::HTTP,
         location: Location::Bound {
             credential: Credential::Named("site"),
         },
@@ -661,7 +660,7 @@ mod tests {
     const REGISTRY: OperationDecl = OperationDecl {
         name: "registry.read",
         doc: "",
-        protocol: ProtocolKind::Http,
+        protocol: ProtocolKind::HTTP,
         location: Location::Bound {
             credential: Credential::ForHost,
         },

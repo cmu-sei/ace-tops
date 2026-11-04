@@ -91,21 +91,19 @@ All events are durable and replayable. The processor must tolerate reprocessing.
 
 ---
 
-## Credential Provider Integration
+## Reaching a repository
 
-The observer does not embed credential logic directly. Instead, it depends on an abstraction:
+The observer holds no credential and opens no connection. It declares two operations (`observe/src/fetch.rs`), and the
+builder's git protocol handler (`polar_agent_builder::protocol::git`) judges each request, gets the credential from the
+CryptoActor, runs libgit2 and hands back the clone, up to date, for the operation's `read`
+(`docs/architecture/protocol-handlers.md`). The observer reads the clone it was handed and publishes what is new.
 
-```rust
-pub trait GitCredentialProvider {
-    fn credentials_for(&self, url: &str) -> Result<GitCredentials>;
-}
-```
+* `git.fetch`: a repository that names a credential, at a host that credential's signed binding names.
+* `git.fetch-public`: a repository that names none, at whatever address the controller gave. Nothing is ever presented.
 
-This ensures:
-
-* Dry separation of authentication from repository walking.
-* Unit-testability (inject mock providers).
-* Pluggability (SSH, HTTPS, token-based, ephemeral credentials).
+A redirect within the repository's host is followed; one to another host fails, with or without a credential, since libgit2
+cannot ask about it, so it could be neither judged nor recorded. A credential the host refuses is presented once, and held
+until a new version of the `credentials` section arrives.
 
 ---
 
@@ -113,8 +111,8 @@ This ensures:
 
 The observer:
 
-* Clones into a deterministic cache directory (e.g., derived from repository ID hash).
-* Performs fetch if repository already exists.
+* Has the handler clone into a deterministic cache directory (e.g., derived from repository ID hash).
+* Has it fetch if the repository already exists.
 * Never assumes clean state; always tolerates partial clone state.
 * Avoids destructive operations.
 

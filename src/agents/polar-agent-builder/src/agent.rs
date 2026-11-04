@@ -517,10 +517,10 @@ fn own_sections<A: PolarAgent>() -> Vec<&'static Section> {
     if !A::TOPIC_FAMILIES.is_empty() {
         sections.push(&crate::topics::FAMILY_SECTION);
     }
-    // An operation over HTTP goes out as the cluster says (docs/architecture/egress.md).
+    // An operation that reaches outside goes out as the cluster says (docs/architecture/egress.md).
     if A::OPERATIONS
         .iter()
-        .any(|operation| operation.protocol == crate::protocol::ProtocolKind::Http)
+        .any(|operation| operation.protocol.goes_out())
     {
         sections.push(&polar::egress::SECTION);
     }
@@ -1798,7 +1798,7 @@ mod tests {
     const SITE_READ: crate::protocol::OperationDecl = crate::protocol::OperationDecl {
         name: "site.read",
         doc: "reads the site",
-        protocol: crate::protocol::ProtocolKind::Test,
+        protocol: crate::protocol::ProtocolKind::TEST,
         location: crate::protocol::Location::Configured {
             variable: "SITE_URL",
             credential: Some(crate::protocol::Credential::Named("site")),
@@ -1851,7 +1851,7 @@ mod tests {
         const OUT: crate::protocol::OperationDecl = crate::protocol::OperationDecl {
             name: "out.read",
             doc: "reads something outside",
-            protocol: crate::protocol::ProtocolKind::Http,
+            protocol: crate::protocol::ProtocolKind::HTTP,
             location: crate::protocol::Location::Arbitrary,
         };
         struct GoesOut;

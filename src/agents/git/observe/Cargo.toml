@@ -31,15 +31,12 @@ default-run = "git-repo-observer"
 [dependencies]
 polar-scudo.workspace = true
 cassini-client.workspace = true
-base64.workspace = true
 cassini-types.workspace = true
 credentials_agent_common.workspace = true
 git2.workspace = true
 git-agent-common.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
-polar-crypto.workspace = true
-polar-escrow.workspace = true
 polar-env.workspace = true
 ractor.workspace = true
 rkyv.workspace = true
@@ -51,10 +48,9 @@ url.workspace = true
 serde_yaml.workspace = true
 
 [dev-dependencies]
-# Test CAs, TLS servers, a proxy and child processes (polar::egress::testing).
-polar = { workspace = true, features = ["testing"] }
-rand.workspace = true
-rsa.workspace = true
+# The real handler, a stand-in git server, and what a test's stand-in CryptoActor answers with.
+polar-agent-builder = { workspace = true, features = ["testing"] }
+polar-crypto.workspace = true
 tempfile.workspace = true
 async-trait.workspace = true
 # property tests of the batched walk over random histories

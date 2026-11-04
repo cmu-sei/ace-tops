@@ -42,7 +42,7 @@ use std::marker::PhantomData;
 pub const READ: OperationDecl = OperationDecl {
     name: "registry.manifest.read",
     doc: "reads an image's manifest from its registry with the credential bound to that host",
-    protocol: ProtocolKind::Http,
+    protocol: ProtocolKind::HTTP,
     location: Location::Bound {
         credential: Credential::ForHost,
     },
@@ -51,7 +51,7 @@ pub const READ: OperationDecl = OperationDecl {
 pub const READ_ANONYMOUSLY: OperationDecl = OperationDecl {
     name: "registry.manifest.read-anonymously",
     doc: "reads an image's manifest from whatever registry the image names, with no credential",
-    protocol: ProtocolKind::Http,
+    protocol: ProtocolKind::HTTP,
     location: Location::Arbitrary,
 };
 pub const OPERATIONS: &[OperationDecl] = &[READ, READ_ANONYMOUSLY];

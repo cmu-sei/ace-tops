@@ -30,6 +30,7 @@
 //! `read` is given holds only the response, and the port to the CryptoActor stays here.
 
 pub mod credentials;
+pub mod git;
 pub mod http;
 pub mod judge;
 #[cfg(any(test, feature = "testing"))]
@@ -48,6 +49,7 @@ use polar_crypto::{CredentialPort, CryptoError};
 use polar_env::Env;
 use polar_health::HoldReason;
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, OutputPort, async_trait};
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -179,8 +181,6 @@ pub trait Protocol: sealed::Sealed + Send + Sync + Sized + 'static {
     /// What an operation reads. Holds what came back, never what was sent.
     type Reply: Send + 'static;
 
-    /// This protocol as the agent started it, if an operation it declared uses it.
-    fn instance(instances: &Instances) -> Option<Arc<Self>>;
     /// The host of a configured location, the value of the operation's variable.
     fn configured_host(base: &str) -> Result<String, String>;
     /// Where `request` goes; `base` is the value of the operation's variable, if it has one.
@@ -201,13 +201,15 @@ pub trait Protocol: sealed::Sealed + Send + Sync + Sized + 'static {
     ) -> Result<(), Failure>;
 }
 
+/// A protocol as it was started.
+pub(crate) type Started = Arc<dyn Any + Send + Sync>;
+
+/// How a protocol starts, given what the agent is configured with: what it reads of that it reads before it returns.
+pub(crate) type Starter = fn(&polar_env::Config) -> Pending<Result<Started, String>>;
+
 /// The protocols the agent started at load, for the operations it declared.
 #[derive(Default)]
-pub struct Instances {
-    http: Option<Arc<http::Http>>,
-    #[cfg(test)]
-    test: Option<Arc<tests::TestProtocol>>,
-}
+pub struct Instances(HashMap<&'static str, Started>);
 
 impl Instances {
     /// Starts each protocol `operations` uses, and no other. An agent that cannot is told at load.
@@ -215,20 +217,28 @@ impl Instances {
         operations: &[OperationDecl],
         config: &polar_env::Config,
     ) -> Result<Self, String> {
-        let uses = |kind| {
-            operations
-                .iter()
-                .any(|operation| operation.protocol == kind)
-        };
-        Ok(Self {
-            http: if uses(ProtocolKind::Http) {
-                Some(Arc::new(http::Http::start(config).await?))
-            } else {
-                None
-            },
-            #[cfg(test)]
-            test: uses(ProtocolKind::Test).then(|| Arc::new(tests::TestProtocol)),
-        })
+        let mut instances = HashMap::new();
+        for operation in operations {
+            let kind = operation.protocol;
+            if !instances.contains_key(kind.as_str()) {
+                instances.insert(kind.as_str(), (kind.start)(config).await?);
+            }
+        }
+        Ok(Self(instances))
+    }
+
+    /// `protocol` as a test made it.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn of<P: Protocol>(protocol: P) -> Self {
+        Self(HashMap::from([(
+            P::KIND.as_str(),
+            Arc::new(protocol) as Started,
+        )]))
+    }
+
+    /// This protocol as the agent started it, if an operation it declared uses it.
+    fn get<P: Protocol>(&self) -> Option<Arc<P>> {
+        self.0.get(P::KIND.as_str())?.clone().downcast().ok()
     }
 }
 
@@ -460,7 +470,7 @@ async fn run<O: Operation>(
         send(Err(failure));
     };
 
-    let Some(protocol) = O::Protocol::instance(&shared.instances) else {
+    let Some(protocol) = shared.instances.get::<O::Protocol>() else {
         return refuse_early(Failure::Configuration(format!(
             "the agent did not start the {} protocol: declare the operation",
             decl.protocol.as_str()
@@ -1073,17 +1083,18 @@ pub(crate) mod tests {
 
     impl sealed::Sealed for TestProtocol {}
 
+    pub(crate) fn start_test_protocol(_: &polar_env::Config) -> Pending<Result<Started, String>> {
+        Box::pin(async { Ok(Arc::new(TestProtocol) as Started) })
+    }
+
     #[async_trait]
     impl Protocol for TestProtocol {
-        const KIND: ProtocolKind = ProtocolKind::Test;
+        const KIND: ProtocolKind = ProtocolKind::TEST;
         const BUDGET: Duration = Duration::from_millis(200);
         type Request = TestRequest;
         type Credential = Zeroizing<Vec<u8>>;
         type Reply = TestReply;
 
-        fn instance(instances: &Instances) -> Option<Arc<Self>> {
-            instances.test.clone()
-        }
         fn configured_host(base: &str) -> Result<String, String> {
             Ok(base.to_string())
         }
@@ -1140,7 +1151,7 @@ pub(crate) mod tests {
         OperationDecl {
             name,
             doc: "",
-            protocol: ProtocolKind::Test,
+            protocol: ProtocolKind::TEST,
             location,
         }
     }
@@ -1382,10 +1393,7 @@ pub(crate) mod tests {
             ProtocolArgs {
                 agent: "an-agent".to_string(),
                 declared: &DECLARED,
-                instances: Instances {
-                    http: None,
-                    test: Some(Arc::new(TestProtocol)),
-                },
+                instances: Instances::of(TestProtocol),
                 credentials: Some(Arc::new(FakeSource {
                     name: "site".to_string(),
                     host: host.clone(),
@@ -1902,9 +1910,11 @@ pub(crate) mod tests {
     async fn a_protocol_is_started_only_for_an_agent_with_an_operation_that_uses_it() {
         let config = polar_env::Config::builder(&polar_env::ProcessEnv).build();
         let used = Instances::start(&DECLARED, &config).await.unwrap();
-        assert!(used.test.is_some());
-        assert!(used.http.is_none());
-        assert!(Instances::start(&[], &config).await.unwrap().test.is_none());
+        assert!(used.get::<TestProtocol>().is_some());
+        assert!(used.get::<http::Http>().is_none());
+        assert!(used.get::<git::Git>().is_none());
+        let none = Instances::start(&[], &config).await.unwrap();
+        assert!(none.get::<TestProtocol>().is_none());
     }
 
     #[tokio::test]

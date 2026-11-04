@@ -24,22 +24,56 @@
 //! What an agent may ask for, and whether a request is allowed: the one decision every request of the domain's passes
 //! through (docs/architecture/protocol-handlers.md, "The judgment"). Pure, so that a rule holds for every input.
 
-/// The protocols a handler exists for. An operation says which it is for, and the builder starts those at load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ProtocolKind {
-    Http,
-    /// Only in this crate's tests, for the framework alone.
-    #[cfg(test)]
-    Test,
+/// A protocol a handler exists for. An operation says which it is for, and the builder starts those at load, each through
+/// what is said here. So a protocol's code, and any library under it, is linked only into an agent that names it in an
+/// operation: libgit2 is in the git observer and in nothing else.
+#[derive(Clone, Copy)]
+pub struct ProtocolKind {
+    name: &'static str,
+    goes_out: bool,
+    pub(crate) start: super::Starter,
 }
 
 impl ProtocolKind {
+    pub const HTTP: Self = Self {
+        name: "http",
+        goes_out: true,
+        start: super::http::start,
+    };
+    pub const GIT: Self = Self {
+        name: "git",
+        goes_out: true,
+        start: super::git::start,
+    };
+    /// Only in this crate's tests, for the framework alone.
+    #[cfg(test)]
+    pub const TEST: Self = Self {
+        name: "test",
+        goes_out: false,
+        start: super::tests::start_test_protocol,
+    };
+
     pub const fn as_str(self) -> &'static str {
-        match self {
-            ProtocolKind::Http => "http",
-            #[cfg(test)]
-            ProtocolKind::Test => "test",
-        }
+        self.name
+    }
+
+    /// Whether it reaches outside the cluster, and so goes out as the egress section says.
+    pub(crate) const fn goes_out(self) -> bool {
+        self.goes_out
+    }
+}
+
+impl PartialEq for ProtocolKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for ProtocolKind {}
+
+impl std::fmt::Debug for ProtocolKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
     }
 }
 
@@ -174,7 +208,7 @@ mod tests {
         OperationDecl {
             name: "an-operation",
             doc: "",
-            protocol: ProtocolKind::Test,
+            protocol: ProtocolKind::TEST,
             location,
         }
     }

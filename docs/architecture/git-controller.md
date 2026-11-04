@@ -336,7 +336,7 @@ with `state` one of `starting`, `observing`, `pending-credential`, `failing`, `s
 It does not take the controller's word for these, because it is the one holding a credential and opening
 connections:
 
-1. A credential goes only to a host matching its `host_pattern`; the CryptoActor enforces it when the observer asks to use the credential for a host (`credentials-agent-architecture.md`, "Named operations on registered secrets"). A repository naming a credential whose pattern
+1. A credential goes only to a host matching its `host_pattern`; the CryptoActor enforces it when the observer's protocol handler asks to use the credential for a host (`protocol-handlers.md`; `credentials-agent-architecture.md`, "Named operations on registered secrets"). A repository naming a credential whose pattern
    does not match its host is `failing`, with the reason, and nothing is sent.
 2. The network guard, at connect time: a private, loopback, link-local or cluster address is refused, and checked
    again at connect so a name that changes its answer is caught. Only `https`; git's own protocol list is

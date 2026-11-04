@@ -53,7 +53,7 @@ is happening.
   (`credentials-agent-architecture.md`, "Secret escrow": "no secret is ever at rest anywhere in this system ... except
   encrypted to a specific holder's own key"). A relay to a consumer is transient: open, re-seal to the consumer, send, wipe.
 - Signed documents carrying secrets: git-repo-observer's `credentials` runtime section, its entries sealed to the
-  OBSERVER's escrow key, in polar-schedules (`git/observe/src/credentials.rs`); on receipt the observer opens each through
+  OBSERVER's escrow key, in polar-schedules (`polar-agent-builder/src/protocol/credentials.rs`); on receipt the observer opens each through
   its custody daemon and escrows it into the credentials agent.
 
 So: rotating the credentials agent's key re-encrypts its whole store (the first real user of a `RotationActor`); rotating

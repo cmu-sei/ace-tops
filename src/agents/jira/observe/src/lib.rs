@@ -293,7 +293,7 @@ pub const CREDENTIAL: &str = "jira";
 pub const READ: OperationDecl = OperationDecl {
     name: "jira.site.read",
     doc: "reads the Jira site at JIRA_URL with its credential",
-    protocol: ProtocolKind::Http,
+    protocol: ProtocolKind::HTTP,
     location: Location::Configured {
         variable: "JIRA_URL",
         credential: Some(Credential::Named(CREDENTIAL)),
@@ -304,7 +304,7 @@ pub const READ: OperationDecl = OperationDecl {
 pub const READ_ANONYMOUSLY: OperationDecl = OperationDecl {
     name: "jira.site.read-anonymously",
     doc: "reads the Jira site at JIRA_URL with no credential, as the public sees it",
-    protocol: ProtocolKind::Http,
+    protocol: ProtocolKind::HTTP,
     location: Location::Configured {
         variable: "JIRA_URL",
         credential: None,

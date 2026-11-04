@@ -54,6 +54,8 @@ polar-version.workspace = true
 rand.workspace = true
 # The HTTP protocol handler. Its default backend, native-tls, is what the image's trust roots are for (polar::egress).
 reqwest.workspace = true
+# The git protocol handler. A protocol is linked only into an agent that names it in an operation (`ProtocolKind`).
+git2.workspace = true
 # Reads a Retry-After given as an HTTP date.
 chrono.workspace = true
 rsa.workspace = true
@@ -63,10 +65,12 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# A stand-in git server for the tests of an agent (`protocol::testing`).
+wiremock = { workspace = true, optional = true }
 
 [features]
 # A protocol handler for the tests of an agent, given its credentials by the test (`protocol::testing`).
-testing = []
+testing = ["dep:wiremock", "polar/testing"]
 
 [dev-dependencies]
 # Test CAs, and TLS in front of a stand-in site (polar::egress::testing).

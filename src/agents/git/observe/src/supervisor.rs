@@ -28,7 +28,6 @@
 //! started when the client registered, and a registration that came again (after a dropped
 //! connection) tried to start it a second time and ended the agent.
 
-use crate::credentials;
 use crate::settings::ObserverSettings;
 use crate::{
     GitRepoSupervisor, GitRepoSupervisorArgs, REPO_SUPERVISOR_NAME, RepoSupervisorMessage,
@@ -36,14 +35,12 @@ use crate::{
 use cassini_types::ClientEvent;
 use git_agent_common::{GIT_REPO_CONFIG_EVENTS, RepositorySet};
 use polar::cassini::{CassiniClient, TcpClient, UnsubscribeRequest};
-use polar::egress::Egress;
 use polar_agent_builder::{
-    AgentBuilder, ConfigurationHandle, Configured, CryptoHandle, HealthClient, HealthHandle,
-    InfrastructureEvent, InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
+    InfrastructureSupervisorMessage, Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
-use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// What the observer needs to drain: the fetch in flight (up to 30 s; a worker fetches inside its
@@ -61,8 +58,8 @@ pub enum RootSupervisorMessage {
     Observe(Box<RepositorySet>),
     /// The infrastructure has decided the agent should end: finish, then say so.
     PrepareShutdown,
-    /// A runtime section was replaced.
-    RuntimeChanged { section: String },
+    /// A version of the `credentials` section reached the CryptoActor.
+    CredentialsApplied,
 }
 
 pub struct RootSupervisor;
@@ -72,8 +69,6 @@ pub struct RootSupervisorState {
     repo_supervisor: Option<ActorRef<RepoSupervisorMessage>>,
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
-    crypto: CryptoHandle,
-    configuration: ConfigurationHandle,
     shutting_down: bool,
 }
 
@@ -87,53 +82,6 @@ impl RootSupervisor {
                 warn!("Failed to deserialize a set of repositories: {e}");
                 None
             }
-        }
-    }
-}
-
-impl RootSupervisor {
-    /// Reads the latest `credentials` section, hands it to the CryptoActor, and tells the workers, so that a
-    /// repository waiting for a credential tries again. A body that does not read is logged and left: the
-    /// builder judged it before accepting it, so this is a disagreement between the two, not an author's
-    /// mistake.
-    async fn apply_credentials(state: &RootSupervisorState) {
-        let value = match state.configuration.runtime(credentials::SECTION_NAME).await {
-            Ok(Some(value)) => value,
-            Ok(None) => return,
-            Err(e) => {
-                warn!("could not read the credentials section: {e}");
-                return;
-            }
-        };
-        let entries = match credentials::parse(&value.body) {
-            Ok(entries) => entries,
-            Err(problems) => {
-                warn!(
-                    version = value.version,
-                    "the credentials section does not read: {}",
-                    problems.join("; ")
-                );
-                return;
-            }
-        };
-        if let Err(e) = credentials::apply(
-            &state.crypto,
-            crate::agent::AGENT_NAME,
-            value.version,
-            &entries,
-        )
-        .await
-        {
-            error!(
-                version = value.version,
-                "the credentials section was not applied: {e}"
-            );
-            return;
-        }
-        if let Some(repo_supervisor) = &state.repo_supervisor
-            && let Err(e) = repo_supervisor.cast(RepoSupervisorMessage::CredentialsChanged)
-        {
-            warn!("could not tell the repositories the credentials changed: {e}");
         }
     }
 }
@@ -152,22 +100,6 @@ impl Actor for RootSupervisor {
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
         let settings = ObserverSettings::read(configured.config())?;
-        let egress = Egress::read(configured.config())?;
-        // The egress CA is trusted from the start, before any clone or fetch: libgit2 takes it once, for the whole
-        // process. It is read here first, so a file that cannot be used stops the agent with the variable's name.
-        if let Some(path) = &egress.ca_cert {
-            let bundle = egress.ca_bundle().await?;
-            crate::trust_ca_file(path).map_err(|e| {
-                ActorProcessingErr::from(format!(
-                    "POLAR_EGRESS_CA_CERT {path} could not be given to git: {e}"
-                ))
-            })?;
-            info!(
-                "trusting {} egress CA certificate(s) beside the system's",
-                bundle.len()
-            );
-        }
-
         let cache_root = settings
             .absolute_cache_root()
             .map_err(|_| ActorProcessingErr::from("Failed to determine cache root"))?;
@@ -199,18 +131,15 @@ impl Actor for RootSupervisor {
                 }
             });
 
-        // The agent declares that it needs encryption, so the builder gives it the CryptoActor.
-        let crypto = resources
-            .crypto
-            .clone()
-            .ok_or("the builder gave no CryptoActor, which this agent needs for its credentials")?;
-        resources
-            .configuration
-            .runtime_changes()
-            .subscribe(myself.clone(), |changed| {
-                Some(RootSupervisorMessage::RuntimeChanged {
-                    section: changed.section,
-                })
+        // Started for the operations the agent declares: an egress CA that cannot be used has stopped the agent by now, and
+        // git has it before any clone or fetch.
+        let protocols = resources.protocols.clone().ok_or(
+            "the builder gave no protocol handler, which this agent declares operations for",
+        )?;
+        protocols
+            .credentials_applied()
+            .subscribe(myself.clone(), |_| {
+                Some(RootSupervisorMessage::CredentialsApplied)
             });
 
         let (repo_supervisor, _) = Actor::spawn_linked(
@@ -220,9 +149,7 @@ impl Actor for RootSupervisor {
                 tcp_client: resources.tcp_client.clone(),
                 cache_root,
                 publish_batch: settings.publish_batch,
-                crypto: Arc::new(crypto.clone()),
-                clone: crate::GitRepoWorker::open_or_clone_bare,
-                egress,
+                protocols,
             },
             myself.get_cell(),
         )
@@ -233,8 +160,6 @@ impl Actor for RootSupervisor {
             repo_supervisor: Some(repo_supervisor),
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
-            crypto,
-            configuration: resources.configuration,
             shutting_down: false,
         })
     }
@@ -270,9 +195,12 @@ impl Actor for RootSupervisor {
                     return Err("Failed to find repo supervisor".into());
                 }
             }
-            RootSupervisorMessage::RuntimeChanged { section } => {
-                if section == credentials::SECTION_NAME {
-                    Self::apply_credentials(state).await;
+            // A repository waiting for a credential tries again.
+            RootSupervisorMessage::CredentialsApplied => {
+                if let Some(repo_supervisor) = &state.repo_supervisor
+                    && let Err(e) = repo_supervisor.cast(RepoSupervisorMessage::CredentialsChanged)
+                {
+                    warn!("could not tell the repositories the credentials changed: {e}");
                 }
             }
             RootSupervisorMessage::PrepareShutdown => {

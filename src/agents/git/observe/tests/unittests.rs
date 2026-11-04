@@ -28,10 +28,9 @@
 
 use git_agent_common::RepoObservationConfig;
 use git_repo_observer::*;
-use git2::{Commit, CredentialType, Oid, Repository};
+use git2::{Commit, Oid, Repository};
 use polar::graph::nodes::git::RepoId;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::Once;
 use tempfile::TempDir;
 
@@ -52,10 +51,6 @@ fn bare_repo() -> (TempDir, Repository) {
     let dir = tempfile::tempdir().unwrap();
     let repo = Repository::init_bare(dir.path()).unwrap();
     (dir, repo)
-}
-
-fn noop_provider() -> Arc<dyn GitCredentialProvider> {
-    Arc::new(PublicRepoProvider)
 }
 
 fn make_commit(repo: &Repository, message: &str, parents: &[&Commit]) -> Oid {
@@ -80,19 +75,6 @@ fn linear_history(repo: &Repository, ref_name: &str, count: usize) -> Vec<Oid> {
     repo.reference(ref_name, *commits.last().unwrap(), true, "init")
         .unwrap();
     commits
-}
-
-// --- Providers ---
-
-#[test]
-fn public_repo_provider_always_errors() {
-    let provider = PublicRepoProvider;
-    let result = provider.credentials(
-        "https://github.com/org/public-repo.git",
-        None,
-        CredentialType::USER_PASS_PLAINTEXT,
-    );
-    assert!(result.is_err());
 }
 
 // --- Walker / observer tests (unchanged from before) ---
@@ -147,12 +129,9 @@ fn observe_updates_last_seen_per_ref_independently() {
     let mut seen = Vec::new();
     let mut refs_seen = HashMap::new();
     let obs_config = dummy_config(vec!["refs/heads/main".into(), "refs/heads/dev".into()]);
-    let provider = noop_provider();
     GitRepoWorker::observe_repository(
         &repo,
-        &provider,
         &obs_config,
-        None,
         &mut last_seen,
         |r, c| seen.push((r.to_string(), c.id())),
         |ref_name, old, new| {
@@ -182,12 +161,9 @@ fn multiple_refs_do_not_interfere() {
     repo.reference("refs/heads/dev", new_dev, true, "update")
         .unwrap();
     let config = dummy_config(vec!["refs/heads/dev".into()]);
-    let provider = noop_provider();
     GitRepoWorker::observe_repository(
         &repo,
-        &provider,
         &config,
-        None,
         &mut last_seen,
         |_r, _c| {},
         |_ref_name, _old, _new| {},
@@ -207,18 +183,9 @@ fn force_push_emits_ref_updated_with_old_and_new_tips() {
 
     let mut last_seen = HashMap::new();
     let config = dummy_config(vec!["refs/heads/main".into()]);
-    let provider = noop_provider();
 
-    GitRepoWorker::observe_repository(
-        &repo,
-        &provider,
-        &config,
-        None,
-        &mut last_seen,
-        |_, _| {},
-        |_, _, _| {},
-    )
-    .unwrap();
+    GitRepoWorker::observe_repository(&repo, &config, &mut last_seen, |_, _| {}, |_, _, _| {})
+        .unwrap();
     assert_eq!(last_seen["refs/heads/main"], old_tip);
 
     // Force-push: a disjoint replacement history with no shared ancestors,
@@ -234,9 +201,7 @@ fn force_push_emits_ref_updated_with_old_and_new_tips() {
 
     GitRepoWorker::observe_repository(
         &repo,
-        &provider,
         &config,
-        None,
         &mut last_seen,
         |r, c| commits_seen.push((r.to_string(), c.id())),
         |ref_name, old, new| refs_updated.push((ref_name.to_string(), old, new)),
@@ -321,14 +286,11 @@ fn a_ref_that_has_not_moved_is_not_reported_again() {
 
     let mut last_seen = HashMap::new();
     let config = dummy_config(vec!["refs/heads/main".into()]);
-    let provider = noop_provider();
     let pass = |last_seen: &mut HashMap<String, Oid>| {
         let mut reported = Vec::new();
         GitRepoWorker::observe_repository(
             &repo,
-            &provider,
             &config,
-            None,
             last_seen,
             |_, _| {},
             |ref_name, old, new| reported.push((ref_name.to_string(), old, new)),

@@ -112,12 +112,9 @@ The agents that declare the section:
   request timeouts, is configured by `Egress::configure` when the agent starts. The agent does not register the section itself: the operation brings it.
   `PROXY_CA_CERT` is gone; it used rustls, which dropped the image's roots, and read only the first certificate of the file.
 - **oci-registry-resolver**: an agent with an operation over HTTP, above, since 2026-11-03. It has no client of its own.
-- **git-repo-observer**: at start (`src/agents/git/observe/src/supervisor.rs:155`) a CA is read through `ca_bundle`
-  and then given to libgit2 once, `git2::opts::set_ssl_cert_file` (`trust_ca_file`,
-  `src/agents/git/observe/src/lib.rs:98`), before any worker exists: it is global to the process, and libgit2 adds it
-  to OpenSSL's default locations. Each worker is given `proxy_for` its repository's URL
-  (`src/agents/git/observe/src/lib.rs:293`), and `build_fetch_options` (`:562`) sets `ProxyOptions::url` for the clone
-  and every fetch; with none, libgit2 connects directly.
+- **an agent with an operation over git** (`polar_agent_builder::protocol::git`; git-repo-observer, since 2026-11-04): the operation brings the section here too. When the
+  agent starts, the handler reads the CA through `ca_bundle` and gives it to libgit2 once, `git2::opts::set_ssl_cert_file` (`trust_ca_file`): it is global to the process, and libgit2
+  adds it to OpenSSL's default locations. Each request is given `proxy_for` its repository's URL, set as `ProxyOptions::url` for the clone or the fetch; with none, libgit2 connects directly.
 
 The outside-access probe at the end of `up.nu` is skipped for a target with a proxy (`egress_report`,
 `infra/egress.nu:82`; `infra/up.nu:770`): it runs git in polar-scheduler-observer, which does not use it.
@@ -139,7 +136,7 @@ the defaults with no duplicate and keeps the rest in order; nothing is given wit
 same; with a proxy and a CA exactly the three agents gain exactly the egress entries), `src/agents/lib/tests/egress.rs`
 (in child processes: the egress CA trusted beside `SSL_CERT_FILE`, no egress ignoring `HTTPS_PROXY`; a two-certificate
 bundle; a call outside arriving at a proxy as `CONNECT host:443`; a property that cluster hosts bypass the proxy), and
-each agent's own.
+each handler's own (`polar-agent-builder/src/protocol/http.rs`, `git.rs`).
 
 ## Not done
 

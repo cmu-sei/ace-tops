@@ -23,7 +23,7 @@
 
 # Protocol handlers: the domain's I/O in infrastructure
 
-Status, 2026-11-03: the design, from the maintainer, vetted. The framework, HTTP and its registry scheme are built, and jira-observer and the resolver are on them; the rest moves in bites ("When, and in what order";
+Status, 2026-11-04: the design, from the maintainer, vetted. The framework, HTTP and its registry scheme, and git are built, and jira-observer, the resolver and the git observer are on them; the rest moves in bites ("When, and in what order";
 `polar-agent-builder/src/protocol.rs`). Framework code that lets us reason about
 each request a domain actor makes, whether to allow or deny it, and that protects the credentials it uses. The domain says what it
 wants; a protocol handler in the builder's infrastructure gets the credential itself, uses it, and calls the domain's code with what
@@ -192,7 +192,7 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
 |---|---|---|---|---|
 | HTTP | Jira, GitLab, OpenAPI | declared | a reply, whole and bounded | Jira now; GitLab and OpenAPI at step 7, when they reach the builder |
 | OCI registry | resolver | declared | a manifest | built, 2026-11-03. A breaking change, with its migration note (`remaining-work.md`) |
-| git | git observer | declared | the fetched `git2::Repository` | now |
+| git | git observer | declared | the fetched `git2::Repository` | built, 2026-11-04 |
 | Kubernetes API | Kubernetes observer, attestation agent | the pod's service account token, which `kube` already picks up: the capability declares it, not `with_credential` | one change at a time | now |
 
 - **OCI is HTTP with one more authentication scheme, not a handler of its own** (`Request::at_a_registry`, `protocol/http.rs`). A registry's token exchange is the
@@ -211,8 +211,20 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
 
   The anonymous path is the same exchange with nothing presented. A registry can make it fetch any address as its auth host: a GET, with no credential, of which nothing but a token is ever read, recorded
   as the permission it is. The old client did the same, without the record.
-- **Git keeps libgit2.** It does its own I/O and asks through a callback, `git/observe/src/lib.rs:722`; that callback moves into the handler. A test
-  shows that the token is not left in the repository's config. The process-wide CA (`trust_ca_file`) is set once, by the handler.
+- **Git keeps libgit2** (`protocol/git.rs`). It does its own I/O and asks through a callback, and that callback is the handler's. It offers the credential once for each connection, and only when the host
+  challenges: asked again means refused, which is held like any other (libgit2 would otherwise ask up to its limit of replays). A test shows that the token is in no file of the clone. The CA (`trust_ca_file`) and the timeouts are global to libgit2, so they are set
+  once, by the handler. The two timeouts go together: the connect timeout leaves the socket non-blocking, and with no server timeout every read fails at once with `EAGAIN` (found by a mutation). Bounds: `CONNECT_TIMEOUT` 15 s, `SERVER_TIMEOUT` 120 s for each read or write,
+  and `MAX_FETCH` 16 GiB, to review, since a fetch goes to disk and nothing bounded it before. Each request runs on a blocking thread, where the worker used to block a thread of the runtime.
+
+  **A redirect to another host fails, with or without a credential, decided while building, to review.** "A redirect is judged at each hop" cannot hold here: libgit2 follows it inside the fetch and never asks, so the hop would be neither judged nor on the record, and a repository's contents would come from a host nobody signed off.
+  The credential itself does not go along: with `RemoteRedirect::Initial`, the default the old code had, a redirect after the login reached the other host with nothing presented (tried, 2026-11-04), and were that host to challenge, the callback would refuse it as another host. So `RemoteRedirect::None`: within the host it still
+  follows, and libgit2 itself refuses https to http. A public repository that moved to another host now fails, saying so, where it used to be followed. The address in the controller's section is what to change.
+
+  **What `read` does (decided while building).** It finds what each ref would publish, from the checkpoints the operation carries: the plans, commit ids only. The events are then made a batch at a time as the client takes them, by the worker from the clone it opens itself: a `read`
+  returns once, and holding a whole walk's events to return them is what `cassini-backpressure.md`, decision 17, ended. So the observer keeps `git2` for reading the clone on disk, which the "beyond the types it reads" of the table above allows, and it is a local read. Nothing yet stops
+  it calling `Remote::fetch` itself: bite 6's test over `cargo metadata` cannot see that, so a lint must (`#![deny(clippy::disallowed_methods)]` is on the crate already).
+
+  A clone's URL is the request's, read as the controller reads it: a test holds `git_agent_common::remote::https_host` and the handler to the same host for any text the first accepts. Only http and https go anywhere now; a path, `ssh://` and `git://` used to reach libgit2 for a public repository.
 - **Kubernetes needs a stream, so one request and many results is part of the framework now.** A watch never ends (`attestation/agent/src/watch.rs`).
   The callback is called per change and each value is a message. `kube`'s own watcher stays. The token's file stays readable in the pod, which
   no handler changes: Kubernetes is the trust base.
@@ -274,7 +286,8 @@ place stands, for all of it. In bites, each reported before the next:
    quay.io (no challenge), and `registry.k8s.io`, which redirected to `us-east4-docker.pkg.dev`, a hop judged and recorded. Two throwaway pods of images new to the graph took `OCIArtifact` from 4 to 6 and joined their `PodContainer`s, each digest the kubelet's `imageID`.
    The real `CredentialPort` answered every `bound_to`. **Not checked live, still: a credential presented.** No registry the sandbox reads wants one; a real one, or one set up for it, is needed. The `localhost:30500` images fail as they did before
    (`remaining-work.md`).
-4. git. The git observer moves.
+4. **Built, 2026-11-04.** git, and the git observer moves (above). Tested over real TLS against a stand-in that speaks the smart protocol (`testing::GitOrigin`), through libgit2 itself.
+   `ProtocolKind` became what a protocol starts through, rather than a list, so that a protocol is linked only into an agent that names one: `git_libgit2_init` is in `git-repo-observer` and in neither `jira-observer` nor `oci-resolver` (`nm`, debug builds). Decided while building, to review; Kubernetes will want it too.
 5. Kubernetes and the stream. The Kubernetes observer and the attestation agent move.
 6. The routes close (the table above), once nothing uses them. Docs and the diagram as built.
 

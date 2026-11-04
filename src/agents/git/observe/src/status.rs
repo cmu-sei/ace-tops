@@ -26,6 +26,7 @@
 
 use git_agent_common::status::{MAX_REASON_CHARS, ObservationState, ObservationStatus};
 use polar::graph::nodes::git::RepoId;
+use polar_agent_builder::protocol::Failure;
 
 /// How an attempt ended.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +42,24 @@ pub enum Outcome {
     Observed {
         tips: Vec<(String, String)>,
     },
+}
+
+impl Outcome {
+    /// What a request the handler could not fulfil means for the repository. Anything that is not about the credential
+    /// is a clone that failed, or with a clone there already, a fetch.
+    pub fn of_failure(failure: &Failure, had_a_clone: bool) -> Self {
+        let why = failure.to_string();
+        match failure {
+            Failure::NoCredential { .. } => Outcome::PendingCredential,
+            Failure::NotBound { .. }
+            | Failure::CredentialUnusable { .. }
+            | Failure::CredentialHeld { .. }
+            | Failure::CredentialRefused(_)
+            | Failure::Denied(_) => Outcome::CredentialUnusable(why),
+            _ if had_a_clone => Outcome::FetchFailed(why),
+            _ => Outcome::CloneFailed(why),
+        }
+    }
 }
 
 /// What the observer remembers between attempts, to say what the last one means in the run it belongs to.
@@ -151,6 +170,47 @@ fn strip_url_logins(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polar_agent_builder::protocol::Denial;
+
+    #[test]
+    fn what_the_handler_could_not_do_is_said_in_the_terms_of_the_repository() {
+        let name = || "gh".to_string();
+        assert_eq!(
+            Outcome::of_failure(&Failure::NoCredential { name: name() }, false),
+            Outcome::PendingCredential
+        );
+        for failure in [
+            Failure::NotBound { name: name() },
+            Failure::CredentialUnusable {
+                name: name(),
+                why: "not text".to_string(),
+            },
+            Failure::CredentialHeld { name: name() },
+            Failure::CredentialRefused("asked again".to_string()),
+            Failure::Denied(Denial::NotEncrypted),
+        ] {
+            // The credential, whether there is a clone or not, and with what the handler said.
+            for had_a_clone in [true, false] {
+                assert_eq!(
+                    Outcome::of_failure(&failure, had_a_clone),
+                    Outcome::CredentialUnusable(failure.to_string())
+                );
+            }
+        }
+        for failure in [
+            Failure::Transient("connection refused".to_string()),
+            Failure::Configuration("the address carries a login of its own".to_string()),
+        ] {
+            assert_eq!(
+                Outcome::of_failure(&failure, false),
+                Outcome::CloneFailed(failure.to_string())
+            );
+            assert_eq!(
+                Outcome::of_failure(&failure, true),
+                Outcome::FetchFailed(failure.to_string())
+            );
+        }
+    }
 
     fn tracker() -> StatusTracker {
         StatusTracker::new(RepoId::new("https_github.com_o_r".into()))
