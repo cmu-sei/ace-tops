@@ -442,6 +442,8 @@ Each step tests first, with property tests where an invariant holds.
 
 ## Step 5, the ticket: the plan (2026-10-28, cleared, its questions decided, built)
 
+*As built, with the crash window and the held requests beside it: [the diagram](sequences/general/core_restart_ticket.svg).*
+
 `deployments.md`'s build step 6. What was decided (question 1, B, 2026-10-26; with the move, `deployments.md`, question
 5): a planned restart hands over; the outgoing credentials agent tells cert-issuer over Cassini that its successor may
 be signed once, within a few minutes; the ticket is in the record; a crash leaves none and goes through its window (C,

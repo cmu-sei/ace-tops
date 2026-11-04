@@ -1,0 +1,62 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% A certificate is revoked, as built (2026-11-04, docs/architecture/key-custody.md "Step 5, revocation", authority-distribution.md, cassini-broker.md). Revocation ends a key and its
+%% sessions. Whether the pod is issued again is the credentials agent's, by its rules as they are. Only the broker and the custody daemons act on the set. The git server, cert-issuer and Neo4j trust the CA alone.
+sequenceDiagram
+    autonumber
+    participant Admin as An administrator (signed action)
+    participant CA as Credentials agent (ledger, publisher)
+    participant Bk as Cassini broker (authority, each Listener)
+    participant Pod as The revoked pod's workload
+    participant Daemon as Its custody daemon (custodian session)
+    participant Other as Every other builder agent
+
+    alt an administrator's revoke
+        Admin->>CA: SignedAdminAction(Revoke serial), on credentials-admin-action-requests
+        CA->>CA: the author's record, not revoked, its signature and its capability, no replay
+        CA->>CA: AdminActionRecorded: the serial goes in revoked_serials
+    else a certificate superseded by a reissue
+        CA->>CA: the renewal rule records the new one, and the old serial goes in revoked_serials
+    end
+    CA->>Bk: publish AuthorityBody::Revoked: the whole set, pruned of what has ended, signed, on polar-authority-updates
+    Bk->>Bk: the publisher's Listener hears it before passing it on: only from the identity that may publish it
+    Bk->>Bk: JudgeSubscriptions to every Listener: each judges its own connection's serial
+
+    opt this connection's certificate is now revoked
+        Bk--xPod: the connection closes, possibly before the set reaches it
+        Bk->>Bk: its session is detached and kept for the retention window, for the identity's next certificate to claim
+    end
+    Bk->>Other: the set, as a delivery
+    Other->>Other: verify it to the pinned key, and hold it: a revoked signer's documents are refused
+
+    Bk->>Daemon: the set, as a delivery
+    Daemon->>Daemon: verify it to the key it pinned under the CA
+    alt it names a certificate of this pod
+        Daemon->>Daemon: every key it holds is destroyed, and it exits. The kubelet restarts it empty
+    else the broker refused its own session as revoked, by the refusal's code
+        Daemon->>Daemon: the same, and only its own certificate is reported revoked
+    end
+    Pod->>Daemon: a sign request is now refused, so the workload cannot make a new connection
+    Pod->>Pod: its health actor ends it, and the pod restarts in place
+
+    Note over Pod,Bk: A revoked certificate that tries again is refused at registration (RegistrationResponse Err Revoked), and the connection closes.
+    Pod->>CA: polar-init asks again. The renewal rule admits it after its five minutes, unless the credentials agent's rules refuse it

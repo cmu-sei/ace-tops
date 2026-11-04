@@ -1,0 +1,78 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Key rotation after a compromise. DESIGNED, cleared by the maintainer 2026-11-01 (docs/architecture/key-rotation.md), and nothing here is built: it comes after custody part B, the credentials agent's own key in its
+%% daemon. Rotation re-wraps 32 bytes and never a payload: the ciphertext, nonce and binding stay byte for byte, and the daemon never sees a payload.
+sequenceDiagram
+    autonumber
+    participant Admin as An administrator
+    participant CA as Credentials agent (ledger)
+    participant CD as Its custody daemon
+    participant Bk as Cassini broker
+    participant X as Each workload with a declared store (its pods)
+    participant XD as Their custody daemons
+    participant RA as Their RotationActors
+
+    rect rgb(235, 219, 178)
+    Note over Admin,CA: DESIGNED: the credentials agent's key, the first user
+    Admin->>CA: a revoke with the cause Compromised
+    CA->>CA: RotationStarted(cause)
+    CA--xCD: the revoked pod's daemon destroys what it holds in memory and exits. Its files stay
+    CA->>CA: the new pod replays, and sees the rotation open
+    CA->>Bk: AuthorityBody::Keys(retiring old), a state-based kind, versioned, caught up by snapshot
+    Bk->>CD: heard, and verified to the pinned key
+    CD->>CD: make the successor: the next file, fsynced, then renamed. The old key only rewraps now
+    CA->>CD: the new public key
+    CA->>CA: RotationKeyReady(successor): the escrow-key query answers the new key from here
+    loop the pass over the ledger, entries still under the old key
+        CA->>CD: Rewrap: open the wrapped key under the old, seal the same 32 bytes to the new
+        CD-->>CA: the new wrap, and the 32 bytes exist only inside this
+        CA->>CA: SecretResealed(name, rotation, from, to): a new event, and history is not rewritten
+    end
+    Note over CA,CD: A relay rotates an entry on read (open_current). A store sealed to the retiring key is accepted and rewrapped first.
+    end
+
+    rect rgb(235, 219, 178)
+    Note over CA,RA: DESIGNED: a workload's key, for every workload whose escrow key must move
+    CA->>CA: RotationStarted for X, and X's escrow certificate revoked as Compromised, so the lookup stops naming it
+    CA->>X: every instance revoked as an ordinary end, since a custodian's authority is spent: each pod restarts
+    X->>CA: the first new custodian finds the name open for rotation: it makes a P-256 key, has it issued, and stores it
+    CA->>CA: RotationKeyReady
+    loop the RotationActor, a resumable pass, whose progress is the store itself
+        RA->>RA: sealed_to(old, after, 64)
+        RA->>XD: Rewrap each
+        RA->>RA: write_back, and Moved is skipped
+    end
+    RA->>RA: census shows zero under the old key
+    RA->>Bk: RotationReport(rotation, store, remaining 0), stamped by the broker
+    Bk->>CA: from the store's own workload, as the catalog names it
+    CA->>CA: RotationStoreDone
+    Note over X,CA: A secret carried in a signed document, opened on restart: sealed to a retired key, the agent asks the credentials agent for its escrowed copy<br/>(LoadSecret), sealed to the new key. One never received before is reported by name, for its author to seal again.
+    end
+
+    rect rgb(235, 219, 178)
+    Note over CA,XD: DESIGNED: completion
+    CA->>CA: every declared store done: RotationCompleted, the wraps under the old key deleted, WrapsShredded(hashes)
+    CA->>Bk: AuthorityBody::Keys(retired old)
+    Bk->>XD: heard: every daemon destroys that key, zeroed and logged
+    Bk->>CD: heard: it deletes the retiring file
+    end
+    Note over CA,Bk: The signing half is not this: a leaf never replaces its pinned key, so its successor is a re-pin, every pod restarting into init.

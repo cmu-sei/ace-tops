@@ -1,0 +1,73 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% The core's own restarts, as built (2026-11-04, docs/architecture/core-restarts.md "Step 5, the ticket" and "3 in detail"). The bootstrap services ask cert-issuer on their token alone, and a request not
+%% admitted by the floor state is held. What opens an entry is an absence and time, or the credentials agent's own ticket, for its own pod.
+sequenceDiagram
+    autonumber
+    participant Old as Credentials agent, outgoing
+    participant Bk as Cassini broker
+    participant CI as cert-issuer (gate, floor state, record)
+    participant Init as polar-init,<br/>a bootstrap service's pod
+    participant Att as Attestation agent
+    participant CA as Credentials agent, running
+
+    alt a planned restart of the credentials agent: it hands over
+        Old->>Bk: its drain begins (PrepareShutdown): a SuccessorTicket on cert-issuer-successor-tickets
+        Bk->>CI: published_by the credentials agent, or it is not taken
+        CI->>CI: bind it to the pod UID of the last client certificate it signed for the credentials agent
+        CI->>CI: the ticket is an entry in the record, so a restarted cert-issuer reads it back
+        Old->>Old: finishes its drain, and the pod<br/>restarts in place: the same UID
+        Init->>CI: the successor's token-only requests, its client certificate and its custodian's
+        CI->>CI: the token bound to that UID, once for each type, within five minutes
+        CI->>Att: attestation-instance-requests, for that pod
+        alt Genuine, or it could not ask
+            CI-->>Init: signed, recorded with the path Ticketed, and unattested if it could not ask
+        else NotGenuine
+            CI->>CI: the ticket's use is given back
+            CI-->>Init: refused
+        end
+    else a crash, a pod deleted or evicted, or a ticket spent or expired: no ticket admits it
+        Init->>CI: the token-only request
+        CI->>CI: held, until the floor state opens the entry
+        Note over CI: The credentials agent present means heard within 60 s (PRESENCE_BOUND). Unheard while Cassini<br/>holds opens its entry alone (CredentialsAgentOnly). A fresh cluster, or both gone, opens every entry (All).
+        CI->>Att: attestation-instance-requests, once it is open
+        CI-->>Init: signed, or refused, as above
+    else the observer or Cassini restarts, and the credentials agent is up: it vouches
+        Init->>CI: the token-only request, for a bootstrap identity the floor state does not admit
+        CI->>CI: held
+        alt over Cassini, while its session holds
+            CI->>Bk: offer it on cert-issuer-held-requests
+            Bk->>CA: taken only from cert-issuer's identity
+            CA->>CA: the rules: a bootstrap service,<br/>not its own successor, bound to a pod,<br/>client or server, the attestation agent<br/>asked, then the renewal rule
+            CA->>Bk: the answer, on cert-issuer-held-replies
+            Bk->>CI: published_by the credentials agent, or it is not taken
+        else over mTLS, while its Cassini session is lost (Cassini itself restarting)
+            CA->>CI: list /internal/held, on a timer: its asking is also its presence
+            CA->>CI: its answer, there
+        end
+        alt vouched
+            CI-->>Init: signed, recorded with the path Vouched
+        else refused
+            CI-->>Init: refused
+        end
+        Note over CI,CA: A Cassini restart so completes with only cert-issuer and the credentials agent up. A request offered again is given its answer again.
+    end

@@ -19,49 +19,44 @@
 %%
 %% DM26-0670
 
- sequenceDiagram
-     autonumber
-     participant Admin as Administrator
-     participant GrantTool as polar-admin-grant<br/>(admin's local tool)
-     participant CredAgentObs as Credentials Agent<br/>(observer -- low trust)
-     participant Cassini as Cassini broker
-     participant CredAgentCon as Credentials Agent<br/>(consumer -- high trust)
-     participant CertIssuer as cert-issuer
-     participant CA as CA (in-process,<br/>part of cert-issuer)
+%% An account is claimed, in two phases, as built (2026-11-04, credentials-agent/common/src/account_claim.rs, docs/architecture/cluster-bootstrap.md). The bootstrap admin is the same flow with a Kubernetes token as the credential, and
+%% happens once: the certificate's identity is the account id, which the claimant cannot know before it builds its CSR. Its key is written before the certificate is asked for, so a crash cannot orphan what is issued.
+sequenceDiagram
+    autonumber
+    participant Admin as The claimant
+    participant Tool as polar-admin-grant (bootstrap or claim)
+    participant Obs as Credentials observer (low trust)
+    participant Bk as Cassini broker
+    participant CA as Credentials agent (ledger)
+    participant CI as cert-issuer
 
-     Note over Admin,CA: One-time. A hard prerequisite for everything else --<br/>someone has to be first, with nothing else yet to vouch for them.<br/>No special carve-out from here on: this goes through the observer<br/>exactly like every other flow, using a Kubernetes credential<br/>instead of an IdP token. No grant lookup -- the Kubernetes<br/>credential itself is what authorizes this one exchange.
+    alt the first admin (bootstrap): someone has to be first, with nothing yet to vouch for them
+        Note over Admin,Tool: A Kubernetes ServiceAccount token: controlling the cluster is what proves it.
+    else anyone after (claim)
+        Note over Admin,CA: An admin's signed action provisioned the account first (ProvisionAccount), by username and email.
+    end
 
-     Admin->>GrantTool: Run tool
-     activate GrantTool
-     GrantTool->>GrantTool: Generate keypair locally (via csr-utils)<br/>(private key never leaves this machine)
-     GrantTool->>CredAgentObs: Send CSR + kubectl-admin-backed<br/>Kubernetes credential<br/>(correlation_id generated)
-     activate CredAgentObs
-     CredAgentObs->>CredAgentObs: Basic well-formedness check only --<br/>no credential validation, no trust decision
-     CredAgentObs->>Cassini: Forward, tagged with correlation_id
-     deactivate CredAgentObs
-     activate Cassini
-     Cassini->>CredAgentCon: Deliver
-     deactivate Cassini
-     activate CredAgentCon
- 
-     CredAgentCon->>CertIssuer: Forward CSR + credential<br/>(direct, internal, core-to-core --<br/>both are trusted services)
-     activate CertIssuer
-     CertIssuer->>CertIssuer: Validate the admin's Kubernetes<br/>credential (existing trust path,<br/>no new IdP config for admins)
-     CertIssuer->>CA: Sign CSR
-     activate CA
-     CA-->>CertIssuer: Signed, ordinary Polar client cert<br/>(no more privileged than any agent's)
-     deactivate CA
-     CertIssuer-->>CredAgentCon: Signed certificate
-     deactivate CertIssuer
- 
-     CredAgentCon->>Cassini: Reply (signed cert), tagged with<br/>the original correlation_id,<br/>including the Credentials Agent's<br/>current escrow public key
-     deactivate CredAgentCon
-     activate Cassini
-     Cassini->>CredAgentObs: Deliver correlated reply
-     deactivate Cassini
-     activate CredAgentObs
-     CredAgentObs->>GrantTool: Signed certificate +<br/>Credentials Agent's escrow public key
-     deactivate CredAgentObs
- 
-     GrantTool->>GrantTool: Store cert + key locally<br/>(reused for every future grant/revoke)
-     deactivate GrantTool
+    Admin->>Tool: run it, with where the certificate and key go. Neither may exist yet
+    Tool->>Tool: make a key, and write it to disk first
+    Tool->>Obs: POST /account Begin(claimant): Bootstrap(token) or Native(username, email)
+    Obs->>Bk: relayed, the observer judging nothing
+    Bk->>CA: delivered
+    alt bootstrap
+        CA->>CA: the token is the bootstrap identity's, and the bootstrap has not been completed:<br/>the pending account is made now (AccountProvisioned), the only one with no admin's action behind it
+    else claim
+        CA->>CA: the claimant matches a pending provisioning
+    end
+    CA-->>Tool: the account_id, through the broker and observer. Not a secret: it ends up in a public certificate
+    Note over Tool,CA: Repeating Begin is safe, and gives the same answer until a certificate is issued. A bootstrap counts as done only<br/>then, so one that fails part-way can simply be repeated.
+
+    Tool->>Tool: a CSR whose SAN is that account_id, signed by the claimant's own key
+    Tool->>Obs: POST /account Complete(claimant, csr)
+    Obs->>Bk: relayed
+    Bk->>CA: delivered
+    CA->>CA: proves who it is again
+    CA->>CI: /internal/issue: an ordinary client certificate, nothing more privileged than an agent's
+    CI-->>CA: signed
+    CA->>CA: AccountCertificateIssued, which consumes the pending record: a claim succeeds exactly once
+    CA-->>Tool: the certificate, through the broker and observer
+    Tool->>Tool: checked against the key, then written. Printed if it cannot be written
+    Note over Tool,CA: Lost after that, the bootstrap admin's only recovery is rebuilding the cluster. Its certificate then signs admin actions (general/admin_permission_grant).

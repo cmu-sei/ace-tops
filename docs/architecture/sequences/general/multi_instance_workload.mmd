@@ -1,0 +1,69 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% A workload of many pods at once, as built (2026-11-04, docs/architecture/authority-model.md, "Multi-instance workloads", built 2026-11-01). One catalog entry, one identity
+%% and one escrow key, with each pod its own instance. Its first user is the load harness.
+sequenceDiagram
+    autonumber
+    participant Cat as Catalog (instances: "many")
+    participant A as pod A
+    participant B as pod B
+    participant CA as Credentials agent
+    participant CI as cert-issuer
+    participant Bk as Cassini broker
+    participant Sub as a subscriber
+
+    Cat->>CA: applying the catalog signs it off: one workload, one ServiceAccount, one identity
+    par each pod asks with its own token, as any workload does (general/workload_certificate_issuance)
+        A->>CA: issuance, the token bound to pod A's UID
+        CA->>CI: /internal/issue
+        CI-->>A: a certificate naming the identity, i:uid:(A's UID) and i:pod:(A's name)
+    and
+        B->>CA: issuance, the token bound to pod B's UID
+        CA->>CI: /internal/issue
+        CI-->>B: the same identity, i:uid:(B's UID) and i:pod:(B's name)
+    end
+    Note over CA: A reissue revokes the certificate it supersedes per (identity, instance), so A's does not end B's. Nothing about an instance is self-reported.
+
+    opt the workload has encryption: one key per workload, shared by its instances
+        A->>CA: A's custodian: X's escrow key: none yet, so it is issued one and stores it
+        B->>CA: B's custodian asks meanwhile
+        CA-->>B: BeingIssued: only one first issuance per identity, so it asks again
+        B->>CA: asks again, once it is escrowed
+        CA-->>B: the same key, sealed to B's ephemeral, into B's own custody slot
+        Note over A,B: A secret sealed to the workload opens in any instance. A reply for one pod is sealed to a key made for that one exchange.
+    end
+
+    A->>Bk: register. The broker reads the instance from the leaf
+    B->>Bk: register. Two sessions: supersede is by (identity, instance)
+    A->>Bk: publish
+    Bk->>Sub: delivery, published_by the identity and published_instance A, both from the verified certificate
+
+    alt pod A restarts in place: the same UID, a new key
+        A->>Bk: register under its own instance
+        Bk->>Bk: it supersedes its own older session, and only that (broker/session_supersede_takeover)
+    else pod A shuts down cleanly
+        A->>Bk: the builder's drain says goodbye
+        Bk->>Bk: its session ends at once
+    else pod A dies uncleanly
+        Bk->>Bk: its session is detached for the retention window, and no successor supersedes it
+    end
+    Note over Bk,Sub: Pods are not a consumer group. A topic delivers to every subscriber, so this serves publishers and does not share work.

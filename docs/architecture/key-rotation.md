@@ -27,6 +27,8 @@ Status: DESIGN CLEARED by the maintainer 2026-11-01, every question below answer
 recommended"); not built, and to be built after custody part B (the credentials agent's own key in its daemon). Arose from the multi-instance threat model (`authority-model.md`, "Multi-instance
 workloads").
 
+*The design, all of it shaded as not built: [the diagram](sequences/general/key_rotation.svg).*
+
 ## Why
 
 Revocation is immediate: the moment Polar says a certificate is revoked, its daemon destroys the keys and the broker ends

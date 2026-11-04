@@ -846,9 +846,9 @@ Each step is taken in bites, each reported before the next.
   - *Bite 1, broker and client:* DONE 2026-11-04. Four new (session supersede and takeover, admission, the stall rule, shutdown and drain), six of
     `broker/` and the five client reliability diagrams redrawn from the code, with registration refusals, and what is not built shaded. Deleted as wrong or
     duplicates and linked from nowhere: `client_timeout` (no such path), `internal_publish`, `internal_subscription` (both claimed no topic is created on first use), `topic_creation`.
-  - *Bite 2, certificates and identity:* new, `polar-init` issuance with custody, multi-instance and rotation of pods, revocation, the core
-    restart ticket. Fix account claim. `attestation_and_issuance` stays, marked as the original design; new shaded diagrams of the current
-    attestation design, the instance check and the process, and of key rotation.
+  - *Bite 2, certificates and identity:* DONE 2026-11-04. New: `workload_certificate_issuance` (`polar-init` with custody), `multi_instance_workload`, `revocation`, `core_restart_ticket`,
+    and `key_rotation`, all shaded as design. `admin_bootstrap_identity` redrawn as the two-phase claim. `attestation_and_issuance` was marked as the original design and the three attestation diagrams were drawn with slices A and B, so
+    they stand. Not traced in this pass: `user_cert_issuance_and_usage` and `identity_normalization_query`, against an IdP (for bite 4).
   - *Bite 3, configuration and health:* new, restart in place, held agent and retry with a Dynamic change, replay on registration, the
     escrowed credential, pulled health, Jira's cursor. Fix health, shutdown and signed configuration.
   - *Bite 4, the rest:* new, authority catch-up, credentials requests, the git flow (fix `proposal_flow`, which names a Jira consumer as the proposer;

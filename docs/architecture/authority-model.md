@@ -693,7 +693,7 @@ To settle one at a time, before building:
 
 ## Multi-instance workloads (decided 2026-11-01, built 2026-11-01)
 
-*As built: see "As built (2026-11-01)" at the end of this section; the decisions below are kept as decided.*
+*As built: see "As built (2026-11-01)" at the end of this section, and [the diagram](sequences/general/multi_instance_workload.svg); the decisions below are kept as decided.*
 
 Decided by the maintainer, answering open question 11 (Blitz's per-run build identities) and the load harness's need for
 several concurrent publishers (broker-baseline.md, "The fifth set": one publisher and one subscriber could not reach the

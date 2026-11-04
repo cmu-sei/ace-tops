@@ -764,6 +764,8 @@ revoked, every earlier one revoked); a reported escrow certificate timed in mill
 
 ## Step 5, revocation: the plan (2026-10-27, its question decided)
 
+*As built: [the diagram](sequences/general/revocation.svg).*
+
 What is there, read for this:
 - *What is revoked.* The credentials agent's ledger puts a serial in `revoked_serials`
   (`credentials-agent/consume/src/state.rs`) for an administrator's `Revoke` (the admin CLI's `revoke`) and for every
@@ -1178,6 +1180,8 @@ Decided item 3. Two keys are left outside a daemon, and they are not alike.
    and a workload with no daemon.
 
 ### Part A's bootstrap: the custodian, the plan (2026-10-27, cleared by the maintainer)
+
+*As built, with the rest of a pod's issuance: [the diagram](sequences/general/workload_certificate_issuance.svg).*
 
 Replaces items 2 and 2a. The design is the maintainer's (2026-10-27): **the token buys only the custodian's
 certificate, and the custodian's certificate buys the rest.**

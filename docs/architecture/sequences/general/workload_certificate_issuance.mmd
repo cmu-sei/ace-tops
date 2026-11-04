@@ -1,0 +1,86 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% A pod gets its certificates, as built (2026-11-04, docs/architecture/key-custody.md "Part A's bootstrap: the custodian", deployments.md "The renewal rule",
+%% credentials-agent-architecture.md). What the credentials agent asks of the attestation agent is general/attestation_instance_check. The bootstrap
+%% services (Cassini, the credentials agent and its observer) ask cert-issuer directly, on their token: general/core_restart_ticket.
+sequenceDiagram
+    autonumber
+    participant Init as polar-init (init container)
+    participant Daemon as custody daemon (a sidecar)
+    participant Obs as Credentials observer<br/>(low trust)
+    participant CA as Credentials agent<br/>(consumer)
+    participant Att as Attestation agent
+    participant CI as cert-issuer
+    participant Bk as Cassini broker
+    participant Agent as the workload's container
+
+    Init->>Init: judge the environment and --cert<br/>arguments as a whole, then wait for<br/>the dependencies' TLS endpoints
+    Init->>Init: read the projected token,<br/>and from its sub the identity X
+    Note over Init,Daemon: One UID, so nothing is decided by what the daemon is told over its socket. A bundle a run before<br/>this one left in this pod, still good, is kept: a restart in place asks only for what it lacks.
+    Init->>Daemon: the custodian slot's CSR. The daemon made the key, and no request signs with that slot
+
+    Note over Init,Obs: The token is not on the pod network in the clear, and the observer never holds it. A certificate whose<br/>key is polar-init's own, not the daemon's, is asked for this same way, first, and written with its key.
+    Init->>Obs: POST /workload/session
+    Obs->>CA: a session, over Cassini
+    CA-->>Init: SessionOffer(id, public key, lifetime), signed, through the observer
+    Init->>Init: the signature holds under the pinned CA,<br/>a signing certificate, naming the credentials<br/>agent. Only then seal
+    Init->>Obs: POST /workload/issue(session, sealed token, Custody, the custodian's CSR)
+    Obs->>CA: the sealed bytes, over Cassini
+    CA->>CA: open the seal, verify the token: its identity, and the pod UID it is bound to
+    CA->>Att: the instance check. No answer, no session, or CannotSay: issued and recorded IssuedUnattested
+    Att-->>CA: Genuine, or NotGenuine: refused, and the pod restarts in place and asks again
+    CA->>CA: the renewal rule, per identity, pod and type: not issued one of that type within five minutes
+    CA->>CI: /internal/issue: names from the catalog, the p: names say what the custodian may fetch
+    CI-->>CA: custody.X's certificate
+    CA-->>Init: it, through the observer
+    Init->>Init: signed by the pinned CA, for this<br/>workload? Otherwise it is refused
+    Init->>Daemon: install it, and the slot is sealed. The token has bought this and nothing else
+
+    rect rgb(250, 240, 215)
+    Note over Daemon,Bk: The custodian fetches the rest, over a Cassini session of its own, as custody.X. No token travels.
+    Daemon->>Bk: register as custody.X, and ask for the authority snapshot
+    Daemon->>CA: for each slot its certificate names: the slot's key and CSR
+    CA->>CA: only to custody.X, only what its certificate names, once each, within five minutes of its issue
+    CA->>CI: /internal/issue
+    CI-->>CA: X's client or server certificate, no longer-lived than the custodian's
+    CA-->>Daemon: it
+    opt the workload has encryption
+        Daemon->>CA: X's escrow key, sealed to an ephemeral the daemon opens itself
+        alt one is escrowed
+            CA-->>Daemon: it, sealed to the ephemeral
+        else none: this pod is the first
+            Daemon->>Daemon: make a P-256 key
+            Daemon->>CA: have it issued, then store it, sealed to the credentials agent's pinned key
+            CA-->>Daemon: its escrow certificate (another pod meanwhile is told BeingIssued, and asks again)
+        end
+        Note over CA,Daemon: Refused to X itself: the workload can neither retrieve the key nor replace it.
+    end
+    end
+
+    Init->>Daemon: Ready? Asked until it is, for at most 240 s, inside its five minutes
+    Daemon-->>Init: ready
+    Init->>Daemon: Certificate, for each slot
+    Init->>Init: write the public bundle<br/>(certificates and ca.pem), and no key
+    Init->>Init: leave the one-use start marker
+    Init->>Agent: exit 0: the workload's container starts, takes the marker, and asks its daemon to sign
+    Note over Daemon: Its authority is spent. What it keeps is a certificate good for listening: authority updates, and its own revocation.
+    Note over Init,Agent: Nothing renews. The workload's health actor ends it as its shortest-lived certificate nears expiry, and the pod restarts in place with empty slots.
