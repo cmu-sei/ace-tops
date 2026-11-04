@@ -84,7 +84,7 @@ Since the handler (2026-11-03):
 A new token is a new signed version: once the CryptoActor has it (`ProtocolHandle::credentials_applied`) the supervisor starts the
 observers again with it, which releases every hold. Without a credential, and not reading anonymously, it starts no
 observer and holds `Credentials`, saying to sign the section; one arriving starts them. An entry under another name is said to be one, with the name to use. `credentials-agent-architecture.md`
-records the CryptoActor's `HttpCredential`, the sibling of git's `GitCredential`.
+records the CryptoActor's `http_credential`, the sibling of git's `git_credential`, which the protocol handler alone asks for now (`protocol-handlers.md`).
 
 **On a fresh cluster the token is sealed from sops, once** (built 2026-11-01, `infra/seed.nu` "jira-observer's
 credential", `seed_jira_credential` in `infra/up.nu`'s seed step; tests in `infra/tests/seed.nu`). When the target runs
@@ -379,8 +379,8 @@ answers and the design principles were silent:
 3. **The hold's message is `<observer>: <what failed>; <what to set>`**, what failed cut to 80 characters, so what to
    set always fits the report's 200.
 4. **`HttpCredential` is a sibling of `GitCredential`**, not a generalisation: git is given a username for a token
-   (`oauth2`), which an HTTP API is not (credentials-agent-architecture.md). Like git's it hands the caller what the
-   request needs rather than an HTTP I/O actor sending it.
+   (`oauth2`), which an HTTP API is not (credentials-agent-architecture.md). Its caller is now the protocol handler, which
+   sends the request, so the second half of this decision, the agent being handed the header's material, is closed.
 5. **`JIRA_EMAIL` is the credential's `username`**, by git's `user-password` precedent: a Cloud API token is a
    `user-password` with the account's email.
 6. **The section takes one entry**: the observer reads one site.

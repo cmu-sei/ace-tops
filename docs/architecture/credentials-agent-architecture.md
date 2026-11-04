@@ -498,7 +498,7 @@ shared safely by both the agent's own ordinary traffic and
 `CryptoActor`'s own Credentials-Agent traffic, precisely because
 neither side of that sharing ever blocks the other.
 
-### Named operations on registered secrets (decided 2026-10-14; the registry and `GitCredential` are built)
+### Named operations on registered secrets (decided 2026-10-14; built, and since 2026-11-04 the protocol handlers alone ask for them: `protocol-handlers.md`)
 
 A secret that reaches an agent, in a signed document (`signed-configuration.md`) or from the credentials agent
 (`RetrieveSecret`), is **registered** with the `CryptoActor` under its name, together with its **binding**: the
@@ -540,9 +540,9 @@ not, so one operation for both would change git's answer. DECIDED, to review: it
 material, as `GitCredential` does for libgit2, rather than going through an HTTP I/O actor as the first bullet above
 designs; jira-observer sends its requests with reqwest, and no I/O actor is built yet. Its first user is jira-observer
 (`jira.md`, "The credential").
-**To be closed (the maintainer, 2026-11-03):** the protocol handler gets the credential from the `CryptoActor` itself, and domain code
-cannot be given it, so these two answers go to the handlers alone (`protocol-handlers.md`, "No way to the credential from domain code"). The port is built
-(`CryptoMessage::UseCredential`, `CredentialPort`), and the two messages stay until the agents have moved off them.
+**Closed, 2026-11-04 (the maintainer's decision of 2026-11-03):** the protocol handler gets the credential from the `CryptoActor` itself, and domain code
+cannot be given it, so these two answers go to the handlers alone (`protocol-handlers.md`, "No way to the credential from domain code"). The `GitCredential` and `HttpCredential` messages of the table above are gone, and what asks is
+`CryptoMessage::UseCredential`, through `CredentialPort`. `CryptoClient::http_credential` is gone too. The two functions in `registry.rs` that decide the answer stay. And `RetrieveSecret` refuses a credential's own record, `IsACredential`, so a restarted agent gets its secrets back by the replay of its section (or, once built, by re-delivery: `key-rotation.md`), not through it.
 
 A **host pattern** is a bare host name, matched case-insensitively and exactly (`github.com`), or `*.` followed by
 a domain (`*.example.org`), which matches that domain with one or more labels before it, at any depth

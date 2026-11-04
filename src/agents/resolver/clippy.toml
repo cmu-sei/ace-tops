@@ -34,6 +34,12 @@ disallowed-methods = [
     { path = "std::env::remove_var", reason = "the environment is read once, into a Config; a test passes an Env of its own" },
 ]
 
+# This crate has oci-client for its types alone (`Reference`, `OciManifest`): reading a registry is the protocol handler's
+# (docs/architecture/protocol-handlers.md, "The protocols"). Its dependency cannot say so, so this does.
+disallowed-types = [
+    { path = "oci_client::Client", reason = "ask the protocol handler: a client of its own is neither judged nor recorded" },
+]
+
 # An entered span is thread-local; a task that yields while holding one corrupts the subscriber's
 # span stack and ref counts (tracing-subscriber panics: "tried to clone a span that already closed").
 await-holding-invalid-types = [

@@ -315,6 +315,12 @@ pub fn escrow_form(
     .map_err(|_| RecordError::Malformed)
 }
 
+/// Whether `bytes` are what `escrow_form` makes, whether or not their binding is usable now: a record kept from before a
+/// rule tightened is a credential all the same.
+pub fn is_escrow_form(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<RecordIn>(bytes).is_ok()
+}
+
 /// The binding and the secret from what `escrow_form` made. A record that is not of that form, or whose binding
 /// is not usable, is refused and not trusted.
 pub fn from_escrow_form(
@@ -333,6 +339,25 @@ pub fn from_escrow_form(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_record_is_told_from_any_other_secret() {
+        let good = binding("github.com", SecretKind::Token, None);
+        assert!(is_escrow_form(&escrow_form(&good, b"t0ken").unwrap()));
+        // A binding no longer usable is still a credential's.
+        let old = br#"{"host_pattern":"","kind":"token","username":null,"secret":"t0ken"}"#;
+        assert!(is_escrow_form(old));
+        assert!(from_escrow_form(old).is_err());
+        for other in [
+            &b"just a value"[..],
+            b"",
+            b"{}",
+            br#"{"secret":"t0ken"}"#,
+            b"[1,2,3]",
+        ] {
+            assert!(!is_escrow_form(other), "{other:?}");
+        }
+    }
 
     fn binding(pattern: &str, kind: SecretKind, username: Option<&str>) -> SecretBinding {
         SecretBinding {

@@ -35,7 +35,6 @@ polar-scudo.workspace = true
 cassini-types.workspace = true
 credentials_agent_common.workspace = true
 polar-agent-builder.workspace = true
-polar-crypto.workspace = true
 polar-env.workspace = true
 ractor.workspace = true
 tokio.workspace = true

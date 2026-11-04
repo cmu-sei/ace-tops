@@ -720,7 +720,7 @@ impl InfrastructureSupervisor {
             .client
             .as_ref()
             .and_then(|client| client.crypto.as_ref())
-            .is_some_and(|crypto| crypto.as_actor_ref().get_id() == id)
+            .is_some_and(|crypto| crypto.actor().get_id() == id)
         {
             Child::Other("the crypto actor".to_string())
         } else if state
@@ -925,7 +925,7 @@ impl Actor for InfrastructureSupervisor {
                     crypto: client
                         .crypto
                         .clone()
-                        .map(|crypto| Arc::new(crypto) as Arc<dyn crate::CryptoClient>),
+                        .map(|crypto| Arc::new(crypto) as Arc<dyn crate::crypto::SectionKeeper>),
                     configuration: configuration.clone(),
                     health: healthcheck.clone(),
                 },
@@ -998,7 +998,7 @@ impl Actor for InfrastructureSupervisor {
                     if let ClientEvent::Registered { .. } = &event
                         && let Some(crypto) = &client.crypto
                         && let Err(e) = crypto
-                            .as_actor_ref()
+                            .actor()
                             .send_message(polar_crypto::CryptoMessage::ClientRegistered)
                     {
                         tracing::warn!("failed to tell CryptoActor the client registered: {e}");
@@ -3224,7 +3224,7 @@ mod tests {
             .crypto
             .clone()
             .expect("an encrypting agent has one");
-        crypto.as_actor_ref().kill();
+        crypto.actor().kill();
         rig.settle().await;
         assert_eq!(rig.events(), ["prepare_shutdown"]);
     }

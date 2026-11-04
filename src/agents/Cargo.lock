@@ -2923,7 +2923,6 @@ name = "git-agent-common"
 version = "1.0.0"
 dependencies = [
  "cassini-client",
- "git2",
  "polar",
  "rkyv",
  "serde",
@@ -2941,7 +2940,6 @@ dependencies = [
  "git-agent-common",
  "polar",
  "polar-agent-builder",
- "polar-crypto",
  "polar-env",
  "polar-scudo",
  "ractor",
@@ -4280,7 +4278,6 @@ dependencies = [
  "neo4rs",
  "polar",
  "polar-agent-builder",
- "polar-crypto",
  "polar-router",
  "polar-scudo",
  "ractor",
@@ -7432,7 +7429,6 @@ dependencies = [
  "cassini-types",
  "credentials_agent_common",
  "polar-agent-builder",
- "polar-crypto",
  "polar-env",
  "polar-scudo",
  "ractor",

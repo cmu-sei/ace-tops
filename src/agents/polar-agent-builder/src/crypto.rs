@@ -33,11 +33,54 @@
 //! test can implement the same trait with a fake, in-memory version,
 //! with no spawned actor, no real Credentials Agent, and no real
 //! network connection needed at all.
+//!
+//! What the domain has of it is deliberately small (docs/architecture/protocol-handlers.md, "No way to the credential from
+//! domain code"). It can store a secret, encrypt to another identity, and read a secret that is not a credential:
+//!
+//! ```
+//! # use polar_agent_builder::{CryptoClient, CryptoHandle};
+//! async fn what_the_domain_has(crypto: &CryptoHandle) {
+//!     let _ = crypto.retrieve_secret("a-name".to_string()).await;
+//! }
+//! ```
+//!
+//! No credential, no actor to send messages to, and nothing that registers what it can read of its own section under a binding
+//! of its choosing. These do not compile:
+//!
+//! ```compile_fail
+//! # use polar_agent_builder::{CryptoClient, CryptoHandle};
+//! async fn a_credential(crypto: &CryptoHandle) {
+//!     let _ = crypto.http_credential("jira".to_string(), "jira.example.org".to_string()).await;
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! # use polar_agent_builder::{CryptoClient, CryptoHandle};
+//! async fn a_credential(crypto: &CryptoHandle) {
+//!     let _ = crypto.git_credential("github".to_string(), "github.com".to_string()).await;
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! # use polar_agent_builder::CryptoHandle;
+//! fn the_actor(crypto: &CryptoHandle) {
+//!     let _ = crypto.as_actor_ref();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! # use polar_agent_builder::{CryptoClient, CryptoHandle};
+//! async fn a_wider_binding(crypto: &CryptoHandle) {
+//!     let _ = crypto.replace_section("credentials".to_string(), Vec::new()).await;
+//! }
+//! ```
 
 use async_trait::async_trait;
-use polar_crypto::registry::{GitCredential, HttpCredential, SecretBinding};
-use polar_crypto::{CryptoError, CryptoMessage};
+use polar_crypto::CryptoMessage;
+use polar_crypto::registry::SecretBinding;
 use ractor::ActorRef;
+
+pub use polar_crypto::{CryptoError, Zeroizing};
 
 #[async_trait]
 pub trait CryptoClient: Send + Sync {
@@ -51,13 +94,18 @@ pub trait CryptoClient: Send + Sync {
         plaintext: Vec<u8>,
     ) -> Result<Vec<u8>, CryptoError>;
 
-    /// See CryptoMessage::RetrieveSecret's own doc comment. `Ok(None)` is a name nothing is stored
+    /// See CryptoMessage::RetrieveSecret's own doc comment: a credential's record is refused. `Ok(None)` is a name nothing is stored
     /// under; a secret this agent may not have is an error that says policy refused it.
     async fn retrieve_secret(
         &self,
         name: String,
     ) -> Result<Option<polar_crypto::Zeroizing<Vec<u8>>>, CryptoError>;
+}
 
+/// What the builder alone does with a `credentials` section: never the domain's, which could otherwise register what it can
+/// read of its own section under a wider binding, and have the handler present it there.
+#[async_trait]
+pub(crate) trait SectionKeeper: Send + Sync {
     /// See CryptoMessage::RegisterSecret's own doc comment.
     async fn register_secret(
         &self,
@@ -68,29 +116,12 @@ pub trait CryptoClient: Send + Sync {
         binding: SecretBinding,
     ) -> Result<(), CryptoError>;
 
-    /// See CryptoMessage::LoadSecret's own doc comment.
-    async fn load_secret(&self, name: String, section: String) -> Result<bool, CryptoError>;
-
     /// See CryptoMessage::ReplaceSection's own doc comment. The names dropped.
     async fn replace_section(
         &self,
         section: String,
         keep: Vec<String>,
     ) -> Result<Vec<String>, CryptoError>;
-
-    /// See CryptoMessage::GitCredential's own doc comment.
-    async fn git_credential(
-        &self,
-        name: String,
-        host: String,
-    ) -> Result<GitCredential, CryptoError>;
-
-    /// See CryptoMessage::HttpCredential's own doc comment.
-    async fn http_credential(
-        &self,
-        name: String,
-        host: String,
-    ) -> Result<HttpCredential, CryptoError>;
 }
 
 /// The real, live implementation of CryptoClient -- a thin wrapper
@@ -105,13 +136,8 @@ impl CryptoHandle {
         Self { actor }
     }
 
-    /// The real, deliberate escape hatch -- for the rare, genuine
-    /// case a caller needs the raw ActorRef directly (e.g. to spawn
-    /// something else linked against it), rather than going through
-    /// this handle's own, ordinary methods. Mirrors
-    /// lib::cassini::TcpClient::as_actor_ref's own, already-established
-    /// convention exactly.
-    pub fn as_actor_ref(&self) -> ActorRef<CryptoMessage> {
+    /// The actor, for this crate alone: its messages include what only the builder may ask.
+    pub(crate) fn actor(&self) -> ActorRef<CryptoMessage> {
         self.actor.clone()
     }
 }
@@ -165,7 +191,10 @@ impl CryptoClient for CryptoHandle {
         });
         flatten_call_result(result)
     }
+}
 
+#[async_trait]
+impl SectionKeeper for CryptoHandle {
     async fn register_secret(
         &self,
         name: String,
@@ -185,15 +214,6 @@ impl CryptoClient for CryptoHandle {
         flatten_call_result(result)
     }
 
-    async fn load_secret(&self, name: String, section: String) -> Result<bool, CryptoError> {
-        let result = ractor::call!(self.actor, |reply| CryptoMessage::LoadSecret {
-            name,
-            section,
-            reply
-        });
-        flatten_call_result(result)
-    }
-
     async fn replace_section(
         &self,
         section: String,
@@ -205,32 +225,6 @@ impl CryptoClient for CryptoHandle {
             reply
         });
         result.map_err(|e| CryptoError::BrokerUnreachable(e.to_string()))
-    }
-
-    async fn git_credential(
-        &self,
-        name: String,
-        host: String,
-    ) -> Result<GitCredential, CryptoError> {
-        let result = ractor::call!(self.actor, |reply| CryptoMessage::GitCredential {
-            name,
-            host,
-            reply,
-        });
-        flatten_call_result(result)
-    }
-
-    async fn http_credential(
-        &self,
-        name: String,
-        host: String,
-    ) -> Result<HttpCredential, CryptoError> {
-        let result = ractor::call!(self.actor, |reply| CryptoMessage::HttpCredential {
-            name,
-            host,
-            reply,
-        });
-        flatten_call_result(result)
     }
 }
 

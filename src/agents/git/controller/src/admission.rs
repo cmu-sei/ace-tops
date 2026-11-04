@@ -33,8 +33,8 @@
 use git_agent_common::remote::{canonical_repository, credential_name_problem};
 use polar::graph::nodes::git::RepoId;
 use polar_agent_builder::RuntimeSection;
+use polar_agent_builder::protocol::credentials::{host_matches, pattern_problem};
 use polar_agent_builder::runtime::SectionAuthority;
-use polar_crypto::registry::{host_matches, pattern_problem};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;

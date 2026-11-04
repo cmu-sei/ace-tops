@@ -31,8 +31,8 @@
 //! the owner's namespace, so the refusal is the same whether or not the name is held).
 
 use credentials_agent_common::secret::StoreRefusalReason;
+use polar_agent_builder::CryptoError;
 use polar_agent_builder::crypto::CryptoClient;
-use polar_crypto::CryptoError;
 
 /// What the owner stores first, and then replaces it with.
 pub const FIRST_VALUE: &[u8] = b"harness-value-one";
@@ -203,7 +203,7 @@ pub fn report(role: &str, round: u64, check: &Check) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polar_crypto::Zeroizing;
+    use polar_agent_builder::Zeroizing;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -273,40 +273,6 @@ mod tests {
                     "policy does not permit this identity to retrieve this secret".to_string(),
                 )),
             }
-        }
-        async fn register_secret(
-            &self,
-            _: String,
-            _: String,
-            _: Vec<u8>,
-            _: Vec<u8>,
-            _: polar_crypto::registry::SecretBinding,
-        ) -> Result<(), CryptoError> {
-            Err(CryptoError::NoReply)
-        }
-        async fn load_secret(&self, _: String, _: String) -> Result<bool, CryptoError> {
-            Err(CryptoError::NoReply)
-        }
-        async fn replace_section(
-            &self,
-            _: String,
-            _: Vec<String>,
-        ) -> Result<Vec<String>, CryptoError> {
-            Err(CryptoError::NoReply)
-        }
-        async fn git_credential(
-            &self,
-            _: String,
-            _: String,
-        ) -> Result<polar_crypto::registry::GitCredential, CryptoError> {
-            Err(CryptoError::NoReply)
-        }
-        async fn http_credential(
-            &self,
-            _: String,
-            _: String,
-        ) -> Result<polar_crypto::registry::HttpCredential, CryptoError> {
-            Err(CryptoError::NoReply)
         }
         async fn encrypt_for_recipient(
             &self,

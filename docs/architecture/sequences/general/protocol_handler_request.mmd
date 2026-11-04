@@ -1,0 +1,87 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+sequenceDiagram
+    autonumber
+    participant Domain as Domain actor
+    participant Handler as ProtocolActor<br/>(the builder's)
+    participant Config as ConfigurationActor
+    participant Crypto as CryptoActor
+    participant Protocol as Http or Git<br/>(its own task)
+    participant Far as The far end
+    participant Read as operation.read<br/>(a blocking thread)
+
+    Note over Domain,Read: As built, 2026-11-04 (docs/architecture/protocol-handlers.md). The domain names an operation it declared<br/>at load (PolarAgent::OPERATIONS). It has no client, no credential, and no way to ask for one.
+
+    Domain->>Handler: ask(operation)
+    activate Handler
+    opt Location::Configured
+        Handler->>Config: the variable, as it is in force
+        Config-->>Handler: its value, or nothing (Denied, NotConfigured)
+    end
+    opt Credential::ForHost
+        Handler->>Crypto: UseCredential(pass, BoundTo host)
+        Crypto-->>Handler: the name bound to the host, never a value
+    end
+    Handler->>Handler: judge(operation, declared, target, ...)<br/>and record the verdict, hosts only (polar::protocol)
+
+    alt denied, or the host asked for time, or the credential is held
+        Handler-->>Domain: Err(Failure), and nothing is sent
+    else allowed
+        opt the operation uses a credential
+            Handler->>Crypto: UseCredential(pass, Http or Git, name, host)
+            Note over Crypto,Protocol: The binding is checked here, where the secret lives.<br/>Any other pass is refused and learns nothing.
+            alt not bound to the host, or not registered
+                Crypto-->>Handler: refused
+                Handler-->>Domain: Err(NotBound or NoCredential), and nothing is sent
+            else
+                Crypto-->>Handler: the credential, wiped when dropped
+            end
+        end
+        Handler->>Protocol: perform(request, credential)
+        deactivate Handler
+        activate Protocol
+        Protocol->>Far: the request, through the egress proxy and CA
+        loop each redirect or auth host (HTTP: git stays on its host, or fails)
+            Far-->>Protocol: go there
+            Protocol->>Handler: hop(target)
+            Handler->>Handler: judged and recorded again
+            alt off the credential's binding
+                Handler-->>Protocol: Err(Failure): not followed
+            else
+                Handler-->>Protocol: the credential for there, if any
+            end
+        end
+        alt the credential is refused
+            Far-->>Protocol: 401 or 403, or a second challenge (git)
+            Protocol-->>Handler: Err(CredentialRefused)
+            Handler->>Handler: not presented again until a new version,<br/>and the agent holds Credentials
+            Handler-->>Domain: Err(CredentialRefused)
+        else it answers
+            Far-->>Protocol: the reply, whole and bounded
+            Protocol->>Read: read(reply): what came back, never what was sent
+            activate Read
+            Read-->>Protocol: a value, within its budget
+            deactivate Read
+            Protocol-->>Domain: Ok(value), as an ordinary message or ask's answer
+        end
+        deactivate Protocol
+    end

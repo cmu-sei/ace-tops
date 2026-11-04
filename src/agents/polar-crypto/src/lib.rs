@@ -150,6 +150,9 @@ pub enum CryptoError {
         "a credential goes only to this agent's protocol handlers, and this pass is not theirs"
     )]
     NotThePort,
+    /// What was asked for is a registered secret's own record, which is used and never read.
+    #[error("that secret is a credential: it is used through a protocol handler, and never read")]
+    IsACredential,
     #[error(transparent)]
     Use(#[from] registry::UseRefusal),
     #[error(transparent)]
@@ -297,7 +300,7 @@ pub enum CryptoMessage {
     /// `Ok` once the secret is registered, and refused, with nothing registered or escrowed, if the binding is
     /// not usable, the bytes are not an escrowed secret, or it does not open under `context`. A name registered
     /// again replaces the earlier secret and stops escrowing it. The plaintext never leaves this actor except
-    /// through an operation on it, such as `GitCredential`.
+    /// through an operation on it, asked for with `UseCredential`.
     RegisterSecret {
         name: String,
         /// The runtime section the secret came from, which `ReplaceSection` speaks of.
@@ -325,23 +328,6 @@ pub enum CryptoMessage {
         keep: Vec<String>,
         reply: RpcReplyPort<Vec<String>>,
     },
-    /// The credential git is given to reach `host` with the registered secret `name`: a username and the secret,
-    /// wiped when dropped. Refused if no secret is registered under the name, if the binding does not name the
-    /// host, or if its kind or content cannot be given to git. The caller never has the secret otherwise.
-    GitCredential {
-        name: String,
-        host: String,
-        reply: RpcReplyPort<Result<registry::GitCredential, CryptoError>>,
-    },
-    /// The credential an HTTP request is given to reach `host` with the registered secret `name`: a bearer token,
-    /// or a user name and password for Basic, wiped when dropped (`registry::http_credential`). Refused as
-    /// `GitCredential` is: no secret under the name, a binding that does not name the host, a user name and password
-    /// with no user name, or content that is not text. The sibling of `GitCredential` for an HTTP API (Jira).
-    HttpCredential {
-        name: String,
-        host: String,
-        reply: RpcReplyPort<Result<registry::HttpCredential, CryptoError>>,
-    },
     /// A protocol handler asks for a credential, with the pass the builder started this actor with: the way
     /// [`CredentialPort`] reaches it. Any other pass is refused, and learns nothing.
     UseCredential {
@@ -353,7 +339,9 @@ pub enum CryptoMessage {
     /// in this process. `Ok(None)` means nothing is stored under the name. Whether this identity may
     /// have the secret is the credentials agent's policy to decide: a denial is
     /// `Err(RetrieveSecretDenied)`, and says nothing about whether the secret exists. The plaintext is
-    /// wiped when dropped.
+    /// wiped when dropped. A registered secret's own record is refused, `Err(IsACredential)`, whatever it is
+    /// called and whether or not it is registered now: a credential is used, through a protocol handler, and never read
+    /// (docs/architecture/protocol-handlers.md, "No way to the credential from domain code").
     RetrieveSecret {
         name: String,
         reply: RpcReplyPort<Result<Option<zeroize::Zeroizing<Vec<u8>>>, CryptoError>>,
@@ -772,12 +760,6 @@ impl Actor for CryptoActor {
                 }
                 let _ = reply.send(dropped);
             }
-            CryptoMessage::GitCredential { name, host, reply } => {
-                let _ = reply.send(git_credential_of(&state.registry, name, &host).await);
-            }
-            CryptoMessage::HttpCredential { name, host, reply } => {
-                let _ = reply.send(http_credential_of(&state.registry, name, &host).await);
-            }
             CryptoMessage::UseCredential { pass, ask } => {
                 let passes = state
                     .credential_pass
@@ -850,9 +832,10 @@ impl Actor for CryptoActor {
                         tcp_client,
                         retrieve_secret_reply_router,
                         escrow_key,
-                        name,
+                        name.clone(),
                     )
-                    .await;
+                    .await
+                    .and_then(|found| refuse_a_credential(&name, found));
                     let _ = reply.send(result);
                 });
             }
@@ -1156,6 +1139,22 @@ fn start_escrow(
     });
     if let Some(earlier) = shared.escrow_tasks.lock().unwrap().insert(name, handle) {
         earlier.abort();
+    }
+}
+
+/// What was retrieved, unless it is a registered secret's own record. Its value decides, not the name, so a credential
+/// not registered yet in this run, or withdrawn, is refused the same.
+fn refuse_a_credential(
+    name: &str,
+    found: Option<zeroize::Zeroizing<Vec<u8>>>,
+) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, CryptoError> {
+    match found {
+        Some(record) if registry::is_escrow_form(&record) => {
+            // Nothing in the agent's own code asks this way: something is trying to.
+            warn!(secret = %name, "a credential's own record was asked for, and refused");
+            Err(CryptoError::IsACredential)
+        }
+        other => Ok(other),
     }
 }
 
@@ -2078,10 +2077,12 @@ mod tests {
     async fn without_a_custody_daemon_nothing_sealed_to_the_escrow_key_opens_and_the_key_is_never_asked_for()
      {
         let daemon = custody_daemon_holding_an_escrow_key();
+        let pass = CredentialPass::new();
         let ((crypto_actor, _), _, _) =
             spawn_crypto_actor_with_fake_credentials_agent_configured(FakeCredentialsAgentConfig {
                 stored_escrow_keypair_pem: Some(daemon.pkcs8.clone()),
                 // Nothing held: a retrieval asked would come back NotFound, not refused.
+                credential_pass: Some(pass.clone()),
                 ..Default::default()
             })
             .await;
@@ -2121,12 +2122,9 @@ mod tests {
             matches!(registered, Err(CryptoError::NoEscrowKey)),
             "{registered:?}"
         );
-        let git = ractor::call!(crypto_actor, |reply| CryptoMessage::GitCredential {
-            name: "github-sei".to_string(),
-            host: "github.com".to_string(),
-            reply,
-        })
-        .unwrap();
+        let git = CredentialPort::new(crypto_actor.clone(), pass)
+            .git("github-sei".to_string(), "github.com".to_string())
+            .await;
         assert!(
             matches!(git, Err(CryptoError::SecretNotRegistered(_))),
             "nothing registered"
@@ -2227,6 +2225,7 @@ mod tests {
     /// every store.
     struct Rig {
         actor: ActorRef<CryptoMessage>,
+        port: CredentialPort,
         _daemon: CustodyDaemon,
         public_pem: String,
         identity: String,
@@ -2252,6 +2251,7 @@ mod tests {
     ) -> Rig {
         let daemon = custody_daemon_holding_an_escrow_key();
         let public_pem = daemon.public_pem.clone();
+        let credential_pass = credential_pass.unwrap_or_default();
         let identity = format!("test-agent-{}", uuid::Uuid::new_v4());
         let stored = Arc::new(std::sync::Mutex::new(Vec::new()));
         let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2269,11 +2269,12 @@ mod tests {
                 stored: Some(stored.clone()),
                 failing_stores: Some(failing.clone()),
                 store_script: script,
-                credential_pass,
+                credential_pass: Some(credential_pass.clone()),
                 ..Default::default()
             })
             .await;
         Rig {
+            port: CredentialPort::new(actor.clone(), credential_pass),
             actor,
             _daemon: daemon,
             public_pem,
@@ -2360,12 +2361,7 @@ mod tests {
         name: &str,
         host: &str,
     ) -> Result<GitCredential, CryptoError> {
-        ractor::call!(rig.actor, |reply| CryptoMessage::GitCredential {
-            name: name.to_string(),
-            host: host.to_string(),
-            reply,
-        })
-        .unwrap()
+        rig.port.git(name.to_string(), host.to_string()).await
     }
 
     async fn load(rig: &Rig, name: &str) -> Result<bool, CryptoError> {
@@ -2424,6 +2420,57 @@ mod tests {
         stop_and_release_key(&r.actor).await;
     }
 
+    /// A credential is used and never read. Its value decides, so one that is not registered in this run, because the agent
+    /// has just started or because it was withdrawn, is refused as one that is. What the same route was asked for by any
+    /// other secret still comes back.
+    #[tokio::test]
+    async fn a_credentials_own_record_is_refused_however_it_is_asked_for() {
+        let record =
+            registry::escrow_form(&token_binding("jira.example.org"), b"the-token").unwrap();
+        let (crypto_actor, _daemon) = crypto_actor_holding_an_escrow_key(
+            &[("agent/jira", &record[..]), ("plain", b"the-other-value")],
+            false,
+        )
+        .await;
+        let ask = |name: &'static str| {
+            let actor = crypto_actor.clone();
+            async move {
+                ractor::call!(actor, |reply| CryptoMessage::RetrieveSecret {
+                    name: name.to_string(),
+                    reply,
+                })
+                .unwrap()
+            }
+        };
+        let refused = ask("agent/jira").await;
+        assert!(
+            matches!(refused, Err(CryptoError::IsACredential)),
+            "{refused:?}"
+        );
+        let plain = ask("plain").await.unwrap();
+        assert_eq!(
+            plain.as_deref().map(|value| value.as_slice()),
+            Some(&b"the-other-value"[..])
+        );
+        stop_and_release_key(&crypto_actor).await;
+    }
+
+    /// The route that is internal does read that record: an agent gets its own secret back that way, and only the port uses it.
+    #[tokio::test]
+    async fn loading_a_credentials_record_registers_it_for_the_port_and_shows_it_to_nobody() {
+        let record =
+            registry::escrow_form(&token_binding("jira.example.org"), b"the-token").unwrap();
+        let r = rig(vec![], vec![("jira", record.to_vec())], false).await;
+        assert!(load(&r, "jira").await.unwrap());
+        let git = r
+            .port
+            .git("jira".to_string(), "jira.example.org".to_string())
+            .await
+            .unwrap();
+        assert_eq!(git.secret.as_slice(), b"the-token");
+        stop_and_release_key(&r.actor).await;
+    }
+
     /// The sibling for an HTTP API: the same registered secret, given as a bearer token for a bound host only.
     #[tokio::test]
     async fn a_registered_secret_is_given_to_an_http_request_for_a_bound_host_and_never_for_another()
@@ -2438,18 +2485,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let ask = |host: &str| {
-            let host = host.to_string();
-            let actor = r.actor.clone();
-            async move {
-                ractor::call!(actor, |reply| CryptoMessage::HttpCredential {
-                    name: "jira".to_string(),
-                    host,
-                    reply,
-                })
-                .unwrap()
-            }
-        };
+        let ask = |host: &str| r.port.http("jira".to_string(), host.to_string());
         let Ok(registry::HttpCredential::Bearer(token)) = ask("jira.example.org").await else {
             panic!("a bearer token");
         };
@@ -2465,12 +2501,10 @@ mod tests {
                 "{host}: {refused:?}"
             );
         }
-        let unknown = ractor::call!(r.actor, |reply| CryptoMessage::HttpCredential {
-            name: "other".to_string(),
-            host: "jira.example.org".to_string(),
-            reply,
-        })
-        .unwrap();
+        let unknown = r
+            .port
+            .http("other".to_string(), "jira.example.org".to_string())
+            .await;
         assert!(
             matches!(unknown, Err(CryptoError::SecretNotRegistered(_))),
             "{unknown:?}"

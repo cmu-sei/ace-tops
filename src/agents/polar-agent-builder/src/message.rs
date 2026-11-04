@@ -31,9 +31,9 @@
 //! real, named step.
 
 use crate::crypto::CryptoClient;
+use crate::crypto::CryptoError;
 use cassini_client::{OfflineBehavior, PublishRequest};
 use polar::cassini::{CassiniClient, CassiniClientError, TcpClient};
-use polar_crypto::CryptoError;
 
 /// A real, plain payload, not yet meant for the wire -- the real,
 /// starting state of every message this flow produces. Genuinely has
@@ -167,40 +167,6 @@ mod tests {
             _name: String,
         ) -> Result<Option<polar_crypto::Zeroizing<Vec<u8>>>, CryptoError> {
             Ok(None)
-        }
-        async fn register_secret(
-            &self,
-            _name: String,
-            _section: String,
-            _secret: Vec<u8>,
-            _context: Vec<u8>,
-            _binding: polar_crypto::registry::SecretBinding,
-        ) -> Result<(), CryptoError> {
-            Ok(())
-        }
-        async fn load_secret(&self, _name: String, _section: String) -> Result<bool, CryptoError> {
-            Ok(false)
-        }
-        async fn replace_section(
-            &self,
-            _section: String,
-            _keep: Vec<String>,
-        ) -> Result<Vec<String>, CryptoError> {
-            Ok(Vec::new())
-        }
-        async fn git_credential(
-            &self,
-            name: String,
-            _host: String,
-        ) -> Result<polar_crypto::registry::GitCredential, CryptoError> {
-            Err(CryptoError::SecretNotRegistered(name))
-        }
-        async fn http_credential(
-            &self,
-            name: String,
-            _host: String,
-        ) -> Result<polar_crypto::registry::HttpCredential, CryptoError> {
-            Err(CryptoError::SecretNotRegistered(name))
         }
     }
 

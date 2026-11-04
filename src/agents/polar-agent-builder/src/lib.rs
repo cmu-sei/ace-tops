@@ -57,7 +57,7 @@ pub use command_actor::{CommandHandle, CommandHandler, CommandRequest};
 pub mod crypto;
 pub mod environment;
 pub mod floor;
-pub use crypto::{CryptoClient, CryptoHandle};
+pub use crypto::{CryptoClient, CryptoError, CryptoHandle, Zeroizing};
 pub use floor::Floor;
 pub mod graph;
 pub mod graph_schema;

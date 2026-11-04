@@ -26,14 +26,16 @@
 //! in the custody daemon, keeps it with its binding and escrows it (docs/architecture/signed-configuration.md).
 //! Nothing of the domain's touches it. A problem names an entry and a field and never holds a value.
 
-use crate::CryptoClient;
+use crate::crypto::SectionKeeper;
 use crate::runtime::{RuntimeSection, SectionAuthority};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use polar_crypto::registry::{SecretBinding, SecretKind, pattern_problem};
+use polar_crypto::registry::{SecretBinding, SecretKind};
 use polar_escrow::EscrowedSecret;
 use serde_json::Value;
 use tracing::{info, warn};
+
+pub use polar_crypto::registry::{host_matches, pattern_problem};
 
 /// What the section is called in a document.
 pub const SECTION_NAME: &str = "credentials";
@@ -263,7 +265,7 @@ pub struct CredentialsApplied {
 /// is withdrawn, whether or not its own entries registered, since a version is the whole section. An entry that fails is
 /// reported by name and does not stop the rest.
 pub(crate) async fn apply(
-    crypto: &dyn CryptoClient,
+    crypto: &dyn SectionKeeper,
     agent: &str,
     version: u64,
     entries: &[Entry],
@@ -331,7 +333,6 @@ pub(crate) async fn apply(
 pub(crate) mod tests_support {
     use super::*;
     use polar_crypto::CryptoError;
-    use polar_crypto::registry::{GitCredential, HttpCredential};
     use std::sync::Mutex;
 
     /// The public half of one key, made once: generating an RSA key is slow.
@@ -367,23 +368,7 @@ pub(crate) mod tests_support {
     }
 
     #[async_trait::async_trait]
-    impl CryptoClient for FakeCrypto {
-        async fn store_secret(&self, _: String, _: Vec<u8>) -> Result<(), CryptoError> {
-            Ok(())
-        }
-        async fn encrypt_for_recipient(
-            &self,
-            _: String,
-            plaintext: Vec<u8>,
-        ) -> Result<Vec<u8>, CryptoError> {
-            Ok(plaintext)
-        }
-        async fn retrieve_secret(
-            &self,
-            _: String,
-        ) -> Result<Option<polar_crypto::Zeroizing<Vec<u8>>>, CryptoError> {
-            Ok(None)
-        }
+    impl SectionKeeper for FakeCrypto {
         async fn register_secret(
             &self,
             name: String,
@@ -401,9 +386,6 @@ pub(crate) mod tests_support {
                 .push((name, section, context, binding));
             Ok(())
         }
-        async fn load_secret(&self, _: String, _: String) -> Result<bool, CryptoError> {
-            Ok(false)
-        }
         async fn replace_section(
             &self,
             _: String,
@@ -411,20 +393,6 @@ pub(crate) mod tests_support {
         ) -> Result<Vec<String>, CryptoError> {
             self.kept.lock().unwrap().push(keep);
             Ok(self.withdraws.clone())
-        }
-        async fn git_credential(
-            &self,
-            name: String,
-            _: String,
-        ) -> Result<GitCredential, CryptoError> {
-            Err(CryptoError::SecretNotRegistered(name))
-        }
-        async fn http_credential(
-            &self,
-            name: String,
-            _: String,
-        ) -> Result<HttpCredential, CryptoError> {
-            Err(CryptoError::SecretNotRegistered(name))
         }
     }
 }

@@ -41,8 +41,8 @@ pub use judge::{
     Credential, Denial, Location, OperationDecl, ProtocolKind, Target, Verdict, judge,
 };
 
-use crate::CryptoClient;
 use crate::configuration::ConfigurationHandle;
+use crate::crypto::SectionKeeper;
 use crate::health::HealthHandle;
 use crate::runtime::RuntimeValue;
 use polar_crypto::registry::{GitCredential, HttpCredential, UseRefusal};
@@ -782,7 +782,7 @@ pub(crate) struct ProtocolArgs {
     pub(crate) declared: &'static [OperationDecl],
     pub(crate) instances: Instances,
     pub(crate) credentials: Option<Arc<dyn CredentialSource>>,
-    pub(crate) crypto: Option<Arc<dyn CryptoClient>>,
+    pub(crate) crypto: Option<Arc<dyn SectionKeeper>>,
     pub(crate) configuration: Arc<dyn LiveConfiguration>,
     pub(crate) health: Arc<dyn Holds>,
     pub(crate) record: Recorder,
@@ -793,7 +793,7 @@ pub(crate) struct ProtocolArgs {
 pub(crate) struct ProtocolState {
     agent: String,
     shared: Arc<Shared>,
-    crypto: Option<Arc<dyn CryptoClient>>,
+    crypto: Option<Arc<dyn SectionKeeper>>,
     applied: Arc<OutputPort<CredentialsApplied>>,
     in_force: Arc<Mutex<Option<CredentialsApplied>>>,
     /// The version of the section last handed to the CryptoActor.
@@ -936,7 +936,7 @@ pub(crate) struct Start<'a> {
     pub(crate) setup: ProtocolSetup,
     pub(crate) config: &'a polar_env::Config,
     pub(crate) credentials: Option<CredentialPort>,
-    pub(crate) crypto: Option<Arc<dyn CryptoClient>>,
+    pub(crate) crypto: Option<Arc<dyn SectionKeeper>>,
     pub(crate) configuration: ConfigurationHandle,
     pub(crate) health: HealthHandle,
 }

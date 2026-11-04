@@ -55,9 +55,10 @@ impl HealthHandle {
         Self { actor }
     }
 
-    /// The same, real, deliberate escape hatch every other handle in
-    /// this crate offers -- see CryptoHandle::as_actor_ref's own doc
-    /// comment for the full, shared reasoning.
+    /// The real, deliberate escape hatch, for the rare, genuine case a
+    /// caller needs the raw ActorRef directly. Mirrors
+    /// lib::cassini::TcpClient::as_actor_ref's own convention. The
+    /// CryptoHandle has none: the CryptoActor's messages are not the domain's.
     pub fn as_actor_ref(&self) -> ActorRef<HealthCheckMessage> {
         self.actor.clone()
     }

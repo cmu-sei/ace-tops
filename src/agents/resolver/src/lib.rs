@@ -21,7 +21,7 @@
    DM26-0670
 */
 
-#![deny(clippy::disallowed_methods)]
+#![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 //! The OCI resolver: follows image references other agents discover to their registry, pulls the
 //! manifest, and publishes what it found for the build processor's provenance linker. See the

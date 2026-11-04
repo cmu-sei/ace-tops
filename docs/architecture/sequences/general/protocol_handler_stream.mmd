@@ -1,0 +1,75 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+sequenceDiagram
+    autonumber
+    participant Domain as Domain actor<br/>(ClusterWatcher, AttestationSupervisor)
+    participant Handler as ProtocolActor
+    participant Task as Kubernetes::perform<br/>(its own task)
+    participant API as Kubernetes API
+    participant Read as operation.read<br/>(a blocking thread)
+    participant Broker as Cassini client
+
+    Note over Domain,Broker: As built, 2026-11-04 (docs/architecture/protocol-handlers.md). A watch never ends, so one request has many results. Each is a message, and the next waits for the last.
+
+    Domain->>Handler: stream(operation, myself, wrap)
+    Handler-->>Domain: a Streaming, which ends it when dropped
+    Handler->>Handler: judge (Location::Cluster): TLS, no host of the domain's,<br/>recorded with credential=service-account
+    Handler->>Task: perform(watch)
+    activate Task
+    Task->>API: list, with the pod's own token (kube reads and renews its file)
+    API-->>Task: the objects, then a watch
+
+    loop each change: Listing, Applied, Deleted, Listed
+        Task->>Read: read(change)
+        activate Read
+        alt it reads
+            Read-->>Task: a value
+            deactivate Read
+            Task->>Domain: Seen(Delivery with Ok(value))
+            activate Domain
+            opt the observer: a publish that waits for room
+                Domain->>Broker: publish_when_ready
+                Broker-->>Domain: there is room
+            end
+            Domain-->>Task: finished with the message, so the Delivery goes
+            deactivate Domain
+            Note over Task,Read: The next change is not read until then,<br/>so a broker falling behind slows this watch and no other.
+        else it does not
+            Read-->>Task: Malformed
+            Task->>Domain: Seen(Delivery with Err): its last word
+            Note over Domain,Task: A stream says each change once, so a gap ends it.
+        end
+    end
+
+    alt the API refused (403) or does not serve the kind (404)
+        API-->>Task: Status
+        Task->>Domain: Seen(Delivery with Err(Configuration)): its last word
+        Note over Domain,Task: Attestation: what it holds is no longer whole, it cannot say,<br/>and it asks again in 5 s. The observer asks again in 5 minutes.
+    else the watch is lost
+        API-->>Task: an error, or the connection goes
+        Task->>Domain: Seen(Delivery with Err(Transient)): its last word
+        Note over Domain,Task: Each asks again in 5 s. No retries in a handler: the new<br/>watch starts from a list, so what was missed is said again.
+    else the domain drops its Streaming, as for a namespace that has gone
+        Domain->>Task: dropped
+        Note over Domain,Task: The task ends where it is, and nothing follows.
+    end
+    deactivate Task

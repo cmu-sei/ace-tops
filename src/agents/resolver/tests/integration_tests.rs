@@ -23,6 +23,9 @@
 
 // tests/integration_tests.rs
 
+// The client here is the far end's, what puts an image in a registry for the handler to read.
+#![allow(clippy::disallowed_types)]
+
 use oci_client::{
     Client as OciClient, Reference,
     client::{ClientConfig, ClientProtocol, Config},

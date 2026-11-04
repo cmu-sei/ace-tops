@@ -23,7 +23,7 @@
 
 # Protocol handlers: the domain's I/O in infrastructure
 
-Status, 2026-11-04: the design, from the maintainer, vetted. The framework, HTTP and its registry scheme, git and the Kubernetes API are built, and jira-observer, the resolver, the git observer, the Kubernetes observer and the attestation agent are on them; what remains is closing the old routes, in bites ("When, and in what order";
+Status, 2026-11-04: the design, from the maintainer, vetted. Built, in bites: the framework, HTTP and its registry scheme, git and the Kubernetes API, with jira-observer, the resolver, the git observer, the Kubernetes observer and the attestation agent on them, and the old routes closed. GitLab and OpenAPI move when they reach the builder, and are held to it then ("When, and in what order";
 `polar-agent-builder/src/protocol.rs`). Framework code that lets us reason about
 each request a domain actor makes, whether to allow or deny it, and that protects the credentials it uses. The domain says what it
 wants; a protocol handler in the builder's infrastructure gets the credential itself, uses it, and calls the domain's code with what
@@ -136,14 +136,21 @@ and a refused credential becoming a held `Credentials` report (`polar-agent-buil
 
 ### No way to the credential from domain code
 
-A rule the developer has to remember is not the rule asked for. By possession, not by convention. Every route open today closes:
+A rule the developer has to remember is not the rule asked for. By possession, not by convention. Every route is closed, as built 2026-11-04:
 
-| Route today | Closed by |
+| Route | Closed by |
 |---|---|
-| `CryptoClient::http_credential`, `git_credential` | removed from the trait |
-| `CryptoMessage::HttpCredential`, `GitCredential`, reachable through `resources.crypto` and `CryptoHandle::as_actor_ref` | removed from the public message. The actor gives the builder a port for them when it is spawned, the handlers hold it, and nothing hands it on. A domain crate that spawns its own `CryptoActor` gets an empty registry |
-| `CryptoClient::retrieve_secret`, which answers with plaintext, for the escrowed `<identity>/<name>` | refused for a name a registered credential uses. `LoadSecret` is internal and does not need the message. Nothing in domain code calls it today, outside the harness |
-| its own HTTP client, or `git2` | a test over `cargo metadata`: a domain crate on the builder has none of `reqwest`, `git2`, `oci-client` or `kube`, beyond the types it reads. Otherwise an agent walks round the judgment as well as the credential |
+| `CryptoClient::http_credential`, `git_credential` | removed from the trait; compile-fail doctests hold it (`polar-agent-builder/src/crypto.rs`) |
+| `CryptoMessage::HttpCredential`, `GitCredential` | removed. What asks now is `UseCredential`, with the `CredentialPass` the builder made when it spawned the actor, compared by identity. The handlers hold the port, and nothing hands it on |
+| `CryptoHandle::as_actor_ref`, which gave the domain every message there is | removed. A method for the builder's own use stays, `pub(crate)` |
+| `CryptoClient::register_secret`, `replace_section`, `load_secret`. **Found closing the others:** an agent can read the ciphertext in its own section, so it could register that under a binding of its choosing and have the handler present the token there | moved to a `pub(crate)` trait, `SectionKeeper`, for what the builder does with a section. `load_secret` had no caller left, so it goes from the client; the message stays for key rotation's re-delivery, which is designed and not built (`key-rotation.md`, P20) |
+| `CryptoClient::retrieve_secret`, which answers with plaintext, for the escrowed `<identity>/<name>` | refused, `IsACredential`, **by what the record is rather than by its name as first designed:** a name check would pass one not registered yet in this run, or withdrawn, and an agent can ask for both. A secret stored any other way still comes back |
+| its own client, or a `CryptoActor` or custody client of its own | `polar-agent-builder/tests/domain_has_no_way_out.rs`, over `cargo metadata`: no domain crate on the builder has one of them, by itself or through a helper crate, in anything but its tests. A new agent is held to it without being listed |
+| `git2` and `oci-client`, which two crates keep for what they read | `clippy.toml`, since a dependency cannot say which methods: the git observer may not fetch, connect, push or clone, and the resolver may not name `oci_client::Client`. Allowances are listed in the test with their reason, and one nothing needs any more fails it |
+
+Left out of that test by decision, each listed there with why: the credentials agent and cert-issuer (the maintainer, above), the broker, the git server and the custody daemon, which serve. Not on the builder yet, so not held: GitLab, OpenAPI and build-processor, which still have `reqwest` until step 7 and step 9.
+
+To go further would take the process apart, not more checks: a raw socket is not a dependency, and domain code could speak Cassini to the credentials agent itself, though it would then have nothing to open the answer with. What this closes is a developer's mistake and a logic bug, as it set out to.
 
 What a callback reads has no route either: a `Reply` holds the response's status, headers and body, never the request that was sent. Domain code
 that wants a fact about a credential asks for the fact (Jira's "this token looks base64-encoded"). A server that echoes its request headers
@@ -317,7 +324,7 @@ place stands, for all of it. In bites, each reported before the next:
    The API refusing, by taking away a binding and restarting the pod: the attestation agent's 5 watches in `polar-graph` said 403 and were asked for again every 5 s, and with the binding back it was ready and had proved itself within 5 s, with no restart. The observer's 3 cluster-wide watches said the same, and came back at their 5 minutes (47 watches and those 3 asked again), with no restart.
    A real shutdown of the observer: `PrepareShutdown` to the end of the infrastructure in under a millisecond, the pod gone in 1 s.
    **Not checked live:** a watch lost to something other than a refusal, an API server restarting say (only against the stand-in), and a broker falling behind slowing a watch (only with a stand-in for the client). No credential of the CryptoActor's goes this way, so bite 4's open item, a credential presented over HTTP, stays open.
-6. The routes close (the table above), once nothing uses them. Docs and the diagram as built.
+6. **Built, 2026-11-04.** The routes close (the table above). The diagrams as built: `sequences/general/protocol_handler_request`, and `protocol_handler_stream` for a watch.
 
 ## Open
 
@@ -337,7 +344,7 @@ place stands, for all of it. In bites, each reported before the next:
   (`lib/src/egress.rs`'s test server).
 - A callback that blocks stalls no other request; one past its budget is refused and reported.
 - A refused credential becomes a held report, and a new version clears it, with no agent code involved.
-- `with_credential` gives the scaffold its section; a domain crate that depends on `reqwest` fails the metadata test.
+- Declaring credentials gives the scaffold its section; a domain crate that depends on `reqwest` fails the metadata test, and so does a helper crate one leans on.
 - Each request is logged with its verdict, with no path and no value.
 - A stream's next change waits for the domain; one that cannot be read ends it, and a failure is its last message; dropping it ends it.
 - Mutations: the handler attaching a credential for another host; `judge` allowing an arbitrary request a credential; a callback's result delivered with no
