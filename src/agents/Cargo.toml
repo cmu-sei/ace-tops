@@ -114,7 +114,6 @@ clap = { version = "4.5.60", features = ["derive"] }   # only used in one place,
 clokwerk = "0.4.0"
 cyclonedx-bom = "0.8.0"                                 # used in provenance
 cynic = "3.12.0"                                        # used in gitlab, jira?
-docker_credential = "1.3.2"                             # used in resolver
 futures = "0.3.32"                                       # used in kube-observer
 futures-lite = "2.6.1"
 git2 = "0.20"
@@ -147,6 +146,7 @@ ascent = "0.8.1"
 # behind, for good and silently (cassini/client/tests/output_port.rs); every client's events go through these ports.
 ractor = { version = "0.15.10", features = ["async-trait", "output-port-v2"] }
 rand = "0.10.0"
+http-auth = { version = "0.1", default-features = false }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 rkyv = "0.8.15"
 rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }

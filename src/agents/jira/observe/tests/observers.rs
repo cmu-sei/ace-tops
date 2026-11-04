@@ -215,6 +215,9 @@ impl CredentialSource for GivesToken {
     ) -> Result<polar_crypto::registry::GitCredential, CryptoError> {
         Err(CryptoError::SecretNotRegistered(name))
     }
+    async fn bound_to(&self, _: String) -> Result<Option<String>, CryptoError> {
+        unreachable!("Jira names its credential")
+    }
     async fn http(
         &self,
         _: String,

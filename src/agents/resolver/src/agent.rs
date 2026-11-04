@@ -25,9 +25,12 @@
 //! `polar_agent_builder::PolarAgent`.
 
 use crate::RESOLVER_SUPERVISOR_NAME;
-use crate::settings;
 use crate::supervisor::{ResolverSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use crate::{credentials, registry, settings};
+use polar_agent_builder::protocol::OperationDecl;
+use polar_agent_builder::{
+    Capability, Cause, Configured, PolarAgent, RuntimeSection, StartError, TopicDecl,
+};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -56,12 +59,14 @@ impl PolarAgent for OciResolver {
         .because(&[Cause::Topic(polar::topics::PROVENANCE_DISCOVERY)])
         .waiting("read by build-processor, a chart outside the catalog"),
     ];
-    const SECTIONS: &'static [&'static Section] = &[&settings::SECTION, &polar::egress::SECTION];
+    const SECTIONS: &'static [&'static Section] = &[&settings::SECTION];
+    const CREDENTIALS: Option<&'static RuntimeSection> = Some(&credentials::CREDENTIALS);
+    const OPERATIONS: &'static [OperationDecl] = registry::OPERATIONS;
     const HELP: Option<&'static str> = Some(
         "The resolver subscribes to the provenance discovery topic on Cassini. For each image \
-         reference it is told of, it pulls the manifest from the registry (with the credentials \
-         in DOCKER_CONFIG, or anonymously) and publishes the resolved artifact for the build \
-         processor. It never touches the graph. The egress section says how a registry is \
+         reference it is told of, it pulls the manifest from the registry (with the signed \
+         credential bound to that host, or with none) and publishes the resolved artifact for the \
+         build processor. It never touches the graph. The egress section says how a registry is \
          reached: through POLAR_EGRESS_PROXY unless the host is in POLAR_EGRESS_NO_PROXY, trusting \
          the CA certificates of POLAR_EGRESS_CA_CERT beside the system's.",
     );

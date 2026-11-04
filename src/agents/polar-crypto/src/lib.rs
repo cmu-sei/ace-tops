@@ -200,6 +200,11 @@ pub enum CredentialAsk {
         host: String,
         reply: RpcReplyPort<Result<registry::GitCredential, CryptoError>>,
     },
+    /// Which secret is bound to `host` (`registry::bound_to`). A name, never a value.
+    BoundTo {
+        host: String,
+        reply: RpcReplyPort<Result<Option<String>, CryptoError>>,
+    },
 }
 
 /// A protocol handler's way to the CryptoActor's credentials: the actor and the pass together.
@@ -236,6 +241,15 @@ impl CredentialPort {
         ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
             pass: self.pass.clone(),
             ask: CredentialAsk::Git { name, host, reply },
+        })
+        .map_err(|_| CryptoError::NoReply)?
+    }
+
+    /// The name of the secret bound to `host`, for a request whose host decides its credential.
+    pub async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::BoundTo { host, reply },
         })
         .map_err(|_| CryptoError::NoReply)?
     }
@@ -792,6 +806,14 @@ impl Actor for CryptoActor {
                         };
                         let _ = reply.send(result);
                     }
+                    CredentialAsk::BoundTo { host, reply } => {
+                        let result = if passes {
+                            Ok(bound_to_host(&state.registry, &host).await)
+                        } else {
+                            Err(CryptoError::NotThePort)
+                        };
+                        let _ = reply.send(result);
+                    }
                 }
             }
             CryptoMessage::EncryptForRecipient {
@@ -1189,6 +1211,18 @@ async fn http_credential_of(
             registry::http_credential(&held.binding, &held.secret, host).map_err(CryptoError::Use)
         }
     }
+}
+
+/// The name of the secret bound to `host`, from what is registered.
+async fn bound_to_host(registry: &Registry, host: &str) -> Option<String> {
+    let registry = registry.lock().await;
+    registry::bound_to(
+        registry
+            .iter()
+            .map(|(name, held)| (name.as_str(), held.binding.host_pattern.as_str())),
+        host,
+    )
+    .map(str::to_string)
 }
 
 /// Opens an `EscrowedSecret` addressed to this identity, for `register_secret`: read the bytes as one, and open the
@@ -2526,6 +2560,40 @@ mod tests {
             assert!(
                 matches!(git, Err(CryptoError::NotThePort)),
                 "{name}: {git:?}"
+            );
+        }
+        let which = forged.bound_to("jira.example.org".to_string()).await;
+        assert!(matches!(which, Err(CryptoError::NotThePort)), "{which:?}");
+        stop_and_release_key(&r.actor).await;
+    }
+
+    /// Which secret a host is bound to is a question for the port, answered with a name: a request whose host decides its
+    /// credential, as a registry's does.
+    #[tokio::test]
+    async fn the_port_says_which_secret_is_bound_to_a_host_by_its_name() {
+        let pass = CredentialPass::new();
+        let r = rig_with_pass(pass.clone()).await;
+        for (name, pattern) in [("broad", "*.example.org"), ("close", "reg.example.org")] {
+            register(
+                &r,
+                name,
+                b"a-secret",
+                name.as_bytes(),
+                token_binding(pattern),
+            )
+            .await
+            .unwrap();
+        }
+        let port = CredentialPort::new(r.actor.clone(), pass);
+        for (host, name) in [
+            ("reg.example.org", Some("close")),
+            ("other.example.org", Some("broad")),
+            ("elsewhere.example.net", None),
+        ] {
+            assert_eq!(
+                port.bound_to(host.to_string()).await.unwrap().as_deref(),
+                name,
+                "{host}"
             );
         }
         stop_and_release_key(&r.actor).await;

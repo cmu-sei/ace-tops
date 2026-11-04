@@ -1025,15 +1025,11 @@ def main [] {
             assert equal ($kinds.ca | get -o needs) ["tracing"]
         }
 
-        "the resolver reads its registry credentials from a Secret, mounted read-only where it is told to look": {
+        "the resolver is given no registry credentials: they are its signed credentials section's": {
             let r = (resolve_for "sandbox-local" "oci-registry-resolver")
-            let volume = ($r.volumes | where name == "oci-registry-auth")
-            assert equal ($volume | length) 1
-            assert equal ($volume | first | get secret) "oci-registry-auth"
-            assert equal ($volume | first | get items) [{ key: "oci-registry-auth", path: "config.json" }]
-            assert equal ($r.mounts | where name == "oci-registry-auth" | first | get path) "/etc/oci-registry-auth"
-            assert ($r.mounts | where name == "oci-registry-auth" | first | get read_only)
-            assert equal (env_value $r "DOCKER_CONFIG") "/etc/oci-registry-auth"
+            assert equal ($r.volumes | where name == "oci-registry-auth" | length) 0
+            assert equal ($r.mounts | where name == "oci-registry-auth" | length) 0
+            assert equal (env_value $r "DOCKER_CONFIG") null
         }
 
         "the resolver speaks http to the cluster's own development registry, which the target names": {

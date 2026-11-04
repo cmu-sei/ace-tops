@@ -39,6 +39,7 @@ polar-crypto.workspace = true
 # The credentials section: judging that a secret is an escrowed one, and what it was bound to.
 polar-escrow.workspace = true
 polar-env = { workspace = true, features = ["document"] }
+http-auth.workspace = true
 serde.workspace = true
 polar-health = { path = "../polar-health" }
 polar-router.workspace = true

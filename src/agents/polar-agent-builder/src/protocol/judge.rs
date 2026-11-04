@@ -50,6 +50,9 @@ pub enum Credential {
     Named(&'static str),
     /// One the request names ([`super::Operation::credential`]), as a repository's configuration names its own.
     Chosen,
+    /// The one whose signed binding names the host the request goes to, as a registry learned from an image is: only with
+    /// [`Location::Bound`]. Nobody names it, the binding decides, and it stays the same one wherever the request goes next.
+    ForHost,
 }
 
 /// Where a request may go. An arbitrary request has no credential to name: the two cannot be declared together.
@@ -101,6 +104,8 @@ pub enum Denial {
     NotEncrypted,
     #[error("the request names no credential, and the operation needs one")]
     NoCredentialNamed,
+    #[error("no credential is bound to this host")]
+    NoCredentialBound,
 }
 
 /// What [`judge`] decides.
@@ -114,7 +119,8 @@ pub enum Verdict {
 }
 
 /// Whether `operation` may go to `target`. `declared` is what the agent declared; `configured_host` is the host of the
-/// operation's variable as it is in force, if it has one and it is set; `chosen` is the credential the request names.
+/// operation's variable as it is in force, if it has one and it is set; `chosen` is the credential the request names, or
+/// for [`Credential::ForHost`] the one bound to the host it first goes to.
 pub fn judge(
     operation: &OperationDecl,
     declared: &[OperationDecl],
@@ -147,6 +153,10 @@ pub fn judge(
         Some(Credential::Chosen) => match chosen {
             Some(name) => Some(name.to_string()),
             None => return Verdict::Deny(Denial::NoCredentialNamed),
+        },
+        Some(Credential::ForHost) => match chosen {
+            Some(name) => Some(name.to_string()),
+            None => return Verdict::Deny(Denial::NoCredentialBound),
         },
     };
     if credential.is_some() && !target.encrypted {
@@ -285,6 +295,32 @@ mod tests {
     }
 
     #[test]
+    fn a_request_for_the_credential_bound_to_its_host_needs_one_to_be() {
+        const FOR_HOST: OperationDecl = declared(Location::Bound {
+            credential: Credential::ForHost,
+        });
+        let host = target("reg.example.org", true);
+        assert_eq!(
+            judge(&FOR_HOST, &[FOR_HOST], &host, None, Some("registry")),
+            allowed(Some("registry"))
+        );
+        assert_eq!(
+            judge(&FOR_HOST, &[FOR_HOST], &host, None, None),
+            Verdict::Deny(Denial::NoCredentialBound)
+        );
+        assert_eq!(
+            judge(
+                &FOR_HOST,
+                &[FOR_HOST],
+                &target("reg.example.org", false),
+                None,
+                Some("registry")
+            ),
+            Verdict::Deny(Denial::NotEncrypted)
+        );
+    }
+
+    #[test]
     fn an_operation_the_agent_did_not_declare_is_denied() {
         let site = target("site.example.org", true);
         assert_eq!(
@@ -300,7 +336,11 @@ mod tests {
     }
 
     fn credential() -> impl Strategy<Value = Credential> {
-        prop_oneof![Just(Credential::Named("site")), Just(Credential::Chosen)]
+        prop_oneof![
+            Just(Credential::Named("site")),
+            Just(Credential::Chosen),
+            Just(Credential::ForHost)
+        ]
     }
 
     fn location() -> impl Strategy<Value = Location> {
@@ -375,7 +415,7 @@ mod tests {
                         prop_assert!(encrypted);
                         prop_assert_eq!(given, name);
                     }
-                    (Some(Credential::Chosen), Some(given)) => {
+                    (Some(Credential::Chosen | Credential::ForHost), Some(given)) => {
                         prop_assert!(encrypted);
                         prop_assert_eq!(Some(given.as_str()), chosen.as_deref());
                     }

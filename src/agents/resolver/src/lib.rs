@@ -28,7 +28,8 @@
 //! README.
 
 pub mod agent;
-pub mod auth;
+pub mod credentials;
+pub mod registry;
 pub mod resolver;
 pub mod settings;
 pub mod supervisor;

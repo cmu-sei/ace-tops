@@ -5078,25 +5078,28 @@ dependencies = [
 name = "oci-resolver"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "cassini-client",
  "cassini-types",
  "cyclonedx-bom",
- "docker_credential",
  "oci-client",
  "polar",
  "polar-agent-builder",
+ "polar-crypto",
  "polar-env",
  "polar-scudo",
+ "proptest",
  "ractor",
- "reqwest 0.12.28",
  "rkyv",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "testcontainers",
  "tokio",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -5895,6 +5898,7 @@ dependencies = [
  "cert-issuer-common",
  "chrono",
  "credentials_agent_common",
+ "http-auth",
  "libc",
  "polar",
  "polar-crypto",

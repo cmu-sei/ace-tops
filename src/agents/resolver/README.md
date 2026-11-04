@@ -52,19 +52,18 @@ The resolver has no startup scrape and maintains no internal list of registries 
 
 ## Authentication
 
-Registry credentials are provided via the standard `DOCKER_CONFIG` environment variable, which points to a `config.json` file in the Docker credential format. The resolver delegates all credential lookup to the `docker-credential` crate, which reads this file and handles per-registry credential resolution transparently. In Kubernetes deployments, mount a Secret containing a valid `config.json` at the path `DOCKER_CONFIG` references.
+Registry credentials are the signed `credentials` runtime section (`src/credentials.rs`; `docs/architecture/protocol-handlers.md`, "The protocols"), each entry encrypted for this agent and bound to the hosts it names. `polar-sign` makes one. The resolver's code never has a credential: it asks the builder's HTTP protocol handler for a manifest, and the handler finds the entry whose host pattern names the registry's host most closely, answers the registry's challenge, and hands back what came.
 
-No resolver-specific credential configuration exists. Credentials are an operational concern handled at deploy time via the rendered manifest pattern.
+- A `user-password` goes where the registry's challenge sends it: to the registry, for Basic, or to the auth host it names, which the entry must name too (`registry.gitlab.com,gitlab.com`; `*.docker.io`). An auth host the entry does not name is sent nothing, and the read fails. The registry itself sees only the token that came back.
+- A `token` goes to the registry as it is, as `Bearer`.
+- A registry no entry names is asked with no credential, as is a registry named in `OCI_INSECURE_REGISTRIES`: a credential goes over nothing that is not encrypted.
+- A credential the registry refuses is presented to nobody until a new version of the section arrives, and the agent holds `Credentials` and says so. It does not become an anonymous read.
 
 For a private registry with an internal CA, or a proxy that inspects TLS, the target sets `cluster.egress` (docs/architecture/egress.md): `POLAR_EGRESS_CA_CERT` names the PEM CA certificates the OCI client trusts beside the system's, every one of them, and `POLAR_EGRESS_PROXY` and `POLAR_EGRESS_NO_PROXY` the proxy it reaches a registry through and the hosts it reaches directly.
-
-**Identity tokens** returned by credential helpers are not supported and are skipped in favor of anonymous access. See the Known Limitations section below.
 
 ## Known Limitations
 
 **Unqualified image references** — When a pod spec contains an image reference without a registry prefix (e.g. `myimage:latest`), the Kubernetes API reports exactly that string. The resolver cannot determine the registry of origin from an unqualified reference and will skip resolution rather than guess. This is recorded in the graph as a provenance gap: the container was running an image whose origin cannot be verified. This most commonly occurs with locally loaded images in development environments. In production, all image references should be fully qualified.
-
-**Identity tokens** — Some credential helpers return an OAuth2 identity token rather than a username/password pair. Identity tokens are not directly usable for OCI registry API calls — they are inputs to a registry-specific token exchange flow that `oci-client` does not implement. Affected registries will fall back to anonymous access. Use username/password or token-based credentials in `DOCKER_CONFIG` for private registry authentication.
 
 ## Environment Variables
 
@@ -72,7 +71,7 @@ For a private registry with an internal CA, or a proxy that inspects TLS, the ta
 |---|---|
 | `POLAR_EGRESS_CA_CERT` | PEM CA certificates trusted beside the system's (the egress section, `polar::egress`) |
 | `POLAR_EGRESS_PROXY`, `POLAR_EGRESS_NO_PROXY` | The proxy a registry is reached through, and the hosts reached directly |
-| `DOCKER_CONFIG` | Path to Docker credential config directory (standard OCI client convention) |
+| `OCI_INSECURE_REGISTRIES` | Registries, as host:port, spoken to over plain http with no credential: a development registry |
 
 Standard Cassini broker connection variables apply as with all Polar agents.
 
@@ -81,8 +80,5 @@ Standard Cassini broker connection variables apply as with all Polar agents.
 ```bash
 nix build .#polarPkgs.resolver.image -o resolver-image
 docker load < resolver-image
-docker run --rm \
-  -e DOCKER_CONFIG=/config \
-  -v /path/to/docker-config:/config \
-  polar-oci-resolver:latest
+docker run --rm polar-oci-resolver:latest --scaffold
 ```

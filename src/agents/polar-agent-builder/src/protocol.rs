@@ -120,6 +120,8 @@ impl From<ReadFailure> for Failure {
 pub trait CredentialSource: Send + Sync {
     async fn http(&self, name: String, host: String) -> Result<HttpCredential, CryptoError>;
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError>;
+    /// The name of the credential bound to `host`, for [`Credential::ForHost`].
+    async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError>;
 }
 
 #[async_trait]
@@ -129,6 +131,9 @@ impl CredentialSource for CredentialPort {
     }
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError> {
         CredentialPort::git(self, name, host).await
+    }
+    async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
+        CredentialPort::bound_to(self, host).await
     }
 }
 
@@ -484,10 +489,31 @@ async fn run<O: Operation>(
         Err(why) => return refuse_early(Failure::Configuration(why)),
     };
 
+    // Which credential the host decides once, where the request first goes: a host it goes on to is checked against that
+    // credential's binding, and never finds one of its own.
+    let chosen = if decl.location
+        == (Location::Bound {
+            credential: Credential::ForHost,
+        }) {
+        let bound = match &shared.credentials {
+            Some(source) => source.bound_to(target.host.clone()).await,
+            None => Ok(None),
+        };
+        match bound {
+            Ok(bound) => bound,
+            Err(error) => {
+                return refuse_early(Failure::Transient(format!(
+                    "the CryptoActor did not say what is bound to the host: {error}"
+                )));
+            }
+        }
+    } else {
+        operation.credential()
+    };
     let asked = Arc::new(Asked {
         decl,
         configured_host,
-        chosen: operation.credential(),
+        chosen,
     });
     let (name, credential) = match admit::<O::Protocol>(&shared, &asked, &target).await {
         Ok(admitted) => admitted,
@@ -946,6 +972,17 @@ pub(crate) fn problems(
                 "operation `{name}` uses a credential, and {agent} declares no credentials"
             ));
         }
+        if matches!(
+            operation.location,
+            Location::Configured {
+                credential: Some(Credential::ForHost),
+                ..
+            }
+        ) {
+            problems.push(format!(
+                "operation `{name}` goes to a configured host and asks for what is bound to the host it learns: name its credential"
+            ));
+        }
     }
     problems
 }
@@ -961,7 +998,8 @@ pub struct OperationEntry {
     /// The variable a configured operation goes to the host of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable: Option<String>,
-    /// The credential it uses: its name, or `chosen` for one the request names.
+    /// The credential it uses: its name, `chosen` for one the request names, or `for-host` for the one bound to where it
+    /// goes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
 }
@@ -985,6 +1023,7 @@ impl From<&OperationDecl> for OperationEntry {
             credential: credential.map(|credential| match credential {
                 Credential::Named(name) => name.to_string(),
                 Credential::Chosen => "chosen".to_string(),
+                Credential::ForHost => "for-host".to_string(),
             }),
         }
     }
@@ -1226,6 +1265,9 @@ pub(crate) mod tests {
                 username: "oauth2".to_string(),
                 secret: Zeroizing::new(self.secret.clone()),
             })
+        }
+        async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
+            Ok((host == self.host).then(|| self.name.clone()))
         }
     }
 
@@ -1957,6 +1999,15 @@ pub(crate) mod tests {
         ] {
             assert!(all.contains(expected), "{expected}: {all}");
         }
+        let confused = [decl(
+            "confused",
+            Location::Configured {
+                variable: "SITE_URL",
+                credential: Some(Credential::ForHost),
+            },
+        )];
+        let all = problems("a", &confused, Some(&SECTION), &["SITE_URL"], true).join(" | ");
+        assert!(all.contains("name its credential"), "{all}");
     }
 
     #[test]

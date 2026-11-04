@@ -29,9 +29,14 @@ use oci_client::{
     manifest::{IMAGE_MANIFEST_MEDIA_TYPE, OciImageManifest, OciManifest},
     secrets::RegistryAuth,
 };
+use oci_resolver::registry::{OPERATIONS, pull_manifest};
+use polar::egress::testing::{TestCa, https_front};
+use polar_agent_builder::protocol::Failure;
+use polar_agent_builder::protocol::testing::http_handle_for;
+use polar_crypto::registry::{SecretBinding, SecretKind};
 use std::str::FromStr;
 use testcontainers::{
-    GenericImage,
+    GenericImage, ImageExt,
     core::{IntoContainerPort, WaitFor},
     runners::AsyncRunner,
 };
@@ -175,6 +180,131 @@ async fn distinct_tags_produce_distinct_digests() {
     assert!(!digest_v2.is_empty());
 }
 
+/// The whole of the resolver's way to a real registry: the handler's client, with no credential, over the http a
+/// registry named as insecure is spoken to. What comes back is what was pushed.
+#[tokio::test]
+async fn the_handler_reads_what_was_pushed_to_a_real_registry() {
+    let (_container, registry_host) = start_registry().await;
+    let pushed = push_minimal_image(&registry_host, "polar/test", "1").await;
+    let site = http_handle_for(
+        &TestCa::new("not used here").pem,
+        OPERATIONS,
+        Vec::new(),
+        None,
+    )
+    .await;
+    let reference = Reference::from_str(&format!("{registry_host}/polar/test:1")).unwrap();
+
+    let (manifest, digest) = pull_manifest(
+        &site.handle,
+        &reference,
+        std::slice::from_ref(&registry_host),
+    )
+    .await
+    .expect("the manifest");
+    assert!(matches!(manifest, OciManifest::Image(_)));
+    assert_eq!(digest, pushed);
+
+    let missing = Reference::from_str(&format!("{registry_host}/polar/none:1")).unwrap();
+    let failure = pull_manifest(&site.handle, &missing, std::slice::from_ref(&registry_host))
+        .await
+        .unwrap_err();
+    assert!(matches!(failure, Failure::Read(_)), "{failure:?}");
+}
+
+/// A real registry that wants a login, with TLS in front since a credential goes over nothing else: the handler answers its
+/// challenge with the login bound to its host, and is refused without it or with another.
+#[tokio::test]
+async fn the_handler_logs_in_to_a_real_registry_that_asks_for_it() {
+    // Only this test's, for this registry's container: `htpasswd -nbB polar-test polar-test-password`.
+    const USER: &str = "polar-test";
+    const PASSWORD: &str = "polar-test-password";
+    const HTPASSWD: &str =
+        "polar-test:$2y$05$Rm9xh7H1q3XF4gqY6a/G.O5nVZeC.dQ9jNK6sFpiIAdZPcqnZA9VG\n";
+
+    let container = GenericImage::new("registry", "2")
+        .with_exposed_port(5000.tcp())
+        .with_wait_for(WaitFor::message_on_stderr("listening on"))
+        .with_env_var("REGISTRY_AUTH", "htpasswd")
+        .with_env_var("REGISTRY_AUTH_HTPASSWD_REALM", "polar-test")
+        .with_env_var("REGISTRY_AUTH_HTPASSWD_PATH", "/auth/htpasswd")
+        .with_copy_to("/auth/htpasswd", HTPASSWD.as_bytes().to_vec())
+        .start()
+        .await
+        .expect("Failed to start registry:2 with a login");
+    let host = container.get_host().await.expect("get_host");
+    let plain = container.get_host_port_ipv4(5000).await.expect("port");
+    let plain = format!("{host}:{plain}");
+
+    let login = RegistryAuth::Basic(USER.to_string(), PASSWORD.to_string());
+    let pushed_to = Reference::from_str(&format!("{plain}/polar/private:1")).unwrap();
+    let pushed = http_client()
+        .push(
+            &pushed_to,
+            &[],
+            Config {
+                data: b"{}".to_vec().into(),
+                media_type: "application/vnd.oci.image.config.v1+json".to_string(),
+                annotations: None,
+            },
+            &login,
+            None,
+        )
+        .await
+        .expect("push with the login")
+        .manifest_url
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let ca = TestCa::new("the test registry's CA");
+    let port = https_front(&ca, &format!("http://{plain}")).await;
+    let reference = Reference::from_str(&format!("localhost:{port}/polar/private:1")).unwrap();
+    let handler_with = |password: &'static str, pattern: &'static str| {
+        let ca = ca.pem.clone();
+        async move {
+            http_handle_for(
+                &ca,
+                OPERATIONS,
+                Vec::new(),
+                Some((
+                    "registry",
+                    password,
+                    SecretBinding {
+                        host_pattern: pattern.to_string(),
+                        kind: SecretKind::UserPassword,
+                        username: Some(USER.to_string()),
+                    },
+                )),
+            )
+            .await
+        }
+    };
+
+    let site = handler_with(PASSWORD, "localhost").await;
+    let (manifest, digest) = pull_manifest(&site.handle, &reference, &[])
+        .await
+        .expect("the manifest, with the login");
+    assert!(matches!(manifest, OciManifest::Image(_)));
+    assert_eq!(digest, pushed);
+
+    let wrong = handler_with("not-the-password", "localhost").await;
+    let failure = pull_manifest(&wrong.handle, &reference, &[])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(failure, Failure::CredentialRefused(_)),
+        "{failure:?}"
+    );
+
+    let off = handler_with(PASSWORD, "registry.example.org").await;
+    let failure = pull_manifest(&off.handle, &reference, &[])
+        .await
+        .unwrap_err();
+    assert!(matches!(failure, Failure::Read(_)), "{failure:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Pure-function unit tests (no container needed)
 // ---------------------------------------------------------------------------
@@ -208,29 +338,6 @@ fn registry_from_image_ref_extracts_hostname() {
     assert_eq!(registry_from_image_ref("myimage:latest"), None);
     // Docker Hub two-part ref — "library" has no dot or port, not a hostname.
     assert_eq!(registry_from_image_ref("library/ubuntu"), None);
-}
-
-/// build_registry_candidates must not generate any http:// variants.
-#[test]
-fn build_registry_candidates_excludes_http() {
-    fn build_registry_candidates(base: &str) -> Vec<String> {
-        vec![
-            base.to_string(),
-            format!("https://{}", base),
-            format!("https://{}/", base),
-            format!("{}/v1/", base),
-            format!("https://{}/v1/", base),
-        ]
-    }
-
-    let candidates = build_registry_candidates("registry.example.com");
-
-    assert!(
-        !candidates.iter().any(|c| c.starts_with("http://")),
-        "no http:// candidates should be generated"
-    );
-    assert!(candidates.contains(&"https://registry.example.com".to_string()));
-    assert!(candidates.contains(&"registry.example.com".to_string()));
 }
 
 /// OciImageManifest serialises and deserialises cleanly via serde_json —

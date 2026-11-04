@@ -30,22 +30,27 @@ polar-scudo.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
 cyclonedx-bom.workspace = true
-docker_credential.workspace = true
 oci-client.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true
 ractor.workspace = true
-reqwest = { workspace = true, features = ["json"] }
 rkyv.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 # Test CAs and TLS servers (polar::egress::testing).
 polar = { workspace = true, features = ["testing"] }
+# The real handler, given a test's stand-in for the CryptoActor (polar_agent_builder::protocol::testing).
+polar-agent-builder = { workspace = true, features = ["testing"] }
+base64.workspace = true
+polar-crypto.workspace = true
+proptest.workspace = true
 testcontainers.workspace = true
 tempfile.workspace = true
+wiremock.workspace = true

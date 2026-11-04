@@ -58,9 +58,14 @@ fn is_bare_name(name: &str) -> bool {
 }
 
 /// What is wrong with a host pattern, if anything. A pattern is a bare name (`github.com`) or `*.` and a domain
-/// (`*.example.org`), compared in lowercase. Anything that could match more than it says (a stray `*`, a port,
-/// userinfo, a trailing dot, an address) is refused.
+/// (`*.example.org`), compared in lowercase, or several of those separated by commas with no spaces, for a credential that
+/// goes to more than one host: a registry and the host it sends logins to (`registry.gitlab.com,gitlab.com`). Anything
+/// that could match more than it says (a stray `*`, a port, userinfo, a trailing dot, an address) is refused.
 pub fn pattern_problem(pattern: &str) -> Option<String> {
+    pattern.split(',').find_map(one_pattern_problem)
+}
+
+fn one_pattern_problem(pattern: &str) -> Option<String> {
     let domain = pattern.strip_prefix("*.").unwrap_or(pattern);
     if domain.contains('*') {
         return Some("a host pattern may have a `*` only as a leading `*.`".to_string());
@@ -78,22 +83,48 @@ pub fn pattern_problem(pattern: &str) -> Option<String> {
 /// Whether `host` is one `pattern` allows a secret to go to. `*.example.org` matches that domain with one or
 /// more labels before it, at any depth, and not the bare domain; a dot is required, so a lookalike
 /// (`evilexample.org`) does not match. Case is ignored. `host` must itself be a bare name, so a port, userinfo,
-/// trailing dot or address never matches, and a pattern that is not valid (`pattern_problem`) matches nothing.
+/// trailing dot or address never matches, and a pattern that is not valid (`pattern_problem`), in any of its parts,
+/// matches nothing.
 pub fn host_matches(pattern: &str, host: &str) -> bool {
+    specificity(pattern, host).is_some()
+}
+
+/// How closely `pattern` names `host`, if it does: a name exactly beats any domain, and a longer domain a shorter one.
+fn specificity(pattern: &str, host: &str) -> Option<usize> {
     if pattern_problem(pattern).is_some() || !host.is_ascii() {
-        return false;
+        return None;
     }
     let host = host.to_ascii_lowercase();
     if !is_bare_name(&host) {
-        return false;
+        return None;
     }
     let pattern = pattern.to_ascii_lowercase();
-    match pattern.strip_prefix("*.") {
-        Some(domain) => host
-            .strip_suffix(domain)
-            .is_some_and(|before| before.ends_with('.')),
-        None => host == pattern,
-    }
+    pattern
+        .split(',')
+        .filter_map(|one| match one.strip_prefix("*.") {
+            Some(domain) => host
+                .strip_suffix(domain)
+                .is_some_and(|before| before.ends_with('.'))
+                .then_some(domain.len()),
+            None => (host == one).then_some(usize::MAX),
+        })
+        .max()
+}
+
+/// The name, among `bindings` of a name and a host pattern, of the secret bound to `host`: the one whose pattern names it
+/// most closely, and among equals the first name in order, so the answer depends on what is signed and not on the order it
+/// is held in. For a request whose host decides its credential: the signed binding says which, and nobody else does.
+pub fn bound_to<'a>(
+    bindings: impl IntoIterator<Item = (&'a str, &'a str)>,
+    host: &str,
+) -> Option<&'a str> {
+    bindings
+        .into_iter()
+        .filter_map(|(name, pattern)| Some((specificity(pattern, host)?, name)))
+        .max_by(|(closer, name), (other, other_name)| {
+            closer.cmp(other).then_with(|| other_name.cmp(name))
+        })
+        .map(|(_, name)| name)
 }
 
 /// What kind of credential a secret is: how it is presented to whatever it authenticates to.
@@ -559,6 +590,59 @@ mod tests {
         }
     }
 
+    fn a_pattern() -> impl proptest::strategy::Strategy<Value = &'static str> {
+        proptest::prop_oneof![
+            proptest::strategy::Just("reg.example.org"),
+            proptest::strategy::Just("*.example.org"),
+            proptest::strategy::Just("*.reg.example.org"),
+            proptest::strategy::Just("example.org"),
+            proptest::strategy::Just("other.example.net"),
+        ]
+    }
+
+    fn a_host() -> impl proptest::strategy::Strategy<Value = &'static str> {
+        proptest::prop_oneof![
+            proptest::strategy::Just("reg.example.org"),
+            proptest::strategy::Just("a.reg.example.org"),
+            proptest::strategy::Just("example.org"),
+            proptest::strategy::Just("other.example.net"),
+            proptest::strategy::Just("evil.example.net"),
+        ]
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_list_matches_a_host_exactly_when_one_of_its_parts_does(
+            parts in proptest::collection::vec(a_pattern(), 1..5),
+            host in a_host(),
+        ) {
+            proptest::prop_assert_eq!(
+                host_matches(&parts.join(","), host),
+                parts.iter().any(|part| host_matches(part, host))
+            );
+        }
+
+        /// What answers for a host is bound to it, nothing answers if nothing is, and how they are held makes no difference.
+        #[test]
+        fn what_answers_for_a_host_is_bound_to_it_whatever_the_order(
+            patterns in proptest::collection::vec(a_pattern(), 0..6),
+            host in a_host(),
+        ) {
+            let names: Vec<String> = (0..patterns.len()).map(|i| format!("s{i}")).collect();
+            let held: Vec<(&str, &str)> =
+                names.iter().map(String::as_str).zip(patterns.iter().copied()).collect();
+            let answer = bound_to(held.iter().copied(), host);
+            proptest::prop_assert_eq!(answer, bound_to(held.iter().rev().copied(), host));
+            match answer {
+                Some(name) => {
+                    let pattern = held.iter().find(|(n, _)| *n == name).unwrap().1;
+                    proptest::prop_assert!(host_matches(pattern, host));
+                }
+                None => proptest::prop_assert!(!patterns.iter().any(|p| host_matches(p, host))),
+            }
+        }
+    }
+
     #[test]
     fn a_kinds_label_is_the_name_it_is_written_with() {
         for kind in [SecretKind::Token, SecretKind::UserPassword] {
@@ -693,6 +777,54 @@ mod tests {
                 "{pattern:?} was accepted"
             );
         }
+    }
+
+    /// A registry's credential goes to the registry and to the host that takes its logins, and a wildcard cannot say
+    /// that of `registry.gitlab.com` and `gitlab.com`.
+    #[test]
+    fn a_pattern_may_name_several_hosts_and_matches_those_and_no_more() {
+        let pattern = "registry.gitlab.com,gitlab.com";
+        assert_eq!(pattern_problem(pattern), None);
+        assert!(host_matches(pattern, "registry.gitlab.com"));
+        assert!(host_matches(pattern, "gitlab.com"));
+        assert!(!host_matches(pattern, "evil.gitlab.com"));
+        assert!(!host_matches(pattern, "registry.gitlab.com,gitlab.com"));
+        assert!(host_matches(
+            "reg.example.org,*.auth.example.org",
+            "a.auth.example.org"
+        ));
+    }
+
+    #[test]
+    fn a_list_with_a_part_that_is_not_a_pattern_is_refused_and_matches_nothing() {
+        for pattern in [
+            "a.example.org,",
+            ",a.example.org",
+            "a.example.org,,b.example.org",
+            "a.example.org, b.example.org",
+            "a.example.org,*",
+            "a.example.org,10.0.0.1",
+            "a.example.org,b.example.org:443",
+        ] {
+            assert!(pattern_problem(pattern).is_some(), "{pattern}");
+            assert!(!host_matches(pattern, "a.example.org"), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn the_closest_binding_answers_for_a_host_and_otherwise_none_does() {
+        let held = [
+            ("broad", "*.example.org"),
+            ("narrower", "*.reg.example.org"),
+            ("exact", "a.reg.example.org,other.example.net"),
+        ];
+        assert_eq!(bound_to(held, "a.reg.example.org"), Some("exact"));
+        assert_eq!(bound_to(held, "b.reg.example.org"), Some("narrower"));
+        assert_eq!(bound_to(held, "c.example.org"), Some("broad"));
+        assert_eq!(bound_to(held, "other.example.net"), Some("exact"));
+        assert_eq!(bound_to(held, "example.org"), None);
+        assert_eq!(bound_to(held, "nowhere.example.net"), None);
+        assert_eq!(bound_to([], "a.reg.example.org"), None);
     }
 
     #[test]

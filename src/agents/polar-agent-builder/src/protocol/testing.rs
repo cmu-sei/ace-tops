@@ -93,6 +93,13 @@ impl CredentialSource for OneSecret {
     async fn git(&self, name: String, _: String) -> Result<GitCredential, CryptoError> {
         Err(CryptoError::SecretNotRegistered(name))
     }
+    async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
+        Ok(polar_crypto::registry::bound_to(
+            [(self.name.as_str(), self.binding.host_pattern.as_str())],
+            &host,
+        )
+        .map(str::to_string))
+    }
 }
 
 /// A handler over HTTP that trusts `ca_pem` as well, with `operations` declared and `variables` in force, its credentials

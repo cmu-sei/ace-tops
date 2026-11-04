@@ -24,17 +24,17 @@
 //! The OCI resolver itself: given a discovered image reference, pull its manifest from the
 //! registry and publish what was found.
 
-use crate::auth;
+use crate::registry;
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::WireTraceCtx;
-use oci_client::{Client as OciClient, Reference, manifest::OciManifest};
+use oci_client::{Reference, manifest::OciManifest};
 use polar::{
     DiscoverySourceRef, ProvenanceEvent,
     cassini::{CassiniClient, TcpClient},
     topics::{KUBERNETES_RESOLUTION_EVENTS, PROVENANCE_EVENTS},
 };
+use polar_agent_builder::protocol::ProtocolHandle;
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
-use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -74,13 +74,10 @@ impl ResolverAgent {
 
         debug!("Attempting to resolve image: {image_ref}");
         let reference = Reference::from_str(image_ref)?;
-        let auth =
-            auth::registry_auth(state.docker_config.as_deref(), reference.resolve_registry())?;
-
-        match state.oci_client.pull_manifest(&reference, &auth).await {
-            Ok(response) => Ok(Some(response)),
-            Err(e) => Err(ActorProcessingErr::from(e)),
-        }
+        registry::pull_manifest(&state.protocols, &reference, &state.insecure_registries)
+            .await
+            .map(Some)
+            .map_err(ActorProcessingErr::from)
     }
 
     fn forward_event(
@@ -101,9 +98,10 @@ impl ResolverAgent {
 
 pub struct ResolverAgentState {
     pub cassini_client: TcpClient,
-    pub oci_client: OciClient,
-    /// Where registry credentials are looked up; the usual places when `None`.
-    pub docker_config: Option<PathBuf>,
+    /// What reads a registry: it holds the credentials and goes out as the cluster says.
+    pub protocols: ProtocolHandle,
+    /// The registries spoken to over plain http.
+    pub insecure_registries: Vec<String>,
 }
 
 #[async_trait]

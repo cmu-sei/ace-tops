@@ -23,20 +23,11 @@
 
 //! What the OCI resolver reads from its configuration, declared once.
 //!
-//! `DOCKER_CONFIG` was read from the process environment by the `docker_credential` crate itself,
-//! so it was not declared or checked before the agent started, and could not reach an agent whose
-//! environment is a pointer to a configuration document. Declared here it is in its scaffold, and
-//! the resolver is handed the value. The CA a private registry or a TLS-intercepting proxy needs
-//! trusted is the egress section's (`polar::egress`).
+//! Registry credentials are the signed `credentials` section's (`crate::credentials`). The CA a private
+//! registry or a TLS-intercepting proxy needs trusted is the egress section's (`polar::egress`), which
+//! the agent's operations bring.
 
-use polar_env::{Config, ConfigError, Defaulted, Described, Optional, Section};
-
-pub static DOCKER_CONFIG: Optional<String> = Optional::text(
-    "DOCKER_CONFIG",
-    "the directory holding the Docker credential file config.json that registry credentials are \
-     looked up in; when unset, the usual places (the home directory's .docker) are tried, and \
-     without credentials the registry is asked anonymously",
-);
+use polar_env::{Config, ConfigError, Defaulted, Described, Section};
 
 /// The registry a local cluster pulls from, over http: kept as the default so a deployment that
 /// says nothing behaves as the resolver always did.
@@ -49,7 +40,7 @@ pub static INSECURE_REGISTRIES: Defaulted<Vec<String>> = Defaulted::list(
     DEFAULT_INSECURE_REGISTRIES,
 );
 
-static VARIABLES: &[&dyn Described] = &[&DOCKER_CONFIG, &INSECURE_REGISTRIES];
+static VARIABLES: &[&dyn Described] = &[&INSECURE_REGISTRIES];
 
 /// The section the OCI resolver registers.
 pub static SECTION: Section = Section {
@@ -59,14 +50,12 @@ pub static SECTION: Section = Section {
 };
 
 pub struct ResolverSettings {
-    pub docker_config: Option<String>,
     pub insecure_registries: Vec<String>,
 }
 
 impl ResolverSettings {
     pub fn read(config: &Config) -> Result<Self, ConfigError> {
         Ok(Self {
-            docker_config: config.read(&DOCKER_CONFIG)?,
             insecure_registries: config.read(&INSECURE_REGISTRIES)?,
         })
     }
@@ -93,7 +82,6 @@ mod tests {
     #[test]
     fn nothing_is_required() {
         let settings = ResolverSettings::read(&config(&[])).unwrap();
-        assert_eq!(settings.docker_config, None);
         assert_eq!(
             settings.insecure_registries,
             vec![DEFAULT_INSECURE_REGISTRIES.to_string()]
@@ -103,18 +91,14 @@ mod tests {
 
     #[test]
     fn what_is_set_is_used() {
-        let settings = ResolverSettings::read(&config(&[
-            ("DOCKER_CONFIG", "/etc/oci-registry-auth"),
-            ("OCI_INSECURE_REGISTRIES", "10.0.2.2:5000, reg.local:5000"),
-        ]))
+        let settings = ResolverSettings::read(&config(&[(
+            "OCI_INSECURE_REGISTRIES",
+            "10.0.2.2:5000, reg.local:5000",
+        )]))
         .unwrap();
         assert_eq!(
             settings.insecure_registries,
             vec!["10.0.2.2:5000", "reg.local:5000"]
-        );
-        assert_eq!(
-            settings.docker_config.as_deref(),
-            Some("/etc/oci-registry-auth")
         );
     }
 }

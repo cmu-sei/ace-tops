@@ -24,15 +24,18 @@
 //! The HTTP protocol: one request, and one whole, bounded reply. It goes out as the cluster says (`polar::egress`), and
 //! presents the credential itself. It follows a redirect only after judging where it goes, so a credential goes to no host
 //! it is not bound to, and it makes one attempt: a failure is the domain's to act on, and a host's `Retry-After` is the
-//! handler's to honour (docs/architecture/protocol-handlers.md).
+//! handler's to honour (docs/architecture/protocol-handlers.md). A container registry is this protocol with one more way
+//! of authenticating ([`Request::at_a_registry`]): the login goes only where a judged challenge sends it, and what comes
+//! back goes only to the registry.
 
 use super::{CredentialSource, Exchange, Failure, Protocol, ProtocolKind, Target};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use polar_crypto::CryptoError;
+use polar_crypto::Zeroizing;
 use polar_crypto::registry::HttpCredential;
-use reqwest::header::{LOCATION, RETRY_AFTER};
+use reqwest::header::{LOCATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use reqwest::redirect::Policy;
 use reqwest::{Client, ClientBuilder, Method, Url};
 use std::sync::Arc;
@@ -51,6 +54,8 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 pub const MAX_BODY: usize = 256 * 1024 * 1024;
 /// The most hops a request follows, as a browser would.
 pub const MAX_HOPS: usize = 10;
+/// The most a registry's auth host may answer with: a token, and what comes with it.
+pub const MAX_TOKEN_REPLY: usize = 1024 * 1024;
 
 /// What an operation says it wants. Where it goes is a path under the operation's configured address, or a whole address
 /// for an operation that learns its host at run time.
@@ -60,6 +65,8 @@ pub struct Request {
     at: At,
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
+    /// For a request at a container registry, what its token is asked to allow.
+    registry_scope: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +96,16 @@ impl Request {
         }
     }
 
+    /// The request is at a container registry, which authenticates in a way of its own, and `scope` is what a token for it
+    /// must allow (`repository:<name>:pull`): it goes with nothing at first, and only a challenge brings anything. A token
+    /// is presented to the registry as it is. A login goes to the registry if it asks for Basic; if it names an auth host, the
+    /// login goes there, a host judged like any other and which the credential's binding must name, and what comes back
+    /// goes to the registry.
+    pub fn at_a_registry(mut self, scope: impl Into<String>) -> Self {
+        self.registry_scope = Some(scope.into());
+        self
+    }
+
     /// With this header as well. The credential is not one to add: the handler attaches it.
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
@@ -101,6 +118,7 @@ impl Request {
             at,
             headers: Vec::new(),
             body: None,
+            registry_scope: None,
         }
     }
 }
@@ -176,6 +194,71 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 /// What a failure of the client says: never the address, which may carry what a query holds.
 fn transport(e: reqwest::Error) -> Failure {
     Failure::Transient(error_chain(&e.without_url()))
+}
+
+/// What a registry's challenge asks for, when it names an auth host.
+#[derive(Debug, PartialEq, Eq)]
+struct BearerChallenge {
+    realm: String,
+    service: Option<String>,
+}
+
+/// The first Bearer challenge among a reply's headers, if any: what a server said, so anything else is no challenge.
+fn bearer_challenge(headers: &HeaderMap) -> Option<BearerChallenge> {
+    headers
+        .get_all(WWW_AUTHENTICATE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(http_auth::parser::ChallengeParser::new)
+        .filter_map(Result::ok)
+        .filter(|challenge| challenge.scheme.eq_ignore_ascii_case("Bearer"))
+        .find_map(|challenge| {
+            let param = |name: &str| {
+                challenge
+                    .params
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.to_unescaped())
+            };
+            Some(BearerChallenge {
+                realm: param("realm")?,
+                service: param("service"),
+            })
+        })
+}
+
+/// What an auth host answers with. Either name is the token's.
+#[derive(serde::Deserialize)]
+struct TokenReply {
+    token: Option<String>,
+    access_token: Option<String>,
+}
+
+/// The failure a host asking for time comes to, if it is asking.
+fn asks_for_time(response: &reqwest::Response) -> Option<Failure> {
+    let status = response.status();
+    if !matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        return None;
+    }
+    let wait = response
+        .headers()
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| retry_after(value, chrono::Utc::now()))?;
+    Some(Failure::Backoff {
+        status: status.as_u16(),
+        wait,
+    })
+}
+
+/// What a registry's challenge comes to: what to present, and when it is a token an auth host gave, how the login was
+/// presented for it.
+struct Answer {
+    presenting: HttpCredential,
+    exchanged: Option<(Presented, bool)>,
 }
 
 /// Where a request goes: a path under `base`, or its whole address.
@@ -265,6 +348,73 @@ impl Http {
     pub(crate) fn with_client(client: Client) -> Self {
         Self { client }
     }
+
+    /// Answers a registry's challenge, or `None` if nothing can, and then its 401 is the reply. The auth host is judged
+    /// before anything goes to it: off the credential's binding the request fails, and nothing is sent.
+    async fn answer_challenge(
+        &self,
+        headers: &HeaderMap,
+        scope: &str,
+        login: Option<HttpCredential>,
+        exchange: &mut Exchange<Self>,
+    ) -> Result<Option<Answer>, Failure> {
+        if let Some(HttpCredential::Bearer(_)) = &login {
+            return Ok(login.map(|presenting| Answer {
+                presenting,
+                exchanged: None,
+            }));
+        }
+        let Some(challenge) = bearer_challenge(headers) else {
+            return Ok(login.map(|presenting| Answer {
+                presenting,
+                exchanged: None,
+            }));
+        };
+        drop(login);
+        let mut realm = Url::parse(&challenge.realm).map_err(|_| {
+            Failure::Configuration("a registry's auth host cannot be read".to_string())
+        })?;
+        let target = target_of(&realm).map_err(Failure::Configuration)?;
+        let at_realm = exchange.hop(target).await?;
+        {
+            let mut query = realm.query_pairs_mut();
+            query.append_pair("scope", scope);
+            if let Some(service) = &challenge.service {
+                query.append_pair("service", service);
+            }
+        }
+        let (outgoing, presented, looks) = attach(self.client.get(realm), at_realm)?;
+        let mut response = outgoing.send().await.map_err(transport)?;
+        if let Some(failure) = asks_for_time(&response) {
+            return Err(failure);
+        }
+        let status = response.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            if presented == Presented::Nothing {
+                return Ok(None);
+            }
+            return Err(Failure::CredentialRefused(format!(
+                "the registry's auth host answered {status}"
+            )));
+        }
+        if status != StatusCode::OK {
+            return Err(Failure::Transient(format!(
+                "the registry's auth host answered {status}"
+            )));
+        }
+        let whole = Zeroizing::new(whole_body(&mut response, MAX_TOKEN_REPLY).await?);
+        // What fails to parse says nothing of what it read: a parser's message can repeat it.
+        let reply: TokenReply = serde_json::from_slice(&whole).map_err(|_| {
+            Failure::Transient("the registry's auth host did not answer with a token".to_string())
+        })?;
+        let token = reply.token.or(reply.access_token).ok_or_else(|| {
+            Failure::Transient("the registry's auth host did not answer with a token".to_string())
+        })?;
+        Ok(Some(Answer {
+            presenting: HttpCredential::Bearer(Zeroizing::new(token.into_bytes())),
+            exchanged: Some((presented, looks)),
+        }))
+    }
 }
 
 impl super::sealed::Sealed for Http {}
@@ -306,7 +456,13 @@ impl Protocol for Http {
         exchange: &mut Exchange<Self>,
     ) -> Result<(), Failure> {
         let mut url = locate(&request.at, base.as_deref()).map_err(Failure::Configuration)?;
-        let mut credential = credential;
+        // What the next send presents. A registry's login is held back until a challenge says where it goes.
+        let (mut presenting, mut login) = match request.registry_scope {
+            None => (credential, None),
+            Some(_) => (None, credential),
+        };
+        let mut exchanged = None;
+        let mut challenged = false;
         let mut method = request.method.clone();
         let mut body = request.body.clone();
         for _ in 0..=MAX_HOPS {
@@ -318,7 +474,9 @@ impl Protocol for Http {
                 outgoing = outgoing.body(body.clone());
             }
             let (outgoing, presented, credential_looks_base64) =
-                attach(outgoing, credential.take())?;
+                attach(outgoing, presenting.take())?;
+            let (presented, credential_looks_base64) =
+                exchanged.unwrap_or((presented, credential_looks_base64));
             let mut response = outgoing.send().await.map_err(transport)?;
             let status = response.status();
 
@@ -335,7 +493,16 @@ impl Protocol for Http {
                         )
                     })?;
                 let target = target_of(&next).map_err(Failure::Configuration)?;
-                credential = exchange.hop(target).await?;
+                // A token from an auth host is for where it was presented: it goes no further.
+                let there = exchange.hop(target).await?;
+                match request.registry_scope {
+                    None => presenting = there,
+                    Some(_) => {
+                        login = there;
+                        exchanged = None;
+                        challenged = false;
+                    }
+                }
                 // As browsers do: a 303 is a GET, and a 301 or 302 of a POST is too. 307 and 308 keep it as it was.
                 if status == StatusCode::SEE_OTHER
                     || (method == Method::POST
@@ -348,19 +515,23 @@ impl Protocol for Http {
                 continue;
             }
 
-            if matches!(
-                status,
-                StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
-            ) && let Some(wait) = response
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| retry_after(value, chrono::Utc::now()))
+            if let Some(failure) = asks_for_time(&response) {
+                return Err(failure);
+            }
+
+            if status == StatusCode::UNAUTHORIZED
+                && !challenged
+                && let Some(scope) = &request.registry_scope
             {
-                return Err(Failure::Backoff {
-                    status: status.as_u16(),
-                    wait,
-                });
+                challenged = true;
+                let answer = self
+                    .answer_challenge(response.headers(), scope, login.take(), exchange)
+                    .await?;
+                if let Some(answer) = answer {
+                    presenting = Some(answer.presenting);
+                    exchanged = answer.exchanged;
+                    continue;
+                }
             }
 
             let headers = response.headers().clone();
@@ -434,6 +605,7 @@ mod tests {
     use polar::egress::testing::{TestCa, https_front};
     use polar_crypto::registry::{SecretBinding, SecretKind};
     use proptest::prelude::*;
+    use std::collections::HashMap;
     use std::sync::OnceLock;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -486,7 +658,15 @@ mod tests {
             credential: Credential::Named("site"),
         },
     };
-    static DECLARED: [OperationDecl; 4] = [CONFIGURED, OPEN, ANYWHERE, LEARNED];
+    const REGISTRY: OperationDecl = OperationDecl {
+        name: "registry.read",
+        doc: "",
+        protocol: ProtocolKind::Http,
+        location: Location::Bound {
+            credential: Credential::ForHost,
+        },
+    };
+    static DECLARED: [OperationDecl; 5] = [CONFIGURED, OPEN, ANYWHERE, LEARNED, REGISTRY];
 
     /// What the operations here give: the reply, and one header of it.
     #[derive(Debug)]
@@ -532,6 +712,7 @@ mod tests {
     operation!(AnywhereRead, ANYWHERE, false);
     operation!(LearnedRead, LEARNED, false);
     operation!(RefusedRead, CONFIGURED, true);
+    operation!(RegistryRead, REGISTRY, false);
 
     struct Fixture {
         server: MockServer,
@@ -1074,6 +1255,640 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    const SCOPE: &str = "repository:team/app:pull";
+    const TOKEN_FROM_THE_AUTH_HOST: &str = "a-token-from-the-auth-host";
+
+    fn manifest_url(host: &str, port: u16) -> String {
+        format!("https://{host}:{port}/v2/team/app/manifests/1")
+    }
+
+    fn at_a_registry(host: &str, port: u16) -> Request {
+        Request::get_at(manifest_url(host, port)).at_a_registry(SCOPE)
+    }
+
+    /// The registry: it answers `Bearer` with its manifest, and anything else with a challenge to go to `realm`.
+    async fn registry_challenging(server: &MockServer, realm: &str) {
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                format!("Bearer {TOKEN_FROM_THE_AUTH_HOST}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("the manifest"))
+            .with_priority(1)
+            .mount(server)
+            .await;
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .respond_with(
+                ResponseTemplate::new(401).insert_header(
+                    "www-authenticate",
+                    format!(
+                        r#"Bearer realm="{realm}",service="the-registry",scope="ignored:by:us""#
+                    )
+                    .as_str(),
+                ),
+            )
+            .with_priority(2)
+            .mount(server)
+            .await;
+    }
+
+    async fn auth_host_giving_a_token(server: &MockServer) {
+        Mock::given(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"token":"{TOKEN_FROM_THE_AUTH_HOST}","expires_in":60}}"#
+            )))
+            .mount(server)
+            .await;
+    }
+
+    async fn requests_to(server: &MockServer, at: &str) -> Vec<wiremock::Request> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == at)
+            .collect()
+    }
+
+    fn basic_login() -> String {
+        format!(
+            "Basic {}",
+            STANDARD.encode(format!("me@example.org:{SECRET}"))
+        )
+    }
+
+    #[tokio::test]
+    async fn a_registry_that_challenges_nothing_is_presented_nothing() {
+        let f = fixture(SecretKind::UserPassword).await;
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("the manifest"))
+            .mount(&f.server)
+            .await;
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"the manifest");
+        assert_eq!(read.presented, Presented::Nothing);
+        let asked = requests_to(&f.server, "/v2/team/app/manifests/1").await;
+        assert_eq!(asked.len(), 1);
+        assert_eq!(authorization(&asked[0]), None);
+    }
+
+    /// The whole of it: the login goes to the auth host and nowhere else, the registry sees only what came back, and the
+    /// domain sees neither.
+    #[tokio::test]
+    async fn a_login_goes_to_the_auth_host_and_only_its_token_to_the_registry() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://localhost:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        auth_host_giving_a_token(&f.server).await;
+
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"the manifest");
+        assert_eq!(read.presented, Presented::Basic);
+        let seen = format!("{read:?}");
+        assert!(
+            !seen.contains(SECRET) && !seen.contains(TOKEN_FROM_THE_AUTH_HOST),
+            "{seen}"
+        );
+
+        let token_asks = requests_to(&f.server, "/token").await;
+        assert_eq!(token_asks.len(), 1);
+        assert_eq!(authorization(&token_asks[0]), Some(basic_login()));
+        let query: HashMap<String, String> = token_asks[0].url.query_pairs().into_owned().collect();
+        assert_eq!(query.get("scope").map(String::as_str), Some(SCOPE));
+        assert_eq!(
+            query.get("service").map(String::as_str),
+            Some("the-registry")
+        );
+
+        let manifest_asks = requests_to(&f.server, "/v2/team/app/manifests/1").await;
+        assert_eq!(
+            manifest_asks.iter().map(authorization).collect::<Vec<_>>(),
+            vec![None, Some(format!("Bearer {TOKEN_FROM_THE_AUTH_HOST}"))]
+        );
+
+        let records = f.site.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert!(records.iter().all(|record| {
+            record.operation == "registry.read"
+                && record.credential.as_deref() == Some("site")
+                && record.verdict == "allowed"
+        }));
+    }
+
+    /// The registry says where the login goes, and it is not to be believed: this is what oci-client does not check.
+    #[tokio::test]
+    async fn an_auth_host_off_the_binding_is_sent_nothing_and_the_request_fails() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://127.0.0.1:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        auth_host_giving_a_token(&f.server).await;
+
+        let failure = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            failure,
+            Failure::NotBound {
+                name: "site".to_string()
+            }
+        );
+        assert!(requests_to(&f.server, "/token").await.is_empty());
+        for request in f.server.received_requests().await.unwrap() {
+            assert_eq!(authorization(&request), None, "{request:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_auth_host_over_a_connection_not_encrypted_is_sent_no_login() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("{}/token", f.server.uri().replace("127.0.0.1", "localhost"));
+        registry_challenging(&f.server, &realm).await;
+        auth_host_giving_a_token(&f.server).await;
+
+        let failure = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap_err();
+        assert_eq!(failure, Failure::Denied(Denial::NotEncrypted));
+        assert!(requests_to(&f.server, "/token").await.is_empty());
+    }
+
+    /// A public image at a registry that wants a token for everything: nothing of the agent's is presented, and the request
+    /// is on the record, each place it went, as the permission it is.
+    #[tokio::test]
+    async fn with_no_credential_a_token_is_asked_for_with_nothing_and_each_host_is_marked() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://127.0.0.1:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        auth_host_giving_a_token(&f.server).await;
+
+        let read = f
+            .site
+            .handle
+            .ask(AnywhereRead(at_a_registry("127.0.0.1", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"the manifest");
+        assert_eq!(read.presented, Presented::Nothing);
+        assert_eq!(
+            authorization(&requests_to(&f.server, "/token").await[0]),
+            None
+        );
+        let records = f.site.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert!(
+            records
+                .iter()
+                .all(|r| r.arbitrary && r.credential.is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_registry_that_asks_for_basic_is_given_the_login() {
+        let f = fixture(SecretKind::UserPassword).await;
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                basic_login().as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("the manifest"))
+            .with_priority(1)
+            .mount(&f.server)
+            .await;
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .insert_header("www-authenticate", r#"Basic realm="the-registry""#),
+            )
+            .with_priority(2)
+            .mount(&f.server)
+            .await;
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"the manifest");
+        assert_eq!(read.presented, Presented::Basic);
+    }
+
+    /// A token is the registry's own, and goes to it whatever the challenge names: nothing goes to the auth host.
+    #[tokio::test]
+    async fn a_token_goes_to_the_registry_and_not_to_the_auth_host_it_names() {
+        let f = fixture(SecretKind::Token).await;
+        let realm = format!("https://localhost:{}/token", f.port);
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                format!("Bearer {SECRET}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("the manifest"))
+            .with_priority(1)
+            .mount(&f.server)
+            .await;
+        registry_challenging(&f.server, &realm).await;
+        auth_host_giving_a_token(&f.server).await;
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"the manifest");
+        assert_eq!(read.presented, Presented::Bearer);
+        assert!(requests_to(&f.server, "/token").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_login_the_auth_host_refuses_is_held() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://localhost:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        Mock::given(path("/token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&f.server)
+            .await;
+        let failure = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(failure, Failure::CredentialRefused(_)),
+            "{failure:?}"
+        );
+        let again = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            again,
+            Failure::CredentialHeld {
+                name: "site".to_string()
+            }
+        );
+        assert_eq!(requests_to(&f.server, "/token").await.len(), 1);
+    }
+
+    /// An auth host that gives nobody a token for this: the registry's own 401 is what the operation reads.
+    #[tokio::test]
+    async fn with_no_credential_an_auth_host_that_refuses_leaves_the_registrys_answer() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://127.0.0.1:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        Mock::given(path("/token"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&f.server)
+            .await;
+        let read = f
+            .site
+            .handle
+            .ask(AnywhereRead(at_a_registry("127.0.0.1", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(read.presented, Presented::Nothing);
+    }
+
+    /// One challenge is answered once. The registry saying no to what it asked for is the operation's to read, with how the
+    /// credential was presented, and not a loop.
+    #[tokio::test]
+    async fn a_registry_that_refuses_the_answer_is_not_asked_again() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://localhost:{}/token", f.port);
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "www-authenticate",
+                format!(r#"Bearer realm="{realm}""#).as_str(),
+            ))
+            .mount(&f.server)
+            .await;
+        auth_host_giving_a_token(&f.server).await;
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(read.presented, Presented::Basic);
+        assert_eq!(
+            requests_to(&f.server, "/v2/team/app/manifests/1")
+                .await
+                .len(),
+            2
+        );
+        assert_eq!(requests_to(&f.server, "/token").await.len(), 1);
+    }
+
+    /// A token is for the host it was presented to: a redirect off it takes nothing along.
+    #[tokio::test]
+    async fn a_token_from_the_auth_host_does_not_follow_a_redirect() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://127.0.0.1:{}/token", f.port);
+        let elsewhere = format!("https://localhost:{}/elsewhere", f.port);
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                format!("Bearer {TOKEN_FROM_THE_AUTH_HOST}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", elsewhere.as_str()))
+            .with_priority(1)
+            .mount(&f.server)
+            .await;
+        registry_challenging(&f.server, &realm).await;
+        auth_host_giving_a_token(&f.server).await;
+        Mock::given(path("/elsewhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("from elsewhere"))
+            .mount(&f.server)
+            .await;
+        let read = f
+            .site
+            .handle
+            .ask(AnywhereRead(at_a_registry("127.0.0.1", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"from elsewhere");
+        assert_eq!(
+            authorization(&requests_to(&f.server, "/elsewhere").await[0]),
+            None
+        );
+    }
+
+    /// A hop gives what may go to the next host, and at a registry that too waits to be asked for.
+    #[tokio::test]
+    async fn a_redirect_at_a_registry_presents_nothing_until_it_is_asked_for() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let next = format!("https://localhost:{}/elsewhere", f.port);
+        Mock::given(path("/v2/team/app/manifests/1"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", next.as_str()))
+            .mount(&f.server)
+            .await;
+        Mock::given(path("/elsewhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("from elsewhere"))
+            .mount(&f.server)
+            .await;
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"from elsewhere");
+        assert_eq!(read.presented, Presented::Nothing);
+        assert_eq!(
+            authorization(&requests_to(&f.server, "/elsewhere").await[0]),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn an_auth_host_that_asks_for_time_or_gives_no_token_says_so_and_nothing_of_what_it_said()
+    {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://localhost:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        let token_replies = [
+            ResponseTemplate::new(200).set_body_string(format!("not json {SECRET}")),
+            ResponseTemplate::new(200).set_body_string(r#"{"expires_in":60}"#),
+            ResponseTemplate::new(500).set_body_string(SECRET),
+        ];
+        for reply in token_replies {
+            let answering = Mock::given(path("/token"))
+                .respond_with(reply)
+                .mount_as_scoped(&f.server)
+                .await;
+            let failure = f
+                .site
+                .handle
+                .ask(RegistryRead(at_a_registry("localhost", f.port)))
+                .await
+                .unwrap_err();
+            assert!(matches!(failure, Failure::Transient(_)), "{failure:?}");
+            assert!(!failure.to_string().contains(SECRET), "{failure}");
+            drop(answering);
+        }
+        // Bounded before it is parsed: the last of them is read no further than its limit.
+        let last = Mock::given(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(vec![b'x'; MAX_TOKEN_REPLY + 1]),
+            )
+            .mount_as_scoped(&f.server)
+            .await;
+        let failure = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap_err();
+        assert!(failure.to_string().contains("bytes"), "{failure}");
+        drop(last);
+        let _answering = Mock::given(path("/token"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+            .mount_as_scoped(&f.server)
+            .await;
+        let failure = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(failure, Failure::Backoff { status: 429, .. }),
+            "{failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_access_token_is_a_token() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let realm = format!("https://localhost:{}/token", f.port);
+        registry_challenging(&f.server, &realm).await;
+        Mock::given(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"access_token":"{TOKEN_FROM_THE_AUTH_HOST}"}}"#
+            )))
+            .mount(&f.server)
+            .await;
+        let read = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("localhost", f.port)))
+            .await
+            .unwrap();
+        assert_eq!(read.body, b"the manifest");
+    }
+
+    /// No binding names the host: nothing is sent, so the domain can go on to the operation with no credential.
+    #[tokio::test]
+    async fn a_host_no_credential_is_bound_to_is_denied_before_anything_is_sent() {
+        let f = fixture(SecretKind::UserPassword).await;
+        let failure = f
+            .site
+            .handle
+            .ask(RegistryRead(at_a_registry("127.0.0.1", f.port)))
+            .await
+            .unwrap_err();
+        assert_eq!(failure, Failure::Denied(Denial::NoCredentialBound));
+        assert!(f.server.received_requests().await.unwrap().is_empty());
+    }
+
+    fn challenge_of(header: &str) -> Option<BearerChallenge> {
+        let mut headers = HeaderMap::new();
+        headers.insert(WWW_AUTHENTICATE, header.parse().unwrap());
+        bearer_challenge(&headers)
+    }
+
+    #[test]
+    fn a_challenge_is_read_as_a_registry_writes_it() {
+        assert_eq!(
+            challenge_of(
+                r#"Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/ubuntu:pull""#
+            ),
+            Some(BearerChallenge {
+                realm: "https://auth.docker.io/token".to_string(),
+                service: Some("registry.docker.io".to_string()),
+            })
+        );
+        assert_eq!(
+            challenge_of(r#"bearer REALM="https://ghcr.io/token""#),
+            Some(BearerChallenge {
+                realm: "https://ghcr.io/token".to_string(),
+                service: None,
+            })
+        );
+        // Among others, and after one of another kind.
+        assert_eq!(
+            challenge_of(r#"Basic realm="a", Bearer realm="https://b.example.org/t""#)
+                .map(|c| c.realm),
+            Some("https://b.example.org/t".to_string())
+        );
+        for no_challenge in [r#"Basic realm="a""#, "Bearer", r#"Bearer service="a""#, ""] {
+            assert_eq!(challenge_of(no_challenge), None, "{no_challenge}");
+        }
+    }
+
+    proptest! {
+        /// A challenge is what a server said: anything at all comes to a challenge or none, and never to a panic.
+        #[test]
+        fn anything_a_server_says_is_a_challenge_or_is_not(header in "[ -~]{0,120}") {
+            let _ = challenge_of(&header);
+        }
+
+        #[test]
+        fn a_realm_and_a_service_come_back_as_they_were_written(
+            realm in "https://[a-z]{1,10}\\.example\\.org/[a-z]{0,10}",
+            service in "[a-zA-Z0-9.:-]{1,20}",
+        ) {
+            prop_assert_eq!(
+                challenge_of(&format!(r#"Bearer realm="{realm}",service="{service}""#)),
+                Some(BearerChallenge { realm, service: Some(service) })
+            );
+        }
+    }
+
+    /// Every certificate of the file: a bundle read as one would leave the second host untrusted.
+    #[tokio::test]
+    async fn every_certificate_of_the_egress_ca_is_trusted() {
+        use polar::egress::testing::https_server;
+        let dir = tempfile::tempdir().unwrap();
+        let first = TestCa::new("first root");
+        let second = TestCa::new("second root");
+        let bundle = dir.path().join("bundle.pem");
+        std::fs::write(&bundle, format!("{}{}", first.pem, second.pem)).unwrap();
+        let egress = polar::egress::Egress {
+            ca_cert: Some(bundle.display().to_string()),
+            ..polar::egress::Egress::default()
+        };
+        let client = Http::client(&egress, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+            .await
+            .unwrap();
+        for server in [https_server(&first).await, https_server(&second).await] {
+            let answer = client.get(&server.url).send().await;
+            assert!(answer.is_ok(), "{}: {answer:?}", server.url);
+            assert!(server.served() > 0, "{} was not reached", server.url);
+        }
+    }
+
+    /// A trust root that was asked for is not silently left out: the agent does not start.
+    #[tokio::test]
+    async fn an_egress_ca_that_cannot_be_read_or_used_stops_the_agent() {
+        let unreadable = polar::egress::Egress {
+            ca_cert: Some("/nonexistent/egress-ca.pem".to_string()),
+            ..polar::egress::Egress::default()
+        };
+        let why = Http::client(&unreadable, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+            .await
+            .expect_err("an error");
+        assert!(
+            why.contains("POLAR_EGRESS_CA_CERT") && why.contains("/nonexistent/egress-ca.pem"),
+            "{why}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("bad.pem");
+        std::fs::write(
+            &bad,
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let unusable = polar::egress::Egress {
+            ca_cert: Some(bad.display().to_string()),
+            ..polar::egress::Egress::default()
+        };
+        assert!(
+            Http::client(&unusable, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+                .await
+                .is_err()
+        );
+    }
+
+    /// The way out the cluster names is the way out, and a host it says to bypass is reached directly.
+    #[tokio::test]
+    async fn a_request_goes_through_the_egress_proxy_unless_its_host_bypasses_it() {
+        use polar::egress::testing::{https_server, recording_proxy};
+        let (proxy, seen) = recording_proxy().await;
+        let local = TestCa::new("bypassed");
+        let bypassed = https_server(&local).await;
+        let dir = tempfile::tempdir().unwrap();
+        let egress = polar::egress::Egress {
+            proxy: Some(proxy),
+            no_proxy: Some("127.0.0.1".to_string()),
+            ca_cert: Some(local.write(dir.path(), "ca.pem").display().to_string()),
+        };
+        let client = Http::client(&egress, CONNECT_TIMEOUT, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let _ = client.get("https://registry.example.org/v2/").send().await;
+        assert_eq!(
+            seen.lock().unwrap().first().map(String::as_str),
+            Some("CONNECT registry.example.org:443 HTTP/1.1")
+        );
+        let answer = client.get(&bypassed.url).send().await;
+        assert!(answer.is_ok(), "{answer:?}");
+        assert_eq!(seen.lock().unwrap().len(), 1, "{seen:?}");
     }
 
     #[test]

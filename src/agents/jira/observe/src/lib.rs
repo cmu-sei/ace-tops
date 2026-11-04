@@ -1041,6 +1041,9 @@ pub(crate) mod test_crypto {
         async fn git(&self, name: String, _: String) -> Result<GitCredential, CryptoError> {
             Err(CryptoError::SecretNotRegistered(name))
         }
+        async fn bound_to(&self, _: String) -> Result<Option<String>, CryptoError> {
+            unreachable!("Jira names its credential")
+        }
         async fn http(&self, name: String, host: String) -> Result<HttpCredential, CryptoError> {
             self.asked.lock().unwrap().push((name.clone(), host));
             match &self.gives {
