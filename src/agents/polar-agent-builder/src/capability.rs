@@ -273,7 +273,6 @@ mod tests {
         "deployment-ca",
         "deployment-copy",
         "git-server",
-        "oci-registry-auth",
         "persistent-data",
         "pinned-ca",
         "provisioned-ca",

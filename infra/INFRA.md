@@ -338,7 +338,7 @@ watch in the health check: the state agent's, `docs/architecture/soft-state.md`)
 `kube-api-read`, and others that describe the shape of the pod rather than what
 the code needs: `persistent-data` (a claim named for the workload, mounted at
 `/var/lib/<workload>`), `pinned-ca` (polar-init and the container trust the Polar CA
-from a mounted file), `tracing` (every workload sends its traces to Jaeger, from its kind) and `oci-registry-auth` (registry credentials mounted as a Docker config). An agent on a document says what its
+from a mounted file) and `tracing` (every workload sends its traces to Jaeger, from its kind). An agent on a document says what its
 code requires in its own scaffold; its entry adds what else the deployment gives
 it with `provides`, lists services it watches but does not wait for at start with
 `no_start_wait`, and, if it answers requests, a `service` (a port, which becomes
@@ -805,7 +805,7 @@ Secrets are encrypted per target and are not rendered by the chart pipeline.
   - **From the SOPS files** (`kubectl_sops_secret`): created when missing; when it exists, compared with what the files give and
     left alone (`unchanged`) or its data replaced, its type, labels and annotations kept. An update names the workloads to restart,
     since a pod reads a Secret when it starts: `secret/gitlab-secret in polar: updated from the sops files (restart the pods that read
-    it: kubectl -n polar rollout restart deployment/<workload>)`. When the files have no value (`token=placeholder`, `oci-registry-auth={}`)
+    it: kubectl -n polar rollout restart deployment/<workload>)`. When the files have no value (`token=placeholder`)
     the placeholder is made only if the Secret is missing, and never replaces a value the cluster holds, which may have been set by hand.
     Neo4j takes its password from `neo4j-secret` on its first start only, so a changed `neo4j_auth` updates the Secret and not the
     database's password (`up.nu`'s Neo4j check says when they differ).

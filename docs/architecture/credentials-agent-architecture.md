@@ -547,7 +547,8 @@ cannot be given it, so these two answers go to the handlers alone (`protocol-han
 A **host pattern** is a bare host name, matched case-insensitively and exactly (`github.com`), or `*.` followed by
 a domain (`*.example.org`), which matches that domain with one or more labels before it, at any depth
 (`api.example.org`, `a.b.example.org`), but not the bare domain and not a lookalike (`evilexample.org`; a dot is
-required). Decided 2026-10-14. The host being checked must itself be a bare name: a port, userinfo, a
+required). Decided 2026-10-14. It may be several of those separated by commas with no spaces, for a credential that goes to
+more than one host (a registry and its auth host, `registry.gitlab.com,gitlab.com`; `protocol-handlers.md`, 2026-11-03). The host being checked must itself be a bare name: a port, userinfo, a
 trailing dot or an IP address never matches (normalising a URL and the network guard are the caller's job,
 `proposals.md`).
 

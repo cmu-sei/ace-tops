@@ -144,7 +144,6 @@ async fn every_certificate_of_a_bundle_is_trusted() {
     };
 
     assert_eq!(egress.ca_bundle().await.unwrap().len(), 2);
-    assert_eq!(egress.pem_blocks().await.unwrap().len(), 2);
     let client = client(&egress).await;
     assert_eq!(reach(&client, &one).await, "ok");
     assert_eq!(reach(&client, &two).await, "ok");

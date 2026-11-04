@@ -23,7 +23,7 @@
 
 # Protocol handlers: the domain's I/O in infrastructure
 
-Status, 2026-11-03: the design, from the maintainer, vetted. The framework and HTTP are built, and jira-observer is on them; the rest moves in bites ("When, and in what order";
+Status, 2026-11-03: the design, from the maintainer, vetted. The framework, HTTP and its registry scheme are built, and jira-observer and the resolver are on them; the rest moves in bites ("When, and in what order";
 `polar-agent-builder/src/protocol.rs`). Framework code that lets us reason about
 each request a domain actor makes, whether to allow or deny it, and that protects the credentials it uses. The domain says what it
 wants; a protocol handler in the builder's infrastructure gets the credential itself, uses it, and calls the domain's code with what
@@ -159,7 +159,7 @@ Moving them there would mean the daemon also makes the request, which is the sea
 | Location | Where it comes from | Credential | Example |
 |---|---|---|---|
 | `Configured` | a variable of the agent's, read as it is in force at each request | if the operation declares one and the host matches its binding | Jira and GitLab's site |
-| `Bound` | the domain, at run time, and the host must match the credential's signed binding | always | the git observer's repositories that name a credential; a registry with a credential |
+| `Bound` | the domain, at run time, and the host must match the credential's signed binding | always | the git observer's repositories that name a credential; a registry a credential is bound to |
 | `Arbitrary` | the domain, at run time, with the permission declared on the operation | **never**: the declaration has no place to name one | OpenAPI following a document's URL; a public repository; a registry nothing is bound to |
 
 - A path, a query and a page belong to the request; the host is what is judged. A location a response gives, such as GitLab's `Link` header, is
@@ -168,10 +168,16 @@ Moving them there would mean the daemon also makes the request, which is the sea
 - The permission is declared on the operation when it is built, so the builder knows it and the catalog says it. Applying the catalog is the
   sign-off (`policy-enforcement.md`).
 
-Proposed, to review: `Bound`. The **resolver** learns registries from the images it sees (`resolver/src/resolver.rs:78`), and the git observer's repositories
+Proposed, to review: `Bound`. The **resolver** learns registries from the images it sees (`resolver/src/registry.rs`), and the git observer's repositories
 come from the controller naming their credential. The host is the domain's, but the host pattern a credential may go to is signed, so a match is a
-location someone signed off and not an arbitrary request. No match is `NotBound`, nothing is sent, and the domain may make the `Arbitrary`
-operation it declared, with no credential.
+location someone signed off and not an arbitrary request. A credential the request names and the host does not match is `NotBound`, and nothing is sent.
+
+Which credential, three ways (`judge::Credential`): `Named` by the declaration, `Chosen` by the request, and `ForHost`, by nobody. The resolver has no name
+to give: a registry is whatever an image says. So the CryptoActor says which secret's binding names the host, the closest pattern first and among equals the
+first name (`registry::bound_to`), and answers with a name. It decides once, where the request first goes, and stays that credential at every later hop, whose host
+its binding must also name. If none is bound the verdict is `NoCredentialBound`, nothing is sent, and the domain may make the `Arbitrary` operation it declared.
+So each read of a public image is two lines on the record, the refused `Bound` one and the allowed `Arbitrary` one. Decided while building, to review: the record says
+exactly what happened, at the cost of a refusal that means nothing for every public image, which the dashboard will have to tell apart.
 
 ## The judgment
 
@@ -185,14 +191,26 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
 | Protocol | Domain's users | Credential | Callback reads | Moves |
 |---|---|---|---|---|
 | HTTP | Jira, GitLab, OpenAPI | declared | a reply, whole and bounded | Jira now; GitLab and OpenAPI at step 7, when they reach the builder |
-| OCI registry | resolver | declared; today a Docker config file | a manifest | now. A breaking change: it needs a migration note (`remaining-work.md`) |
+| OCI registry | resolver | declared | a manifest | built, 2026-11-03. A breaking change, with its migration note (`remaining-work.md`) |
 | git | git observer | declared | the fetched `git2::Repository` | now |
 | Kubernetes API | Kubernetes observer, attestation agent | the pod's service account token, which `kube` already picks up: the capability declares it, not `with_credential` | one change at a time | now |
 
-- **OCI is HTTP with one more authentication scheme, not a handler of its own.** A registry's token exchange is the unusual scheme the decisions
-  provide for, and it is needed: `oci-client` sends Basic credentials to whatever host the registry's `WWW-Authenticate` realm names (read in
-  0.18.0's `client.rs`, the `get(realm)` with `apply_authentication`; not tried), so a binding cannot be enforced around it today. The handler does the
-  exchange, judges the realm against the binding, and gives `oci-client` only the bearer token. So a binding for a registry names its auth host too.
+- **OCI is HTTP with one more authentication scheme, not a handler of its own** (`Request::at_a_registry`, `protocol/http.rs`). A registry's token exchange is the
+  unusual scheme the decisions provide for, and it is needed: `oci-client` sends Basic credentials to whatever host the registry's `WWW-Authenticate` realm names (read in
+  0.18.0's `client.rs`, the `get(realm)` with `apply_authentication`; not tried), so a binding cannot be enforced around it. The request goes with nothing at first. On a
+  401 a `token` credential goes to the registry as it is; a `user-password` goes to the registry for a Basic challenge, or for a Bearer one to the auth host it names, judged as a hop
+  against the same credential's binding, and only what comes back goes to the registry, and no further than that host. So a binding for a registry names its auth host too:
+  `*.docker.io`, or `registry.gitlab.com,gitlab.com` where one wildcard cannot say both, which is why a pattern may now list several. The registry's word alone is not enough for an auth host,
+  since a token from a host we hold a login for, handed to any registry that asked, is a leak. So a credential is never found by the auth host, only by the registry.
+
+  **A change from what was vetted, to review.** This said the handler would do the exchange and give `oci-client` the bearer token. Reading how it would run, that cannot work: `oci-client`
+  caches the first auth of each registry for good (`store_auth_if_needed`) and reuses it, so a token scoped to one repository would be presented for the next and a new signed version never taken up;
+  it follows redirects itself, with no way to judge them; and a Basic-only registry still needs Basic handed over, whereupon it would follow a Bearer challenge by itself. So the handler makes the request as
+  well, and `oci-client` stays for its types alone (`Reference`, `OciManifest`). The checks that made its client worth having are in the resolver's `read`: the digest of the body against the header and against the
+  digest the image names, and the schema version and media type. One client for the agent, whose egress is the handler's, in place of a second that needed its own proxy and CA.
+
+  The anonymous path is the same exchange with nothing presented. A registry can make it fetch any address as its auth host: a GET, with no credential, of which nothing but a token is ever read, recorded
+  as the permission it is. The old client did the same, without the record.
 - **Git keeps libgit2.** It does its own I/O and asks through a callback, `git/observe/src/lib.rs:722`; that callback moves into the handler. A test
   shows that the token is not left in the repository's config. The process-wide CA (`trust_ca_file`) is set once, by the handler.
 - **Kubernetes needs a stream, so one request and many results is part of the framework now.** A watch never ends (`attestation/agent/src/watch.rs`).
@@ -250,7 +268,12 @@ place stands, for all of it. In bites, each reported before the next:
    Checked live on u7s, 2026-11-03, reading Apache's Jira anonymously: the agent starts, each request is on the record, and issues keep arriving in the graph (2,343 to 2,351, the
    cursor moving on, projects unchanged). Starting the client there found a lost `Registered`, fixed for every agent (`infrastructure::catch_up`). **Not checked live: the credential path.**
    The sandbox reads anonymously, so the real `CredentialPort`, an applied section and a presented token have run only in tests.
-3. The registry scheme. The resolver moves, with its migration note.
+3. **Built, 2026-11-03.** The registry scheme, and the resolver moves (above), with its section, `Credential::ForHost` and host patterns that list several. Tested over real TLS against stand-ins, and against a
+   real `registry:2` anonymously and with an htpasswd login behind TLS (right password, wrong password held, a binding for another host asked with nothing).
+   Checked live on u7s, 2026-11-03, anonymously: each image goes through both operations on the record, and real exchanges work. Docker Hub (`index.docker.io`, a token from `auth.docker.io`), ghcr.io (its own host for both),
+   quay.io (no challenge), and `registry.k8s.io`, which redirected to `us-east4-docker.pkg.dev`, a hop judged and recorded. Two throwaway pods of images new to the graph took `OCIArtifact` from 4 to 6 and joined their `PodContainer`s, each digest the kubelet's `imageID`.
+   The real `CredentialPort` answered every `bound_to`. **Not checked live, still: a credential presented.** No registry the sandbox reads wants one; a real one, or one set up for it, is needed. The `localhost:30500` images fail as they did before
+   (`remaining-work.md`).
 4. git. The git observer moves.
 5. Kubernetes and the stream. The Kubernetes observer and the attestation agent move.
 6. The routes close (the table above), once nothing uses them. Docs and the diagram as built.

@@ -145,7 +145,6 @@ let ProvenanceLinkerName = "provenance-linker"
 
 let ProvenanceResolverName = "provenance-resolver"
 
-let OciRegistrySecret = { name = "oci-registry-auth" }
 
 let DropAllCapSecurityContext =
       kubernetes.SecurityContext::{
@@ -280,7 +279,6 @@ in  { PolarNamespace
     , ArtifactLinkerName
     , ProvenanceLinkerName
     , ProvenanceResolverName
-    , OciRegistrySecret
     , DropAllCapSecurityContext
     , RejectSidecarAnnotation
     , JobPodReplacementPolicy

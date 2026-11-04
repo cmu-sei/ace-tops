@@ -298,7 +298,7 @@ def main [] {
             name: "a placeholder never overwrites a value the cluster holds: the SOPS files have none, so the cluster's is kept"
             body: {
                 assert equal (secret_action "sops" { token: "fake-set-by-hand" } { token: "placeholder" } --placeholder) "keep-cluster"
-                assert equal (secret_action "sops" { oci-registry-auth: '{"auths":{}}' } { oci-registry-auth: "{}" } --placeholder) "keep-cluster"
+                assert equal (secret_action "sops" { a-placeholder: '{"auths":{}}' } { a-placeholder: "{}" } --placeholder) "keep-cluster"
             }
         }
         {
@@ -345,7 +345,7 @@ def main [] {
             name: "literals become data split at the first =, so a value may hold one"
             body: {
                 assert equal (literal_data ["token=fake=1==" "user=u"]) { token: "fake=1==", user: "u" }
-                assert equal (literal_data ["oci-registry-auth={}"]) { oci-registry-auth: "{}" }
+                assert equal (literal_data ["a-placeholder={}"]) { a-placeholder: "{}" }
             }
         }
         {
@@ -453,11 +453,11 @@ def main [] {
             name: "a placeholder leaves a value set by hand where it is"
             body: {
                 let dir = (fake_cluster)
-                fake_secret $dir "polar" "oci-registry-auth" { oci-registry-auth: '{"auths":{"fake.example":{}}}' }
-                let r = (against $dir 'kubectl_sops_secret "oci-registry-auth" "polar" ["oci-registry-auth={}"] --placeholder')
+                fake_secret $dir "polar" "a-placeholder" { a-placeholder: '{"auths":{"fake.example":{}}}' }
+                let r = (against $dir 'kubectl_sops_secret "a-placeholder" "polar" ["a-placeholder={}"] --placeholder')
                 assert equal $r.exit_code 0 $r.stderr
                 assert ($r.stdout | str contains "the cluster's is kept") $r.stdout
-                assert equal (stored $dir "polar" "oci-registry-auth" | get plain) { oci-registry-auth: '{"auths":{"fake.example":{}}}' }
+                assert equal (stored $dir "polar" "a-placeholder" | get plain) { a-placeholder: '{"auths":{"fake.example":{}}}' }
                 rm -rf $dir
             }
         }

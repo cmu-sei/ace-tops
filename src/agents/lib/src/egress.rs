@@ -171,19 +171,6 @@ impl Egress {
         Ok(certs)
     }
 
-    /// Each certificate block of the CA file as PEM text of its own, for a client that reads only the first
-    /// certificate of what it is given (oci-client's `Certificate`): none when no CA is set.
-    pub async fn pem_blocks(&self) -> Result<Vec<Vec<u8>>, EgressError> {
-        let Some((path, data)) = self.ca_file().await? else {
-            return Ok(Vec::new());
-        };
-        let blocks = pem_blocks_of(&String::from_utf8_lossy(&data));
-        if blocks.is_empty() {
-            return Err(EgressError::Empty { path });
-        }
-        Ok(blocks)
-    }
-
     /// A reqwest client builder that trusts `bundle` beside the system's roots and goes out through the proxy,
     /// or directly when none is set. The TLS backend is left as it is: reqwest's default, native-tls, reads the
     /// system's roots from the image (`SSL_CERT_FILE`), and rustls would trust its built-in list in their place.
@@ -219,24 +206,6 @@ impl Egress {
             .intercept(&uri)
             .map(|_| proxy.clone())
     }
-}
-
-const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
-const END: &str = "-----END CERTIFICATE-----";
-
-/// Each `CERTIFICATE` block of `text`, from its BEGIN line to its END line.
-fn pem_blocks_of(text: &str) -> Vec<Vec<u8>> {
-    let mut blocks = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find(BEGIN) {
-        let Some(len) = rest[start..].find(END) else {
-            break;
-        };
-        let end = start + len + END.len();
-        blocks.push(format!("{}\n", &rest[start..end]).into_bytes());
-        rest = &rest[end..];
-    }
-    blocks
 }
 
 /// Test certificates, TLS servers and child processes for the tests of egress, in this crate and in the agents
@@ -536,17 +505,6 @@ mod tests {
         assert!(problems(&[("POLAR_EGRESS_CA_CERT", "/etc/polar-egress-ca/ca.pem")]).is_empty());
     }
 
-    #[test]
-    fn the_blocks_of_a_bundle_are_split_one_per_certificate() {
-        let text = format!("junk\n{BEGIN}\nAAAA\n{END}\nmore\n{BEGIN}\nBBBB\n{END}\n");
-        let blocks = pem_blocks_of(&text);
-        assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0], format!("{BEGIN}\nAAAA\n{END}\n").into_bytes());
-        assert_eq!(blocks[1], format!("{BEGIN}\nBBBB\n{END}\n").into_bytes());
-        assert!(pem_blocks_of("no certificate here").is_empty());
-        assert!(pem_blocks_of(&format!("{BEGIN}\nunterminated")).is_empty());
-    }
-
     #[tokio::test]
     async fn a_ca_that_is_set_and_cannot_be_read_or_holds_nothing_names_the_variable_and_the_path()
     {
@@ -573,13 +531,11 @@ mod tests {
             error.contains("POLAR_EGRESS_CA_CERT") && error.contains("holds no PEM certificate"),
             "{error}"
         );
-        assert!(egress.pem_blocks().await.is_err());
     }
 
     #[tokio::test]
     async fn no_ca_is_an_empty_bundle() {
         let egress = Egress::default();
         assert!(egress.ca_bundle().await.unwrap().is_empty());
-        assert!(egress.pem_blocks().await.unwrap().is_empty());
     }
 }

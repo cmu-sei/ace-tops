@@ -65,12 +65,3 @@ jira_token: ""
 # The Jira Cloud account's email, for a Cloud API token (a `user-password` credential, this its
 # username). Empty for a Data Center or Server personal access token.
 jira_email: ""
-
-# =============================================================================
-# OCI Registry
-# =============================================================================
-
-# Docker auth JSON for OCI registry access.
-# Generate with: podman login <registry> && cat ~/.docker/config.json
-# Used to create: oci-registry-auth (polar namespace)
-docker_auth_json: ""

@@ -103,19 +103,15 @@ proxy. The CA file itself is read when the agent starts.
   TLS backend, native-tls, which reads the image's `SSL_CERT_FILE` bundle; `use_rustls_tls` would trust
   webpki-roots in its place. With a proxy it sets `Proxy::all` with the bypass list; without one it calls
   `no_proxy()`, so `HTTPS_PROXY` in the process never decides the way out.
-- `pem_blocks` (`:176`) gives each certificate as PEM text of its own, for oci-client.
 - `proxy_for` (`:211`) answers, for a URL, the proxy to use by the same rules reqwest follows (hyper-util's
   `Matcher`): none for a bypassed host, an ssh remote, or with no proxy set.
 
 The agents that declare the section:
 
-- **an agent with an operation over HTTP** (`polar_agent_builder::protocol::http`; jira-observer first): the handler's client, with its connect and
+- **an agent with an operation over HTTP** (`polar_agent_builder::protocol::http`; jira-observer, oci-registry-resolver): the handler's client, with its connect and
   request timeouts, is configured by `Egress::configure` when the agent starts. The agent does not register the section itself: the operation brings it.
   `PROXY_CA_CERT` is gone; it used rustls, which dropped the image's roots, and read only the first certificate of the file.
-- **oci-registry-resolver**: `client_config` (`src/agents/resolver/src/supervisor.rs:67`) sets oci-client's
-  `https_proxy`, `http_proxy` and `no_proxy`; `oci_client` (`:105`) gives one `Certificate { Pem }` per PEM block
-  (oci-client reads only the first certificate of each) and makes the client with `try_from`, since `new` falls back
-  to a default client, without the CA, on an error. `PROXY_CA_CERT` is gone.
+- **oci-registry-resolver**: an agent with an operation over HTTP, above, since 2026-11-03. It has no client of its own.
 - **git-repo-observer**: at start (`src/agents/git/observe/src/supervisor.rs:155`) a CA is read through `ca_bundle`
   and then given to libgit2 once, `git2::opts::set_ssl_cert_file` (`trust_ca_file`,
   `src/agents/git/observe/src/lib.rs:98`), before any worker exists: it is global to the process, and libgit2 adds it
@@ -152,7 +148,5 @@ each agent's own.
 - gitlab-observer still reads `PROXY_CA_CERT` from the process (nothing sets it; its chart's always-None plumbing is
   gone), and so does `polar::get_web_client`, which nothing calls. The gitlab agents, openapi and build-processor
   declare the section when they move onto the agent builder.
-- With no proxy set, oci-client's reqwest client still consults the process's `HTTP(S)_PROXY` (it has no switch for
-  the system proxy). A Polar pod sets neither.
 - The render asks for the proxy's port spelled out; the agent's own check accepts a URL without one (the scheme's).
 - The init container (polar-init) and the custody daemon reach only the cluster, so they are given nothing.

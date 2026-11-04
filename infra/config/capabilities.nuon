@@ -355,21 +355,4 @@
     init: {}
     resources: {}
   }
-
-  # Registry credentials for a workload that pulls from private registries: the Secret
-  # `oci-registry-auth`, whose one key is a Docker credential file, mounted read-only as
-  # config.json in a directory the workload is told to look in (DOCKER_CONFIG). The secrets step
-  # makes the Secret; with no credentials it holds an empty file and the registries are asked
-  # anonymously.
-  oci-registry-auth: {
-    pod: {
-      env: [ { name: "DOCKER_CONFIG", value: "/etc/oci-registry-auth" } ]
-      volumes: [ { name: "oci-registry-auth", secret: "oci-registry-auth", items: [ { key: "oci-registry-auth", path: "config.json" } ] } ]
-      mounts: [ { name: "oci-registry-auth", path: "/etc/oci-registry-auth", read_only: true } ]
-    }
-    identity: {}
-    dependency: {}
-    init: {}
-    resources: {}
-  }
 }

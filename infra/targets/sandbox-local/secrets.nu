@@ -82,10 +82,6 @@ def main [target_dir: string, repo_root: string] {
     # (docs/architecture/jira.md, "The credential"). The `jira_token` of the sops files is not read here: up.nu's
     # seed seals it once into that section on a fresh cluster (infra/seed.nu), and polar-sign changes it after.
 
-    # Registry credentials for the OCI resolver: an empty Docker credential file, so registries are
-    # asked anonymously. Put real ones in the Secret to pull from a private registry; a re-run keeps them.
-    kubectl_sops_secret "oci-registry-auth" "polar" ["oci-registry-auth={}"] --placeholder
-
     print ""
 
     # -- polar-auth namespace ------------------------------------------------
