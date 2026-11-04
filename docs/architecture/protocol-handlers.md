@@ -325,6 +325,7 @@ place stands, for all of it. In bites, each reported before the next:
    A real shutdown of the observer: `PrepareShutdown` to the end of the infrastructure in under a millisecond, the pod gone in 1 s.
    **Not checked live:** a watch lost to something other than a refusal, an API server restarting say (only against the stand-in), and a broker falling behind slowing a watch (only with a stand-in for the client). No credential of the CryptoActor's goes this way, so bite 4's open item, a credential presented over HTTP, stays open.
 6. **Built, 2026-11-04.** The routes close (the table above). The diagrams as built: `sequences/general/protocol_handler_request`, and `protocol_handler_stream` for a watch.
+   Checked live on u7s, 2026-11-04, with every agent rebuilt on it: all 20 pods running with no restarts, Jira issues still arriving (2,712), both watching agents on the record as in bite 5, the git observer applying its section, and the real `CredentialPort` answering the resolver's `bound_to` with the pass (`no credential is bound`, 3 records). **Not repeated: a credential presented**, since no credential is in force on the cluster. The port's code did not change, and the actor with a real custody daemon is tested through it; bite 4's live check stands, and a credential presented over HTTP is still open.
 
 ## Open
 
