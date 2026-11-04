@@ -19,20 +19,32 @@
 %%
 %% DM26-0670
 
+%% A delivery from the broker, as built (2026-11-04, docs/architecture/cassini-client-reliability.md, "Step 5's acknowledged deliveries, as built"). At-least-once:
+%% acknowledged on hand-off to the router, not after the agent's work, and a repeat is not dropped. Shaded is the design, not built (steps 4 and 5a).
 sequenceDiagram
     autonumber
-    participant B as Broker
-    participant T as Transport
-    participant F as Facade + Outbox
+    participant B as Broker (the subscriber's delivery outbox)
+    participant L as its Listener
+    participant T as Transport (reader, acknowledgement writer)
     participant R as Router
     participant D as Domain actor
 
-    B->>T: PublishResponse(topic, payload, published_by, origin epoch and seq, delivery id)
-    T->>F: Delivered(...)
-    F->>F: origin (publisher, epoch, seq) already seen? yes: skip delivery and acknowledge again
-    F->>R: Route(topic, payload)
-    R->>D: deliver to the topic's registered handler
-    F->>T: PublishResponseAck(delivery id)
-    T->>B: PublishResponseAck(delivery id)
-    B->>B: remove the delivery from this subscriber's outbox
-    Note over B,F: If the connection fails before the acknowledgement, the broker keeps the delivery<br/>and sends it again after the reconnect. The facade drops the duplicate by its origin<br/>and acknowledges it again.
+    B->>B: number it and hold it until it is acknowledged
+    B->>L: PushMessage(delivery_id)
+    L->>T: PublishResponse(topic, payload, published_by, published_instance, origin epoch and seq, delivery_id)
+    alt the frame does not decode
+        T->>L: FrameUndecodable(frame), and the delivery it carried is let go as acknowledged
+    else
+        rect rgb(235, 219, 178)
+        Note over T,R: DESIGNED, step 4: origin (publisher, epoch, seq) already seen? Skip it and acknowledge again.
+        end
+        T->>R: IncomingMessage(topic, payload, published_by)
+        R->>D: the topic's registered handler, into its mailbox
+        T->>L: PublishResponseAck(delivery_id), by the writer's own task
+        L->>B: PublishResponseAck(delivery_id), to that topic's subscriber of its session
+        B->>B: remove it from the outbox, and its backlog falls
+        rect rgb(235, 219, 178)
+        Note over D,B: DESIGNED, step 5a: acknowledge after the agent's work, such as a consumer's graph write. Until then,<br/>a consumer that dies with a message in its mailbox loses it.
+        end
+    end
+    Note over B,T: If the connection fails before the acknowledgement, the broker keeps the delivery and sends it again<br/>on resume with the number it had, so one the client had may arrive twice, and the agent sees both.

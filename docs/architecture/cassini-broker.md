@@ -84,6 +84,8 @@ used to record, fixed.)
 
 ## The flows
 
+As built, 2026-11-04, each in `sequences/broker/`: [registering](sequences/broker/client_registration.svg), with what is refused; [coming back](sequences/broker/client_reconnect.svg); [a session taken over](sequences/broker/session_supersede_takeover.svg); [publishing](sequences/broker/client_publish.svg); [subscribing](sequences/broker/client_subscription.svg); [unsubscribing](sequences/broker/client_unsubscription.svg); [how a session ends or waits](sequences/broker/client_disconnect.svg); [admission and refusal for now](sequences/broker/backpressure_admission.svg); [a slow subscriber and the stall rule](sequences/broker/slow_subscriber_stall.svg); and [shutting down in order](sequences/broker/broker_shutdown_drain.svg). Below is the record of how each was read, by line.
+
 - **Register:** Listener (960) → Broker (`broker.rs:679`) → SessionManager (`session.rs:558`): reuses a session
   (595-641) or creates one with the peer identity (662-670) and supersedes older ones (679-683); the Listener stores the
   registration id and the session's address (`listener.rs:1011-1059`).

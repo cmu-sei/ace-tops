@@ -165,6 +165,8 @@ Split what `TcpClientActor` does into a stable part and a disposable part.
 
 ![components](sequences/general/cassini_client_components.svg)
 
+*The diagrams of this section show the client as built, with what is designed and not built marked (2026-11-04). The text around them is the design: an outbox file and a repeat dropped by its origin are steps 3 and 4.*
+
 - **Facade + Outbox** is what the rest of the agent holds, and it lives as long as the agent. It owns
   the agent-facing mailbox, the session identity (registration id), the remembered subscriptions and
   the outbox: a queue of messages not yet acknowledged by the broker, each with an `(epoch, seq)`. It
@@ -209,6 +211,8 @@ The same problem in the other direction. The broker keeps a delivery until the c
 ### The facade's states
 
 ![states](sequences/general/cassini_client_facade_states.svg)
+
+*Drawn as built. `Offline` and `Draining`, below, are the design's states and do not exist yet: as built, a facade that stops loses what it held.*
 
 `Draining` starts at `ProceedWithShutdown`, not at `PrepareShutdown`: domain actors legitimately
 publish while they drain, so publishing stays open until they have finished. From then on new

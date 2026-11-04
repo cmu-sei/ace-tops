@@ -1,0 +1,66 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% A new session takes over from older ones of its identity and instance, as built (2026-11-04, docs/architecture/cassini-broker.md,
+%% "One session per identity"). A single-instance workload's certificates name no instance, so its pods supersede each other. A
+%% multi-instance workload's pods are each a session, and only a pod restarted in place (the same UID, a new key) supersedes its own.
+sequenceDiagram
+    autonumber
+    participant New as new client
+    participant NL as new Listener
+    participant SM as SessionManager
+    participant OS as old SessionAgent
+    participant OL as old Listener
+    participant Old as old client
+    participant OSub as old SubscriberAgents
+    participant NSub as new SubscriberAgent
+
+    Note over Old,OL: Usually a replaced pod, registered before the broker has seen the old connection die. It may still look connected.
+    New->>NL: RegistrationRequest (no session to resume, or one it cannot)
+    NL->>SM: RegistrationRequest(identity, instance)
+    SM->>SM: a new session, and every older one for which<br/>session::supersedes((identity, instance), its own) holds is marked superseded:<br/>it can no longer be resumed
+    opt it still has a connection
+        SM->>OS: CloseConnection(except: the new client)
+        OS->>OL: close it
+        OL--xOld: the connection closes
+    end
+    SM->>OSub: SessionSuperseded, through the SubscriberManager
+    OSub->>OSub: stop forwarding, and hold what arrives (HoldSubscription)
+    OSub-->>SM: SessionHeld, once they all hold
+    SM->>OS: drain: drained, not stopped, so that its CloseConnection goes first
+    SM-->>NL: RegistrationResponse(Ok new id)
+    NL-->>New: RegistrationResponse(Ok new id)
+
+    New->>NL: SubscribeRequest(topic), decided at the Listener
+    NL->>NSub: CreateSubscriber, through the session, the broker and the topic
+    NSub->>SM: GetHeldSessions: parked until no takeover of this identity and instance is in progress
+    SM-->>NSub: the sessions it may claim from
+    NSub->>OSub: ClaimHeld, oldest first
+    OSub-->>NSub: what each held on this topic
+    NSub->>New: numbered anew and delivered, then acknowledged as usual
+
+    Note over SM,OSub: What nobody claims is let go a retention window after the takeover (end_expired_sessions).
+
+    opt the old instance is still running, and comes back asking for its session
+        Old->>SM: RegistrationRequest(the superseded id), by a new connection
+        SM-->>Old: a new session, which supersedes nothing
+        Note over Old,SM: So two live instances do not take turns closing each other.<br/>A single-instance workload that runs two has a bug this stops from thrashing.
+    end

@@ -1,0 +1,80 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% The broker shuts down in order, as built (2026-11-04, docs/architecture/cassini-broker.md, infra/cassini-shutdown.nu). Asked over the wire with
+%% its token, or by its own infrastructure when its pod is told to stop. Five phases, each with its own timeout, which forces it on.
+sequenceDiagram
+    autonumber
+    participant Op as operator (cassini-shutdown.nu),<br/>or the infrastructure's PrepareShutdown
+    participant Broker
+    participant Control as ControlManager
+    participant LM as ListenerManager
+    participant SM as SessionManager
+    participant SA as SessionAgents
+    participant TM as TopicManager
+    participant Subs as SubscriberManager
+    participant L as Listeners
+
+    Op->>Broker: PrepareForShutdown(token)
+    Broker->>Control: PrepareForShutdown(token)
+    alt the token is not the one it started with (compared in constant time)
+        Control->>Control: logged, and nothing happens
+    else
+        Note over Control: Phase by phase: each is asked for through the Broker, its completion comes back the same way,<br/>and a phase past its timeout has its manager stopped so that the next can begin.
+        rect rgb(250, 240, 215)
+        Note over Broker,LM: 1. StopAcceptingNewConnections
+        Control->>LM: InitiateShutdownPhase, through the Broker
+        LM->>LM: end the accept loop
+        LM-->>Control: ShutdownPhaseComplete
+        end
+        rect rgb(250, 240, 215)
+        Note over Broker,SA: 2. DrainExistingSessions
+        Control->>SM: InitiateShutdownPhase, through the Broker
+        SM->>SA: PrepareForShutdown: from now each publish is refused for now,<br/>which a client keeps for the broker that comes back
+        Note over SM: A registration asked for now is refused ("Broker is shutting down").
+        alt nothing pending
+            SM->>SA: stop every session
+        else publishes pending
+            SA-->>SM: each answered publish lowers the count, and a session ends when it is done
+        end
+        SM-->>Control: ShutdownPhaseComplete, then the manager stops
+        end
+        rect rgb(250, 240, 215)
+        Note over Broker,TM: 3. FlushTopicQueues
+        Control->>TM: InitiateShutdownPhase, through the Broker
+        TM->>TM: each topic pumps what waits, ignoring any hold,<br/>and the agents stop
+        TM-->>Control: ShutdownPhaseComplete, then the manager stops
+        end
+        rect rgb(250, 240, 215)
+        Note over Broker,Subs: 4. TerminateSubscribers
+        Control->>Subs: InitiateShutdownPhase, through the Broker
+        Subs->>Subs: each subscriber told and stopped, and what it holds is not flushed
+        Subs-->>Control: ShutdownPhaseComplete
+        end
+        rect rgb(250, 240, 215)
+        Note over Broker,L: 5. TerminateListeners
+        Control->>LM: InitiateShutdownPhase, through the Broker
+        LM->>L: stop each, and its connection closes
+        LM-->>Control: ShutdownPhaseComplete, then the manager stops
+        end
+        Control->>Control: shutdown_completed, and it stops
+        Note over Broker: The pressure manager ends with the drain. A client finds its connection gone,<br/>and its facade keeps its outbox and tries again until a broker is back.
+    end

@@ -1,0 +1,68 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% What the broker does when a publisher is faster than it can hold, as built (2026-11-04, docs/architecture/cassini-backpressure.md,
+%% and cassini-broker.md "The bounds, as built"). Every payload byte the broker holds is charged to one budget, whose limit is set at run
+%% time from what the machine has. A slow subscriber is the other half, in broker/slow_subscriber_stall.
+sequenceDiagram
+    autonumber
+    participant Domain as Domain actor
+    participant Facade as Client facade (credit, outbox, buffer)
+    participant Reader as the connection's reader
+    participant Window as Window (a quarter of the budget)
+    participant Budget as Budget
+    participant Pressure as PressureManager
+    participant Topic as TopicAgent
+
+    Note over Domain,Facade: The client bounds itself first, by what the broker has not yet acknowledged.
+    Domain->>Facade: publish_when_ready, or publish
+    alt publish_when_ready: there is no room in the outbox
+        Facade-->>Domain: waits, so that pressure slows the caller instead of failing it
+    else publish: no room
+        Facade-->>Domain: by its OfflineBehavior: Queue takes the buffer, or BufferFull when that is full,<br/>Fail is Busy, and Drop is counted
+    end
+    Facade->>Reader: PublishRequest(epoch, seq), numbered and kept until acknowledged
+
+    Note over Pressure,Budget: Each second the PressureManager samples memory and sets the limit,<br/>from a floor of four frames up to a ceiling, and a limit below what is held evicts nothing.
+    Pressure->>Budget: set_limit (or set_starved, under the floor)
+
+    Note over Reader: A frame over 64 KiB is admitted before its body is read. A smaller one is read first,<br/>so acknowledgements are never stuck behind the frames they would make room for.
+    alt it fits
+        Reader->>Window: try_take, released when the topic accepts it
+        Reader->>Budget: try_charge, refunded when its last holder drops it
+        Reader->>Topic: on through the Listener and the session (broker/client_publish)
+    else it does not fit
+        Reader->>Reader: wait for admission, and tell the session ConnectionWaiting
+        Note over Reader: A small publish waits while the reader reads on: an acknowledgement passes at once,<br/>and the first other frame is kept until it is admitted, then TCP pushes back.
+        opt it fills the budget
+            Budget-->>Pressure: exhausted: every reader waits, until what is held falls to three quarters
+            Pressure->>Pressure: says so, with the five largest holders
+        end
+        alt room is made
+            Reader->>Topic: admitted, and on it goes
+        else the session judged it stalled and spared it (broker/slow_subscriber_stall)
+            Reader-->>Facade: PublishResponse(Err, Unavailable, origin): refused for now, and it reads on
+            Note over Reader: A large one's body is read past under one global slot, so the budget<br/>is passed by at most one frame while connections refuse.
+            Facade->>Facade: kept in the outbox, a Deferral, one resend at a time,<br/>its wait doubling from 1 s to 30 s
+            Facade->>Reader: PublishRequest, the same epoch and seq
+        end
+    end
+    Topic-->>Facade: PublishRequestAck(id): it leaves the outbox and makes room, which wakes a waiting caller

@@ -19,21 +19,48 @@
 %%
 %% DM26-0670
 
+%% A publish, online, as built (2026-11-04, docs/architecture/cassini-client-reliability.md "Step 2, as built", and cassini-backpressure.md). What the broker does
+%% with it is broker/client_publish, and what it does when it has no room is broker/backpressure_admission.
 sequenceDiagram
     autonumber
     participant D as Domain actor
-    participant F as Facade + Outbox
+    participant C as Credit
+    participant F as Facade (outbox, buffer)
     participant T as Transport
     participant B as Broker
 
-    D->>F: Publish(topic, payload)
-    F->>F: assign (epoch, seq) and append to the outbox
-    F->>T: Send(PublishRequest, epoch, seq)
-    T->>B: PublishRequest(epoch, seq)
-    B->>B: at the session ingress, in socket order: already accepted? acknowledge again. Pending? wait. New? hand to the topic actor
-    B->>B: the topic actor accepts it
-    B-->>T: PublishRequestAck(epoch, seq), for this message only
-    T-->>F: Acked(epoch, seq)
-    F->>F: remove exactly that entry from the outbox
-    F-->>D: PublishAcknowledged (optional receipt)
-    Note over F,B: A message leaves the outbox only when the broker acknowledges that exact message.<br/>Acks can come back in any order, because different topic actors answer.<br/>Writing it to the socket proves nothing.
+    alt publish_when_ready
+        D->>C: wait for room in the outbox, then take it
+    else publish
+        D->>C: take room: outbox, then the buffer if it asks to Queue
+        alt no room anywhere
+            C-->>D: BufferFull, or Busy (Fail), or counted and gone (Drop)
+        end
+    end
+    D->>F: PublishWith(topic, payload, slot)
+    alt it took room in the outbox
+        F->>F: assign (epoch, seq), and keep it in the outbox
+        F->>T: Transmit(topic, id), at once if a transport is registered
+        T->>B: PublishRequest(epoch, seq)
+    else it took room in the buffer
+        F->>F: wait in order, and go to the outbox as room is made
+    end
+
+    alt accepted
+        B-->>T: PublishRequestAck(topic, epoch, seq), for this message only
+        T-->>F: Acknowledged(id)
+        F->>F: settle exactly that entry, then promote what waits in the buffer
+        F->>C: room made, which wakes a waiting caller
+        T-->>D: ClientEvent::PublishAcknowledged(topic, id)
+    else refused (policy)
+        B-->>T: PublishResponse(Err, Denied, origin)
+        T-->>F: Refused(id)
+        F->>F: settle it: it is not sent again
+        T-->>D: ClientEvent::PublishRefused(topic, reason)
+    else refused for now
+        B-->>T: PublishResponse(Err, Unavailable, origin)
+        T-->>F: Deferred(id)
+        F->>F: kept, with one timer: a wait doubling from 1 s to 30 s
+        F->>T: Transmit(topic, id), the same number, when it fires
+    end
+    Note over F,B: A message leaves the outbox only when the broker answers that exact message. Acks come back in any<br/>order, since different topic actors answer. Writing to the socket proves nothing, and silence is not resent:<br/>a topic holding a publish back leaves it unacknowledged on purpose.

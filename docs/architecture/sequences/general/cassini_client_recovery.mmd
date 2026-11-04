@@ -19,41 +19,47 @@
 %%
 %% DM26-0670
 
+%% Losing the connection and coming back, as built (2026-11-04, docs/architecture/cassini-client-reliability.md, "Step 2, as built"). Shaded is the design, not built:
+%% the outbox file (step 3) and the deduplication (step 4). So a facade that ends loses its outbox, and a message sent again may be delivered twice.
 sequenceDiagram
     autonumber
     participant D as Domain actor
-    participant F as Facade + Outbox
-    participant Disk as Outbox file
+    participant F as Facade (outbox, buffer)
     participant T as Transport
     participant B as Broker
 
-    Note over F,B: Online. 41 and 42 were sent, only 41 acknowledged.
-    T--xB: connection fails
-    T-->>F: ConnectionLost
-    F->>Disk: quiesce: write the unacknowledged entries (42) with their epoch and seq
-    F->>F: state = Offline
-    D->>F: Publish (43)
-    F->>F: append to the outbox
-    F->>Disk: append entry 43
-    F->>T: respawn the transport, with backoff
-    T->>B: connect and register (same registration id)
-    alt the broker still has the session
-        B-->>T: registered
-    else the broker lost the session
-        B-->>T: session mismatch
-        T-->>F: SessionInvalidated
-        T->>B: register fresh
-        B-->>T: registered (new id)
+    Note over F,B: Registered. 41 and 42 were sent, and only 41 acknowledged.
+    T--xB: the connection fails
+    T-->>F: the transport ended: online = false, and a retry with backoff
+    rect rgb(235, 219, 178)
+    Note over F: DESIGNED, step 3: write the unacknowledged entries to the outbox file.
     end
-    T-->>F: Connected(registration id)
-    F->>T: Subscribe for every remembered topic
-    B->>B: the old connection is fenced: whatever it delivers late is ignored
-    F->>T: retransmit the unacknowledged, in order: 42 then 43, same epoch and seq
+    D->>F: Publish (43)
+    F->>F: numbered into the outbox, or the buffer when that is full, and held
+    F->>T: a new transport, after the backoff
+    T->>B: connect, mutual TLS, RegistrationRequest(the same registration id)
+
+    alt the broker still has the session, and this identity and instance may resume it
+        B-->>T: RegistrationResponse(Ok the same id)
+    else it was ended early, its budget exhausted while it was away
+        B-->>T: SessionEnded(id, why)
+        T-->>D: ClientEvent::SessionEnded: the agent resynchronises
+        B-->>T: RegistrationResponse(Ok a new id)
+    else the broker has lost it (restarted, or the retention passed)
+        B-->>T: RegistrationResponse(Ok a new id)
+    else it is refused: another protocol, or a revoked certificate
+        B-->>T: RegistrationResponse(Err code), and the connection closes
+        T-->>D: ClientEvent::RegistrationRefused(code, reason)
+    end
+
+    T-->>F: ClientRegistered(id), which the facade sees through the transport's events
+    T-->>D: ClientEvent::Registered: the builder sends each subscription again, and asks for its documents again
+    F->>T: the whole outbox again, in order, with the numbers it had: 42 then 43
     T->>B: PublishRequest 42, 43
-    B->>B: 42 already accepted? acknowledge it again. 43 is new: accept it
-    B-->>T: PublishRequestAck(42) and PublishRequestAck(43), each for its own message
-    T-->>F: Acked(42), Acked(43)
-    F->>F: outbox empty
-    F->>Disk: remove the file
-    F->>F: state = Online
-    Note over B,T: If the broker restarted it also lost its record of 42, so it accepts 42 again.<br/>Subscribers drop that duplicate by the origin (publisher, epoch, seq) the message carries.
+    Note over B: A broker that accepted 42 before the connection failed has no record of having done so, and accepts it again.
+    B-->>T: PublishRequestAck(42), PublishRequestAck(43), each for its own message
+    T-->>F: Acknowledged(42), Acknowledged(43)
+    F->>F: the outbox is empty
+    rect rgb(235, 219, 178)
+    Note over F,B: DESIGNED, step 4: subscribers drop a repeat by the origin (publisher, epoch, seq) the message carries.<br/>Today 42 reaches them twice, as at-least-once allows. And step 3: the facade removes the file.
+    end

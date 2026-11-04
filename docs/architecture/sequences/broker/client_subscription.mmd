@@ -19,57 +19,49 @@
 %%
 %% DM26-0670
 
-%% A client subscribes to a topic. The path is the code as built (2026-10-21, docs/architecture/cassini-broker.md);
-%% the decision at the Listener is the design (docs/architecture/policy-enforcement.md, stage 5), not built yet. The
-%% agent's own check before it sends is built (stage 1, 2026-10-21: the same rule as the broker's, topic_gate.rs).
+%% A client subscribes to a topic, as built (2026-11-04, docs/architecture/cassini-broker.md "The flows" and "Policy in the
+%% broker"). The agent's own gate decides first by the same rule, so a refusal at the broker is a surprise, and is said to be.
 sequenceDiagram
     autonumber
-    participant Own as the agent's check and its PolicyActor<br/>(built, stage 1)
-    participant Client as Agent (TcpClientActor)
+    participant Gate as the agent's gate and its authority
+    participant Client as Agent (facade and transport)
     participant Listener
-    participant Policy as Broker's PolicyLookup<br/>(designed)
     participant Session as SessionAgent
     participant Broker
     participant Topics as TopicManager / TopicAgent
     participant Subs as SubscriberManager / SubscriberAgent
 
-    Note over Client,Listener: the connection's identity is the leaf certificate's first DNS SAN,<br/>taken at the handshake, and the leaf is kept (designed) for its p: names
-    rect rgb(235, 219, 178)
-    Note over Own,Client: BUILT 2026-10-21 (stage 1), not yet run on a cluster: before anything is sent
-    Client->>Own: subscribe, topic
-    alt the agent's policy speaks
-        Own-->>Client: permit (even outside the computed set) or forbid (even inside it)
-    else no policy yet, or it does not speak
-        Own-->>Client: the computed set: declared and implied topics
-    end
-    alt refused
-        Client->>Client: log it, ClientEvent::SubscribeRefused, nothing sent
-    end
-    end
-
-    Client->>Listener: SubscribeRequest(registration_id, topic)
-    alt not registered, or another session's id
-        Listener-->>Client: SubscribeAcknowledgment(Err "not registered")
-    end
-
-    rect rgb(235, 219, 178)
-    Note over Listener,Policy: DESIGNED: the decision, before anything is created
-    Listener->>Policy: subscribe, Topic::"topic", Identity::"identity",<br/>facts: workload, declared or implied
-    alt policy loaded and it speaks
-        Policy-->>Listener: Allow or Deny (Cedar overrides the certificate, both ways)
-    else no policy, or it does not speak
-        Listener->>Listener: the floor: implied topics from the identity,<br/>declared topics from the certificate's p:sub: names
-    end
-    alt refused (default deny)
-        Listener-->>Client: SubscribeAcknowledgment(Err "refused: ...")
-        Note right of Client: ClientEvent::SubscribeRefused (stage 0), the agent logs it
-    end
+    Client->>Gate: subscribe, topic
+    alt refused: its Cedar forbids it, or the computed set has no such topic and no permit
+        Gate-->>Client: refused
+        Client->>Client: kept as wanted, ClientEvent::SubscribeRefused, nothing sent<br/>(asked again when the agent's authority changes)
+    else allowed
+        Client->>Listener: SubscribeRequest(registration_id, topic)
+        alt not registered, or another session's id
+            Listener-->>Client: SubscribeAcknowledgment(Err "Bad request: ...")
+        else Listener::decide: Cedar first, then the floor (p:sub), default deny
+            Listener-->>Client: SubscribeAcknowledgment(Err reason)
+            Client->>Client: ClientEvent::SubscribeRefused,<br/>and the agent's health says the broker refused what its gate let through
+        else allowed
+            Listener->>Session: SubscribeRequest(topic)
+            Session->>Broker: SubscribeRequest(registration_id, topic)
+            Broker->>Topics: ensure_topic_and_subscribe (a topic is created on first use)
+            Topics->>Subs: CreateSubscriber(registration_id:topic)
+            opt the session took over from a superseded one
+                Subs->>Subs: inherit what its identity and instance held on this topic, oldest first (ClaimHeld)
+            end
+            Subs-->>Topics: SubscriberAgent
+            Topics->>Topics: TopicAgent AddSubscriber, then TopicAttached to it,<br/>and what was queued for a first subscriber goes to it
+            Topics-->>Client: SubscribeAcknowledgment(Ok), through the session's Listener
+            Client->>Client: ClientEvent::ClientSubscribed
+        end
     end
 
-    Listener->>Session: SubscribeRequest(topic)
-    Session->>Broker: SubscribeRequest(registration_id, topic)
-    Broker->>Topics: ensure_topic_and_subscribe (a topic is created on first use)
-    Topics->>Subs: CreateSubscriber(registration_id:topic)
-    Subs-->>Topics: SubscriberAgent
-    Topics->>Topics: TopicAgent AddSubscriber, deliver any queued messages
-    Topics-->>Client: SubscribeAcknowledgment(Ok), through the session's listener (ClientEvent::ClientSubscribed)
+    Note over Listener,Client: Later, on every change of authority (JudgeSubscriptions), each Listener judges what its connection holds again.
+    opt no longer allowed
+        Listener->>Session: UnsubscribeRequest(topic)
+        Listener-->>Client: SubscribeAcknowledgment(Err reason), unasked
+    end
+    opt the certificate is now revoked
+        Listener->>Listener: the connection closes, the session kept for the retention window
+    end

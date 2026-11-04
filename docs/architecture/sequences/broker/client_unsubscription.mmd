@@ -19,72 +19,33 @@
 %%
 %% DM26-0670
 
+%% A client gives up a topic, as built (2026-11-04, docs/architecture/cassini-broker.md "The flows"). The broker does this by
+%% itself too, when authority no longer allows a subscription (broker/client_subscription).
 sequenceDiagram
-    participant Client
-    participant TcpClientActor
-    participant Listener
-    participant Broker
-    participant SessionManager
-    participant SubscriberManager
-    participant TopicManager
-    participant SubscriberAgent
-    participant TopicAgent
-
     autonumber
-    Client->>TcpClientActor: UnsubscribeRequest(topic)
-    TcpClientActor->>Listener: Forward UnsubscribeRequest(topic)
+    participant Client as Agent (facade and transport)
+    participant Listener
+    participant Session as SessionAgent
+    participant Broker
+    participant Topics as TopicManager
+    participant Subs as SubscriberManager
+    participant Sub as SubscriberAgent
+    participant SM as SessionManager
 
-    alt Listener Exists
-        Listener->>Broker: Forward UnsubscribeRequest(topic)
-    else Listener Missing
-        Listener-->>Client: Error("Listener not found")
+    Client->>Client: the facade forgets any standing refusal of the topic
+    Client->>Listener: UnsubscribeRequest(registration_id, topic)
+    Listener->>Session: UnsubscribeRequest(topic)
+    Session->>Broker: UnsubscribeRequest(registration_id, topic)
+    par side by side, neither waits for the other
+        Broker->>Topics: UnsubscribeRequest
+        Note over Topics: The TopicManager has no arm for it, and logs it as unexpected.
+    and
+        Broker->>Subs: UnsubscribeRequest
+        Subs->>Sub: stop, and what it held goes with it
+        Sub->>Topics: TopicHold(not holding), if it was holding the topic back
+        Subs->>SM: UnsubscribeAcknowledgment(registration_id, topic, Ok)
+        SM->>Session: UnsubscribeAcknowledgment
+        Session->>Listener: UnsubscribeAcknowledgment
+        Listener-->>Client: UnsubscribeAcknowledgment(topic, Ok)
     end
-
-    alt Broker Exists
-        activate Broker
-        Broker->>SessionManager: Validate Session
-        deactivate Broker
-    else Broker Missing
-        Broker-->>Client: Error("Broker not found")
-    end
-
-    alt Session Exists
-        activate SessionManager
-        SessionManager-->>Broker: OK
-        deactivate SessionManager
-    else Session Missing
-        SessionManager-->>Broker: Error("Session not found")
-        Broker-->>Client: Error("Unsubscribe Failed")
-    end
-
-    Broker->>SubscriberManager: Locate Subscriber
-
-    alt Subscriber Exists
-        activate SubscriberManager
-        SubscriberManager->>SubscriberAgent: Terminate Subscription
-        SubscriberAgent-->>SubscriberManager: Acknowledgment
-        deactivate SubscriberManager
-    else Subscriber Missing
-        SubscriberManager-->>Broker: Error("Subscription not found")
-        Broker-->>Client: Error("Unsubscribe Failed")
-    end
-
-    SubscriberManager->>TopicManager: Remove Subscriber from Topic
-
-    alt Topic Exists
-        activate TopicManager
-        TopicManager->>TopicAgent: Remove Subscriber
-        deactivate TopicManager
-        TopicAgent-->>TopicManager: Acknowledgment
-    else Topic Missing
-        TopicManager-->>Broker: Error("Topic not found")
-        Broker-->>Client: Error("Unsubscribe Failed")
-    end
-
-    Broker-->>Listener: Unsubscribe Ack
-    Listener-->>TcpClientActor: Unsubscribe Ack
-    TcpClientActor-->>Client: Unsubscribe Ack
-
-    note over Broker, SubscriberManager: If no subscriber found, return error
-    note over SessionManager: If session is missing, error is logged and returned
-    note over TopicManager: Ensures the topic removes the subscriber correctly
+    Note over Topics,Sub: So the topic keeps the dead reference until its next publish finds it has ended, and drops it then.

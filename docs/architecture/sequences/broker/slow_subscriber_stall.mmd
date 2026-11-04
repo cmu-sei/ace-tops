@@ -1,0 +1,76 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% What the broker does about a subscriber that falls behind, as built (2026-11-04, docs/architecture/cassini-backpressure.md, "The stall
+%% rule ends only a subscriber that makes no progress", and cassini-broker.md "The bounds, as built"). A slow subscriber that keeps
+%% acknowledging holds its topic back and is never ended. Only a connection that acknowledges nothing for the stall bound is.
+sequenceDiagram
+    autonumber
+    participant Client as Slow client
+    participant Listener as its Listener and reader
+    participant Sub as SubscriberAgent
+    participant Topic as TopicAgent
+    participant Pub as Publisher
+    participant Pressure as PressureManager
+    participant Session as its SessionAgent
+    participant SM as SessionManager
+
+    Sub->>Listener: PushMessage(delivery_id), kept in the delivery outbox until acknowledged
+    Note over Sub: Its backlog is what is delivered and not acknowledged. Its high water is an eighth<br/>of the budget as it is now, never under 1 MiB, with hysteresis down to half of it.
+    opt above its high water, and connected
+        Sub->>Topic: TopicHold(holding): to the ref the topic gave it (TopicAttached)
+        Topic->>Topic: accepts no publish: they wait in order, each holding its connection's window
+        Topic--xPub: no acknowledgement comes, so the publisher's credit runs out and it slows
+    end
+    Client->>Listener: PublishResponseAck(delivery_id)
+    Listener->>Session: ConnectionProgress, told by the reader, beside the Listener's mailbox
+    Listener->>Sub: PublishResponseAck, and its backlog falls
+    opt below half its high water
+        Sub->>Topic: TopicHold(not holding): the topic pumps what waits
+    end
+
+    Note over Pressure,Sub: A stall check is a quarter of the stall bound, between 50 ms and 5 s, and the bound is 30 s by default.
+    alt the budget is exhausted
+        Pressure->>Sub: BudgetExhausted, through the SubscriberManager
+        Sub->>Sub: a client that is away lets go of what it held (shed_if_away: broker/client_disconnect)
+    else it is not
+        Pressure->>Sub: StallCheck, through the SubscriberManager
+    end
+    opt above its high water for the bound, or, the budget exhausted, nothing acknowledged for the bound
+        Note over Sub: The clock counts only time spent connected.
+        Sub->>Session: SubscriberStalled(topic, held, stalled_for)
+        Session->>Session: pressure::verdict, from what it knows of its connection
+        alt it read an acknowledgement on any topic within the bound, or was spared within it
+            Session->>Session: Ignore: slow is not stalled, and any condemnation is forgotten
+        else its reader waits for admission, and it has made progress since it was last spared
+            Session->>Listener: refuse_for(the bound): Spare, so its reader refuses for now and reads on
+            Note over Session,Listener: What it acknowledged may be unread behind that wait, so it is not ended for it.
+        else nothing acknowledged, nothing to spare it for
+            Session->>Session: Condemn, and look again an eighth of the bound on
+            opt still so at a later look
+                Session->>Listener: cut, from outside the Listener, which may be waiting on a write to this client
+                Listener--xClient: the connection ends
+                Session->>SM: SessionStallEnded: logged with the identity, the topic, the bytes and how long
+                Listener->>SM: DisconnectRequest: the session detaches for the retention window
+                Note over Topic,SM: The topic moves again, and the client may come back and be sent what it is owed.
+            end
+        end
+    end

@@ -19,31 +19,48 @@
 %%
 %% DM26-0670
 
-%% A client reconnects after its connection dropped, as built (2026-10-21, docs/architecture/cassini-broker.md and
-%% cassini-client-reliability.md), with the identity check that is designed (policy-enforcement.md, stage 0).
+%% A client comes back after its connection dropped, as built (2026-11-04, docs/architecture/cassini-broker.md and
+%% cassini-client-reliability.md). A registration id is not a bearer token: only its identity and instance may resume it.
 sequenceDiagram
     autonumber
-    participant Client as Agent (TcpClientActor)
+    participant Client as Agent (a new transport, under its facade)
     participant Listener as new Listener
     participant SM as SessionManager
     participant SA as SessionAgent (detached)
+    participant Subs as SubscriberManager / SubscriberAgents
 
-    Note over Client,SA: the old connection hit EOF or an I/O error: its session was detached,<br/>kept for the retention window, its subscriptions held
-    Client->>Listener: TCP connect, mutual TLS, identity from the leaf
-    Client->>Listener: RegistrationRequest(the old registration_id)
-    Listener->>SM: RegistrationRequest(client_id, registration_id, identity)
+    Note over Client,Subs: The old connection hit EOF or an I/O error: its session is detached for the retention window,<br/>and its subscribers keep what they hold while the budget allows.
+    Client->>Listener: TCP connect, mutual TLS, identity and instance from the leaf
+    Client->>Listener: RegistrationRequest(protocol, the old registration_id)
+    Note over Listener: Refused first if the protocol differs or the certificate is revoked (broker/client_registration).
+    Listener->>SM: RegistrationRequest(client_id, registration_id, identity, instance)
 
-    alt the session is still held
-        rect rgb(235, 219, 178)
-        alt DESIGNED: identity differs from the session's
-            SM->>SA: leave it alone
-            SM-->>Listener: a new session for this identity
+    alt the session is held, not superseded, and this identity and instance may resume it
+        SM->>SA: ReassignClient(this Listener)
+        SM-->>Listener: RegistrationResponse(Ok the same id, the session's address)
+        Listener->>SA: ConnectionOpened
+        Listener-->>Client: RegistrationResponse(Ok)
+        SM->>Subs: RegistrationRequest(id): replay what is held
+        Note over SM,Subs: Told only once the session has the new connection: told sooner,<br/>they replayed to the dead one.
+        Subs->>Listener: each delivery not acknowledged, oldest first, with the number it had
+        Listener-->>Client: PublishResponse(delivery_id) (at-least-once: one it had may come twice)
+        Listener->>Subs: SubscriptionsOf(id), to judge them under this certificate
+        opt one is no longer allowed
+            Listener-->>Client: SubscribeAcknowledgment(Err reason), and it is dropped
         end
-        end
-        SM->>SA: reattach to this connection, deliver what was queued
-        SM-->>Listener: RegistrationResponse(Ok, the same registration_id)
-    else retention over, or never existed
-        SM-->>Listener: a new session (its subscriptions are gone)
+    else it was ended early, its budget exhausted while it was away
+        SM-->>Listener: SessionEnded(id, why)
+        Listener-->>Client: SessionEnded(id, why)
+        Client->>Client: ClientEvent::SessionEnded, the agent resynchronises
+        SM-->>Listener: RegistrationResponse(Ok a new id)
+        Listener-->>Client: RegistrationResponse(Ok, a new id)
+    else the retention passed, it never existed, or another identity asks
+        SM-->>Listener: RegistrationResponse(Ok a new id)
+        Listener-->>Client: RegistrationResponse(Ok, a new id)
+    else it was superseded: this instance lost it and is still running
+        SM-->>Listener: RegistrationResponse(Ok a new id), which supersedes nothing
+        Listener-->>Client: RegistrationResponse(Ok, a new id)
+        Note over SM: Two live instances do not take turns closing each other.
     end
-    Listener-->>Client: RegistrationResponse
-    Client->>Client: ClientEvent::Registered, subscriptions sent again,<br/>each decided at the Listener (designed)
+    Client->>Client: ClientEvent::Registered: subscriptions sent again, each decided at the Listener
+    Client->>Listener: the facade sends its whole outbox again, in order, with the numbers it had

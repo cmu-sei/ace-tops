@@ -843,9 +843,9 @@ Each step is taken in bites, each reported before the next.
   no diagram yet of many new features). An audit against the code, 2026-11-02, over the 41 then in `docs/architecture/sequences`: 26
   stale, 9 wrong or placeholders, 6 with no mismatch on a shallow reading; none changed since 2026-10-28, and 14 linked from no document. Four
   early sketches were deleted as nothing the project is heading for. Designed steps stay shaded (`rect rgb(235, 219, 178)`).
-  - *Bite 1, broker and client:* new, session supersede and takeover, back-pressure with admission and shedding, broker shutdown and
-    drain. Fix `broker/` and the five client reliability diagrams (they draw the offline file and deduplication unmarked; `facade.rs`
-    says neither exists); registration refusals.
+  - *Bite 1, broker and client:* DONE 2026-11-04. Four new (session supersede and takeover, admission, the stall rule, shutdown and drain), six of
+    `broker/` and the five client reliability diagrams redrawn from the code, with registration refusals, and what is not built shaded. Deleted as wrong or
+    duplicates and linked from nowhere: `client_timeout` (no such path), `internal_publish`, `internal_subscription` (both claimed no topic is created on first use), `topic_creation`.
   - *Bite 2, certificates and identity:* new, `polar-init` issuance with custody, multi-instance and rotation of pods, revocation, the core
     restart ticket. Fix account claim. `attestation_and_issuance` stays, marked as the original design; new shaded diagrams of the current
     attestation design, the instance check and the process, and of key rotation.

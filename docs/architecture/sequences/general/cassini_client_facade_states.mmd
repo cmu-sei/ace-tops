@@ -19,23 +19,28 @@
 %%
 %% DM26-0670
 
+%% The facade's states as built (2026-11-04, cassini/client/src/facade.rs, FacadeState: transport, registered, closing). The design's Offline and
+%% Draining states with their outbox file are not built (docs/architecture/cassini-client-reliability.md, steps 3 and 4). While it is not registered, what
+%% is published waits in the memory of the outbox and the buffer, and a facade that ends loses it.
 stateDiagram-v2
-    [*] --> Connecting: start, unacknowledged entries loaded from the file
-    Connecting --> Online: Connected, subscriptions sent, outbox retransmitted
-    Online --> Offline: ConnectionLost, outbox written to the file
-    Offline --> Connecting: backoff elapsed, transport respawned
-    Online --> Draining: ProceedWithShutdown, publishes now refused
-    Offline --> Draining: ProceedWithShutdown, publishes now refused
-    Draining --> [*]: outbox empty or the budget is spent, the remainder written to the file
+    [*] --> Connecting: start. A first transport that cannot be built stops the agent
+    Connecting --> Registered: ClientRegistered. Whole outbox sent again, in order, the numbers it had
+    Registered --> Waiting: the transport ended, for any reason. online = false
+    Connecting --> Waiting: the transport ended
+    Waiting --> Connecting: backoff elapsed, a new transport
+    Registered --> Closing: Disconnect, the agent's shutdown
+    Connecting --> Closing: Disconnect
+    Waiting --> Closing: Disconnect
+    Closing --> [*]: stopped with the agent, and what is unacknowledged is lost
 
-    note left of Online
-        Domain actors may publish while they drain,
-        so publishing stays open until they have finished
-        and ProceedWithShutdown arrives.
+    note right of Registered
+        A publish is numbered into the outbox and sent at once,
+        or waits in the buffer when the outbox has no room.
+        Refused for now: kept, sent again after a backoff.
     end note
 
-    note right of Offline
-        Every publish goes into the outbox
-        and is appended to the file.
-        Nothing is dropped, nothing is sent.
+    note left of Waiting
+        By its OfflineBehavior. Queue is numbered into the
+        outbox and sent on the next registration, or refused
+        with both full. Fail is refused, and Drop is gone.
     end note

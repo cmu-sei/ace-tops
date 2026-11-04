@@ -19,49 +19,49 @@
 %%
 %% DM26-0670
 
+%% How a session ends or waits, as built (2026-11-04, docs/architecture/cassini-broker.md). A goodbye ends the session at once,
+%% and any other loss keeps it for the retention window. There is no idle timeout of the broker's own: a dead connection
+%% is found by TCP keepalive and TCP_USER_TIMEOUT (60 s), or by a failed write.
 sequenceDiagram
-    participant Client
-    participant TcpClientActor
-    participant Listener
-    participant Broker
-    participant SessionManager
-    participant SubscriberManager
-    participant SubscriberAgent
-
     autonumber
-    Client->>TcpClientActor: DisconnectRequest(registration_id)
-    TcpClientActor->>Listener: Forward DisconnectRequest(registration_id)
+    participant Client as Agent
+    participant Listener
+    participant LM as ListenerManager
+    participant SM as SessionManager
+    participant SA as SessionAgent
+    participant Subs as SubscriberManager / SubscriberAgents
 
-    alt Listener Exists
-        activate Listener
-        Listener->>Broker: Forward DisconnectRequest(registration_id)
-        deactivate Listener
-    else Listener Missing
-        Listener-->>Client: Error("Listener not found")
+    alt a goodbye: a client that means it (a multi-instance pod's clean shutdown says one)
+        Client->>Listener: DisconnectRequest(Goodbye)
+        Listener->>LM: DisconnectRequest(Goodbye, registration_id)
+        Listener->>Listener: stop
+        LM->>SM: DisconnectRequest(Goodbye, registration_id)
+        SM->>SA: stop
+        SM->>Subs: DisconnectRequest(registration_id)
+        Subs->>Subs: forget its subscriptions, which drops what they held
+    else the connection is gone: EOF, an I/O error or a write that failed
+        Listener->>LM: DisconnectRequest(RemoteClosed or TransportError)
+        Listener->>Listener: stop
+        LM->>SM: DisconnectRequest(reason, registration_id)
+        SM->>SM: detach: the session is kept, with its subscribers, for the retention window
+        SM->>Subs: SessionDetached
+        Note over Subs: They no longer hold their topics back, and keep what they hold while the budget allows.
+        alt the client comes back in time
+            Client->>Listener: register, asking for this session (broker/client_reconnect)
+        else the retention window passes (SessionExpiryTick)
+            SM->>SA: stop
+            SM->>Subs: DisconnectRequest(registration_id)
+        else the budget is exhausted while it is away
+            Subs->>SA: SessionShed(topic, count): they let go of what they held
+            SA->>SM: EndSession(id, why)
+            SM->>SA: stop, and remember why for when it comes back
+            SM->>Subs: DisconnectRequest(registration_id)
+        end
+    else its certificate is revoked (JudgeSubscriptions, on a change of authority)
+        Listener->>LM: DisconnectRequest(RemoteClosed)
+        Listener->>Listener: stop
+        LM->>SM: DisconnectRequest(RemoteClosed): detached
+        Note over SM: Kept for the retention window, for the identity's next certificate to claim.
+    else it stalled (broker/slow_subscriber_stall), or it was superseded (broker/session_supersede_takeover)
+        Note over Listener,SM: Each of those has its own diagram: a stall detaches the session, and a supersede closes the old connection.
     end
-
-    alt Broker Exists
-        activate Broker
-        Broker->>SessionManager: Validate and Terminate Session(registration_id)
-        deactivate Broker
-    else Broker Missing
-        Broker-->>Client: Error("Broker not found")
-    end
-
-    alt Session Exists
-        activate SessionManager
-        SessionManager->>SubscriberManager: Notify Disconnect(registration_id)
-        SubscriberManager->>SubscriberAgent: Terminate Subscriber(registration_id)
-        deactivate SessionManager
-    else Session Missing
-        SessionManager-->>Broker: Warning("Session not found")
-    end
-
-    Broker-->>Listener: Acknowledge Disconnect
-    Listener-->>TcpClientActor: Acknowledge Disconnect
-    TcpClientActor-->>Client: Acknowledge Disconnect
-
-    note over SessionManager: Ensures proper cleanup of the session
-    note over SubscriberManager: Notifies all subscriber agents of disconnection
-    note over SubscriberAgent: Terminates any active subscribers tied to the session
-    note over Broker: Central coordinator for the disconnect process

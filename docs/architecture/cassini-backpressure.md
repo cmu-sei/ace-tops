@@ -42,6 +42,8 @@ The broker is installed on machines with little memory, where less memory under 
 5. **Lose nothing silently:** whatever is refused or dropped is counted, logged and, where a caller can act, returned.
 6. **Fit the reliability design:** its outbox and per-message acknowledgements are the credit a later phase uses.
 
+*As built, in two diagrams: [admission and refusal for now](sequences/broker/backpressure_admission.svg), and [a slow subscriber and the stall rule](sequences/broker/slow_subscriber_stall.svg).*
+
 ## Phase 1: the broker bounds itself and tells TCP (no wire change)
 
 - **One budget** for every payload byte the broker holds (in flight from a reader, queued for a subscriber, in a topic's

@@ -19,22 +19,27 @@
 %%
 %% DM26-0670
 
+%% The Cassini client as built, steps 1 and 2 and the acknowledged deliveries of step 5 (2026-11-04, docs/architecture/cassini-client-reliability.md).
+%% Dashed is the design that is not built: the offline file (step 3) and deduplication (step 4). A facade that ends loses its outbox.
 flowchart LR
     subgraph Agent["Agent process"]
         D["Domain actors<br/>supervisor, handlers, CryptoActor"]
+        C["Credit<br/>shared with whoever holds a TcpClient:<br/>room in the outbox and the buffer"]
         subgraph Stable["Stable: lives as long as the agent"]
-            F["Facade + Outbox<br/>the one agent-facing mailbox<br/>session identity, remembered subscriptions<br/>sequenced outbox, retransmit, dedupe"]
+            F["Facade<br/>the one agent-facing mailbox, session identity<br/>outbox, numbered, kept until acknowledged<br/>buffer, for what the outbox has no room for<br/>deferrals, what was refused for now<br/>refused topics, what the agent still wants"]
         end
-        T["Transport<br/>TLS connection, reader and writer<br/>disposable: respawned on any failure"]
+        T["Transport<br/>TLS connection, reader and writer<br/>its own task writes delivery acknowledgements<br/>disposable: respawned on any failure"]
         R["Router"]
-        S[("Outbox file<br/>unacknowledged entries")]
+        S[("Designed: outbox file<br/>not built, step 3")]
     end
     B["Cassini broker"]
 
+    D -->|"publish_when_ready waits for room"| C
     D -->|"Publish, Subscribe"| F
-    F -->|"Send with epoch and seq"| T
-    T -->|"Acked, Delivered, ConnectionLost"| F
-    F -->|"inbound, deduplicated"| R
+    F --- C
+    F -->|"Transmit, with epoch and seq"| T
+    T -->|"Acknowledged, Refused, Deferred, ClientRegistered"| F
+    T -->|"each delivery, acknowledged on hand-off"| R
     R --> D
-    F <-->|"quiesce on trouble, rehydrate on start"| S
+    F -.->|"not built"| S
     T <-->|"mTLS"| B

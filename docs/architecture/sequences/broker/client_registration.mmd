@@ -19,11 +19,11 @@
 %%
 %% DM26-0670
 
-%% A client connects and registers, as built (2026-10-21, docs/architecture/cassini-broker.md), with the identity
-%% check on resuming a session that is designed (docs/architecture/policy-enforcement.md, stage 0) and not built yet.
+%% A client connects and registers, as built (2026-11-04, docs/architecture/cassini-broker.md, "The flows" and "What is
+%% refused"). What supersede does is broker/session_supersede_takeover, and coming back is broker/client_reconnect.
 sequenceDiagram
     autonumber
-    participant Client as Agent (TcpClientActor)
+    participant Client as Agent (the client's transport)
     participant LM as ListenerManager
     participant Listener
     participant Broker
@@ -31,23 +31,35 @@ sequenceDiagram
     participant SA as SessionAgent
 
     Client->>LM: TCP connect, mutual TLS (the cluster's CA)
-    LM->>LM: identity = the leaf's first DNS SAN (none: fails open, identity unset)<br/>designed: keep the leaf, for its p: names
-    LM->>Listener: spawn, one per connection, with the identity
-    Client->>Listener: RegistrationRequest(registration_id or none)
-    Listener->>Broker: RegistrationRequest(client_id, registration_id, identity)
-    Broker->>SM: handle_registration_request
+    LM->>Listener: spawn, one per connection
+    Listener->>Listener: from the leaf: identity (first DNS SAN), serial,<br/>floor (p:pub, p:sub), instance (i:uid, i:pod)
+    Client->>Listener: RegistrationRequest(protocol, registration_id or none)
 
-    alt a registration_id that names a live or detached session
-        rect rgb(235, 219, 178)
-        Note over SM: DESIGNED: the connection's identity must be the session's,<br/>else this is a new session (a registration id is not a bearer token)
+    alt another protocol version, or a first frame that does not decode
+        Listener-->>Client: RegistrationResponse(Err ProtocolMismatch)
+        Listener->>Listener: stop, the connection closes
+        Client->>Client: ClientEvent::RegistrationRefused(code, reason)
+    else the serial is in the revoked set
+        Listener-->>Client: RegistrationResponse(Err Revoked)
+        Listener->>Listener: stop, the connection closes
+        Client->>Client: ClientEvent::RegistrationRefused(code, reason)
+    else registers
+        Listener->>Broker: RegistrationRequest(client_id, registration_id, identity, instance)
+        Broker->>SM: RegistrationRequest
+        alt the broker is shutting down
+            SM-->>Listener: RegistrationResponse(Err "Broker is shutting down")
+            Listener-->>Client: RegistrationResponse(Err)
+            Client->>Client: ClientEvent::RegistrationRefused(code, reason)
+        else a new session
+            SM->>SA: spawn SessionAgent(new registration_id)
+            opt it is not an instance that lost its session and asks for it back
+                SM->>SM: supersede what its identity and instance held
+            end
+            SM-->>Listener: RegistrationResponse(Ok id, the session's address)
+            Listener->>SA: ConnectionOpened(client_id, control): bound to the connection
+            Note over Listener,SA: Bound before the client is told, so a publish sent<br/>the moment it hears (a facade sends its whole outbox then) has a session to go to.
+            Listener-->>Client: RegistrationResponse(Ok registration_id)
+            Client->>Client: ClientEvent::Registered, the builder sends every subscription again<br/>and asks for its signed documents again
         end
-        SM->>SA: resume, attach this connection
-    else new
-        SM->>SA: spawn SessionAgent(registration_id), Session { identity }
-        SM->>SM: supersede older sessions of the same identity
     end
-    SM-->>Listener: RegistrationResponse(registration_id)
-    Listener->>Listener: remember registration_id and the session's address
-    Listener-->>Client: RegistrationResponse(Ok registration_id)
-    Client->>Client: ClientEvent::Registered, the builder sends every subscription again
-    Note right of Client: every subscribe and publish is then decided at the Listener<br/>(client_subscription, client_publish)
+    Note right of Client: Each subscribe and publish is then decided at the Listener<br/>(broker/client_subscription, broker/client_publish).
