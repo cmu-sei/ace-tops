@@ -36,3 +36,6 @@ serde_json = { workspace = true, optional = true }
 
 [features]
 document = ["dep:serde", "dep:serde_json"]
+
+[dev-dependencies]
+proptest.workspace = true

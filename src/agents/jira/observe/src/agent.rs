@@ -47,7 +47,7 @@ pub struct JiraObserver;
 
 /// What the observers are started with, made from the configuration. The credential is not here: it is the signed
 /// `credentials` runtime section, which the supervisor hands to the CryptoActor (`crate::credentials`).
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
     pub jira_url: String,
     /// Read without a credential (JIRA_ANONYMOUS).
@@ -90,8 +90,13 @@ pub fn prepare(config: &polar_env::Config) -> Result<Prepared, String> {
     })
 }
 
+/// Whether settings can work, as [`prepare`] says: an update that would stop them working is refused.
+fn settings_work(config: &polar_env::Config) -> Result<(), String> {
+    prepare(config).map(|_| ())
+}
+
 /// What the start log says of reading anonymously.
-fn log_anonymous(prepared: &Prepared) {
+pub(crate) fn log_anonymous(prepared: &Prepared) {
     if prepared.anonymous {
         info!(
             "JIRA_ANONYMOUS is true: the observer sends no credential and reads only what the site shows the public \
@@ -113,7 +118,6 @@ fn try_again(
             Some(JIRA_OBSERVER_SUPERVISOR.to_string()),
             ObserverSupervisor,
             ObserverSupervisorArgs {
-                prepared,
                 base_interval: BASE_INTERVAL_SECS,
                 infrastructure: Infrastructure::Built {
                     resources: retry.resources,
@@ -141,6 +145,8 @@ impl PolarAgent for JiraObserver {
         Some(&crate::credentials::CREDENTIALS);
     const OPERATIONS: &'static [polar_agent_builder::protocol::OperationDecl] = crate::OPERATIONS;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
+    const SETTINGS_JUDGE: Option<polar_agent_builder::configuration::SettingsJudge> =
+        Some(settings_work);
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::publish(
             jira_common::JIRA_PROJECTS_CONSUMER_TOPIC,
@@ -208,7 +214,6 @@ impl PolarAgent for JiraObserver {
         };
         log_anonymous(&prepared);
         let args = ObserverSupervisorArgs {
-            prepared,
             // TODO: read this from configuration
             base_interval: BASE_INTERVAL_SECS,
             infrastructure: Infrastructure::Build(configured),
@@ -270,6 +275,23 @@ mod tests {
         assert!(why.contains("workloads.jira-observer.env"), "{why}");
         let prepared = prepare(&config("https://jira.example.org")).unwrap();
         assert_eq!(prepared.jira_url, "https://jira.example.org");
+    }
+
+    /// What the agent says of settings is what refuses an update: the placeholder, and a credential over http.
+    #[test]
+    fn the_judge_refuses_what_prepare_refuses() {
+        let judge = <JiraObserver as PolarAgent>::SETTINGS_JUDGE.expect("a judge");
+        assert!(judge(&config("https://jira.example.org")).is_ok());
+        assert!(
+            judge(&config("https://example.atlassian.net"))
+                .unwrap_err()
+                .contains("placeholder")
+        );
+        assert!(
+            judge(&config("http://jira.example.org"))
+                .unwrap_err()
+                .contains("https")
+        );
     }
 
     /// A site read with a credential is https and a host name; one read anonymously needs neither.

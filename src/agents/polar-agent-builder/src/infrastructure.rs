@@ -131,8 +131,8 @@ pub enum InfrastructureSupervisorMessage {
     /// Internal: the ConfigurationActor says what it did with a document. Published on Cassini, if there
     /// is a client; a service without one has nowhere to say it.
     Outcome(polar_scheduler_common::ConfigurationOutcome),
-    /// The configuration changed: if it was a log filter, the logging follows.
-    ConfigurationChanged(crate::configuration::ConfigChanged),
+    /// A log filter changed, and the logging follows.
+    LoggingChanged(polar::logging::LoggingSettings),
     /// The agent wants the current authority from the credentials agent: publish the request on the client as
     /// it is now.
     AuthorityAsk,
@@ -235,6 +235,8 @@ pub struct InfrastructureSupervisorArgs {
     pub(crate) protocols: crate::protocol::ProtocolSetup,
     /// The agent's judge of a runtime section before it is replaced, if it has one.
     pub(crate) section_judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
+    /// The agent's judge of its settings as a whole, if it has one.
+    pub(crate) settings_judge: Option<crate::configuration::SettingsJudge>,
     /// Publish probes to the agent itself and expect them back; see `selftest`.
     pub(crate) self_test: bool,
 }
@@ -365,14 +367,6 @@ pub struct InfrastructureSupervisorState {
 }
 
 pub struct InfrastructureSupervisor;
-
-/// Whether a change to these variables is one the logging follows: the two filters. (The
-/// endpoint is not: traces go where the exporter was built to send them.)
-pub(crate) fn affects_logging(changed: &[String]) -> bool {
-    changed.iter().any(|name| {
-        name == polar::logging::CONSOLE_FILTER.name() || name == polar::logging::TRACE_FILTER.name()
-    })
-}
 
 impl InfrastructureSupervisor {
     /// The one entry point to ending the agent. Idempotent: the first reason
@@ -851,6 +845,7 @@ impl Actor for InfrastructureSupervisor {
             args.runtime_sections,
             authority.as_ref().map(|a| a.policy()),
             args.section_judge.clone(),
+            args.settings_judge,
             myself_cell.clone(),
         )
         .await?;
@@ -873,11 +868,23 @@ impl Actor for InfrastructureSupervisor {
             .subscribe(myself.clone(), |outcome| {
                 Some(InfrastructureSupervisorMessage::Outcome(outcome))
             });
-        configuration.changes().subscribe(myself.clone(), |change| {
-            Some(InfrastructureSupervisorMessage::ConfigurationChanged(
-                change,
-            ))
-        });
+        let log_filters: [&dyn polar_env::Described; 2] = [
+            &polar::logging::CONSOLE_FILTER,
+            &polar::logging::TRACE_FILTER,
+        ];
+        if let Err(why) = configuration
+            .follow_group(
+                &log_filters,
+                |config: &polar_env::Config| {
+                    polar::logging::LoggingSettings::read(config).map_err(|e| e.to_string())
+                },
+                &myself,
+                InfrastructureSupervisorMessage::LoggingChanged,
+            )
+            .await
+        {
+            tracing::warn!("InfrastructureSupervisor: the log filters: {why}");
+        }
 
         let infrastructure_events = Arc::new(OutputPort::default());
 
@@ -1116,29 +1123,14 @@ impl Actor for InfrastructureSupervisor {
                     }
                 }
             }
-            InfrastructureSupervisorMessage::ConfigurationChanged(change) => {
-                if affects_logging(&change.changed) {
-                    match state.configuration.current().await {
-                        Ok(config) => match polar::logging::LoggingSettings::read(&config) {
-                            Ok(settings) => match polar::logging::reload(&settings) {
-                                Ok(()) => tracing::info!(
-                                    version = change.version,
-                                    "InfrastructureSupervisor: the log filters follow the new configuration"
-                                ),
-                                Err(why) => tracing::warn!(
-                                    "InfrastructureSupervisor: the log filters could not be reloaded: {why}"
-                                ),
-                            },
-                            Err(why) => tracing::warn!(
-                                "InfrastructureSupervisor: the logging settings cannot be read: {why}"
-                            ),
-                        },
-                        Err(why) => {
-                            tracing::warn!(
-                                "InfrastructureSupervisor: {why}; the log filters stay as they were"
-                            )
-                        }
-                    }
+            InfrastructureSupervisorMessage::LoggingChanged(settings) => {
+                match polar::logging::reload(&settings) {
+                    Ok(()) => tracing::info!(
+                        "InfrastructureSupervisor: the log filters follow the new configuration"
+                    ),
+                    Err(why) => tracing::warn!(
+                        "InfrastructureSupervisor: the log filters could not be reloaded: {why}"
+                    ),
                 }
             }
             InfrastructureSupervisorMessage::Outcome(outcome) => {
@@ -1649,6 +1641,7 @@ mod tests {
                     runtime_sections: runtime,
                     protocols: crate::protocol::ProtocolSetup::default(),
                     section_judge: None,
+                    settings_judge: None,
                     self_test: self_test.is_some(),
                 },
             )
@@ -2242,18 +2235,33 @@ mod tests {
 
     // -- the funnel ----------------------------------------------------------------------
 
-    #[test]
-    fn only_a_change_to_a_log_filter_reaches_the_logging() {
-        let changed = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        assert!(affects_logging(&changed(&["RUST_LOG"])));
-        assert!(affects_logging(&changed(&[
-            "POLAR_HEALTH_TICK_SECS",
-            "POLAR_TRACE_FILTER"
-        ])));
-        assert!(!affects_logging(&changed(&["POLAR_HEALTH_TICK_SECS"])));
-        // Where traces are sent is fixed when the exporter is built, so it is not a reload.
-        assert!(!affects_logging(&changed(&["JAEGER_OTLP_ENDPOINT"])));
-        assert!(!affects_logging(&[]));
+    /// The infrastructure follows the log filters, so an update to one says nothing of it going unfollowed, and an
+    /// update to anything else does not reach the logging: where traces are sent is fixed when the exporter is built, so
+    /// it is Static and not followed.
+    #[tokio::test]
+    async fn the_log_filters_are_followed_and_nothing_else_reaches_the_logging() {
+        let rig = Rig::standard("infra-log-filters").await;
+        assert_eq!(
+            rig.resources
+                .configuration
+                .dynamic_settings_problems(&[&polar::logging::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+        let outcome = rig
+            .resources
+            .configuration
+            .apply_unchecked(1, vec![("RUST_LOG".to_string(), "debug".to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            crate::configuration::ApplyOutcome::Applied {
+                changed: vec!["RUST_LOG".to_string()],
+                notes: Vec::new(),
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3430,6 +3438,7 @@ mod service_tests {
                     runtime_sections: &[],
                     protocols: crate::protocol::ProtocolSetup::default(),
                     section_judge: None,
+                    settings_judge: None,
                     self_test: false,
                 },
             )

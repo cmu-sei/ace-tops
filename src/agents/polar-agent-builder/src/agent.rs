@@ -136,6 +136,9 @@ pub trait PolarAgent: Sized + 'static {
     /// `ConfigurationHandle::runtime`. They appear in the schema export beside the variable sections. A
     /// section not declared here is refused however it is signed.
     const RUNTIME: &'static [&'static RuntimeSection] = &[];
+    /// What the agent's settings must satisfy as a whole, beyond what its sections check: an update that would break
+    /// settings that work is refused, the values in force stay, and the outcome says why (`dynamic-settings.md`).
+    const SETTINGS_JUDGE: Option<crate::configuration::SettingsJudge> = None;
     /// The credentials the agent's operations use: a section made by `protocol::credentials::section`, which saying this
     /// adds to `RUNTIME`. The infrastructure hands each signed version to the CryptoActor, so the domain never has one in
     /// its hands (docs/architecture/protocol-handlers.md). It needs encryption for it, and need not list that.
@@ -179,6 +182,8 @@ pub struct Configured {
     pub(crate) commands: &'static [CommandSpec],
     /// The runtime sections the agent declared.
     pub(crate) runtime: &'static [&'static RuntimeSection],
+    /// The agent's judge of its settings as a whole.
+    pub(crate) settings_judge: Option<crate::configuration::SettingsJudge>,
     /// The operations and credentials the agent declared.
     pub(crate) protocols: ProtocolSetup,
     /// The constraints and indexes for the labels the agent owns ([`graph_key_indexes`]).
@@ -277,6 +282,7 @@ impl Configured {
             self_test: false,
             commands: &[],
             runtime: &[],
+            settings_judge: None,
             protocols: ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Arc::new(TopicSet::default()),
@@ -1153,6 +1159,7 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         commands: A::COMMANDS,
         // Once, for the life of the process, as the declarations it is made from are.
         runtime: runtime_of::<A>().leak(),
+        settings_judge: A::SETTINGS_JUDGE,
         protocols: ProtocolSetup {
             operations: A::OPERATIONS,
             credentials: A::CREDENTIALS.is_some(),

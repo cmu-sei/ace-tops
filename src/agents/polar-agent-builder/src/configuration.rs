@@ -35,8 +35,12 @@
 //! - **Monotonic.** Each update carries a version that must be higher than the last one
 //!   applied, so an old update cannot be replayed over a newer one. A refused update does not
 //!   advance the version, so a corrected one can be sent again under the same number.
-//! - **Notified by message.** Subscribers receive [`ConfigChanged`] on an output port and read
-//!   [`ConfigurationHandle::current`] again. No closure of theirs runs inside this actor.
+//! - **Notified by message.** An actor that holds a value follows it ([`ConfigurationHandle::follow`]): it gets the
+//!   value in force, and each new one as a message of its own, which it knows what to do with. Subscribers of the
+//!   port receive [`ConfigChanged`] and read [`ConfigurationHandle::current`] again. The values are read where the
+//!   follower is, so no closure of theirs runs inside this actor; only an agent's judge does, a pure function.
+//! - **Followed, or says so.** An update to a variable nobody follows applies, and its outcome says it does nothing
+//!   until the next restart. `docs/architecture/dynamic-settings.md`.
 //! - **Recorded.** Every applied and refused update is kept (the latest [`HISTORY`]) and logged,
 //!   with its version. Values are never recorded: a secret's value appears nowhere.
 //!
@@ -48,7 +52,7 @@
 
 use crate::runtime::{RuntimeChanged, RuntimeSection, RuntimeValue};
 use crate::signed::{Rejection, UpdateVerifier, VerifiedDocument};
-use polar_env::{Config, Resolved};
+use polar_env::{Config, Described, Mutability, Readable, Resolved, Section};
 use polar_policy::PolicyMessage;
 use polar_scheduler_common::ConfigurationOutcome;
 use polar_signing::Authority;
@@ -127,6 +131,75 @@ impl std::fmt::Display for ConfigurationError {
 
 impl std::error::Error for ConfigurationError {}
 
+/// Why [`ConfigurationHandle::follow`] gave no value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FollowError {
+    /// The actor did not answer, and nothing is followed.
+    Unavailable(ConfigurationError),
+    /// The configuration in force does not read. It is followed all the same: the next value that reads arrives as a
+    /// message.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for FollowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FollowError::Unavailable(why) => write!(f, "{why}"),
+            FollowError::Unreadable(why) => write!(f, "the settings do not read: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for FollowError {}
+
+/// An agent's judge of its settings as a whole, beyond what its sections check, such as the placeholder address a
+/// section must accept so that the agent can stay up and say so (`PolarAgent::SETTINGS_JUDGE`). Pure: it runs inside
+/// the actor, on every update that changes a value.
+pub type SettingsJudge = fn(&Config) -> Result<(), String>;
+
+/// Whether an update is refused, by what the judge says of the settings before and after it. Only one that would
+/// break settings that work: while they do not work any update goes through, or an agent held on them could not even
+/// have its logging changed, nor be mended in two steps.
+pub(crate) fn breaks_what_works(
+    in_force: Result<(), String>,
+    candidate: Result<(), String>,
+) -> Option<String> {
+    match (in_force, candidate) {
+        (Ok(()), Err(why)) => Some(why),
+        _ => None,
+    }
+}
+
+/// What an outcome says of a variable that changed and that nothing follows.
+fn nothing_follows(name: &str) -> String {
+    format!("nothing follows {name} now, so it takes effect at the agent's next restart")
+}
+
+/// How to see whether a follower's value depends on a variable, for [`ConfigurationHandle::dynamic_settings_problems`].
+type Depends = Arc<dyn Fn(&Config, &Config) -> Result<bool, String> + Send + Sync>;
+
+/// Someone following variables, as the actor keeps them.
+#[derive(Clone)]
+pub struct Follower {
+    names: Vec<&'static str>,
+    actor: ractor::ActorCell,
+    /// Each new configuration goes here. The value is read and compared at the far end, not in the actor.
+    configs: Option<tokio::sync::mpsc::UnboundedSender<Arc<Config>>>,
+    depends: Option<Depends>,
+}
+
+impl Follower {
+    fn alive(&self) -> bool {
+        !matches!(
+            self.actor.get_status(),
+            ractor::ActorStatus::Stopping | ractor::ActorStatus::Stopped
+        ) && self
+            .configs
+            .as_ref()
+            .is_none_or(|configs| !configs.is_closed())
+    }
+}
+
 pub enum ConfigurationMessage {
     Apply {
         version: u64,
@@ -148,6 +221,14 @@ pub enum ConfigurationMessage {
         section: String,
         reply: RpcReplyPort<Option<RuntimeValue>>,
     },
+    /// Someone follows these variables from now on. The answer is the configuration in force at that moment, so no
+    /// update falls between what they read and what they are sent.
+    Follow {
+        follower: Follower,
+        reply: RpcReplyPort<Arc<Config>>,
+    },
+    /// Who follows what, and the configuration in force.
+    Followers(RpcReplyPort<(Arc<Config>, Vec<Follower>)>),
 }
 
 pub struct ConfigurationActor;
@@ -170,6 +251,8 @@ pub struct ConfigurationArgs {
     pub policy: Option<ActorRef<PolicyMessage>>,
     /// The agent's judge of a runtime section before it is replaced, if it has one.
     pub judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
+    /// The agent's judge of its settings as a whole, if it has one.
+    pub settings_judge: Option<SettingsJudge>,
 }
 
 pub struct ConfigurationState {
@@ -189,6 +272,8 @@ pub struct ConfigurationState {
     runtime: HashMap<String, RuntimeValue>,
     policy: Option<ActorRef<PolicyMessage>>,
     judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
+    settings_judge: Option<SettingsJudge>,
+    followers: Vec<Follower>,
 }
 
 /// The id and version a document says it has, read without trusting any of it: only to label an outcome.
@@ -422,6 +507,25 @@ impl ConfigurationState {
         });
     }
 
+    /// Why the agent's judge refuses this candidate, if it does.
+    fn judged(&self, candidate: &Config, changed: &[&'static str]) -> Option<String> {
+        if changed.is_empty() {
+            return None;
+        }
+        let judge = self.settings_judge?;
+        breaks_what_works(judge(&self.config), judge(candidate))
+    }
+
+    /// What to say of the variables that changed and that nothing follows now. Names only.
+    fn nothing_follows(&mut self, changed: &[&'static str]) -> Vec<String> {
+        self.followers.retain(Follower::alive);
+        changed
+            .iter()
+            .filter(|name| !self.followers.iter().any(|f| f.names.contains(*name)))
+            .map(|name| nothing_follows(name))
+            .collect()
+    }
+
     fn apply(
         &mut self,
         id: Option<String>,
@@ -438,14 +542,20 @@ impl ConfigurationState {
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str()))
                 .collect();
-            match self.config.apply_overrides(&pairs) {
-                Ok(changed) => {
-                    self.last_version = version;
-                    ApplyOutcome::Applied {
-                        changed: changed.into_iter().map(str::to_string).collect(),
-                        notes: Vec::new(),
+            let mut candidate = self.config.clone();
+            match candidate.apply_overrides(&pairs) {
+                Ok(changed) => match self.judged(&candidate, &changed) {
+                    Some(why) => ApplyOutcome::Refused(Refusal::Invalid(vec![why])),
+                    None => {
+                        self.config = candidate;
+                        self.last_version = version;
+                        let notes = self.nothing_follows(&changed);
+                        ApplyOutcome::Applied {
+                            changed: changed.into_iter().map(str::to_string).collect(),
+                            notes,
+                        }
                     }
-                }
+                },
                 Err(problems) => ApplyOutcome::Refused(Refusal::Invalid(problems)),
             }
         };
@@ -459,6 +569,11 @@ impl ConfigurationState {
                         version,
                         changed: changed.clone(),
                     });
+                    for follower in &self.followers {
+                        if let Some(configs) = &follower.configs {
+                            let _ = configs.send(self.current.clone());
+                        }
+                    }
                 }
             }
             ApplyOutcome::Refused(why) => {
@@ -496,6 +611,8 @@ impl Actor for ConfigurationActor {
             runtime: HashMap::new(),
             policy: args.policy,
             judge: args.judge,
+            settings_judge: args.settings_judge,
+            followers: Vec::new(),
         })
     }
 
@@ -529,6 +646,14 @@ impl Actor for ConfigurationActor {
             }
             ConfigurationMessage::Runtime { section, reply } => {
                 let _ = reply.send(state.runtime.get(&section).cloned());
+            }
+            ConfigurationMessage::Follow { follower, reply } => {
+                state.followers.retain(Follower::alive);
+                state.followers.push(follower);
+                let _ = reply.send(state.current.clone());
+            }
+            ConfigurationMessage::Followers(reply) => {
+                let _ = reply.send((state.current.clone(), state.followers.clone()));
             }
         }
         Ok(())
@@ -574,13 +699,14 @@ impl ConfigurationHandle {
             runtime_sections,
             None,
             None,
+            None,
             supervisor,
         )
         .await
     }
 
     /// Starts the actor with everything: runtime sections, the policy actor to ask before the signer's
-    /// certificate whether a change is allowed, and the agent's judge of a runtime section.
+    /// certificate whether a change is allowed, the agent's judge of a runtime section and its judge of its settings.
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_full(
         name: Option<String>,
@@ -590,6 +716,7 @@ impl ConfigurationHandle {
         runtime_sections: &'static [&'static RuntimeSection],
         policy: Option<ActorRef<PolicyMessage>>,
         judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
+        settings_judge: Option<SettingsJudge>,
         supervisor: ractor::ActorCell,
     ) -> Result<Self, ActorProcessingErr> {
         let changes = Arc::new(OutputPort::default());
@@ -608,6 +735,7 @@ impl ConfigurationHandle {
                 runtime_changes: runtime_changes.clone(),
                 policy,
                 judge,
+                settings_judge,
             },
             supervisor,
         )
@@ -702,6 +830,175 @@ impl ConfigurationHandle {
     /// for the other ports; then read [`current`](Self::current).
     pub fn changes(&self) -> Arc<OutputPort<ConfigChanged>> {
         self.changes.clone()
+    }
+
+    /// `actor` follows the variable: the value in force is the answer, and each value after it that differs arrives as
+    /// `message(value)`. The mapping only makes the message; what a new value means is the actor's to decide in its
+    /// own `handle`. Called from its `pre_start`, an actor started again later has the value signed since and not what
+    /// the render gave it.
+    pub async fn follow<V, M>(
+        &self,
+        variable: &'static V,
+        actor: &ActorRef<M>,
+        message: impl Fn(V::Out) -> M + Send + Sync + 'static,
+    ) -> Result<V::Out, FollowError>
+    where
+        V: Readable + Send + Sync + 'static,
+        V::Out: PartialEq + Clone + Send + Sync + 'static,
+        M: ractor::Message,
+    {
+        self.follow_group(
+            &[variable as &dyn Described],
+            move |config: &Config| config.read(variable).map_err(|e| e.to_string()),
+            actor,
+            message,
+        )
+        .await
+    }
+
+    /// As [`follow`](Self::follow), for variables that mean something only together: `read` makes one value of them, and
+    /// an update that changes several is one message, so that no one sees a new address with the old way of reaching
+    /// it. `read` is pure, and `names` says what it reads.
+    pub async fn follow_group<T, M>(
+        &self,
+        names: &[&dyn Described],
+        read: impl Fn(&Config) -> Result<T, String> + Send + Sync + 'static,
+        actor: &ActorRef<M>,
+        message: impl Fn(T) -> M + Send + Sync + 'static,
+    ) -> Result<T, FollowError>
+    where
+        T: PartialEq + Clone + Send + Sync + 'static,
+        M: ractor::Message,
+    {
+        let read = Arc::new(read);
+        let (configs, mut incoming) = tokio::sync::mpsc::unbounded_channel::<Arc<Config>>();
+        let depends: Depends = {
+            let read = read.clone();
+            Arc::new(move |before, after| Ok(read(before)? != read(after)?))
+        };
+        let follower = Follower {
+            names: names.iter().map(|variable| variable.desc().name).collect(),
+            actor: actor.get_cell(),
+            configs: Some(configs),
+            depends: Some(depends),
+        };
+        // Not bounded by CALL_TIMEOUT: the actor may be judging a document, and a follower can wait for it.
+        let in_force = self
+            .call_within(
+                |reply| ConfigurationMessage::Follow { follower, reply },
+                None,
+            )
+            .await
+            .map_err(FollowError::Unavailable)?;
+        let first = read(&in_force);
+
+        let mut last = first.as_ref().ok().cloned();
+        let actor = actor.clone();
+        tokio::spawn(async move {
+            while let Some(config) = incoming.recv().await {
+                match read(&config) {
+                    Ok(value) if last.as_ref() != Some(&value) => {
+                        last = Some(value.clone());
+                        if actor.cast(message(value)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(why) => {
+                        warn!("a followed setting does not read, and the last value stands: {why}")
+                    }
+                }
+            }
+        });
+        first.map_err(FollowError::Unreadable)
+    }
+
+    /// `actor` reacts to these variables by its own means, not through [`follow`](Self::follow): a held supervisor,
+    /// which on any change asks the agent to try again.
+    pub(crate) async fn followed_by(
+        &self,
+        names: Vec<&'static str>,
+        actor: ractor::ActorCell,
+    ) -> Result<(), ConfigurationError> {
+        let follower = Follower {
+            names,
+            actor,
+            configs: None,
+            depends: None,
+        };
+        self.call_within(
+            |reply| ConfigurationMessage::Follow { follower, reply },
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// For an agent's tests, once its actors have registered: every Dynamic variable of `sections` that nothing
+    /// follows, that its follower's value does not depend on, or that a test cannot change. Read-only: it changes copies.
+    pub async fn dynamic_settings_problems(
+        &self,
+        sections: &[&Section],
+    ) -> Result<Vec<String>, ConfigurationError> {
+        let (current, followers) = self.call(ConfigurationMessage::Followers).await?;
+        let report = current.report();
+        let mut problems = Vec::new();
+        for desc in sections
+            .iter()
+            .flat_map(|section| section.vars.iter())
+            .map(|variable| variable.desc())
+        {
+            let name = desc.name;
+            let following: Vec<&Follower> = followers
+                .iter()
+                .filter(|follower| follower.alive() && follower.names.contains(&name))
+                .collect();
+            if desc.mutability != Mutability::Dynamic {
+                if !following.is_empty() {
+                    problems.push(format!(
+                        "{name} is followed, but it is static: no update can reach it"
+                    ));
+                }
+                continue;
+            }
+            if following.is_empty() {
+                problems.push(format!("{name} is Dynamic, and nothing follows it"));
+                continue;
+            }
+            let now = report
+                .iter()
+                .find(|resolved| resolved.name == name)
+                .and_then(|resolved| resolved.value.as_deref());
+            let Some(other) = desc.another_value(now) else {
+                problems.push(format!(
+                    "{name} cannot be changed by a test: give its declaration an .example()"
+                ));
+                continue;
+            };
+            let mut changed = (*current).clone();
+            if let Err(why) = changed.apply_overrides(&[(name, other.as_str())]) {
+                problems.push(format!(
+                    "{name} cannot be changed by a test: {}",
+                    why.join("; ")
+                ));
+                continue;
+            }
+            for follower in following {
+                let Some(depends) = &follower.depends else {
+                    continue;
+                };
+                match depends(&current, &changed) {
+                    Ok(true) => {}
+                    Ok(false) => problems.push(format!(
+                        "{name} is followed, and what its follower is told does not depend on it"
+                    )),
+                    Err(why) => problems.push(format!(
+                        "{name} changed makes settings that do not read: {why}"
+                    )),
+                }
+            }
+        }
+        Ok(problems)
     }
 
     async fn call<T: Send + 'static>(
@@ -871,7 +1168,7 @@ mod tests {
             outcome,
             ApplyOutcome::Applied {
                 changed: vec!["HIGH".to_string()],
-                notes: Vec::new(),
+                notes: vec![nothing_follows("HIGH")],
             }
         );
         assert_eq!(config.current().await.unwrap().read(&HIGH).unwrap(), 20);
@@ -1148,7 +1445,7 @@ mod tests {
             outcome,
             ApplyOutcome::Applied {
                 changed: vec!["HIGH".to_string()],
-                notes: Vec::new(),
+                notes: vec![nothing_follows("HIGH")],
             }
         );
         assert_eq!(high(&config).await, 20);
@@ -1818,6 +2115,7 @@ mod tests {
             &RUNTIME_SECTIONS,
             None,
             Some(judge),
+            None,
             parent.get_cell(),
         )
         .await
@@ -2165,6 +2463,7 @@ mod tests {
             &RUNTIME_SECTIONS,
             Some(policy),
             None,
+            None,
             parent.get_cell(),
         )
         .await
@@ -2344,5 +2643,482 @@ mod tests {
             .await
             .unwrap();
         assert!(is_unauthorized(&outcome), "{outcome:?}");
+    }
+
+    // -- following ---------------------------------------------------------------------
+
+    /// An actor following something, as a domain actor would, keeping every message it is sent.
+    struct Keeper<T>(Arc<Mutex<Vec<T>>>);
+    #[ractor::async_trait]
+    impl<T: Send + Sync + 'static> Actor for Keeper<T> {
+        type Msg = T;
+        type State = ();
+        type Arguments = ();
+        async fn pre_start(&self, _: ActorRef<T>, _: ()) -> Result<(), ActorProcessingErr> {
+            Ok(())
+        }
+        async fn handle(
+            &self,
+            _: ActorRef<T>,
+            message: T,
+            _: &mut (),
+        ) -> Result<(), ActorProcessingErr> {
+            self.0.lock().unwrap().push(message);
+            Ok(())
+        }
+    }
+
+    async fn keeper<T: Send + Sync + 'static>() -> (ActorRef<T>, Arc<Mutex<Vec<T>>>) {
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let (actor, _) = Actor::spawn(None, Keeper(kept.clone()), ()).await.unwrap();
+        (actor, kept)
+    }
+
+    #[tokio::test]
+    async fn a_follower_gets_the_value_in_force_and_each_new_one() {
+        let (config, _) = handle().await;
+        let (actor, kept) = keeper::<u64>().await;
+        assert_eq!(config.follow(&HIGH, &actor, |v| v).await.unwrap(), 10);
+
+        config
+            .apply_unchecked(1, change("HIGH", "20"))
+            .await
+            .unwrap();
+        config
+            .apply_unchecked(2, change("HIGH", "30"))
+            .await
+            .unwrap();
+        settle().await;
+        assert_eq!(*kept.lock().unwrap(), [20, 30]);
+    }
+
+    /// One who follows a variable hears nothing of another, nor of an update that leaves the value as it was.
+    #[tokio::test]
+    async fn a_follower_is_told_only_when_its_value_differs() {
+        let (config, _) = handle().await;
+        let (actor, kept) = keeper::<u64>().await;
+        config.follow(&HIGH, &actor, |v| v).await.unwrap();
+
+        config.apply_unchecked(1, change("LOW", "2")).await.unwrap();
+        config
+            .apply_unchecked(2, change("HIGH", "10"))
+            .await
+            .unwrap();
+        settle().await;
+        assert!(kept.lock().unwrap().is_empty());
+
+        config
+            .apply_unchecked(3, change("HIGH", "11"))
+            .await
+            .unwrap();
+        settle().await;
+        assert_eq!(*kept.lock().unwrap(), [11]);
+    }
+
+    /// An update that changes two variables of a group is one message, holding both.
+    #[tokio::test]
+    async fn settings_that_change_together_arrive_as_one_value() {
+        let (config, _) = handle().await;
+        let (actor, kept) = keeper::<(u64, u64)>().await;
+        let bounds = |c: &Config| -> Result<(u64, u64), String> {
+            Ok((
+                c.read(&LOW).map_err(|e| e.to_string())?,
+                c.read(&HIGH).map_err(|e| e.to_string())?,
+            ))
+        };
+        let names: [&dyn Described; 2] = [&LOW, &HIGH];
+        assert_eq!(
+            config
+                .follow_group(&names, bounds, &actor, |v| v)
+                .await
+                .unwrap(),
+            (1, 10)
+        );
+
+        config
+            .apply_unchecked(
+                1,
+                vec![
+                    ("LOW".to_string(), "5".to_string()),
+                    ("HIGH".to_string(), "50".to_string()),
+                ],
+            )
+            .await
+            .unwrap();
+        settle().await;
+        assert_eq!(*kept.lock().unwrap(), [(5, 50)]);
+    }
+
+    /// An actor started again after an update has the signed value, not the one the render gave it.
+    #[tokio::test]
+    async fn one_who_follows_after_an_update_has_its_value() {
+        let (config, _) = handle().await;
+        config
+            .apply_unchecked(1, change("HIGH", "20"))
+            .await
+            .unwrap();
+        let (actor, kept) = keeper::<u64>().await;
+        assert_eq!(config.follow(&HIGH, &actor, |v| v).await.unwrap(), 20);
+        settle().await;
+        assert!(kept.lock().unwrap().is_empty());
+    }
+
+    /// However quickly updates come, the follower ends on the value in force, each value in its order.
+    #[tokio::test]
+    async fn a_burst_of_updates_loses_nothing() {
+        let (config, _) = handle().await;
+        let (actor, kept) = keeper::<u64>().await;
+        config.follow(&HIGH, &actor, |v| v).await.unwrap();
+        for version in 1..=200u64 {
+            config
+                .apply_unchecked(version, change("HIGH", &(version + 10).to_string()))
+                .await
+                .unwrap();
+        }
+        settle().await;
+        assert_eq!(
+            *kept.lock().unwrap(),
+            (1..=200u64).map(|v| v + 10).collect::<Vec<_>>()
+        );
+    }
+
+    fn notes(outcome: ApplyOutcome) -> Vec<String> {
+        match outcome {
+            ApplyOutcome::Applied { notes, .. } => notes,
+            refused => panic!("{refused:?}"),
+        }
+    }
+
+    /// An update to something nobody follows applies, and its outcome says it does nothing yet. A follower that has
+    /// stopped follows nothing.
+    #[tokio::test]
+    async fn an_update_nothing_follows_says_so() {
+        let (config, _) = handle().await;
+        let said = notes(
+            config
+                .apply_unchecked(1, change("HIGH", "20"))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("HIGH"), "{said:?}");
+        assert!(said[0].contains("next restart"), "{said:?}");
+
+        let (actor, _) = keeper::<u64>().await;
+        config.follow(&HIGH, &actor, |v| v).await.unwrap();
+        let said = notes(
+            config
+                .apply_unchecked(2, change("HIGH", "30"))
+                .await
+                .unwrap(),
+        );
+        assert!(said.is_empty(), "{said:?}");
+
+        actor.stop_and_wait(None, None).await.unwrap();
+        let said = notes(
+            config
+                .apply_unchecked(3, change("HIGH", "40"))
+                .await
+                .unwrap(),
+        );
+        assert!(said[0].contains("HIGH"), "{said:?}");
+    }
+
+    /// What an update that changed nothing says of no one.
+    #[tokio::test]
+    async fn an_update_that_changes_nothing_has_no_such_note() {
+        let (config, _) = handle().await;
+        let said = notes(
+            config
+                .apply_unchecked(1, change("HIGH", "10"))
+                .await
+                .unwrap(),
+        );
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    async fn judged_by(judge: SettingsJudge) -> ConfigurationHandle {
+        struct Parent;
+        #[ractor::async_trait]
+        impl Actor for Parent {
+            type Msg = ();
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<()>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let (parent, _) = Actor::spawn(None, Parent, ()).await.unwrap();
+        ConfigurationHandle::spawn_full(
+            None,
+            AGENT,
+            config(),
+            None,
+            &[],
+            None,
+            None,
+            Some(judge),
+            parent.get_cell(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The settings work while HIGH is an even number.
+    fn even(config: &Config) -> Result<(), String> {
+        let high = config.read(&HIGH).map_err(|e| e.to_string())?;
+        if high % 2 == 0 {
+            Ok(())
+        } else {
+            Err("HIGH must be even".to_string())
+        }
+    }
+
+    /// An update that would break settings that work is refused, the values stay and its version is not spent.
+    #[tokio::test]
+    async fn an_update_that_breaks_working_settings_is_refused() {
+        let config = judged_by(even).await;
+        let outcome = config
+            .apply_unchecked(1, change("HIGH", "21"))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ApplyOutcome::Refused(Refusal::Invalid(vec!["HIGH must be even".to_string()]))
+        );
+        assert_eq!(config.current().await.unwrap().read(&HIGH).unwrap(), 10);
+        // The corrected one goes under the same number.
+        assert!(matches!(
+            config
+                .apply_unchecked(1, change("HIGH", "22"))
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+    }
+
+    /// While the settings do not work any update goes through: one to something else (an agent held on them can have
+    /// its logging changed), one that leaves them broken, and the one that mends them.
+    #[tokio::test]
+    async fn while_settings_do_not_work_any_update_applies() {
+        fn odd_first(config: &Config) -> Result<(), String> {
+            even(config)
+        }
+        let env: HashMap<String, String> = [
+            ("HOST".to_string(), "h".to_string()),
+            ("HIGH".to_string(), "11".to_string()),
+        ]
+        .into();
+        let start = Config::builder(&env).register(&SECTION).build();
+        struct Parent;
+        #[ractor::async_trait]
+        impl Actor for Parent {
+            type Msg = ();
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<()>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let (parent, _) = Actor::spawn(None, Parent, ()).await.unwrap();
+        let config = ConfigurationHandle::spawn_full(
+            None,
+            AGENT,
+            start,
+            None,
+            &[],
+            None,
+            None,
+            Some(odd_first),
+            parent.get_cell(),
+        )
+        .await
+        .unwrap();
+        for (version, name, value) in [(1, "LOW", "2"), (2, "HIGH", "13"), (3, "HIGH", "14")] {
+            assert!(
+                matches!(
+                    config
+                        .apply_unchecked(version, change(name, value))
+                        .await
+                        .unwrap(),
+                    ApplyOutcome::Applied { .. }
+                ),
+                "{name}={value}"
+            );
+        }
+        // And now they work, so they are kept working.
+        assert!(matches!(
+            config
+                .apply_unchecked(4, change("HIGH", "15"))
+                .await
+                .unwrap(),
+            ApplyOutcome::Refused(Refusal::Invalid(_))
+        ));
+    }
+
+    proptest::proptest! {
+        /// The rule, for every pair of answers: refused exactly when what works would stop working, with the reason given.
+        #[test]
+        fn an_update_is_refused_exactly_when_it_breaks_what_works(
+            in_force in proptest::option::of("[a-z]{1,4}"),
+            candidate in proptest::option::of("[a-z]{1,4}"),
+        ) {
+            let answer = |why: &Option<String>| why.clone().map_or(Ok(()), Err);
+            let refused = breaks_what_works(answer(&in_force), answer(&candidate));
+            proptest::prop_assert_eq!(
+                refused,
+                if in_force.is_none() { candidate } else { None }
+            );
+        }
+
+        /// For any sequence of updates, settings that start working are working after each, the follower ends on the
+        /// value in force, and it was told nothing twice running.
+        #[test]
+        fn working_settings_stay_working_and_a_follower_ends_on_what_is_in_force(
+            updates in proptest::collection::vec(11u64..60, 0..24),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let config = judged_by(even).await;
+                let (actor, kept) = keeper::<u64>().await;
+                config.follow(&HIGH, &actor, |v| v).await.unwrap();
+                for (index, high) in updates.iter().enumerate() {
+                    let _ = config
+                        .apply_unchecked(index as u64 + 1, change("HIGH", &high.to_string()))
+                        .await
+                        .unwrap();
+                    let current = config.current().await.unwrap();
+                    assert!(even(&current).is_ok(), "{high}");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let in_force = config.current().await.unwrap().read(&HIGH).unwrap();
+                let told = kept.lock().unwrap().clone();
+                assert_eq!(told.last().copied().unwrap_or(10), in_force);
+                assert!(told.windows(2).all(|pair| pair[0] != pair[1]), "{told:?}");
+            });
+        }
+    }
+
+    // -- the shared check ----------------------------------------------------------------
+
+    static PHRASE: Defaulted<String> = Defaulted::text("PHRASE", "a phrase", "hello").dynamic();
+    static SAID: Defaulted<String> = Defaulted::text("SAID", "what is said", "hello")
+        .example("goodbye")
+        .dynamic();
+    static COUNT: Defaulted<u64> = Defaulted::number("COUNT", "a count", "1").dynamic();
+    static FIXED: Defaulted<u64> = Defaulted::number("FIXED", "fixed", "1");
+    static CHECKED_VARS: &[&dyn Described] = &[&SAID, &COUNT];
+    static CHECKED: Section = Section {
+        name: "checked",
+        vars: CHECKED_VARS,
+        relations: |_| Vec::new(),
+    };
+    static NO_EXAMPLE_VARS: &[&dyn Described] = &[&PHRASE];
+    static NO_EXAMPLE: Section = Section {
+        name: "no-example",
+        vars: NO_EXAMPLE_VARS,
+        relations: |_| Vec::new(),
+    };
+    static WITH_FIXED_VARS: &[&dyn Described] = &[&FIXED];
+    static WITH_FIXED: Section = Section {
+        name: "with-fixed",
+        vars: WITH_FIXED_VARS,
+        relations: |_| Vec::new(),
+    };
+
+    async fn checked_handle(sections: &[&'static Section]) -> ConfigurationHandle {
+        struct Parent;
+        #[ractor::async_trait]
+        impl Actor for Parent {
+            type Msg = ();
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<()>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let (parent, _) = Actor::spawn(None, Parent, ()).await.unwrap();
+        let env: HashMap<String, String> = HashMap::new();
+        let mut builder = Config::builder(&env);
+        for section in sections {
+            builder = builder.register(section);
+        }
+        ConfigurationHandle::spawn(None, AGENT, builder.build(), None, parent.get_cell())
+            .await
+            .unwrap()
+    }
+
+    /// A Dynamic variable nothing follows is named, and one followed is not.
+    #[tokio::test]
+    async fn the_shared_check_fails_a_dynamic_variable_nothing_follows() {
+        let config = checked_handle(&[&CHECKED]).await;
+        let problems = config.dynamic_settings_problems(&[&CHECKED]).await.unwrap();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("SAID")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("COUNT")), "{problems:?}");
+
+        let (actor, _) = keeper::<String>().await;
+        config.follow(&SAID, &actor, |v| v).await.unwrap();
+        let (counter, _) = keeper::<u64>().await;
+        config.follow(&COUNT, &counter, |v| v).await.unwrap();
+        assert_eq!(
+            config.dynamic_settings_problems(&[&CHECKED]).await.unwrap(),
+            Vec::<String>::new()
+        );
+
+        counter.stop_and_wait(None, None).await.unwrap();
+        let problems = config.dynamic_settings_problems(&[&CHECKED]).await.unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("COUNT"), "{problems:?}");
+    }
+
+    /// A group that says it follows a variable and whose value does not depend on it is found out.
+    #[tokio::test]
+    async fn the_shared_check_fails_a_follower_whose_value_ignores_the_variable() {
+        let config = checked_handle(&[&CHECKED]).await;
+        let (actor, _) = keeper::<u64>().await;
+        let names: [&dyn Described; 2] = [&SAID, &COUNT];
+        config
+            .follow_group(
+                &names,
+                |c: &Config| c.read(&COUNT).map_err(|e| e.to_string()),
+                &actor,
+                |v| v,
+            )
+            .await
+            .unwrap();
+        let problems = config.dynamic_settings_problems(&[&CHECKED]).await.unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("SAID"), "{problems:?}");
+        assert!(problems[0].contains("does not depend"), "{problems:?}");
+    }
+
+    /// Text with no example cannot be changed by a test, and that is said rather than passed over.
+    #[tokio::test]
+    async fn the_shared_check_fails_a_variable_it_cannot_change() {
+        let config = checked_handle(&[&NO_EXAMPLE]).await;
+        let (actor, _) = keeper::<String>().await;
+        config.follow(&PHRASE, &actor, |v| v).await.unwrap();
+        let problems = config
+            .dynamic_settings_problems(&[&NO_EXAMPLE])
+            .await
+            .unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("example"), "{problems:?}");
+    }
+
+    /// Following a Static variable is a mistake: no update can reach it.
+    #[tokio::test]
+    async fn the_shared_check_fails_following_a_static_variable() {
+        let config = checked_handle(&[&WITH_FIXED]).await;
+        let (actor, _) = keeper::<u64>().await;
+        config.follow(&FIXED, &actor, |v| v).await.unwrap();
+        let problems = config
+            .dynamic_settings_problems(&[&WITH_FIXED])
+            .await
+            .unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("FIXED"), "{problems:?}");
+        assert!(problems[0].contains("static"), "{problems:?}");
     }
 }

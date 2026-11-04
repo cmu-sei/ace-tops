@@ -63,7 +63,7 @@ pub static WARMUP_SECS: Defaulted<u64> = Defaulted::seconds(
 )
 .dynamic();
 
-static VARIABLES: &[&dyn Described] = &[&REPUBLISH_SECS, &PROPOSAL_TTL_SECS, &WARMUP_SECS];
+pub static VARIABLES: &[&dyn Described] = &[&REPUBLISH_SECS, &PROPOSAL_TTL_SECS, &WARMUP_SECS];
 
 /// The section the git controller registers.
 pub static SECTION: Section = Section {
@@ -71,6 +71,27 @@ pub static SECTION: Section = Section {
     vars: VARIABLES,
     relations: |_| Vec::new(),
 };
+
+/// The times the controller keeps to, followed as one value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Times {
+    /// Between two announcements of the set.
+    pub republish: Duration,
+    /// How long a proposal is kept without being announced again.
+    pub proposal_ttl: Duration,
+    /// After the start, while the set it announces is marked incomplete.
+    pub warmup: Duration,
+}
+
+impl Times {
+    pub fn read(config: &Config) -> Result<Self, String> {
+        Ok(Self {
+            republish: read_interval(config).map_err(|e| e.to_string())?,
+            proposal_ttl: read_proposal_ttl(config).map_err(|e| e.to_string())?,
+            warmup: read_warmup(config).map_err(|e| e.to_string())?,
+        })
+    }
+}
 
 /// The time to wait before the next announcement, for a setting of `secs`.
 pub fn republish_interval(secs: u64) -> Duration {

@@ -330,8 +330,7 @@ place stands, for all of it. In bites, each reported before the next:
 ## Open
 
 - What a callback's budget is, by protocol.
-- Whether a Dynamic setting's reaction (`remaining-work.md`, "EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC") shrinks when a URL or a host is
-  the handler's to pick up.
+- Whether a Dynamic setting's reaction shrinks when a URL or a host is the handler's to pick up. A little (`dynamic-settings.md`).
 - Whether Cedar judges requests one day, as it does configuration and commands (`Operation::"<agent>/<name>"`), overriding the floor both ways.
 - Whether an operation can ever need an arbitrary request with a credential (the maintainer: open to it). None found.
 - Slice C's lock and the configuration agent's `git` command: it needs `exec`, which the lock would otherwise refuse (`runtime-attestation.md`).

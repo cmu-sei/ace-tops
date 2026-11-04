@@ -1,0 +1,190 @@
+<!--
+  ACE Tool
+
+  Copyright 2026 Carnegie Mellon University.
+
+  NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+  FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+  EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+  PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+  MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+  TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+  Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+  for full terms.
+
+  [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+  distribution.  Please see Copyright notice for non-US Government use and distribution.
+
+  This Software includes and/or makes use of Third-Party Software each subject to its own license.
+
+  DM26-0670
+-->
+
+# Dynamic settings
+
+Step 6 of the order of work (`remaining-work.md`, "EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC"). The maintainer asked for one
+reaction in the builder rather than Jira's by hand in every agent, and a shared test that fails a Dynamic setting nothing
+reacts to. Designed and cleared 2026-11-04. **The builder's half is built, with Jira, the git controller and logging on it;
+the other agents are not yet** ("The order", below).
+
+## What holds it together
+
+- Only a Dynamic variable can be changed by a signed update (`polar-env/src/config.rs:318`). Cedar is asked per variable,
+  `Variable::"<agent>/<name>"`, with `c:update-configuration` as the fallback (`polar-agent-builder/src/signed.rs:460`).
+- A domain supervisor is the **parent** of its infrastructure: `AgentBuilder::new(myself, ...)` in its `pre_start`. So the
+  builder cannot stop an agent's work and start it again without losing the session, the health actor and the configuration
+  itself. Restarting the work is the agent's to do, where it has to be done at all.
+
+## The shape (the maintainer's, 2026-11-04)
+
+**The actor that holds a value follows it.** It registers, the answer is the value in force, and each later value that
+differs arrives as a message of its own, which it already knows what to do with: keep it for next use, replace a timer, or
+restart a child. A supervisor follows only what it must restart a child for.
+
+```rust
+let batch = resources.configuration.follow(&PUBLISH_BATCH, &myself, Msg::BatchChanged).await?;
+```
+
+Built in `polar-agent-builder/src/configuration.rs`:
+
+- **The callback only maps to a message.** What a new value means runs in the actor's own `handle`. The value is read and
+  compared in a task of the follower's, not in the ConfigurationActor, so no closure of a domain's can slow it or panic it.
+- **`follow` answers with the value in force.** The ConfigurationActor takes the registration in its turn, so no update falls
+  between what the actor read and what it is sent. It also means a child started again later has the value signed since, not
+  the one the render gave it, as long as it follows from `pre_start`.
+- **Settings that mean something together register together.** `follow_group(names, read, actor, message)`: an update that
+  changes several is one message holding one consistent value. An update that sets `JIRA_URL` to http and `JIRA_ANONYMOUS` to
+  true must never be seen half done, with http and a credential. `read` is pure, and `names` says what it reads.
+- **A value that does not read** gives `FollowError::Unreadable` at registration, and is followed all the same: the next value
+  that reads arrives as a message. A later one that does not read is logged, and the last value stands.
+
+**Declaring a variable Dynamic is the opt-in, and it means something follows it.**
+
+- At run time, an update to a variable nothing follows still applies, and its outcome says so in `notes`: "nothing follows X
+  now, so it takes effect at the agent's next restart". That is also the truth when the follower is down. A held supervisor
+  counts as following everything while it runs, since any change asks the agent to try again.
+- In tests, `ConfigurationHandle::dynamic_settings_problems(&[&SECTION])` is the shared check. Once an agent's actors have
+  registered, it fails a Dynamic variable nothing follows, a variable whose follower's value does not depend on it, a Static
+  variable someone follows, and a variable a test cannot change. It changes copies, so it applies nothing. The other value
+  comes from the type (a number goes up by one, a flag flips, a list gains an entry) or from `.example("...")` on the
+  declaration for text (`VarDesc::another_value`).
+
+**What the shared check does not do.** Registrations exist only at run time, so it cannot live in `polar_agent_tests!`, and
+nothing forces an agent to call it. Declaring them in a const would close that gap, and write each one down twice, which the
+design principles rule out. The outcome's note is what catches a missed follower on a live cluster. It also stops at the
+registration: an actor could take the message and ignore it, so each agent has a test of its own `handle`. And an agent's test
+calls the same function its `pre_start` does (Jira's `follow_settings`), rather than starting the whole supervisor, whose
+`pre_start` builds the infrastructure. **Marked for review:** the first design said the helper starts the real supervisor; the
+builder has no rig an agent's crate can use for that, and the live check covers `pre_start`.
+
+**An update that would break working settings is refused.** `PolarAgent::SETTINGS_JUDGE` is an optional pure function for what
+an agent's settings must satisfy as a whole, beyond what its sections check. The ConfigurationActor runs it on the settings in
+force and on the candidate, and refuses only when the first works and the second does not (`breaks_what_works`): `Invalid`, with
+the judge's reason, the values in force stay, and the version is not spent. While the settings do not work any update goes
+through, or an agent held on them could not have its logging changed, nor be mended in two steps. Only jira-observer has one,
+`prepare`, because `relations` already covers the checks between variables elsewhere. A section cannot do this job for it: a
+section must accept the placeholder address, so the agent can stay up and say so. This replaces what jira-observer did before,
+which was to stop its observers and hold `Configuration` on an update that could not work: a typo no longer stops a working agent.
+
+Drawn as built: [`held_agent_and_dynamic_setting`](sequences/general/held_agent_and_dynamic_setting.mmd).
+
+### Rejected: the builder restarts the work
+
+The builder could own the work and restart all of it on a change, so that an agent could not forget. It needs every domain
+supervisor turned inside out, with the infrastructure no longer its child, in every agent, and most values need no restart. It
+belongs with the remaining-work item on the builder-owned shutdown handshake, if ever. `held::stay_up` stays as it is.
+
+## Which variables
+
+### Dynamic, as already declared
+
+All following now. Logging, `RUST_LOG`, `POLAR_TRACE_FILTER` (the infrastructure supervisor). `JIRA_URL`, `JIRA_ANONYMOUS`,
+`JIRA_DEPLOYMENT`, `QUERY_DATE` (one group, the observers' supervisor). `POLAR_GIT_CONTROLLER_REPUBLISH_SECS`,
+`_PROPOSAL_TTL_SECS`, `_WARMUP_SECS` (one group, the controller's supervisor, where they had been read with `current()` at each
+use with a fallback written out each time).
+
+### Dynamic, new (step 2)
+
+| Variable | Agent | Reaction |
+|---|---|---|
+| `POLAR_GIT_PUBLISH_BATCH` | git-repo-observer | restart its workers |
+| `POLAR_STATE_GRAPH_TIMEOUT_SECS` | soft-state observer | next use |
+| `POLAR_HEALTH_ASK_INTERVAL_SECS` | soft-state processor | replace the timer |
+| `POLAR_HEALTH_ANSWER_TIMEOUT_SECS` | soft-state processor | next use (the check that it stays below the interval is there) |
+| `POLAR_STATE_REPLY_TIMEOUT_SECS`, `_ATTEMPTS`, `_UNAVAILABLE_RETRY_SECS`, `_UNAVAILABLE_LIMIT_SECS` | every agent that reads state, the builder's own | next use |
+
+### Constants that become variables (cleared 2026-11-04)
+
+The list above is short. Most of what an operator would want to tune was not a variable:
+
+| Constant | Where | Now |
+|---|---|---|
+| `BASE_INTERVAL_SECS` | `jira/observe/src/agent.rs:44` (`TODO: read this from configuration`) | 1800 |
+| `PAGE_SIZE` (three) | `jira/observe/src/{groups,issues,users}.rs` | 50 |
+| `INTERVAL` (two) | `polar-scheduler/observer/src/{deployment_copy,deployment_record}.rs` | 10 s, 30 s |
+| `lost`, `refused` | `kubernetes/observe/src/watches.rs:240` | 5 s, 300 s |
+
+Left as constants: the git controller's admission limits (`MAX_ENTRIES` and the like, bounds on what proposers can do), the
+drain windows (the shutdown budget is computed from them), and `DRIFT_GRACE_SECS` (a detection window, for slice C to settle).
+
+### Static, by the maintainer's scope of 2026-11-02
+
+Paths, sockets and bind addresses. `BROKER_ADDR`, `CASSINI_SERVER_NAME`, `POLAR_SCHEDULER_REMOTE_URL`. `CERT_ISSUER_ISSUERS`,
+`CERT_ISSUER_INTERNAL_CALLERS`, `POLAR_GIT_SERVER_ADMINS`, `CREDENTIALS_AGENT_BOOTSTRAP_IDENTITY`. Egress (jira.md, the cluster's
+setting).
+
+### Static, read from the same rules (cleared 2026-11-04)
+
+| Variable | Why |
+|---|---|
+| `OCI_INSECURE_REGISTRIES` | allows plain http to a host: a trust setting |
+| `CERT_ISSUER_*_LIFETIME_SECS`, `_IDENTITY_LIFETIME_OVERRIDES`, `_MAX_TOKEN_LIFETIME_SECS` | whoever may change them can lengthen every certificate's life, which is the bound the rest of the design leans on |
+| `CERT_ISSUER_BOOTSTRAP`, `_CA_PROVISIONING`, `_SERVER_IDENTITY` | trust |
+| `CREDENTIALS_AGENT_KUBERNETES_ISSUERS`, `_INTROSPECTION_ENDPOINT`, `_INTROSPECTION_CLIENT_ID`, `CREDENTIALS_AGENT_AUTHORITY_MODEL` | trust |
+| `POLAR_GIT_SERVER_REPOS` | its access rules |
+| `POLAR_AUTHORITY_PUBLISHER`, `POLAR_CAPABILITIES`, `POLAR_SERVED_WORKLOADS` | trust, or facts the render signs off |
+| `POLAR_ATTESTATION_NAMESPACES` | the render grants a Role per namespace (`capabilities.nuon:182`), so a new one would have no access |
+| `POLAR_SCHEDULER_DEPLOYMENT_*_URL` | channel |
+| `POLAR_SCHEDULER_SYNC_INTERVAL` | channel, for a remote that is not Polar's git server: 0 means it never pulls again, so the correction never arrives |
+| `GRAPH_DB`, `GRAPH_USER`, `GRAPH_ENDPOINT` | channel, beside a secret |
+| The health section | `configuration.md` keeps the safety invariants Static; the threshold must match polar-init's (`1a9485d3`), and the tick must match the probe's staleness |
+| The broker's `CASSINI_DECISION_CACHE_SECS`, `_STALL_SECS`, `_MEMORY_BUDGET_BYTES`, `_BUDGET_*` | **It has no way to hear an update.** The subscription exists only for a Cassini client (`infrastructure.rs:514`), and the broker is not one. It is its own change |
+
+So these agents end with logging as their only Dynamic setting, because they have no other setting of this kind:
+kube-consumer, the Jira, git and scheduler processors, the credentials pair, cert-issuer, polar-git-server, the attestation
+agent and the resolver. The maintainer's test, that an agent whose non-secret settings are Static is not properly migrated,
+then rests on the table above.
+
+## What this leaves true
+
+- **The rendered value runs first after every restart.** Agents read at start, and the replay comes after registration, so
+  an agent runs on the render's value until the signed one arrives, and then reacts if the value differs. It is seconds, it is
+  true of Jira as it always was, and it is a reason a trust setting cannot be Dynamic: this window would hold the old value.
+- **A signed document removed from the repository stays in force until the agent restarts.** As before.
+- **Every new Dynamic variable widens what `c:update-configuration` can do**, for a signer with no Cedar rule saying otherwise.
+- **While a held agent's work runs, its held supervisor still counts as following everything**, so the note does not appear for
+  a variable the work forgets. Jira, the one user, follows all of its own.
+
+## The protocol handlers' open question
+
+`protocol-handlers.md` asks whether a reaction shrinks when a URL is the handler's to pick up. A little: `Location::Configured`
+reads the host in force at each request, so the judgment already follows. The domain still builds its URLs, and Jira still
+restarts its observers. Nothing here depends on it.
+
+## Seen on the way
+
+`CASSINI_QUEUE_PATH` is declared, but read from the process's environment rather than the snapshot (`cassini/client/src/lib.rs:128`),
+so a value given in the `POLAR_CONFIG` document is missed. Not part of this.
+
+## The order
+
+1. **The builder and its first users. Built 2026-11-04.** `follow`, `follow_group`, the outcome's note, `SETTINGS_JUDGE`,
+   the shared check. Jira and the git controller moved onto them, and the infrastructure supervisor's logging. Jira's
+   stop-and-hold went, and so did its filter of what changed (`touches_the_observers`), which held a branch that could never
+   fire (egress is Static).
+2. **The new variables and the constants** above, each with a test of its `handle` and the shared check.
+3. **Live on u7s:** a signed update to one variable of each reaction, an update that is refused, and a restart to see the
+   replay put the value back.
+
+No migration is needed: a variable going from Static to Dynamic changes nothing for a deployment that does not sign an update.

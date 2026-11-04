@@ -232,7 +232,22 @@ impl Actor for HeldSupervisor {
         resources
             .configuration
             .changes()
-            .subscribe(myself, |_| Some(HeldMessage::ConfigChanged));
+            .subscribe(myself.clone(), |_| Some(HeldMessage::ConfigChanged));
+        // Any change asks the agent to try again, so while it is held nothing goes unfollowed.
+        let dynamic = resources
+            .configuration
+            .current()
+            .await?
+            .describe()
+            .into_iter()
+            .flat_map(|(_, variables)| variables)
+            .filter(|variable| variable.mutability == polar_env::Mutability::Dynamic)
+            .map(|variable| variable.name)
+            .collect();
+        resources
+            .configuration
+            .followed_by(dynamic, myself.get_cell())
+            .await?;
         Ok(HeldState::new(
             args.service_name,
             args.reason,

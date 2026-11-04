@@ -39,5 +39,6 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+polar-health.workspace = true
 async-trait.workspace = true
 cassini-client.workspace = true

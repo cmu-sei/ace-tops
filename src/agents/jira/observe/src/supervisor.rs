@@ -66,11 +66,8 @@ pub enum ObserverSupervisorMessage {
     PrepareShutdown,
     /// A version of the `credentials` section reached the CryptoActor: it brings a new credential, or withdraws it.
     CredentialsApplied(CredentialsApplied),
-    /// A signed update changed the variables named: one the observers are started with makes the supervisor read the
-    /// settings again and start them again.
-    ConfigChanged {
-        changed: Vec<String>,
-    },
+    /// A signed update changed what the observers are started with: they start again with it.
+    SettingsChanged(Prepared),
 }
 
 pub struct ObserverSupervisor;
@@ -85,15 +82,10 @@ pub struct ObserverSupervisorState {
     /// The agent's soft state, which the issue observer's cursor is read from (its state actor).
     state: Option<Arc<dyn StateClient>>,
     healthcheck: HealthHandle,
-    /// The live configuration.
-    configuration: Option<ConfigurationHandle>,
     /// The CryptoActor has the credential: from the latest `credentials` section, until one withdraws it.
     credential: bool,
     /// Why the latest `credentials` section gave no credential, when it was refused.
     credential_problem: Option<String>,
-    /// Why the settings in force cannot work, when a signed update made them so: no observer runs until another
-    /// update mends them.
-    settings_problem: Option<String>,
     /// Cassini has registered this agent: nothing calls Jira before.
     registered: bool,
     /// The standing problem the supervisor itself holds (no credential), apart from the observers' own.
@@ -121,8 +113,6 @@ pub enum Infrastructure {
 pub struct ObserverSupervisorArgs {
     /// The agent's infrastructure, to build or already built.
     pub infrastructure: Infrastructure,
-    /// The settings `prepare` made of it.
-    pub prepared: Prepared,
     pub base_interval: u64,
 }
 
@@ -233,11 +223,6 @@ impl ObserverSupervisor {
         if !state.registered {
             return Ok(());
         }
-        if let Some(why) = &state.settings_problem {
-            let message = format!("jira-observer: {why}");
-            state.hold(HoldReason::Configuration, message);
-            return Ok(());
-        }
         match state.auth() {
             None => {
                 let message = match &state.credential_problem {
@@ -271,35 +256,20 @@ impl ObserverSupervisor {
         ObserverSupervisor::start_observers(myself, state).await
     }
 
-    /// A signed update changed a setting: the settings are made again from the configuration in force
-    /// (`agent::prepare` on `current()`), and the observers start again with them, which releases every hold. Settings
-    /// that cannot work stop the observers, and the supervisor holds `Configuration` with why, until an update mends
-    /// them.
-    async fn settings_changed(
+    /// The supervisor follows the observers' settings as one value, so that an update to several is one start. The
+    /// answer is the value in force. An update that could not work never gets here: the agent's judge refused it
+    /// (`crate::agent::settings_work`).
+    async fn follow_settings(
+        configuration: &ConfigurationHandle,
         myself: &ActorRef<ObserverSupervisorMessage>,
-        state: &mut ObserverSupervisorState,
-    ) -> Result<(), ActorProcessingErr> {
-        let Some(configuration) = &state.configuration else {
-            return Ok(());
-        };
-        let current = match configuration.current().await {
-            Ok(current) => current,
-            Err(e) => {
-                warn!("could not read the configuration in force: {e}");
-                return Ok(());
-            }
-        };
-        match crate::agent::prepare(&current) {
-            Ok(prepared) => {
-                state.prepared = prepared;
-                state.settings_problem = None;
-            }
-            Err(why) => {
-                error!("the settings a signed update made cannot work: {why}");
-                state.settings_problem = Some(why);
-            }
-        }
-        ObserverSupervisor::restart_observers(myself, state, "a signed update changed the settings")
+    ) -> Result<Prepared, polar_agent_builder::configuration::FollowError> {
+        configuration
+            .follow_group(
+                crate::settings::VARIABLES,
+                crate::agent::prepare,
+                myself,
+                ObserverSupervisorMessage::SettingsChanged,
+            )
             .await
     }
 
@@ -404,14 +374,8 @@ impl Actor for ObserverSupervisor {
                     Some(ObserverSupervisorMessage::PrepareShutdown)
                 }
             });
-        resources
-            .configuration
-            .changes()
-            .subscribe(myself.clone(), |changed| {
-                Some(ObserverSupervisorMessage::ConfigChanged {
-                    changed: changed.changed,
-                })
-            });
+        let prepared =
+            ObserverSupervisor::follow_settings(&resources.configuration, &myself).await?;
         let protocols = resources.protocols.clone().ok_or(
             "the builder gave no protocol handler, which this agent declares operations for",
         )?;
@@ -422,7 +386,7 @@ impl Actor for ObserverSupervisor {
             });
 
         Ok(ObserverSupervisorState {
-            prepared: args.prepared,
+            prepared,
             base_interval: args.base_interval,
             protocols,
             tcp_client: resources.tcp_client,
@@ -430,10 +394,8 @@ impl Actor for ObserverSupervisor {
                 .state
                 .map(|handle| Arc::new(handle) as Arc<dyn StateClient>),
             healthcheck: resources.healthcheck,
-            configuration: Some(resources.configuration),
             credential: false,
             credential_problem: None,
-            settings_problem: None,
             registered,
             held: None,
             infrastructure: resources.infrastructure,
@@ -475,10 +437,15 @@ impl Actor for ObserverSupervisor {
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
-            ObserverSupervisorMessage::ConfigChanged { changed } => {
-                if crate::settings::touches_the_observers(&changed) {
-                    ObserverSupervisor::settings_changed(&myself, state).await?;
-                }
+            ObserverSupervisorMessage::SettingsChanged(prepared) => {
+                crate::agent::log_anonymous(&prepared);
+                state.prepared = prepared;
+                ObserverSupervisor::restart_observers(
+                    &myself,
+                    state,
+                    "a signed update changed the settings",
+                )
+                .await?;
             }
             ObserverSupervisorMessage::CredentialsApplied(applied) => {
                 state.credentials_applied(&applied);
@@ -630,10 +597,8 @@ mod tests {
             tcp_client: TcpClient::from_actor_ref(sink().await),
             state: None,
             healthcheck: HealthHandle::new(health),
-            configuration: None,
             credential,
             credential_problem: None,
-            settings_problem: None,
             registered: true,
             held: None,
             infrastructure: sink().await,
@@ -791,10 +756,27 @@ mod tests {
             .unwrap()
     }
 
-    /// A signed update that makes the settings unusable stops the observers and holds `Configuration` with why; one
-    /// that mends them releases it and starts them again, with the settings now in force.
+    /// Each of the settings reaches the supervisor: it follows them all, and what it is told depends on each.
     #[tokio::test]
-    async fn a_signed_update_to_the_settings_starts_the_observers_again_or_holds_why_not() {
+    async fn every_setting_is_followed_and_what_the_observers_get_depends_on_each() {
+        let configuration = configuration_of(&[("JIRA_URL", "https://jira.invalid")]).await;
+        let myself = sink::<ObserverSupervisorMessage>().await;
+        let prepared = ObserverSupervisor::follow_settings(&configuration, &myself)
+            .await
+            .unwrap();
+        assert_eq!(prepared.jira_url, "https://jira.invalid");
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&crate::settings::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// New settings start the observers again, whatever they held released, and they ask the site now in force.
+    #[tokio::test]
+    async fn new_settings_start_the_observers_again_at_the_site_now_in_force() {
         let _turn = NAMED.lock().await;
         let server = site_without_data().await;
         let (health, recorded) = health_recorder().await;
@@ -812,39 +794,27 @@ mod tests {
             .unwrap();
         // Read anonymously: three, the users observer not among them.
         assert_eq!(running(&state), 3);
+        let before = told(&health, &recorded).await;
 
-        // The placeholder address: nothing can be read.
-        state.configuration = Some(
-            configuration_of(&[
-                ("JIRA_URL", "https://example.atlassian.net"),
-                ("JIRA_ANONYMOUS", "true"),
-            ])
-            .await,
-        );
-        ObserverSupervisor::settings_changed(&myself, &mut state)
-            .await
-            .unwrap();
-        assert_eq!(running(&state), 0);
-        let told_now = told(&health, &recorded).await;
-        let Some(Told::Hold(HoldReason::Configuration, message)) = told_now.last() else {
-            panic!("a Configuration hold: {told_now:?}");
-        };
-        assert!(message.contains("placeholder"), "{message}");
-
-        // An update that mends it: the observers start again at the address now in force.
         let mended = crate::test_crypto::behind_tls(&server.uri()).await;
         site.set("JIRA_URL", mended.clone());
-        state.configuration =
-            Some(configuration_of(&[("JIRA_URL", &mended), ("JIRA_ANONYMOUS", "true")]).await);
-        ObserverSupervisor::settings_changed(&myself, &mut state)
+        let prepared = Prepared {
+            jira_url: mended.clone(),
+            ..state.prepared.clone()
+        };
+        ObserverSupervisor
+            .handle(
+                myself.clone(),
+                ObserverSupervisorMessage::SettingsChanged(prepared),
+                &mut state,
+            )
             .await
             .unwrap();
-        // Read anonymously: three, the users observer not among them.
         assert_eq!(running(&state), 3);
         assert_eq!(state.prepared.jira_url, mended);
         let after = told(&health, &recorded).await;
         assert!(
-            after[told_now.len()..].contains(&Told::Release(HoldReason::Configuration)),
+            after[before.len()..].contains(&Told::Release(HoldReason::Configuration)),
             "{after:?}"
         );
         // And they ask the new site.

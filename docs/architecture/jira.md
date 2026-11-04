@@ -116,7 +116,7 @@ pushed, and a run again tries again.
   `infra/targets/<target>/config.nuon` (`{ name, value }` entries; `cluster-inputs.nuon` replaces entries of the same
   name). They become literals in the agent's document, ConfigMap `jira-observer-config` (`config.json`, the settings
   under `.sections[].variables[]` as `{ name, value }`). A change reaches the pod after a render and apply (`up.nu`), or,
-  without one, as a signed update to the agent (they are Dynamic). The catalog's entry gives jira-observer nothing:
+  without one, as a signed update to the agent (they are Dynamic; `dynamic-settings.md`). One that could not work is refused and says why. The catalog's entry gives jira-observer nothing:
   no Secret, no env. sandbox-local (u7c) reads Apache's Jira anonymously (`https://issues.apache.org/jira`, `server`,
   `QUERY_DATE` 2026-10-31; `b1789556`).
 - **Token:** the `credentials` section, signed with `polar-sign` for jira-observer (above). There is no `jira-secret`.
@@ -190,10 +190,10 @@ Drawn as built: [`held_agent_and_dynamic_setting`](sequences/general/held_agent_
      placed. Several observers may hold at once (DECIDED, to review): each releases only its own, so one observer's
      success never ends another's hold; the health actor keeps one standing problem, the latest, and each is logged at
      error by its observer.
-   - **Settings change at run time** (`e0901170`): the supervisor subscribes to the ConfigurationActor's `changes()`;
-     an update naming a `jira` (or egress) variable makes it run `prepare` again on `current()`. Settings that work
-     replace the ones in force and the observers start again; settings that cannot work stop them, and the supervisor
-     holds `Configuration` with why until an update mends them. The scheduler replays the signed documents to an agent
+   - **Settings change at run time** (`e0901170`, revised 2026-11-04, `dynamic-settings.md`): the supervisor follows the four
+     settings as one value, made by `prepare`. A new value replaces the one in force and the observers start again. An
+     update that could not work is refused by the agent's judge, also `prepare`: the values in force stay, the observers
+     run on, and the outcome says why. It used to stop them and hold `Configuration`. The scheduler replays the signed documents to an agent
      that has just registered, so after each restart the render's env applies first and the signed update just after.
    - **Held at start, then mended** (`8635c729`): `held::stay_up` takes a `TryAgain`; jira-observer's runs `prepare` on
      the configuration in force and, if it works, starts the observer supervisor on the infrastructure the held agent
@@ -437,7 +437,8 @@ anonymously (`JIRA_ANONYMOUS` true, `JIRA_DEPLOYMENT` server). The graph still h
 - **Across a rejuvenation (22:30:38, in place):** the new process's first pull started at the graph's newest issue
   (22:04:34, written by the 22:04 pull); polar-init did not wait on the renewal rule.
 - **Pulled health:** 14 `(:AgentHealth)`, every agent `healthy`.
-- **A signed update that cannot work, then one that can** (`polar-sign sign --push`, settings version 1 then 2):
+- **A signed update that cannot work, then one that can** (`polar-sign sign --push`, settings version 1 then 2; as it was then:
+  since 2026-11-04 the first is refused and the observers run on, `dynamic-settings.md`, and that has not been seen live):
   `JIRA_URL` set to the placeholder was applied the same second (`changed=["JIRA_URL"]`), the observers stopped, the
   agent held `Configuration` and stayed up, the next round wrote `unhealthy` / `configuration` with its transition;
   version 2 (Apache's address) released the hold ("the standing problem (configuration) is resolved"), respawned the

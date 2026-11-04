@@ -46,6 +46,7 @@ pub static CONSOLE_FILTER: Defaulted<String> = Defaulted::text(
      warn,polar=debug)",
     DEFAULT_FILTER,
 )
+.example("warn,polar=debug")
 .dynamic();
 
 pub static TRACE_FILTER: Defaulted<String> = Defaulted::text(
@@ -54,6 +55,7 @@ pub static TRACE_FILTER: Defaulted<String> = Defaulted::text(
      since every span it admits is sent",
     DEFAULT_TRACE_FILTER,
 )
+.example("warn,polar=debug")
 .dynamic();
 
 pub static OTLP_ENDPOINT: Optional<String> = Optional::text(

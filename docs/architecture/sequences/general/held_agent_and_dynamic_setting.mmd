@@ -41,7 +41,7 @@ sequenceDiagram
     Health-->>Writer: Unhealthy, reason configuration, and the message
 
     Author->>Config: a signed configuration document, by delivery or replay
-    Config->>Config: verify, then apply_overrides: only a Dynamic variable, all or none
+    Config->>Config: verify, then apply_overrides: only a Dynamic variable, all or none.<br/>Settings in force that do not work: any update goes through
     alt nothing changed, or it was refused
         Note over Config: No announcement. The outcome says why, and the hold stands
     else a value changed
@@ -60,16 +60,19 @@ sequenceDiagram
         end
     end
 
-    Note over Config,Work: Once the work runs, a Dynamic change goes to it (jira-observer's supervisor, for a setting that touches the observers)
-    Config-)Work: ConfigChanged { version, changed }
-    Work->>Config: current()
-    Work->>Work: prepare() on it
-    alt the settings work
-        Work->>Work: stop the observers, and start them with the new settings
-        Work->>Health: release every hold (an observer that meets it again holds it again)
-    else they cannot
-        Work->>Work: stop the observers
-        Work->>Health: hold(Configuration, why), until an update mends it
+    Note over Config,Work: Once the work runs, whoever holds a value follows it (dynamic-settings.md).<br/>jira-observer's supervisor follows the four settings as one value, made by prepare
+    Work->>Config: follow_group(the four, prepare), from its pre_start
+    Config-->>Work: the configuration in force, so no update falls in between
+    Author->>Config: another signed document
+    Config->>Config: the agent's judge, prepare, on what is in force and on the candidate
+    alt what works would stop working
+        Note over Config: Refused, invalid, with why. The values in force stay, its version is not spent,<br/>and the observers run on
+    else it goes through
+        Config-)Work: the configuration, to a task of the follower's, which reads it and compares
+        opt the value differs
+            Work->>Work: SettingsChanged(prepared): stop the observers, and start them with it
+            Work->>Health: release every hold (an observer that meets it again holds it again)
+        end
     end
 
     alt told to end while held, with no work running

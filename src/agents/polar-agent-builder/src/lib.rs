@@ -203,6 +203,8 @@ pub struct AgentBuilder<M: ractor::Message> {
     declared_protocols: protocol::ProtocolSetup,
     /// The agent's judge of a runtime section before it is replaced ([`with_section_judge`](Self::with_section_judge)).
     section_judge: Option<Arc<dyn runtime::SectionJudge>>,
+    /// The agent's judge of its settings as a whole (`PolarAgent::SETTINGS_JUDGE`).
+    settings_judge: Option<configuration::SettingsJudge>,
     /// The agent's topics, from `PolarAgent`; with them the client checks each publish and subscribe.
     topics: Option<Arc<topics::TopicSet>>,
 }
@@ -267,6 +269,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
             declared_runtime: &[],
             declared_protocols: protocol::ProtocolSetup::default(),
             section_judge: None,
+            settings_judge: None,
             topics: None,
         }
     }
@@ -420,6 +423,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
         self.self_test = configured.self_test;
         self.declared_commands = configured.commands;
         self.declared_runtime = configured.runtime;
+        self.settings_judge = configured.settings_judge;
         self.declared_protocols = configured.protocols;
         self.topics = Some(configured.topics.clone());
         ConfiguredAgent {
@@ -528,6 +532,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 runtime_sections: this.declared_runtime,
                 protocols: this.declared_protocols,
                 section_judge: this.section_judge,
+                settings_judge: this.settings_judge,
             },
             myself_cell,
         )
@@ -685,6 +690,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 runtime_sections: &[],
                 protocols: protocol::ProtocolSetup::default(),
                 section_judge: None,
+                settings_judge: None,
             },
             this.myself.get_cell(),
         )
@@ -1072,6 +1078,7 @@ mod tests {
             self_test: false,
             commands: &BOTH,
             runtime: &[],
+            settings_judge: None,
             protocols: protocol::ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
@@ -1114,6 +1121,7 @@ mod tests {
             self_test: false,
             commands: &[],
             runtime: &[],
+            settings_judge: None,
             protocols: protocol::ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
@@ -1146,6 +1154,7 @@ mod tests {
             self_test: false,
             commands: &[],
             runtime: &[],
+            settings_judge: None,
             protocols: protocol::ProtocolSetup::default(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),

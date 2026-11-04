@@ -74,6 +74,8 @@ pub enum RootSupervisorMessage {
     Judged(Option<Vec<(Key, Decision)>>),
     /// Time to expire what is stale, judge again and announce the set again.
     Republish,
+    /// A signed update changed the times it keeps to.
+    TimesChanged(settings::Times),
     /// The infrastructure has decided the agent should end.
     PrepareShutdown,
 }
@@ -151,6 +153,12 @@ pub struct RootSupervisorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     configuration: ConfigurationHandle,
+    /// The times in force.
+    times: settings::Times,
+    /// The next `Republish`, which a shorter interval does not wait for.
+    next_republish: Option<
+        ractor::concurrency::JoinHandle<Result<(), ractor::MessagingErr<RootSupervisorMessage>>>,
+    >,
     control: Control,
     /// A judging is under way.
     judging: bool,
@@ -218,26 +226,13 @@ impl RootSupervisor {
         }
     }
 
-    /// The warm-up in force, in milliseconds.
-    async fn warmup_ms(state: &RootSupervisorState) -> i64 {
-        match state.configuration.current().await {
-            Ok(config) => settings::read_warmup(&config)
-                .unwrap_or(Duration::from_secs(600))
-                .as_millis() as i64,
-            Err(e) => {
-                warn!("could not read the warm-up, using ten minutes: {e}");
-                600_000
-            }
-        }
-    }
-
     /// Announces the set if there is anything the controller may say. With `only_if_changed`, only when it is
     /// not what was last announced.
     async fn announce_set(state: &mut RootSupervisorState, only_if_changed: bool) {
         if state.shutting_down {
             return;
         }
-        let warmup = Self::warmup_ms(state).await;
+        let warmup = state.times.warmup.as_millis() as i64;
         let Some(set) = state.control.to_announce(now_ms(), warmup) else {
             return;
         };
@@ -296,6 +291,16 @@ impl Actor for RootSupervisor {
                 })
             });
 
+        let times = resources
+            .configuration
+            .follow_group(
+                settings::VARIABLES,
+                settings::Times::read,
+                &myself,
+                RootSupervisorMessage::TimesChanged,
+            )
+            .await?;
+
         // A section already held (the agent started again in the same process, or the replay was quick) is
         // read first; the timer's first announcement follows it.
         for section in [desired::SECTION_NAME, admission::SECTION_NAME] {
@@ -310,6 +315,8 @@ impl Actor for RootSupervisor {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             configuration: resources.configuration,
+            times,
+            next_republish: None,
             control: Control::new(now_ms()),
             judging: false,
             judge_again: false,
@@ -407,28 +414,29 @@ impl Actor for RootSupervisor {
                 if state.shutting_down {
                     return Ok(());
                 }
-                let config = state.configuration.current().await;
-                let ttl = match &config {
-                    Ok(config) => settings::read_proposal_ttl(config)
-                        .unwrap_or(settings::proposal_ttl(86_400)),
-                    Err(e) => {
-                        warn!("could not read the proposal time limit, using a day: {e}");
-                        settings::proposal_ttl(86_400)
-                    }
-                };
+                let ttl = state.times.proposal_ttl;
                 for gone in state.control.expire(now_ms(), ttl.as_millis() as i64) {
                     publish_decision(&state.tcp_client, &gone);
                 }
                 // Names are looked up again, and a flood limit's hour moves on.
                 myself.cast(RootSupervisorMessage::Judge)?;
                 Self::announce_set(state, false).await;
-                let wait = match config {
-                    Ok(config) => {
-                        settings::read_interval(&config).unwrap_or(settings::republish_interval(60))
-                    }
-                    Err(_) => settings::republish_interval(60),
-                };
-                drop(myself.send_after(wait, || RootSupervisorMessage::Republish));
+                // Only one is ever waiting, however this one came.
+                if let Some(earlier) = state.next_republish.take() {
+                    earlier.abort();
+                }
+                state.next_republish = Some(
+                    myself.send_after(state.times.republish, || RootSupervisorMessage::Republish),
+                );
+            }
+            RootSupervisorMessage::TimesChanged(times) => {
+                info!(?times, "the times the controller keeps to have changed");
+                let new_interval = times.republish != state.times.republish;
+                state.times = times;
+                // A shorter interval does not wait out the longer one, and a longer one starts from now.
+                if new_interval {
+                    myself.cast(RootSupervisorMessage::Republish)?;
+                }
             }
             RootSupervisorMessage::PrepareShutdown => {
                 info!("PrepareShutdown received -- nothing to drain");
@@ -635,5 +643,165 @@ mod tests {
                 .iter()
                 .all(|a| admission::address_problem(*a).is_some())
         );
+    }
+
+    /// The three times reach the supervisor, as one value that depends on each.
+    #[tokio::test]
+    async fn the_times_are_followed_and_a_change_to_one_takes_effect() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (client, _) = Actor::spawn(
+            None,
+            Sink {
+                received: received.clone(),
+            },
+            (),
+        )
+        .await
+        .unwrap();
+
+        struct Idle;
+        #[async_trait]
+        impl Actor for Idle {
+            type Msg = RootSupervisorMessage;
+            type State = Arc<Mutex<usize>>;
+            type Arguments = Arc<Mutex<usize>>;
+            async fn pre_start(
+                &self,
+                _: ActorRef<Self::Msg>,
+                republished: Self::Arguments,
+            ) -> Result<Self::State, ActorProcessingErr> {
+                Ok(republished)
+            }
+            async fn handle(
+                &self,
+                _: ActorRef<Self::Msg>,
+                message: Self::Msg,
+                republished: &mut Self::State,
+            ) -> Result<(), ActorProcessingErr> {
+                if matches!(message, RootSupervisorMessage::Republish) {
+                    *republished.lock().unwrap() += 1;
+                }
+                Ok(())
+            }
+        }
+        let republished = Arc::new(Mutex::new(0));
+        let (myself, _) = Actor::spawn(None, Idle, republished.clone()).await.unwrap();
+
+        let env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let in_force = polar_env::Config::builder(&env)
+            .register(&settings::SECTION)
+            .build();
+        let configuration = ConfigurationHandle::spawn(
+            None,
+            "git-repo-controller",
+            in_force,
+            None,
+            myself.get_cell(),
+        )
+        .await
+        .unwrap();
+        let times = configuration
+            .follow_group(
+                settings::VARIABLES,
+                settings::Times::read,
+                &myself,
+                RootSupervisorMessage::TimesChanged,
+            )
+            .await
+            .unwrap();
+        assert_eq!(times.republish, Duration::from_secs(60));
+        assert_eq!(
+            configuration
+                .dynamic_settings_problems(&[&settings::SECTION])
+                .await
+                .unwrap(),
+            Vec::<String>::new()
+        );
+
+        struct Nothing<M>(std::marker::PhantomData<fn() -> M>);
+        #[async_trait]
+        impl<M: ractor::Message> Actor for Nothing<M> {
+            type Msg = M;
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(&self, _: ActorRef<M>, _: ()) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+        }
+        let (infrastructure, _) = Actor::spawn(None, Nothing(std::marker::PhantomData), ())
+            .await
+            .unwrap();
+        let (health, _) = Actor::spawn(None, Nothing(std::marker::PhantomData), ())
+            .await
+            .unwrap();
+        let mut control = Control::new(now_ms());
+        control.set_explicit(vec![config("https://example.org/a.git")]);
+        let mut state = RootSupervisorState {
+            tcp_client: TcpClient::from_actor_ref(client),
+            healthcheck: HealthHandle::new(health),
+            infrastructure,
+            configuration,
+            times,
+            next_republish: None,
+            control,
+            judging: false,
+            judge_again: false,
+            last_announced: None,
+            shutting_down: false,
+        };
+
+        // With the warm-up in force the set is announced as incomplete.
+        RootSupervisor::announce_set(&mut state, false).await;
+        assert_eq!(state.last_announced.as_ref().map(|set| set.1), Some(false));
+
+        // A warm-up of none, and the same interval: no announcement is hurried, and the next is complete.
+        let shorter_warmup = settings::Times {
+            warmup: Duration::ZERO,
+            ..times
+        };
+        RootSupervisor
+            .handle(
+                myself.clone(),
+                RootSupervisorMessage::TimesChanged(shorter_warmup),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(*republished.lock().unwrap(), 0);
+        RootSupervisor::announce_set(&mut state, false).await;
+        assert_eq!(state.last_announced.as_ref().map(|set| set.1), Some(true));
+
+        // A new interval does not wait out the old one.
+        let soon = settings::Times {
+            republish: Duration::from_secs(5),
+            ..shorter_warmup
+        };
+        RootSupervisor
+            .handle(
+                myself.clone(),
+                RootSupervisorMessage::TimesChanged(soon),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(*republished.lock().unwrap(), 1);
+        assert_eq!(state.times, soon);
+
+        // However many Republish came, only one waits: the earlier ones' timers do not go on as loops of their own.
+        state.times.republish = Duration::from_millis(40);
+        for _ in 0..3 {
+            RootSupervisor
+                .handle(
+                    myself.clone(),
+                    RootSupervisorMessage::Republish,
+                    &mut state,
+                )
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(*republished.lock().unwrap(), 2);
     }
 }

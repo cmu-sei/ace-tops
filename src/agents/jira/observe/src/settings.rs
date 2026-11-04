@@ -34,7 +34,7 @@ use url::Url;
 
 // Every setting is Dynamic (the maintainer, 2026-11-01: an agent whose own non-secret settings are Static has not been
 // properly migrated to the builder): a signed update changes it while the agent runs, and the supervisor starts the
-// observers again with it (`supervisor.rs`, `settings_changed`). The egress section stays Static: it is the cluster's
+// observers again with it (`supervisor.rs`, `follow_settings`). The egress section stays Static: it is the cluster's
 // setting, and its CA a mounted file.
 
 /// The address of the Jira site.
@@ -42,6 +42,7 @@ pub static JIRA_URL: Required<String> = Required::text(
     "JIRA_URL",
     "the Jira site's address, for example https://jira.example.org (a context path such as https://host/jira is kept)",
 )
+.example("https://jira.example.org")
 .dynamic();
 
 /// The explicit opt-in to read the site without a credential, as the public sees it.
@@ -58,6 +59,7 @@ pub static JIRA_DEPLOYMENT: Optional<String> = Optional::text(
     "cloud, server or datacenter, used when the site's serverInfo does not say its deploymentType; when unset too \
      it follows the address (an atlassian.net site is cloud). Any other value is refused at start",
 )
+.example("cloud")
 .dynamic();
 
 pub static QUERY_DATE: Optional<String> = Optional::text(
@@ -65,23 +67,16 @@ pub static QUERY_DATE: Optional<String> = Optional::text(
     "a date, YYYY-MM-DD or YYYY-MM-DD HH:MM, from which the first pull asks for issues (updated > date) when the \
      graph has none; unset pulls all of them. Any other value is refused at start",
 )
+.example("2026-01-01")
 .dynamic();
 
-static VARIABLES: &[&dyn Described] = &[&JIRA_URL, &JIRA_ANONYMOUS, &JIRA_DEPLOYMENT, &QUERY_DATE];
+pub static VARIABLES: &[&dyn Described] =
+    &[&JIRA_URL, &JIRA_ANONYMOUS, &JIRA_DEPLOYMENT, &QUERY_DATE];
 
 /// Nothing holds between the variables: the credential is not a variable but the signed `credentials` runtime
 /// section (`crate::credentials`), which reading anonymously does without.
 fn relations(_env: &dyn Env) -> Vec<String> {
     Vec::new()
-}
-
-/// Whether a change to the variables named `changed` touches what the observers are started with: the section's
-/// own, or the egress section's (Static today, so never changed while the agent runs).
-pub fn touches_the_observers(changed: &[String]) -> bool {
-    VARIABLES
-        .iter()
-        .chain(polar::egress::SECTION.vars.iter())
-        .any(|v| changed.iter().any(|name| name == v.desc().name))
 }
 
 /// The section the Jira observer registers.
@@ -373,10 +368,10 @@ mod tests {
         assert!(JiraSettings::read(&config(&[])).is_err());
     }
 
-    /// Every setting may be changed while the agent runs (a signed update), and a change to one, and to nothing
-    /// else the observers use, starts them again.
+    /// Every setting may be changed while the agent runs (a signed update). That a change to one reaches the
+    /// observers is the supervisor's test, `every_setting_is_followed_and_what_the_observers_get_depends_on_each`.
     #[test]
-    fn every_setting_is_dynamic_and_a_change_to_one_starts_the_observers_again() {
+    fn every_setting_is_dynamic() {
         for v in VARIABLES {
             assert_eq!(
                 v.desc().mutability,
@@ -384,15 +379,7 @@ mod tests {
                 "{}",
                 v.desc().name
             );
-            assert!(
-                touches_the_observers(&[v.desc().name.to_string()]),
-                "{}",
-                v.desc().name
-            );
         }
-        assert!(!touches_the_observers(&["RUST_LOG".to_string()]));
-        assert!(!touches_the_observers(&[]));
-        assert!(touches_the_observers(&["POLAR_EGRESS_PROXY".to_string()]));
     }
 
     /// The token and the email are not settings any more: the credential is the signed `credentials` runtime

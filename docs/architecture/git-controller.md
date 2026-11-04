@@ -149,7 +149,7 @@ published. Since 2026-10-30 the state agent (`soft-state.md`) is meant to answer
 
 There are two kinds of configuration for these agents, and they need different authors:
 
-- **Deployment configuration** (`type: configuration`): the agent's own Dynamic variables, such as the log level.
+- **Deployment configuration** (`type: configuration`): the agent's own Dynamic variables, such as the log level (`dynamic-settings.md`).
   Whoever may change it can change how the agent runs. Capability `c:update-configuration`.
 - **Runtime configuration** (`type: runtime`): what the agent works on. Which repositories, under what rules,
   with which credentials. A policy author may change it and cannot touch the log level, the shutdown budget or

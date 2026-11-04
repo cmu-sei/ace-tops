@@ -2942,6 +2942,7 @@ dependencies = [
  "polar",
  "polar-agent-builder",
  "polar-env",
+ "polar-health",
  "polar-scudo",
  "ractor",
  "rkyv",
@@ -6015,6 +6016,7 @@ dependencies = [
 name = "polar-env"
 version = "1.0.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
 ]

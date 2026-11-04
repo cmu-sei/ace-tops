@@ -63,7 +63,7 @@ Each resolved value is reported with its source. This is the catalog's layering
 (kind, workload, target) carried into runtime, with provenance.
 
 **Mutability.** Each declaration says whether it is `Static` (the default) or `Dynamic`. Only
-a Dynamic variable accepts a scheduled override and notifies subscribers. This is how the
+a Dynamic variable accepts a scheduled override, and the actor that holds it follows it (`dynamic-settings.md`). This is how the
 code, not the repository, decides what may change while the agent runs. TLS paths, the broker
 address, the capabilities and the health safety invariants stay Static.
 
@@ -203,7 +203,7 @@ is not higher than the last applied (replay), keeps the latest 100 updates (name
 announces a change on an output port; subscribers then read `ConfigurationHandle::current()` again. The handle
 is `AgentResources::configuration` (and `ServiceResources::configuration`), beside `config`, which stays the
 startup snapshot. Nothing yet sends it an update, no variable in the workspace is `Dynamic` apart from tests, and
-it does not decide who may send one.
+it does not decide who may send one. *(All since built: signed configuration, and what follows a variable, `dynamic-settings.md`.)*
 
 Next, in order: the scheduler integration (a subscriber on `agent.<id>.schedule` that turns a `ScheduleNotification`
 into an update), signed configuration in front of `apply`, then the credentials agent's use of it. *(Done another way:
