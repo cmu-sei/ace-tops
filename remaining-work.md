@@ -855,8 +855,8 @@ Each step is taken in bites, each reported before the next.
   - *Bite 4, the rest:* new, authority catch-up, credentials requests, the git flow (fix `proposal_flow`, which names a Jira consumer as the proposer;
     only `discover_repo` proposes), image publish and release; shaded, the registry gate and the pod reaper. Link the unlinked.
   - *After the merge:* anything of GitLab, OpenAPI, build-processor, the orchestrator; the graph write path.
-  - *Read in the code, 2026-11-04:* `signed_configuration_delivery` had the scheduler observer refusing an import and verifying early. Neither is built: both are shaded now, and
-    `signed-configuration.md` says so. The target verifies regardless.
+  - *Read in the code, 2026-11-04:* `signed_configuration_delivery` had the scheduler observer refusing an import and verifying early. Neither was built. The refusal is now
+    (`signed-configuration.md`); the early verification stays shaded, and the target verifies regardless. Still to bring into line: `infra/seed.nu` reads the repository's documents with `dhall-to-json`, imports on.
 - [ ] **Stale text** (`docs/` and comments that no longer say what is true):
   - `docs/architecture/git/agents.md` is conceptually sound but stale (2026-10-10): its tree shows `GitObserverRoot` owning the client, it
     omits the `GIT_REPO_CONFIG_EVENTS` configuration path (the README describes `GIT_AGENT_CONFIG` JSON instead), topics, shutdown and

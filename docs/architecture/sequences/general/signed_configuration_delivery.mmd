@@ -20,7 +20,7 @@
 %% DM26-0670
 
 %% The runtime side, as built (2026-11-04, docs/architecture/signed-configuration.md, "How it fits together"), read against polar-scheduler and polar-agent-builder/src/signed.rs.
-%% The shaded step is designed and not built: the observer verifies nothing today, and nothing refuses a file with an import. The target verifies regardless.
+%% The shaded step is designed and not built: the observer verifies nothing today. The target verifies regardless.
 %% An agent that has just registered asks for what is held for it: general/configuration_replay.
 sequenceDiagram
     participant Server as Polar git server
@@ -38,11 +38,10 @@ sequenceDiagram
     Sync->>Server: git pull --ff-only (mTLS, workload certificate)
     Note over Sync: It also pulls on its interval, and a failed pull waits for the next
     Sync-->>Watch: the checkout changed, seen by the file watcher
-    Watch->>Watch: evaluate the .dhall under permanent, adhoc or ephemeral to JSON,<br/>and hold it for replay
+    Watch->>Watch: evaluate the .dhall under permanent, adhoc or ephemeral to JSON, imports off:<br/>a file with an import is refused, and what it names is not read. Hold the rest for replay
 
     rect rgb(235, 219, 178)
     Note over Watch: DESIGNED (signed-configuration.md), not built
-    Watch->>Watch: refuse a file with an import
     Watch->>Watch: verify with the target's rules, drop and log if invalid
     end
 

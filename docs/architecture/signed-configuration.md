@@ -82,7 +82,7 @@ imports they like. `polar-sign` then evaluates it to normal form, which has no i
 signs it, and writes the final single file. What is committed is that rendered file. The observer
 evaluates a file with nothing left to resolve, so the signer's and the observer's evaluations cannot
 differ, and the scheduler sends only a document that has already been verified once. A committed file
-that still contains an import is refused. *(Read against the code, 2026-11-04: neither that verification nor that refusal is built, below.)*
+that still contains an import is refused (built 2026-11-04; the early verification is not, below).
 
 **What is signed.** The canonical encoding of `payload` after evaluation: UTF-8 JSON, object keys
 sorted, no insignificant whitespace, preceded by the domain-separation line
@@ -106,7 +106,9 @@ exposes it.)
 
 1. The document parses, has exactly the two fields, and the signature block has exactly its three.
    (A committed document that still contains a Dhall import is refused where the file is read, before
-   it becomes JSON: not built.)
+   it becomes JSON, and what it names is not read or asked for: built 2026-11-04, `watcher.rs`,
+   `evaluate_dhall_file_to_json`; `polar-sign`'s `evaluate` reads a file to verify the same way. Dhall's fallback,
+   `import ? other`, takes its other side, so such a file evaluates to what it says in plain text.)
 2. The signature block's chain verifies to the Polar CA the receiver already pins, and the signing
    certificate is valid now, with `digitalSignature` key usage and a key of a type this system signs with,
    the one the document claims. The signature verifies over the canonical encoding of `payload`.
