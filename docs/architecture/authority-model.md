@@ -397,7 +397,7 @@ directly, not through the observer or the agent meant to, could do. Read from th
 | `credentials-store-secret-requests` | encryption agents | the publisher, a payload encrypted to the escrow key, and Cedar | yes | only what it may itself |
 | `credentials-retrieve-secret-requests` | encryption agents | the publisher, and Cedar | yes | only what it may itself |
 | `credentials-retrieve-agent-escrow-keypair-requests` | polar-init | the publisher, which names the keypair (`agent_escrow_keypair_bootstrap.rs:65`) | yes | only its own keypair |
-| `credentials-decrypt-on-behalf-of-requests` | encryption agents | the publisher, and Cedar | yes | only what it may itself |
+| `credentials-decrypt-on-behalf-of-requests` | nothing in the catalog, and no `CryptoMessage` (read 2026-11-04) | the publisher, and Cedar | yes | only what it may itself |
 
 *Since 2026-10-27 and 2026-10-28* (`key-custody.md`, steps 2 and 9): the escrow keypair's issuance and retrieval, and
 the store of `agent-escrow-keypair:<X>`, are answered to X's custodian alone (`custody.<X>`, whose certificate names

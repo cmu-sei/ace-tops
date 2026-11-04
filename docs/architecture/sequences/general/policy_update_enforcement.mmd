@@ -19,9 +19,8 @@
 %%
 %% DM26-0670
 
-%% How a signed policy reaches every agent and how it is enforced. Built: steps 1 to 12 (2026-10-13, authority-distribution.md).
-%% Designed, not built (policy-enforcement.md, decisions of 2026-10-21): the broker as a holder (stage 5), aging, the bounded
-%% degraded window and the restart into init (stage 6).
+%% How a signed policy reaches every agent and how it is enforced, as built (2026-11-04, authority-distribution.md, policy-enforcement.md, stage 5b). Catching up is
+%% general/authority_snapshot_catchup. Designed, not built, and shaded (policy-enforcement.md, stage 6): aging, the bounded degraded window, the restart into init.
 sequenceDiagram
     autonumber
     actor Admin as Administrator
@@ -39,27 +38,25 @@ sequenceDiagram
     GS->>Sch: RepoChanged
     Sch->>CA: agent.credentials-agent.configuration (forwarded unverified, the receiver verifies)
     CA->>CA: verify chain, signer's c:update-policy (capability only, Cedar never governs its own authorship),<br/>revocation, version higher, then the schema
-    CA->>CA: re-sign as an authority Update with the escrow key, apply locally
+    CA->>CA: re-sign as an authority Update with the escrow key, numbered through the ledger, apply locally
     CA->>Bk: publish polar-authority-updates
+    Bk->>Bk: its Listener hears it on the way through, only from the identity that may publish it:<br/>the same AuthorityCore, for its own subscribe and publish decisions
+    Bk->>Bk: JudgeSubscriptions: each Listener judges its connections' subscriptions again,<br/>and one now refused is dropped
     Bk->>Ag: deliver
-    Ag->>Ag: AuthorityCore: published_by is the credentials agent, key pinned from the first snapshot,<br/>signature, sequence: SetPolicy to the PolicyActor (a set that does not validate leaves the old one)
+    Ag->>Ag: AuthorityCore: published_by is the credentials agent,<br/>key pinned from a certified snapshot, signature, sequence:<br/>SetPolicy to the PolicyActor<br/>(a set that does not validate leaves the old one)
+    Note over Ag: a jump in the sequence asks for a<br/>snapshot (authority_snapshot_catchup)
 
-    rect rgb(235, 219, 178)
-    Note over Bk: DESIGNED: the broker holds an authority too, fed in process from its own Listener
-    Bk->>Bk: the same AuthorityCore, for its subscribe and publish decisions
+    Note over Bk,Ag: a decision, in the agent and in the broker alike: Cedar first,<br/>the certificate where no policy speaks (both directions)
+
+    loop half an hour with no update
+        CA->>Bk: the snapshot republished (REPUBLISH_AFTER), for one that missed an update
+        Bk->>Ag: deliver
     end
 
-    loop every 30 minutes, the heartbeat
-        CA->>Bk: snapshot republished
-        Bk->>Ag: deliver, the clock restarts (designed)
-    end
-
-    Note over Ag: a decision: Cedar first, the certificate where no policy speaks (both directions)
-
     rect rgb(235, 219, 178)
-    Note over CA,Ag: DESIGNED: the credentials agent is unreachable
+    Note over CA,Ag: DESIGNED (policy-enforcement.md, stage 6): the credentials agent is unreachable
     Ag->>Ag: 45 minutes without hearing: ask for a snapshot
-    Ag->>Ag: degraded: keep deciding with the cached policy, the certificate where it is silent
-    Ag->>Ag: 90 minutes (POLAR_AUTHORITY_MAX_AGE_SECS): fail the health check
-    Note over Ag: the shutdown pipeline, exit 1, the Job's new pod waits in init<br/>for the credentials agent (health_rejuvenation)
+    Ag->>Ag: degraded: keep deciding with the cached policy,<br/>the certificate where it is silent
+    Ag->>Ag: 90 minutes (POLAR_AUTHORITY_MAX_AGE_SECS):<br/>fail the health check
+    Note over Ag: the shutdown pipeline, exit 1, and the pod restarts in place,<br/>polar-init waiting for the credentials<br/>agent (health_rejuvenation)
     end

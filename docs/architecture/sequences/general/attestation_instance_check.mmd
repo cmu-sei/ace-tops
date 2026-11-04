@@ -31,7 +31,7 @@ sequenceDiagram
     participant API as Kubernetes API
     participant CI as cert-issuer
     participant Sch as Configuration agent
-    participant Repo as Deployment repository, on Polar's git server
+    participant Repo as Deployment repository,<br/>on Polar's git server
 
     Note over Att,API: read from what it already holds, not a call per question
     Att->>API: watch pods, ReplicaSets, Deployments, StatefulSets and Jobs in Polar's namespaces (get, list, watch only)

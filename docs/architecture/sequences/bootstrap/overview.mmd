@@ -19,10 +19,10 @@
 %%
 %% DM26-0670
 
-%% The whole bootstrap of a Polar cluster from the sandbox-local target, in three phases.
+%% The whole bootstrap of a Polar cluster from the sandbox-local target, in four phases. Read against infra/up.nu on 2026-11-04.
 %% This is the code in infra/ (traced in docs/architecture/cluster-bootstrap.md), run end to end on a podman
 %% dev node on 2026-10-19, and from the dev pod on 2026-10-21 with the registry and the deployment git server in the cluster.
-%% A target that does not set gitops: true applies its layers itself. Shaded: designed, not built (policy-enforcement.md).
+%% A target that does not set gitops: true applies its layers itself.
 sequenceDiagram
     autonumber
     actor Op as Operator
@@ -40,9 +40,7 @@ sequenceDiagram
     Up->>Infra: every image the target runs, before the render: copied (--import-from) or built (--dev)
     Up->>K: ask each agent's image for its scaffold, as a pod in a scratch namespace (cached by digest)
     Up->>Up: render the manifests (infra/render.nu), the registry the nodes use resolved once
-    rect rgb(235, 219, 178)
-    Up->>Up: DESIGNED: the render writes each workload's declared topics into the issuance floors
-    end
+    Up->>Up: the render writes each workload's declared topics into the issuance floors
     Up->>K: apply namespaces, make the cluster CA, create the secrets (polar-admin-grant, secrets.nu)
     Up->>Infra: apply the deployment git server with its own PKI, re-seeded from mirror.git (deploy-repo.nu ensure)
     Up->>Infra: commit the layers there, signed with the pipeline certificate (deploy-repo.nu publish)
@@ -60,8 +58,10 @@ sequenceDiagram
     rect rgb(204, 220, 232)
     Note over Op,W: PHASE 3 - after Flux. up.nu does what needs running workloads
     Up->>W: wait for the core services, port-forwards, then the admin flow (accounts and certificates)
-    Up->>Infra: record the first admin as the git server's administrator, publish again, Flux restarts it
-    Up->>W: sign and push the first policy to the schedules repository
-    Up->>Op: ask to close the browser, import the certificate, check Neo4j
+    Up->>Infra: record the first admin as the git server's administrator, publish again, Flux rolls its Deployment
+    Up->>W: sign and push the first policy, the state agent's sections and, from sops, jira-observer's credential
+    Note over Up,W: PHASE 4 - the handoff (phase4-handoff)
+    Up->>W: wait for the copy, point Flux at Polar's git server, publish there, retire the bootstrap server,<br/>and report what the attestation agent says of itself
+    Up->>Op: if the browser lacks it: ask to close the browser, import the certificate. Check Neo4j
     Up->>Op: report that the target is up
     end

@@ -19,42 +19,57 @@
 %%
 %% DM26-0670
 
+%% A signed command. The agent's side is built, in every builder agent, and tested, but no agent declares a command yet. Everything that would bring one to it, and write down
+%% what became of it, is designed and shaded (docs/architecture/commands.md, "Built so far"). Nothing subscribes to polar-command-outcome. What a command in the repository
+%% does today: the scheduler processor records it as unroutable, with why, and forwards it nowhere.
 sequenceDiagram
+    autonumber
     actor Admin
     participant Sign as polar-sign
     participant Processor as Scheduler processor
     participant Graph as Neo4j
     participant Cassini
-    participant Agent as Target agent
+    participant Agent as Target agent<br/>(command actor)
     participant Handler as Command handler
 
+    rect rgb(235, 219, 178)
+    Note over Admin,Cassini: DESIGNED, not built
     Admin->>Sign: build and sign backup-now for the agent
     Sign-->>Admin: signed command with an id and an expiry
     Admin->>Processor: submit, by repository first, front door later
     Processor->>Graph: write a Command node and its status
-    Processor->>Graph: mark it dispatched
-    Processor-)Cassini: command on agent.name.command
-    Cassini-)Agent: command
+    Processor->>Graph: mark it dispatched, and never dispatch an id twice
+    Processor-)Cassini: command on agent.NAME.command
+    end
 
-    Agent->>Agent: verify signer, target, authority and time
-    Agent->>Agent: declared, arguments valid, not seen, not draining
+    Cassini-)Agent: command on agent.NAME.command, which every builder agent subscribes to
+    Agent->>Agent: the notification decodes and names this agent. Otherwise dropped and logged, with no outcome
+    Agent->>Agent: two fields, chain, signature, type command, a strict payload, the target
+    Agent->>Agent: authority: policy first, then c:run-command
+    Agent->>Agent: not revoked, and within its window (past it: expired)
+    Agent->>Agent: declared, arguments valid
+    Agent->>Agent: not already seen (duplicate), not exclusive and busy, not draining
     alt any check fails
-        Agent-)Cassini: CommandOutcome refused and the step
+        Agent-)Cassini: CommandOutcome refused and the step, or expired, or duplicate
     else every check passes
+        Agent->>Agent: remember the id, in a bounded set
         Agent-)Cassini: CommandOutcome accepted
         Agent->>Handler: run with the declared timeout
         Agent-)Cassini: CommandOutcome started
         alt it finishes
             Handler-->>Agent: done
             Agent-)Cassini: CommandOutcome succeeded and how long
-        else it fails or times out
+        else it fails, panics, times out, or a shutdown interrupts it
             Handler-->>Agent: error
             Agent-)Cassini: CommandOutcome failed and why
         end
     end
-    Cassini-)Processor: CommandOutcome
-    Processor->>Graph: write an outcome node, linked to the command
 
+    rect rgb(235, 219, 178)
+    Note over Processor,Cassini: DESIGNED, not built
+    Cassini-)Processor: CommandOutcome on polar-command-outcome
+    Processor->>Graph: write an outcome node, linked to the command
     Note over Processor,Graph: Dispatched, but no outcome by the expiry
     Processor->>Graph: write unanswered, with no retry
     Admin->>Sign: a new command has a new id
+    end

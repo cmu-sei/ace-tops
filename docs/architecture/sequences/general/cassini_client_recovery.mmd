@@ -56,7 +56,7 @@ sequenceDiagram
     T-->>D: ClientEvent::Registered: the builder sends each subscription again, and asks for its documents again
     F->>T: the whole outbox again, in order, with the numbers it had: 42 then 43
     T->>B: PublishRequest 42, 43
-    Note over B: A broker that accepted 42 before the connection failed has no record of having done so, and accepts it again.
+    Note over B: A broker that accepted 42 before the connection failed<br/>has no record of having done so, and accepts it again.
     B-->>T: PublishRequestAck(42), PublishRequestAck(43), each for its own message
     T-->>F: Acknowledged(42), Acknowledged(43)
     F->>F: the outbox is empty

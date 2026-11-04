@@ -20,9 +20,10 @@
 %% DM26-0670
 
 %% Phase 3 of the sandbox-local bootstrap: what up.nu does once the workloads run.
-%% These steps are the code in infra/up.nu (step_forwards, step_admin, step_seed, step_browser,
+%% These steps are the code in infra/up.nu (step_forwards, step_admin, step_seed, step_handoff, step_browser,
 %% report_egress) and run after Flux (or after the apply loop, for a target up.nu applies itself).
-%% Each checks whether it is already done. Run end to end on a gitops target on 2026-10-19.
+%% Each checks whether it is already done. Run end to end on a gitops target on 2026-10-19, read against the code on 2026-11-04.
+%% Its own numbering is the plan's steps 12 to 17.
 %% The bootstrap-admin hop between polar-admin-grant and the credentials agent is drawn in
 %% general/admin_bootstrap_identity.mmd.
 sequenceDiagram
@@ -41,7 +42,7 @@ sequenceDiagram
     participant N4 as Neo4j :7473
 
     Note over Up,K: 1 wait for the core services
-    Up->>K: wait_pods: pods name=cert-issuer, job-name=cassini, credentials-agent,<br/>credentials-agent-observer, and rollout status of statefulset polar-neo4j<br/>(polar-graph), up to 10 minutes
+    Up->>K: wait_pods: pods name=cert-issuer, name=cassini, credentials-agent,<br/>credentials-agent-observer, and rollout status of statefulset polar-neo4j<br/>(polar-graph), up to 10 minutes
 
     Note over Up,Fwd: 2 port-forwards (only those the target needs)
     Up->>Fwd: pgrep for each svc/NAME, start the missing ones:<br/>observer 8081, neo4j 7473, git 8443 (logs in files, restarted if they drop)
@@ -51,30 +52,33 @@ sequenceDiagram
     Up->>Up: a stored ca.pem from another cluster? move the directory aside to<br/>polar-admin.old-TIMESTAMP, delete nothing
     Up->>Adm: just admin-bootstrap (skipped if bootstrap-admin.crt exists)
     Adm->>K: polar-ca to ca.pem
-    Adm->>CAg: polar-admin-grant bootstrap: a CSR and the Kubernetes credential
+    Adm->>CAg: polar-admin-grant bootstrap: Begin with the Kubernetes credential, a key and CSR, then Complete
     CAg-->>Adm: bootstrap-admin.crt and .key (the key never left this machine)
     Up->>Adm: just admin-provision U E (skipped if U.crt exists)
-    Adm->>CAg: provision-account, signed with the bootstrap certificate:<br/>permissions, capabilities (provision-account, grant, update-configuration,<br/>run-command, update-policy, update-runtime, update-groups)
-    CAg-->>Adm: the account exists and the bootstrap certificate is spent
+    Adm->>CAg: provision-account, signed with the bootstrap certificate:<br/>permissions, capabilities (provision-account, grant, update-configuration,<br/>run-command, update-policy, update-runtime, update-groups, revoke)
+    CAg-->>Adm: the account is pending, and another ProvisionAccount with the bootstrap certificate<br/>is refused: BootstrapCertificateSpent
     Up->>Adm: just admin-claim U E
-    Adm->>CAg: claim: a keypair made here, a CSR sent
+    Adm->>CAg: claim: Begin(username, email) gives the account id, a key is made and written here,<br/>a CSR naming it, then Complete
     CAg-->>Adm: U.crt, U.key, U.chain.pem
 
     Note over Up,GS: 4 seed the schedules repository with the first signed policy
     Up->>K: wait_pods: polar-git-server, polar-scheduler-observer, polar-scheduler, credentials-agent
-    Up->>Up: openssl x509 -ext subjectAltName on U.crt: the first DNS name is U's identity,<br/>and the seed documents must name agents that exist
+    Up->>Up: openssl x509 -ext subjectAltName on U.crt: the first DNS name is U's identity,<br/>U's certificate must carry update-policy and update-runtime, and the seed documents must name agents that exist
     alt this cluster's inputs do not yet name U as an administrator of the git server
         Up->>Up: write targets/T/cluster-inputs.nuon (gitignored, tied to this cluster by the sha256 of its CA)
         Up->>Up: render again, so the git server's configuration names U
         Up->>Up: publish a second signed commit (deploy-repo.nu publish), its provenance.json names the<br/>inputs file, its digest, the cluster and the values (flux.nu wait for Flux, or the apply loop)
-        Note over Up,GS: Flux recreates the polar-git-server Job: the fingerprint of its ConfigMap, in the pod template,<br/>changed. The step waits for the pods again before it goes on.
+        Note over Up,GS: Flux rolls the polar-git-server Deployment: the fingerprint of its ConfigMap, in the pod template,<br/>changed. The step waits for the pods again before it goes on.
     end
     Up->>Git: git clone polar-schedules over mTLS with U's certificate<br/>(through the 8443 forward, 6 tries 5 seconds apart: the forward may be reconnecting to a pod that was just replaced)
     Git->>GS: clone
     GS-->>Git: the repository (a 403 here means the git server does not know U: seed refused_hint says where to look)
     loop each seed document not yet in the repository
         Up->>Sign: polar-sign runtime --agent A --section S --version N --body-file - --user U<br/>(the body on standard input from seed.nu)
-        Sign-->>Up: a signed document, written to permanent/A/S.dhall in the clone
+        Sign-->>Up: a signed document, written in the clone: permanent/credentials-agent-policy.dhall,<br/>soft-state-observer-schema.dhall (computed from the scaffolds), soft-state-processor-agents.dhall (from the catalog)
+    end
+    opt the target reads Jira with a credential, sops holds jira_token, and no credentials section is there yet
+        Up->>Sign: polar-sign sign, sealing it to jira-observer's escrow certificate: permanent/jira-observer/credentials.dhall.<br/>The token on standard input. A seal that fails is said, and the rest goes on (escrowed_credential_lifecycle)
     end
     Up->>Git: git add, commit "feat(seed): ...", push (as U)
     Git->>GS: push: ACL by U's identity, append push-log.jsonl
@@ -84,7 +88,10 @@ sequenceDiagram
     CAg->>CAg: verify the signature and the signer's capabilities (update-policy), apply and publish the policy
     Up->>K: kubectl logs credentials-agent until it says the policy is published (3 minutes)
 
-    Note over Up,N4: 5 browser certificate and Neo4j password
+    Note over Up,GS: 5 hand the deployment to Polar's git server (phase4-handoff)
+    Up->>GS: wait for the copy, point Flux there, publish there, retire the bootstrap server,<br/>and report what the attestation agent says of itself
+
+    Note over Up,N4: 6 browser certificate and Neo4j password
     Note over Up,Brw: from the dev pod (bin/polar-dev) the browser is on the operator's machine: this step pauses<br/>for "bin/polar-dev cert U" and "bin/polar-dev forward" there, then checks Neo4j as below
     Up->>Brw: read the Librewolf certificate store (read-only): does it trust this CA<br/>and hold U's current certificate?
     alt something is missing or stale
@@ -100,7 +107,7 @@ sequenceDiagram
         N4-->>Up: accepted
     end
 
-    Note over Up,K: 6 report
+    Note over Up,K: 7 report
     Up->>K: kubectl -n polar get pods
     Up->>K: egress probe: git ls-remote against a public repository from inside the<br/>polar-scheduler-observer pod. Only a note, never a failure
     Up-->>Op: Target T is up

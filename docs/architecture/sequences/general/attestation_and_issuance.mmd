@@ -83,7 +83,7 @@ sequenceDiagram
     note over Attestation: Attestation service must now verify that the service is running on the provided host.
 
     Attestation->>+Host: SSH into Host and Run Validation Script
-    note left of Host: **Host Validation:**<br>- Attestation service introspects running containers.<br>- Verifies Runtime ID matches the actual process.
+    note left of Host: **Host Validation:**<br>- Attestation service<br/>introspects running containers.<br>- Verifies Runtime ID<br/>matches the actual process.
 
     Host->>Host: Check Running Containers (Docker, Containerd, Podman, Kubernetes)
     Host-->>-Attestation: Confirm Runtime State

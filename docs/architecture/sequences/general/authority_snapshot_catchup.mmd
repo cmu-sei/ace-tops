@@ -1,0 +1,84 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% How an agent catches up with the credentials agent's authority, as built (2026-11-04, docs/architecture/authority-distribution.md, "Snapshots", "Pruning the
+%% revoked set", "Pinning the key to the CA"). How an update starts is general/policy_update_enforcement, and what a revoked serial does is general/revocation.
+%% The same core (AuthorityCore) runs in every builder agent, in the broker and in each custody daemon's custodian session.
+sequenceDiagram
+    autonumber
+    participant Pub as credentials agent<br/>(publisher)
+    participant Ledger as credentials agent<br/>(ledger)
+    participant Bk as Cassini broker
+    participant Leaf as a leaf: agent, broker or daemon<br/>(AuthorityCore)
+    participant CI as cert-issuer
+
+    Note over CI,Pub: The key it signs with is its escrow key. Nothing<br/>certifies a key made in its own pod, so it asks
+    Pub->>CI: /internal/issue, a Signing certificate for its own identity, a CSR made with that key
+    CI-->>Pub: the certificate. Renewed at half its life,<br/>tried again every few seconds while cert-issuer cannot answer
+    Note over Pub: No snapshot goes out before this one, and one goes out at once when it comes
+
+    Note over Bk,Leaf: When a leaf asks
+    alt its Cassini client registers, or registers again
+        Leaf-)Bk: AuthoritySnapshotRequest on polar-authority-snapshot-requests
+    else it has no key pinned, every 30 s
+        Leaf-)Bk: the same
+    else an update shows a jump in the sequence, at most once in 5 s
+        Leaf-)Bk: the same
+    else the broker refused what its own gate let through: it may be behind
+        Leaf-)Bk: the same
+    else it is the broker, once at its start, which never registers
+        Note over Bk: Asks as a leaf. It waits on the topic until the credentials agent subscribes
+    end
+
+    Bk-)Pub: the request
+    alt no snapshot in the last 5 s
+        Pub-)Bk: the snapshot on polar-authority-snapshot-replies
+    else one went out a moment ago, perhaps before this asker was listening
+        Pub->>Pub: one more when the 5 s end, for everyone who asked in them. None is dropped
+        Pub-)Bk: the snapshot
+    end
+    Note over Pub,Bk: It also republishes after half an hour with no update (REPUBLISH_AFTER), the backstop for one that missed it
+
+    Bk-)Leaf: the snapshot, to every subscriber, stamped with who published it
+    Note over Leaf: The key, the key's certificate chain, and<br/>the latest signed update of each kind:<br/>a bundle of signed updates, not a document signed whole
+
+    Leaf->>Leaf: published by the credentials agent's identity, or ignored:<br/>checked first, so nobody else causes signature work
+    Leaf->>Leaf: the chain goes to its pinned CA, is valid now,<br/>names that identity, carries id-kp-documentSigning,<br/>and is for the key the snapshot names.<br/>Otherwise nothing is believed
+    alt no key pinned yet
+        Leaf->>Leaf: pin it, for good
+    else it is another key, certified or not
+        Leaf->>Leaf: refused and reported: a key that changes<br/>is an incident, never an update
+    end
+    loop each update in it
+        Leaf->>Leaf: verify on its own. One that fails is skipped<br/>and reported, and the rest apply
+        Leaf->>Leaf: a higher version replaces what is<br/>held. A jump here is not a miss
+    end
+    Leaf->>Leaf: policy, groups, revoked serials: to the actors<br/>that hold them, and AuthorityChanged
+
+    Note over Pub,Ledger: The revoked set only grows in the ledger. What is published does not, or every leaf would look through a set that grows with each restart
+    loop every 10 minutes, and on each revocation
+        Pub->>Ledger: PublishedRevocations
+        Ledger-->>Pub: the set, less serials whose certificate ended more than 2 hours ago,<br/>and a version: ever revoked plus ended, which never falls
+        opt the version rose
+            Pub-)Bk: the signed Revoked update on polar-authority-updates
+            Bk-)Leaf: delivered. A smaller set with a higher version replaces the larger
+        end
+    end

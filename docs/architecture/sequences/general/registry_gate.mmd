@@ -1,0 +1,50 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% DESIGNED, nothing built (docs/architecture/registry-gate.md, "Status, 2026-10-20: a design for review"). Open there: where the PKI lives, a push by a Polar account
+%% (c:push-image), a new crate, the gate's own image pinned by digest. Today the registry in the cluster has no authentication (infra/cluster-registry.nu).
+sequenceDiagram
+    autonumber
+    participant Up as up.nu<br/>(the registry step)
+    participant PKI as The deployment's PKI
+    participant Node as A node (kubelet)
+    actor Op as Operator (pusher)
+    participant Gate as The gate
+    participant Reg as The upstream registry<br/>(127.0.0.1:5000 only)
+    participant Log as Append-only log
+    participant Cassini
+
+    rect rgb(235, 219, 178)
+    Note over Up,Cassini: DESIGNED: the gate is the only way in
+    Up->>PKI: make the server certificate and the pusher's client certificate, if absent
+
+    Node->>Gate: pull: plain HTTP, by the NodePort, GET or HEAD under /v2/
+    Gate->>Reg: passed through
+    Gate-->>Node: any other method is refused
+
+    Op->>Gate: push: mTLS, by the ClusterIP through a port-forward, as pusher
+    Gate->>Gate: the exact identity. DELETE is refused to everyone
+    Gate->>Reg: passed through
+    loop each manifest
+        Gate->>Log: who, digest, tag, address
+        Gate-)Cassini: an event, once Cassini runs
+    end
+    end

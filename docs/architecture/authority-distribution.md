@@ -141,6 +141,8 @@ has a lifetime.
 
 ## Snapshots (read from the code, 2026-10-27)
 
+Drawn as built, with pruning and pinning: [`authority_snapshot_catchup`](sequences/general/authority_snapshot_catchup.mmd).
+
 A snapshot is the credentials agent's whole current authority in one message. Live updates come one at a time
 (`polar-authority-updates`); a snapshot is how an agent that has just started, or has fallen behind, catches up.
 

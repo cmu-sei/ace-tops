@@ -21,7 +21,7 @@
 
 %% Phase 2 of the sandbox-local bootstrap: Flux reconciles the deployment repo, layer by layer.
 %% This ran on a podman dev node on 2026-10-19, and from the dev pod on 2026-10-21 (registry and deployment git server in the cluster).
-%% Shaded: designed, not built (policy-enforcement.md, stages 3 and 5). The layers, their order and what each waits for are declared in
+%% Read against infra/ on 2026-11-04. The layers, their order and what each waits for are declared in
 %% infra/targets/T/target.nu (apply_layers) and travel in the repo as the Kustomizations under flux/.
 sequenceDiagram
     autonumber
@@ -36,7 +36,7 @@ sequenceDiagram
     Up->>DGit: git ls-remote as "flux": the commit that was published
     SC->>DGit: git clone over mTLS, presenting the "flux" certificate<br/>(Secret deploy-repo-auth), trusting ca.crt, by its Service, polar-deploy-git.polar-deploy.svc.cluster.local:9443
     DGit->>DGit: the identity "flux" is a reader of deploy-T: allowed
-    DGit-->>SC: the tree at COMMIT (layers/, flux/, provenance.json)
+    DGit-->>SC: the tree at COMMIT (layers/, flux/, provenance.json, deployment-record.json, a README)
     SC->>K: artifact for COMMIT, GitRepository Ready
 
     Note over KC,W: each layer is a Kustomization that dependsOn the one before
@@ -49,18 +49,16 @@ sequenceDiagram
     KC->>K: data: neo4j, postgres, keycloak
     Note over KC,W: No health check on this layer. Neo4j's polar-init waits for the credentials agent,<br/>which is in a later layer that depends on this one: waiting here would never end.<br/>up.nu waits for Neo4j after every layer is applied.
 
-    KC->>K: cassini: cassini-resources, cassini (a Job)
-    KC->>KC: health check: the Endpoints of Service cassini-ip-svc have an address.<br/>This is the gate: a client that starts first attaches to a broker that is about to go away
+    KC->>K: cassini: cassini-resources, cassini (a Deployment)
+    KC->>KC: health check: Deployment cassini is ready.<br/>This is the gate: a client that starts first attaches to a broker that is about to go away
 
-    KC->>K: identity: credentials-agent and credentials-agent-observer (Jobs)
-    KC->>KC: health check: the Endpoints of Service credentials-agent-observer have an address.<br/>The credentials agent itself has no Service and nothing waits for it separately
+    KC->>K: identity: credentials-agent and credentials-agent-observer (Deployments)
+    KC->>KC: health check: Deployments credentials-agent and credentials-agent-observer are ready
 
-    KC->>K: agents: jaeger, ace, kube, jira, git, polar-git-server, scheduler, secret-harness (Jobs)
-    Note over KC,W: A Job that runs until replaced never completes, and Flux's own Job reader<br/>counts only a completed Job as healthy, so a running agent is waited for through the<br/>Endpoints of its Service. A layer with a Job is applied with force: its pod template is immutable.<br/>jira-observer fails when no Jira is set up: expected.
+    KC->>K: agents: jaeger, ace, kube, jira, git, soft-state, polar-git-server, scheduler,<br/>oci-registry-resolver, attestation-agent (Deployments)
+    Note over KC,W: This layer has no wait_for, so no health check. jira-observer with no Jira set up holds the problem<br/>and stays up (held_agent_and_dynamic_setting)
 
-    rect rgb(235, 219, 178)
-    Note over KC,W: DESIGNED: as each workload's pod starts, polar-init gets a certificate carrying its declared topics<br/>(p:pub, p:sub, from the issuance floor the render wrote). The broker, cert-issuer and the credentials agent<br/>run on that floor before any policy exists, and every subscribe and publish is decided at the broker.<br/>(general/topic_floor_issuance)
-    end
+    Note over KC,W: as each workload's pod starts, polar-init gets a certificate carrying its declared topics and groups<br/>(p:pub, p:sub, g:, from the model the render wrote). The broker, cert-issuer and the credentials agent<br/>run on that floor before any policy exists, and every subscribe and publish is decided at the broker.<br/>(general/topic_floor_issuance)
     KC->>K: record each Kustomization Ready at COMMIT
     loop every 5 seconds until the timeout
         Up->>K: every Kustomization Ready, and applied from COMMIT (not an earlier commit)?
@@ -69,10 +67,10 @@ sequenceDiagram
         end
     end
     alt a layer is unhealthy at the timeout
-        Up-->>Up: name the layers and Flux's message, exit non-zero
+        Up-->>Up: name the layers and Flux's<br/>message, exit non-zero
         Note over Up,KC: run the same command again: nothing is redone, it waits
     else all Ready
         Up-->>Up: phase 2 is done
     end
 
-    Note over SC,K: Afterwards, with no one running anything: Flux checks the repo on an interval,<br/>applies a new commit, prunes what left the repo, and puts back what was edited in the cluster.<br/>A Job is recreated when its pod template changes: a rebuilt image changes the digest it names,<br/>and a changed ConfigMap changes the polar.dev/config-hash fingerprint published with it.
+    Note over SC,K: Afterwards, with no one running anything: Flux checks the repo on an interval,<br/>applies a new commit, prunes what left the repo, and puts back what was edited in the cluster.<br/>A Deployment rolls (Recreate) when its pod template changes: a rebuilt image changes the digest it names,<br/>and a changed ConfigMap changes the polar.dev/config-hash fingerprint published with it.

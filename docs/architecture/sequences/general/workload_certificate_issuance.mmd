@@ -42,7 +42,7 @@ sequenceDiagram
     Init->>Obs: POST /workload/session
     Obs->>CA: a session, over Cassini
     CA-->>Init: SessionOffer(id, public key, lifetime), signed, through the observer
-    Init->>Init: the signature holds under the pinned CA,<br/>a signing certificate, naming the credentials<br/>agent. Only then seal
+    Init->>Init: the signature holds<br/>under the pinned CA,<br/>a signing certificate,<br/>naming the credentials<br/>agent. Only then seal
     Init->>Obs: POST /workload/issue(session, sealed token, Custody, the custodian's CSR)
     Obs->>CA: the sealed bytes, over Cassini
     CA->>CA: open the seal, verify the token: its identity, and the pod UID it is bound to

@@ -1,0 +1,46 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% A push to Polar's git server, as built (2026-11-04, docs/architecture/git-server.md, cluster-bootstrap.md, "Handing off"). What the scheduler observer does next is
+%% general/signed_configuration_delivery. The Cedar authorizer is designed and not built: access is the static list, by the certificate's first DNS name.
+sequenceDiagram
+    autonumber
+    actor Client as A pusher (git, over mTLS)
+    participant Srv as polar-git-server
+    participant Git as git receive-pack
+    participant Log as push-log.jsonl
+    participant Cassini
+    participant Sch as Scheduler observer
+
+    Client->>Srv: git-receive-pack. The identity is the first DNS name of the client certificate
+    Srv->>Srv: the repository, with write access for this identity, else 403
+    Srv->>Srv: read the ref updates ahead of the pack, else 400
+    Srv->>Srv: authorize each: the identity may write, under refs/heads/ only, else 403
+    opt the repository names a signer (signed_by: the deployment repository)
+        Srv->>Srv: read the pack into a quarantine, and verify every commit it brings<br/>to the deployment CA. A refusal is a report in git's own form, and nothing stays
+    end
+    Srv->>Git: only now, the push
+    Git-->>Client: its report
+    loop each ref that now resolves to the new commit
+        Srv->>Log: time, repo, ref, old, new, pusher
+        Srv-)Cassini: RepoChangedEvent on polar-git-repo-changed, if it has a broker
+    end
+    Cassini-)Sch: RepoChanged. Its only subscriber, and it pulls only for the repository it watches

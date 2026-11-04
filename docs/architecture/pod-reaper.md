@@ -23,7 +23,7 @@
 
 # Reaping Failed pods
 
-Status, 2026-10-20: a design for review. Nothing here is built.
+Status, 2026-10-20: a design for review. Nothing here is built. Drawn, shaded: [`pod_reaper`](sequences/general/pod_reaper.mmd).
 
 **Update, 2026-10-26 (the maintainer):** the pod observer's role is taken by the attestation agent
 (`runtime-attestation.md`), which needs the same rights over pods; one agent holds them rather than two. What this

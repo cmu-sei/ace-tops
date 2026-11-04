@@ -27,7 +27,7 @@ Status, 2026-10-11: design, decided (see the end); the build has begun with the 
 "here is something to add to what you handle", without an administrator editing configuration by hand, and
 the rules for accepting one are signed repository content that the agents interested in that kind read. This
 is the second of the three kinds in `scheduling-kinds.md` (configuration, proposal, command); the sequence is
-`sequences/general/proposal_flow.mmd`.
+`sequences/general/proposal_flow.mmd`, drawn as built 2026-11-04. Read against the code that day: the scheduler processor takes no part (below, its part is design), and `git-repo-processor` writes the decisions.
 
 **Amended 2026-10-12 (`git-controller.md`):** for the git agents the **receiver is the git controller**, not the
 observer (the observer keeps the host-binding check and the network guard, since it holds the credentials and

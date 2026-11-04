@@ -62,5 +62,5 @@ sequenceDiagram
         Listener-->>Client: RegistrationResponse(Ok, a new id)
         Note over SM: Two live instances do not take turns closing each other.
     end
-    Client->>Client: ClientEvent::Registered: subscriptions sent again, each decided at the Listener
+    Client->>Client: ClientEvent::Registered: subscriptions<br/>sent again, each decided at the Listener
     Client->>Listener: the facade sends its whole outbox again, in order, with the numbers it had

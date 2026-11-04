@@ -25,6 +25,8 @@
 
 ## Purpose
 
+Drawn as built: [`credentials_agent_requests`](sequences/general/credentials_agent_requests.mmd) (what an agent asks), [`admin_permission_grant`](sequences/general/admin_permission_grant.mmd) (signed admin actions), [`admin_bootstrap_identity`](sequences/general/admin_bootstrap_identity.mmd) (how a person's account gets a certificate), [`user_cert_issuance_and_usage`](sequences/general/user_cert_issuance_and_usage.mmd) and [`identity_normalization_query`](sequences/general/identity_normalization_query.mmd) (a certificate from an IdP token, built and refused today, since no target renders the introspection settings), [`graph_projection_catch_up`](sequences/general/graph_projection_catch_up.mmd) (the graph projection).
+
 The Credentials Agent is the cluster's single trusted broker for credential
 distribution. Every Polar participant — human or agent — that needs a
 credential for a legitimate purpose asks the Credentials Agent for it,

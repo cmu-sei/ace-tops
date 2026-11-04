@@ -29,7 +29,7 @@ sequenceDiagram
     participant R as Router
     participant D as Domain actor
 
-    B->>B: number it and hold it until it is acknowledged
+    B->>B: number it and hold it<br/>until it is acknowledged
     B->>L: PushMessage(delivery_id)
     L->>T: PublishResponse(topic, payload, published_by, published_instance, origin epoch and seq, delivery_id)
     alt the frame does not decode
@@ -42,7 +42,7 @@ sequenceDiagram
         R->>D: the topic's registered handler, into its mailbox
         T->>L: PublishResponseAck(delivery_id), by the writer's own task
         L->>B: PublishResponseAck(delivery_id), to that topic's subscriber of its session
-        B->>B: remove it from the outbox, and its backlog falls
+        B->>B: remove it from the outbox,<br/>and its backlog falls
         rect rgb(235, 219, 178)
         Note over D,B: DESIGNED, step 5a: acknowledge after the agent's work, such as a consumer's graph write. Until then,<br/>a consumer that dies with a message in its mailbox loses it.
         end

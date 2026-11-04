@@ -48,7 +48,7 @@ sequenceDiagram
             Broker->>Topics: ensure_topic_and_subscribe (a topic is created on first use)
             Topics->>Subs: CreateSubscriber(registration_id:topic)
             opt the session took over from a superseded one
-                Subs->>Subs: inherit what its identity and instance held on this topic, oldest first (ClaimHeld)
+                Subs->>Subs: inherit what its identity and instance held<br/>on this topic, oldest first (ClaimHeld)
             end
             Subs-->>Topics: SubscriberAgent
             Topics->>Topics: TopicAgent AddSubscriber, then TopicAttached to it,<br/>and what was queued for a first subscriber goes to it

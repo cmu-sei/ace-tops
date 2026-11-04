@@ -23,7 +23,7 @@
 
 # A gate in front of the registry in the cluster
 
-Status, 2026-10-20: a design for review. Nothing here is built.
+Status, 2026-10-20: a design for review. Nothing here is built. Drawn, shaded: [`registry_gate`](sequences/general/registry_gate.mmd).
 
 ## The problem
 

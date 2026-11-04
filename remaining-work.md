@@ -852,11 +852,20 @@ Each step is taken in bites, each reported before the next.
   - *Bite 3, configuration and health:* DONE 2026-11-04. New: `pod_restart_in_place`, `held_agent_and_dynamic_setting`, `configuration_replay`, `escrowed_credential_lifecycle`,
     `pulled_health`, `jira_cursor_soft_state`. Redrawn: `health_rejuvenation`, `shutdown_pipeline`, `configuration_startup`, `signed_configuration_delivery`, `signed_configuration_secrets`.
     Compared with the logs and graph on u7s: restart in place, replay, pulled health, the cursor. Not presented to a real site in this pass: a credential (u7s reads Jira anonymously).
-  - *Bite 4, the rest:* new, authority catch-up, credentials requests, the git flow (fix `proposal_flow`, which names a Jira consumer as the proposer;
-    only `discover_repo` proposes), image publish and release; shaded, the registry gate and the pod reaper. Link the unlinked.
+  - *Bite 4, the rest:* DONE 2026-11-04. New: `authority_snapshot_catchup`, `credentials_agent_requests`, `git_repository_observation`, `git_server_push`, `bootstrap/image_publish_import_release`;
+    shaded as design, `registry_gate`, `pod_reaper`. Redrawn: `policy_update_enforcement`, `proposal_flow`, `command_flow` (everything above the agent shaded), `user_cert_issuance_and_usage`, `identity_normalization_query`,
+    `admin_permission_grant`, `graph_projection_catch_up`, `topic_floor_issuance`; the bootstrap overview and phases 1 to 3 corrected. `observe_process_sequence` removed: a three-box sketch linked from nowhere, which `git_repository_observation` draws for real. Every diagram is linked.
   - *After the merge:* anything of GitLab, OpenAPI, build-processor, the orchestrator; the graph write path.
   - *Read in the code, 2026-11-04:* `signed_configuration_delivery` had the scheduler observer refusing an import and verifying early. Neither was built. The refusal is now
     (`signed-configuration.md`); the early verification stays shaded, and the target verifies regardless. Still to bring into line: `infra/seed.nu` reads the repository's documents with `dhall-to-json`, imports on.
+- [ ] **Found drawing the last diagrams, 2026-11-04, read and not run:**
+  - *The credentials agent's projection re-reads its whole log on every graph tick* (`projection.rs`, `catch_up`; `controller.rs`: `Available` on each 30 s tick and after each operation that sent something), through the ledger's mailbox. It grows with the log.
+  - *A grant may never be marked consumed in the graph:* `project_single_event` asks whether it existed after the fold has removed it (`projection.rs`, `ledger.rs`), and the operation keys on the identity. Not tested. The ledger is the record, and it is right.
+  - *An accepted proposal leaves the set after a controller restart,* since proposals are not replayed and nothing re-announces yet. It matters once a real proposer exists (`proposals.md`).
+  - *`git-controller.md`'s connect-time check by the observer is not built* (`git_repository_observation` shades it).
+  - *No target renders `CREDENTIALS_AGENT_INTROSPECTION_*`,* so an IdP token is refused at introspection everywhere. `user-cert-fetcher` reads a token from a file; nothing in the code uses the `browser-cert-fetcher` client Keycloak is given.
+  - *The release flow has no signature and no comparison:* a tag is annotated and unsigned, `images.nu publish` is not tied to the tag or the lock, and `images.nu import` records what it copied without comparing it with the committed lock.
+  - *Stale comments and text:* `infra/targets/sandbox-local/target.nu:64`, `infra/up.nu:309-312` and `:847`, the retrieve comment in `credentials-agent/common/src/lib.rs`, `policy-enforcement.md:267`.
 - [ ] **The scheduler observer restarts about five times per certificate** (seen on u7s, 2026-11-04; `deployments.md`, item 4). It has no custody daemon, so `polar-init` keeps a bundle that is
   still valid (`keeps_existing_bundle`), which brings it back into the certificate it is rejuvenating away from, until that expires. A first thought, not decided: keep a bundle only with more left than the rejuvenation threshold.
 - [ ] **Stale text** (`docs/` and comments that no longer say what is true):

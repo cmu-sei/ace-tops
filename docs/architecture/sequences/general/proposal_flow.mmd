@@ -19,49 +19,44 @@
 %%
 %% DM26-0670
 
+%% A proposal to observe a repository, as built (2026-11-04, docs/architecture/proposals.md, git-controller.md). The one proposer today is the discover_repo harness
+%% (git/observe/src/bin/discover_repo.rs): nothing in a deployed agent proposes yet. What an accepted repository leads to is general/git_repository_observation.
 sequenceDiagram
+    autonumber
     actor Admin
-    participant Proposer as Jira consumer
+    participant Proposer as A proposer<br/>(the discover_repo harness)
     participant Cassini
-    participant Controller as Git controller
-    participant Observer as Git observer
-    participant Processor as Scheduler processor
+    participant Controller as git-repo-controller
+    participant Proc as git-repo-processor
     participant Graph as Neo4j
-    participant Creds as Credentials agent
+    participant Observer as git-repo-observer
 
-    Note over Admin,Controller: Admission rules first: a signed runtime document, section admission
-    Admin->>Processor: signed runtime document for the controller
-    Processor-)Cassini: document on the controller's configuration topic
-    Cassini-)Controller: document
-    Controller->>Controller: verify for itself, until then accept nothing
+    Note over Admin,Controller: The admission rules first: a signed runtime section, by the usual delivery
+    Admin-)Controller: signed section admission, verified for itself. Until then every proposal is pending
 
-    Note over Proposer,Graph: A proposal
-    Proposer-)Cassini: Proposal kind, subject, evidence
-    Cassini-)Processor: Proposal, publisher named by the broker
-    Processor->>Graph: write a Proposal node
-    Cassini-)Controller: Proposal, publisher named by the broker
-    Controller->>Controller: normalise, then apply the rules in order
-    alt rejected
-        Controller-)Cassini: ProposalDecision rejected and the rule
-    else pending
-        Controller-)Cassini: ProposalDecision pending and what for
-    else accepted
-        Controller-)Cassini: ProposalDecision accepted
-        Controller-)Observer: repository to observe, naming its credential
-        Observer->>Creds: RetrieveSecret for that credential, if it does not hold it
-        Creds-->>Observer: re-encrypted to the agent's own escrow key
-        Observer->>Observer: host binding and network guard, then clone
+    Proposer-)Cassini: Proposal { url, evidence } on polar-proposal-observe-repo
+    Cassini-)Controller: the Proposal, published_by stamped by the broker. Its only subscriber
+    Controller->>Controller: receive, into a bounded table, kept in memory only
+    alt no proposer stamped, a URL not canonical, a proposer not in the rules, or the table is full
+        Controller-)Cassini: ProposalDecision rejected, at once
+    else held, and judged on a copy, off the actor
+        Controller->>Controller: kind, rules, proposer, url, denied, host, organisation
+        Controller->>Controller: the network guard: unresolved stays pending, not public is rejected
+        Controller->>Controller: limits, then approval and credential, either of which stays pending
+        Controller-)Cassini: ProposalDecision on polar.git.proposals.decisions, only when it changed:<br/>accepted, rejected, pending or expired
     end
-    Cassini-)Processor: ProposalDecision
-    Processor->>Graph: write a decision node, linked to the proposal
+    Cassini-)Proc: ProposalDecision
+    Proc->>Graph: a GitProposal, for one held, and PROPOSES if accepted
+    opt accepted
+        Controller-)Observer: the whole RepositorySet, with this repository in it
+    end
 
-    Note over Admin,Observer: Approval and credentials are signed edits
-    Admin->>Processor: a new admission section (an approval), or a credentials document for the observer
-    Processor-)Cassini: document
-    Cassini-)Controller: admission section, re-evaluate every pending proposal
-    Cassini-)Observer: credentials section, decrypt and escrow with StoreSecret
+    Note over Admin,Controller: An approval is a signed edit
+    Admin-)Controller: a new version of admission
+    Controller->>Controller: judge every held proposal again
 
-    Note over Processor,Controller: A restarted controller gets them again
-    Processor-)Cassini: replay the documents and the kind's proposals
-    Cassini-)Controller: documents, then proposals
-    Controller->>Controller: re-evaluate against the current rules
+    loop every 60 s
+        Controller->>Controller: expire a claim past its time (1 day by default), publish expired,<br/>judge again and announce what changed
+    end
+
+    Note over Proposer,Controller: A restarted controller starts with an empty table. Proposals are not replayed: the proposers are to announce again, and the harness does not, so what<br/>it proposed leaves the set after the warm-up. Only the signed sections come back, by replay on registration (configuration_replay)

@@ -28,11 +28,12 @@ order, and every artifact it makes. The diagrams are in `sequences/bootstrap/`:
 
 | Diagram | Covers |
 |---|---|
-| [overview](sequences/bootstrap/overview.svg) | the three phases on one page |
+| [overview](sequences/bootstrap/overview.svg) | the four phases on one page |
 | [phase 1: before Flux](sequences/bootstrap/phase1-before-flux.svg) | `up.nu` up to installing Flux |
 | [phase 2: Flux](sequences/bootstrap/phase2-flux.svg) | Flux reconciling the layers |
 | [phase 3: after Flux](sequences/bootstrap/phase3-after-flux.svg) | the admin flow, the seed, the browser |
-| [handoff](sequences/bootstrap/phase4-handoff.svg) (designed) | the cluster's deployment moves to Polar's own git server |
+| [handoff](sequences/bootstrap/phase4-handoff.svg) | the cluster's deployment moves to Polar's own git server |
+| [images and release](sequences/bootstrap/image_publish_import_release.svg) | cutting a release, publishing its images, and taking them |
 
 The sources are the `.mmd` files beside them (regenerate as in `sequences/assets/asset_regeneration.md`).
 
@@ -78,7 +79,7 @@ below).
 ### Phase 2 (Flux)
 
 `platform` → `cert-issuer` → `data` → `cassini` → `identity` → `agents`, each a Kustomization that `dependsOn` the one before
-and is healthy before the next starts. What it waits for is each layer's `wait_for` in the target, turned into health checks (a StatefulSet or Deployment as itself, an agent's Job through the Endpoints of its Service); the `data` layer waits for nothing, because Neo4j cannot be Ready until the credentials agent of a later layer is up.
+and is healthy before the next starts. What it waits for is each layer's `wait_for` in the target, turned into health checks (a StatefulSet or Deployment as itself); the `data` layer waits for nothing, because Neo4j cannot be Ready until the credentials agent of a later layer is up.
 `cassini` is a layer of its own because a client that starts before its broker attaches to a broker that is about to go away.
 `flux.nu wait <target>` polls until every Kustomization is Ready *and* was applied from the commit that was published (a layer that is Ready at an older commit does not count), printing a layer's state when it changes, and on timeout names the layers that are not. A layer waiting on a health check begun under an older spec or revision is ended by restarting the kustomize-controller (see "What looks odd").
 
@@ -173,7 +174,7 @@ From then on a run has no deployment git server to start. It starts the forwards
   So the flag is 5 s (`flux.nu`, `with_requeue`, which refuses an export that has lost its place), which measured 77 s, 51 of them the source's 1 minute poll; and `flux.nu wait` asks the source to look as soon as a commit is published.
 - **`up.nu` creates secrets that Flux does not own.** They are not in the repository, so Flux never prunes them, and they
   have to exist before the workloads that use them start. That is intended.
-- **A Job never completes, and Flux cannot be told a running Job is healthy.** Every agent is a Job that runs until it is replaced (about hourly, before its certificate expires), so `wait: true` cannot be used on the `agents` layer. A health check on the Job itself does not work either: Flux's kustomize-controller registers its own Job status reader ahead of any `healthCheckExprs`, and it counts a Job as Current only when it has completed (found 2026-10-19: `polar-cassini` stayed "Running health checks" for ten minutes with a Ready pod, and a CEL expression on the Job was never consulted; `fluxcd/pkg` `runtime/statusreaders/job.go`). What says an agent is up is the Service that selects its pods: its `Endpoints` has a deterministic name and no `subsets` until a pod is ready. `publish` gives a layer a health check on that Endpoints with `subsets.exists(s, has(s.addresses) && size(s.addresses) > 0)` (`has()` takes only a field selection, so the missing field is left to make Flux wait). `cassini` and `identity` are gated this way (the broker and the credentials observer). The credentials agent Job has no Service, so nothing waits for it separately; its observer depends on it. A layer's `wait_for` of a Job with no Service is dropped.
+- **(Until agents became Deployments, 2026-10-28; `deployments.md`.) A Job never completes, and Flux cannot be told a running Job is healthy.** Every agent was a Job that runs until it is replaced (about hourly, before its certificate expires), so `wait: true` cannot be used on the `agents` layer. A health check on the Job itself does not work either: Flux's kustomize-controller registers its own Job status reader ahead of any `healthCheckExprs`, and it counts a Job as Current only when it has completed (found 2026-10-19: `polar-cassini` stayed "Running health checks" for ten minutes with a Ready pod, and a CEL expression on the Job was never consulted; `fluxcd/pkg` `runtime/statusreaders/job.go`). What says an agent is up is the Service that selects its pods: its `Endpoints` has a deterministic name and no `subsets` until a pod is ready. `publish` gives a layer a health check on that Endpoints with `subsets.exists(s, has(s.addresses) && size(s.addresses) > 0)` (`has()` takes only a field selection, so the missing field is left to make Flux wait). `cassini` and `identity` are gated this way (the broker and the credentials observer). The credentials agent Job has no Service, so nothing waits for it separately; its observer depends on it. A layer's `wait_for` of a Job with no Service is dropped.
 
 ## Not settled, to decide before building
 

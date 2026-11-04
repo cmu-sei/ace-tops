@@ -1,0 +1,69 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Cutting a release, publishing its images and taking them, as built (2026-11-04, infra/release.nu, infra/images.nu, infra/up.nu, infra/INFRA.md). The three are separate steps. release.nu pushes only to
+%% the local registry and never to Docker Hub or to git. No step signs: the tag is annotated, and signing starts at the deployment, with the pipeline's commit and the signed record.
+sequenceDiagram
+    autonumber
+    actor Op as Operator
+    participant Rel as infra/release.nu
+    participant Img as infra/images.nu
+    participant Nix as nix build
+    participant LR as Local registry
+    participant Git as The checkout
+    participant Hub as Docker Hub
+    actor Cons as Who takes the release
+    participant Up as infra/up.nu
+    participant CR as The cluster's registry
+
+    Note over Op,Git: Cut it
+    Op->>Rel: release.nu run
+    Rel->>Rel: refuse dirty tracked files or a detached HEAD
+    Rel->>Rel: the gates: unit, deny, secrets and resolve block, clippy reports.<br/>A failure ends it with nothing changed
+    Rel->>Rel: semver.nu's evidence and suggestion. Refuse nothing to release,<br/>a version not after the last, or a tag that exists
+    Op->>Rel: the highlights, then y (--dry-run stops here, after a preview)
+    Rel->>Git: VERSION, committed as chore(release): prepare vX.Y.Z (resumes if that is HEAD)
+    Rel->>Img: images.nu sync --all, the dev lock set aside
+    Img->>Nix: build every image
+    Nix-->>Img: the archives
+    Img->>LR: skopeo copy, recording each digest
+    Rel->>Rel: lock problems refuse, then promote: images.lock.nuon, with what it was built from
+    Rel->>Rel: the determinism gate
+    Rel->>Git: CHANGELOG.md, written by changelog.nu from the evidence and the lock's digests
+    Op->>Rel: y
+    Rel->>Git: lock and changelog, committed as chore(release): vX.Y.Z.<br/>Refused, and left untagged, if the diff touched anything else
+    Rel->>Git: git tag -a vX.Y.Z, then a commit of X.Y.Z+dev
+    Rel-->>Op: the git push to run, which it does not run
+
+    Note over Op,Hub: Publish it, by hand. No check here ties this to the tag or the lock
+    Op->>Img: images.nu publish --to docker.io/ACCOUNT --arch A --also-tag X.Y.Z
+    Img->>Nix: build each nix image for that architecture (a mirror only when named)
+    Img->>Hub: skopeo, as polar-IMAGE:TAG-ARCH, for the table's tag and X.Y.Z
+
+    Note over Cons,CR: Take it, from a checkout of the release
+    Cons->>Up: up.nu T --import-from docker.io/ACCOUNT --import-tag X.Y.Z
+    Up->>Up: every image the target runs: its charts rendered alone, and the catalog's.<br/>--import-tag with no --import-from is refused
+    Up->>Img: images.nu import --skip-mirrors --tag X.Y.Z
+    Img->>Hub: read polar-IMAGE:X.Y.Z-ARCH, this machine's architecture
+    Img->>CR: copy, under its table tag. Each digest goes to the dev lock.<br/>Nothing here compares it with the committed lock
+    Up->>Img: sync the mirrors from upstream
+    Up->>Up: render, pinning each image by digest: the dev lock over the committed one.<br/>An image the render names that was not prepared stops it
+    Note over Cons,Up: --dev builds and pushes instead. With both, import first, then build.<br/>With neither, the step is skipped, and what is in the registry is asked for

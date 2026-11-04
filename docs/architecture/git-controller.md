@@ -59,6 +59,13 @@ power to decide what is observed.
 
 ## Flows
 
+Drawn as built: [`git_repository_observation`](sequences/general/git_repository_observation.mmd), [`proposal_flow`](sequences/general/proposal_flow.mmd).
+
+*Read against the code, 2026-11-04.* The one proposer is the `discover_repo` harness; no deployed agent proposes yet.
+The controller alone subscribes to proposals, and `git-repo-processor` writes the decisions as `GitProposal`; the scheduler
+processor does neither, so the table above and the flow below overstate its part. Proposals are not replayed: the proposers are to announce
+again, and the harness does not, so what it proposed leaves the set after a controller restarts.
+
 ### The repository set (permanent items)
 
 ```
@@ -332,6 +339,9 @@ Observer to controller, on `polar.git.observation.status`, per repository, after
 with `state` one of `starting`, `observing`, `pending-credential`, `failing`, `stopped`.
 
 ## The observer's own checks
+
+*Read against the code, 2026-11-04: item 1 is built. Item 2 is not: nothing in `git/observe` or the protocol handler looks at the address it connects to,
+and the only network guard is the controller's, at judging, for proposals (`admission.rs`, `address_problem`). The diagram shades it.*
 
 It does not take the controller's word for these, because it is the one holding a credential and opening
 connections:

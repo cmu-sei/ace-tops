@@ -1,0 +1,53 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% DESIGNED, nothing built (docs/architecture/pod-reaper.md, with its updates to 2026-10-30). Pods that restart in place leave no hourly Failed pods, so what it is wanted for now is Failed
+%% Jobs' pods, evicted pods of Deployments and old ReplicaSets, each recorded in the graph first. Until it is built, `just cluster-prune-failed`, by hand. N is not settled.
+sequenceDiagram
+    autonumber
+    participant Sch as Scheduler
+    participant Att as Attestation agent<br/>(the pod observer's role)
+    participant K as Kubernetes API
+    participant Graph as Neo4j
+    participant Reaper as The Reaper
+    participant Policy as PolicyActor
+    participant VAP as ValidatingAdmissionPolicy
+
+    rect rgb(235, 219, 178)
+    Note over Sch,VAP: DESIGNED: two agents, the one that sees and the one that may delete
+    Sch-)Att: the inventory's schedule
+    Att->>K: list what is finished, and its logs, with a namespaced Role
+    Att->>Graph: the observable first: the pod, owner, exit code or eviction reason, the end of its log
+    Att-)Reaper: the report. The Reaper checks published_by and the capability
+    Reaper-)Att: when it restarts, ask for the current set
+    Reaper->>Reaper: retention: the newest N, by signed configuration
+    Reaper->>Policy: Action reap on Pod NAMESPACE/NAME, with phase, owner and age
+    Policy-->>Reaper: Cedar's answer
+    Reaper->>K: delete, with preconditions.uid
+    K->>VAP: admitted only for a finished pod a Polar workload owns
+    Reaper->>Graph: an edge to the reaping
+
+    alt an old ReplicaSet
+        Att->>Graph: the observable first: revision, digests, template hash, replaced at
+        Reaper->>K: delete, keeping the newest N
+        K->>VAP: refused for one with replicas, the current revision, or not of a Polar Deployment
+    end
+    end

@@ -23,11 +23,11 @@
 
 # Polar git server
 
-Status, 2026-10-10: built and tested (unit tests, and end-to-end tests that drive the real `git`
-CLI over generated mTLS certificates); not yet run on a cluster. Built: transport and identity, the
-read and write paths, push authorization, the `RepoChanged` topic, seeding, runtime repository
-creation, and the push log. Not built: the Cedar authorizer, `polar-sign` and signed-commit
-verification. Crates: `src/agents/polar-git-server/{common,server}`.
+Status, 2026-11-04: built, and running on clusters. Built: transport and identity, the read and write paths, push
+authorization, the `RepoChanged` topic, seeding, runtime repository creation, the push log, and every commit of a
+repository that names a signer verified on push (`server/src/signed.rs`, the deployment repository). `polar-sign` signs
+the documents; `polar-schedules` has no signer of its own. Not built: the Cedar authorizer.
+Crates: `src/agents/polar-git-server/{common,server}`. Drawn as built: [`git_server_push`](sequences/general/git_server_push.mmd).
 
 ## Purpose
 
