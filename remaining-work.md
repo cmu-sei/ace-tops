@@ -857,6 +857,8 @@ Each step is taken in bites, each reported before the next.
   - *After the merge:* anything of GitLab, OpenAPI, build-processor, the orchestrator; the graph write path.
   - *Read in the code, 2026-11-04:* `signed_configuration_delivery` had the scheduler observer refusing an import and verifying early. Neither was built. The refusal is now
     (`signed-configuration.md`); the early verification stays shaded, and the target verifies regardless. Still to bring into line: `infra/seed.nu` reads the repository's documents with `dhall-to-json`, imports on.
+- [ ] **The scheduler observer restarts about five times per certificate** (seen on u7s, 2026-11-04; `deployments.md`, item 4). It has no custody daemon, so `polar-init` keeps a bundle that is
+  still valid (`keeps_existing_bundle`), which brings it back into the certificate it is rejuvenating away from, until that expires. A first thought, not decided: keep a bundle only with more left than the rejuvenation threshold.
 - [ ] **Stale text** (`docs/` and comments that no longer say what is true):
   - `docs/architecture/git/agents.md` is conceptually sound but stale (2026-10-10): its tree shows `GitObserverRoot` owning the client, it
     omits the `GIT_REPO_CONFIG_EVENTS` configuration path (the README describes `GIT_AGENT_CONFIG` JSON instead), topics, shutdown and
