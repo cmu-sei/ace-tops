@@ -24,6 +24,7 @@
 //! What kube-observer is, as the infrastructure asks to be told: see `polar_agent_builder::PolarAgent`.
 
 use crate::supervisor::{ClusterObserverSupervisor, SHUTDOWN_BUDGET};
+use polar_agent_builder::protocol::OperationDecl;
 use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
 use ractor::Actor;
 use std::time::Duration;
@@ -35,6 +36,7 @@ impl PolarAgent for KubeObserver {
     const PURPOSE: &'static str =
         "Watches the Kubernetes API and publishes what it sees to Cassini";
     const NEEDS: &'static [Capability] = &[Capability::KubeApiRead];
+    const OPERATIONS: &'static [OperationDecl] = &[crate::watches::WATCH];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
         kube_common::KUBERNETES_CONSUMER,
@@ -50,11 +52,6 @@ impl PolarAgent for KubeObserver {
     );
 
     async fn start(configured: Configured) -> Result<(), StartError> {
-        // Required when multiple providers are present in the dependency tree.
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .map_err(|_| "a rustls crypto provider was already installed")?;
-
         configured.init_logging("kubernetes.cluster.observer.supervisor");
 
         let (_, handle) = Actor::spawn(
@@ -80,4 +77,12 @@ mod tests {
     use super::*;
 
     polar_agent_builder::polar_agent_tests!(KubeObserver);
+
+    #[test]
+    fn it_says_it_reads_the_cluster() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<KubeObserver>();
+        assert_eq!(scaffold.operations.len(), 1);
+        assert_eq!(scaffold.operations[0].protocol, "kubernetes");
+        assert_eq!(scaffold.operations[0].location, "cluster");
+    }
 }

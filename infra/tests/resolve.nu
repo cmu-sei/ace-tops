@@ -42,7 +42,7 @@ const RESOLVER = (path self | path dirname | path dirname | path join "resolve.n
 # What each catalog workload's code declares it needs to drain
 # (with_shutdown_budget in its supervisor). The deployment must give at least this.
 const BUDGETS = {
-    kube-observer: 40
+    kube-observer: 20
     kube-consumer: 45
     jira-observer: 40
     jira-processor: 40

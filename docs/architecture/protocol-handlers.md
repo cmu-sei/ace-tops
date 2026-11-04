@@ -23,7 +23,7 @@
 
 # Protocol handlers: the domain's I/O in infrastructure
 
-Status, 2026-11-04: the design, from the maintainer, vetted. The framework, HTTP and its registry scheme, and git are built, and jira-observer, the resolver and the git observer are on them; the rest moves in bites ("When, and in what order";
+Status, 2026-11-04: the design, from the maintainer, vetted. The framework, HTTP and its registry scheme, git and the Kubernetes API are built, and jira-observer, the resolver, the git observer, the Kubernetes observer and the attestation agent are on them; what remains is closing the old routes, in bites ("When, and in what order";
 `polar-agent-builder/src/protocol.rs`). Framework code that lets us reason about
 each request a domain actor makes, whether to allow or deny it, and that protects the credentials it uses. The domain says what it
 wants; a protocol handler in the builder's infrastructure gets the credential itself, uses it, and calls the domain's code with what
@@ -126,7 +126,8 @@ impl Operation for Projects {
     fn read(&self, reply: &Reply) -> Result<Self::Output, ReadFailure> { /* domain logic */ }
 }
 
-protocols.request(Projects { start_at }, myself, Message::Projects)?;   // the value comes back as a message
+let projects = protocols.ask(Projects { start_at }).await?;   // waits, holding only this actor's mailbox
+let watching = protocols.stream(Pods { namespace }, myself, Message::Seen)?;   // one message for each change, until `watching` is dropped
 ```
 
 `Protocol` is the trait each handler implements, and it says only what differs: its request, how a credential attaches, and what a callback
@@ -161,6 +162,7 @@ Moving them there would mean the daemon also makes the request, which is the sea
 | `Configured` | a variable of the agent's, read as it is in force at each request | if the operation declares one and the host matches its binding | Jira and GitLab's site |
 | `Bound` | the domain, at run time, and the host must match the credential's signed binding | always | the git observer's repositories that name a credential; a registry a credential is bound to |
 | `Arbitrary` | the domain, at run time, with the permission declared on the operation | **never**: the declaration has no place to name one | OpenAPI following a document's URL; a public repository; a registry nothing is bound to |
+| `Cluster` | Kubernetes, which tells every pod where its API is. The request can name no host | the pod's service account token, which no section holds: recorded as `service-account`, and only over TLS | the Kubernetes observer's and the attestation agent's watches |
 
 - A path, a query and a page belong to the request; the host is what is judged. A location a response gives, such as GitLab's `Link` header, is
   judged like any other: another host is not the same request.
@@ -193,7 +195,7 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
 | HTTP | Jira, GitLab, OpenAPI | declared | a reply, whole and bounded | Jira now; GitLab and OpenAPI at step 7, when they reach the builder |
 | OCI registry | resolver | declared | a manifest | built, 2026-11-03. A breaking change, with its migration note (`remaining-work.md`) |
 | git | git observer | declared | the fetched `git2::Repository` | built, 2026-11-04 |
-| Kubernetes API | Kubernetes observer, attestation agent | the pod's service account token, which `kube` already picks up: the capability declares it, not `with_credential` | one change at a time | now |
+| Kubernetes API | Kubernetes observer, attestation agent | the pod's service account token, which `kube` already picks up: the capability declares it, not `with_credential` | one change at a time | built, 2026-11-04 |
 
 - **OCI is HTTP with one more authentication scheme, not a handler of its own** (`Request::at_a_registry`, `protocol/http.rs`). A registry's token exchange is the
   unusual scheme the decisions provide for, and it is needed: `oci-client` sends Basic credentials to whatever host the registry's `WWW-Authenticate` realm names (read in
@@ -225,9 +227,25 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
   it calling `Remote::fetch` itself: bite 6's test over `cargo metadata` cannot see that, so a lint must (`#![deny(clippy::disallowed_methods)]` is on the crate already).
 
   A clone's URL is the request's, read as the controller reads it: a test holds `git_agent_common::remote::https_host` and the handler to the same host for any text the first accepts. Only http and https go anywhere now; a path, `ssh://` and `git://` used to reach libgit2 for a public repository.
-- **Kubernetes needs a stream, so one request and many results is part of the framework now.** A watch never ends (`attestation/agent/src/watch.rs`).
-  The callback is called per change and each value is a message. `kube`'s own watcher stays. The token's file stays readable in the pod, which
-  no handler changes: Kubernetes is the trust base.
+- **Kubernetes needs a stream, so one request and many results is part of the framework now** (`ProtocolHandle::stream`, `protocol/kubernetes.rs`). A watch never ends.
+  `kube`'s own watcher stays, and the callback is called per change, each value a message. The token's file stays readable in the pod, which no handler changes: Kubernetes is the trust base.
+
+  **`Location::Cluster`, decided while building, to review.** None of the three locations was true of it. The address is not a variable of the agent's and the token is not a section's, and it is hardly arbitrary. So a fourth: Kubernetes says where, the
+  request can name no host at all, and it goes only over TLS. The capability says it has a token to go with: an agent with such an operation and neither `kube-api-read` nor `pod-read` does not pass `polar_agent_tests!`. What a watch is of is not on the record, which has hosts only, and the Role or ClusterRole is what bounds it.
+
+  **A stream is paced, and ends once.** What is published can have to wait (`cassini-backpressure.md`), and a watch that piled up in a mailbox would undo that. So each message holds a `Delivery`, and the next change is not read until the actor has let go of it, which it does by finishing with the message. One stream's wait holds no other's. Decided while building, to review.
+  A stream ends when its `Streaming` is dropped, or with one failure, which is its last message. A change `read` cannot make sense of ends it as well: a stream says each change once, so one that was lost leaves a gap, and the watch that replaces it starts from a list. There are no retries in a handler, so asking again is the domain's: each agent waits 5 s after a watch is lost, and the observer 5 minutes after the API refuses one (403) or does not serve the kind (404), as Flux's kinds may not be there.
+
+  **One protocol for every kind, so what it hands on is JSON, decided while building.** `Protocol::Request` is one type, and `kube`'s `DynamicObject` watches any kind by name (`Resource`, `Resource::of::<Pod>()` for a type the API defines). So the attestation agent's `read` parses each object into its `k8s-openapi` type, and the observer publishes it as it came. Neither crate has `kube` any more, but for the observer's tests of Flux's names. An object of a list has its `apiVersion` and `kind` written back, which a list's items do not carry.
+  The observer used to go through its own types, so a Flux object it had no field for lost that field, and one it could not parse stopped the watch. Now the consumer sees all of it, and is what has to read it.
+
+  **What the observer's move changed.** The handler holds the loop, so most of the actor tree had no reason left: one actor per watch, a supervisor per namespace, and the macros to make them. Now `ClusterWatcher` holds every stream and publishes, and the supervisor, which it would otherwise hold up when a publish waits, still hears the client and shutdown. Four behaviours differ, each to review:
+  - *A lost watch comes back.* Before, a watcher that lost the API stopped and nobody restarted it (`NamespaceWatcherSupervisor`'s `handle_supervisor_evt` only logged), so it was blind to that kind in that namespace until the pod's next restart, within the hour. The doc comment said that supervision would restart it.
+  - *A relist is published.* The watcher's own list was ignored after a separate one at the start, so what changed while a watch was lost never went out. Deletions in that time still do not: the consumer has no way to hear them, as when the observer itself restarts.
+  - *A namespace that went while its watch was lost* stops being watched, by not being in the next list.
+  - *Shutdown no longer times out by design.* `stop_and_wait` on an actor in an endless `handle` could only time out, and the `?` on it would fail the supervisor, which reaches the exit by accident (read in the code; not seen in a log). `SHUTDOWN_BUDGET` is now 20 s rather than 40.
+
+  Gone with the tree, unused: the watchers defined for nodes, CRDs, ClusterRoles, ClusterRoleBindings, Secrets and ConfigMaps, none of which were ever started.
 - **Responses are bounded and whole for HTTP and git.** Paging stays in the domain, as one request per page.
 
 *Stays as it is, with no credential to protect:* Cassini, which is infrastructure's already. Bolt: the domain sends the graph controller messages
@@ -276,7 +294,7 @@ place stands, for all of it. In bites, each reported before the next:
    `CryptoActor`, a refused credential held and cleared by a new version, and a host's `Retry-After` honoured. Against a test protocol, no real one.
 2. **Built, 2026-11-03.** HTTP, against real TLS (`protocol/http.rs`): one attempt, each redirect judged, a bounded reply (`MAX_BODY`, 256 MiB, to review: nothing
    bounded it before), and the egress section brought by the operation. Jira moves: two operations, the credential named `jira`, and `ProtocolHandle::ask`, since its observers go through
-   their pages in order and waiting holds only their own mailbox. `request` is for a stream.
+   their pages in order and waiting holds only their own mailbox. `stream` is for a stream.
    Checked live on u7s, 2026-11-03, reading Apache's Jira anonymously: the agent starts, each request is on the record, and issues keep arriving in the graph (2,343 to 2,351, the
    cursor moving on, projects unchanged). Starting the client there found a lost `Registered`, fixed for every agent (`infrastructure::catch_up`). **Not checked live: the credential path.**
    The sandbox reads anonymously, so the real `CredentialPort`, an applied section and a presented token have run only in tests.
@@ -292,7 +310,8 @@ place stands, for all of it. In bites, each reported before the next:
    custody daemon and the real `CredentialPort`. With the wrong token: the server saw a request with nothing, then one with the credential, once, and refused it; the agent held `Credentials` and did not try again. A new signed version with the right token: the hold cleared, the handler asked at once, the server accepted, and both commits are in the graph. The withdrawal
    (`withdrawn=1`) and a public repository, `octocat/Hello-World` from `github.com`, recorded as arbitrary, work too. **Still not checked live: a credential presented over HTTP**, Jira's or a registry's. They share all of this but `CredentialPort::http` and the `Authorization` header.
    Signing that credential found that **nothing could be sealed to an agent at all, since 2026-10-27** (`polar_signing::verify_escrow_certificate`, fixed), and that a signed list cannot hold entries with different fields (`remaining-work.md`).
-5. Kubernetes and the stream. The Kubernetes observer and the attestation agent move.
+5. **Built, 2026-11-04.** Kubernetes and the stream, and the Kubernetes observer and the attestation agent move (above). Tested over real TLS against a stand-in API (`testing::KubeApi`), through `kube`'s watcher.
+   Not yet checked live.
 6. The routes close (the table above), once nothing uses them. Docs and the diagram as built.
 
 ## Open
@@ -315,5 +334,6 @@ place stands, for all of it. In bites, each reported before the next:
 - A refused credential becomes a held report, and a new version clears it, with no agent code involved.
 - `with_credential` gives the scaffold its section; a domain crate that depends on `reqwest` fails the metadata test.
 - Each request is logged with its verdict, with no path and no value.
+- A stream's next change waits for the domain; one that cannot be read ends it, and a failure is its last message; dropping it ends it.
 - Mutations: the handler attaching a credential for another host; `judge` allowing an arbitrary request a credential; a callback's result delivered with no
   message.

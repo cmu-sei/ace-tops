@@ -29,18 +29,21 @@ license.workspace = true
 polar-scudo.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
-futures.workspace = true
 k8s-openapi = { workspace = true }
 kube-common.workspace = true
-kube.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
 ractor.workspace = true
 rkyv.workspace = true
-rustls.workspace = true
 serde_json.workspace = true
-serde.workspace = true
 tokio.workspace = true
 tracing-glog.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The real handler and a stand-in Kubernetes API.
+polar-agent-builder = { workspace = true, features = ["testing"] }
+# What says how Flux's kinds are named, from the types kube-common generates.
+kube.workspace = true
+proptest.workspace = true

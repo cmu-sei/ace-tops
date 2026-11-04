@@ -31,7 +31,7 @@
 use crate::holdings::{Change, Holdings, Kind, Watch};
 use crate::record::{Arrival, arrival, read_record};
 use crate::settings;
-use crate::watch::{self, Source, WatchActor, WatchArgs};
+use crate::watch::Watching;
 use attestation_common::{
     AGENT_NAME, DeploymentRecord, Doubt, DriftWatch, Envelope, InstanceQuestion, Proved,
     REPORTS_TOPIC, REQUESTS_TOPIC, Report, Reporting, Verdict, WorkloadFacts, decode_question,
@@ -40,6 +40,7 @@ use attestation_common::{
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
 use polar::cassini::{CassiniClient, TcpClient};
+use polar_agent_builder::protocol::{Delivery, Failure, ProtocolHandle, Streaming};
 use polar_agent_builder::{
     AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
     InfrastructureSupervisorMessage, Subscription,
@@ -48,8 +49,11 @@ use polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC;
 use polar_signing::Trust;
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
-use std::sync::Arc;
+use std::collections::BTreeMap;
 use tracing::{debug, error, info, warn};
+
+/// How long a watch that lost the API waits before listing again.
+const RETRY: Duration = Duration::from_secs(5);
 
 /// How often what is deployed is held to the record.
 const COMPARE_EVERY: Duration = Duration::from_secs(60);
@@ -166,7 +170,13 @@ pub enum AttestationMessage {
         payload: Vec<u8>,
         published_by: Option<String>,
     },
-    Seen(Change),
+    /// What a watch said, or that it has ended.
+    Seen {
+        watch: Watch,
+        delivery: Delivery<Change>,
+    },
+    /// Time to ask for a watch again.
+    Again(Watch),
     /// The deployment's signed record, as the configuration agent delivered it.
     Record {
         payload: Vec<u8>,
@@ -182,6 +192,9 @@ pub struct AttestationState {
     tcp_client: TcpClient,
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
+    protocols: ProtocolHandle,
+    /// Each watch in progress: one that ended is not here until it is asked for again.
+    watches: BTreeMap<Watch, Streaming>,
     held: Holdings,
     /// The deployment CA, for the record alone.
     deployment_ca: Trust,
@@ -192,6 +205,34 @@ pub struct AttestationState {
     /// Whether its verdicts are to be believed.
     proved: Result<Proved, Doubt>,
     shutting_down: bool,
+}
+
+/// Asks for `watch`, whose changes come to `myself`.
+fn start_watch(
+    protocols: &ProtocolHandle,
+    myself: &ActorRef<AttestationMessage>,
+    watch: Watch,
+) -> Result<Streaming, ActorProcessingErr> {
+    let of = watch.clone();
+    protocols
+        .stream(Watching(watch), myself.clone(), move |delivery| {
+            AttestationMessage::Seen {
+                watch: of.clone(),
+                delivery,
+            }
+        })
+        .map_err(|e| ActorProcessingErr::from(e.to_string()))
+}
+
+/// What it holds from what a watch said, and whether the watch has ended: a failure is its last word, and leaves what it said in doubt.
+fn change_of(watch: Watch, said: Result<Change, Failure>) -> (Change, bool) {
+    match said {
+        Ok(change) => (change, false),
+        Err(why) => {
+            warn!(?watch, "a watch lost the API: {why}");
+            (Change::Lost { watch }, true)
+        }
+    }
 }
 
 fn now_secs() -> i64 {
@@ -256,35 +297,18 @@ impl Actor for AttestationSupervisor {
                 InfrastructureEvent::PrepareShutdown => Some(AttestationMessage::PrepareShutdown),
             });
 
-        let config = kube::Config::incluster()
-            .map_err(|e| ActorProcessingErr::from(format!("no Kubernetes API in this pod: {e}")))?;
-        let client = kube::Client::try_from(config)
-            .map_err(|e| ActorProcessingErr::from(format!("no Kubernetes client: {e}")))?;
+        let protocols = resources.protocols.clone().ok_or(
+            "the builder started no protocol handler, though the agent declares an operation",
+        )?;
+        let mut watches = BTreeMap::new();
         for namespace in &namespaces {
             for kind in Kind::ALL {
                 let watch = Watch {
                     kind,
                     namespace: namespace.clone(),
                 };
-                let client = client.clone();
-                let named = format!("{AGENT_NAME}.watch.{kind:?}.{namespace}");
-                let source: Source = Arc::new({
-                    let watch = watch.clone();
-                    move || watch::stream_of(&client, &watch)
-                });
-                let to = myself.clone();
-                let deliver: Arc<dyn Fn(Change) + Send + Sync> = Arc::new(move |change| {
-                    if let Err(e) = to.cast(AttestationMessage::Seen(change)) {
-                        debug!("a watch's change was not delivered: {e}");
-                    }
-                });
-                Actor::spawn_linked(
-                    Some(named),
-                    WatchActor,
-                    WatchArgs { source, deliver },
-                    myself.get_cell(),
-                )
-                .await?;
+                let stream = start_watch(&protocols, &myself, watch.clone())?;
+                watches.insert(watch, stream);
             }
         }
 
@@ -294,6 +318,8 @@ impl Actor for AttestationSupervisor {
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
+            protocols,
+            watches,
             held: Holdings::new(&namespaces),
             deployment_ca,
             record: None,
@@ -307,7 +333,7 @@ impl Actor for AttestationSupervisor {
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
@@ -322,7 +348,16 @@ impl Actor for AttestationSupervisor {
                 }
                 _ => (),
             },
-            AttestationMessage::Seen(change) => {
+            AttestationMessage::Again(watch) => {
+                let stream = start_watch(&state.protocols, &myself, watch.clone())?;
+                state.watches.insert(watch, stream);
+            }
+            AttestationMessage::Seen { watch, delivery } => {
+                let (change, ended) = change_of(watch.clone(), delivery.result);
+                if ended {
+                    state.watches.remove(&watch);
+                    myself.send_after(RETRY, move || AttestationMessage::Again(watch));
+                }
                 let was_ready = state.held.ready();
                 state.held.apply(change);
                 if state.held.ready() != was_ready {
@@ -506,6 +541,40 @@ mod tests {
             });
         }
         held
+    }
+
+    /// However a watch ends, what it holds is no longer whole, and a pod it does not hold can no longer be called absent.
+    #[test]
+    fn a_watch_that_ended_leaves_it_unable_to_say() {
+        let watch = Watch {
+            kind: Kind::Pod,
+            namespace: "polar".into(),
+        };
+        let mut held = listed_holdings();
+        let (change, ended) = change_of(
+            watch.clone(),
+            Ok(Change::Listed {
+                watch: watch.clone(),
+            }),
+        );
+        assert!(!ended);
+        held.apply(change);
+        assert!(held.ready());
+        for why in [
+            Failure::Transient("lost".into()),
+            Failure::Configuration("refused".into()),
+            Failure::Read("unreadable".into()),
+        ] {
+            let mut held = listed_holdings();
+            let (change, ended) = change_of(watch.clone(), Err(why));
+            assert!(ended);
+            held.apply(change);
+            assert!(!held.ready());
+            assert_eq!(
+                answer(&held, &PROVED, |_| None, &question()),
+                Verdict::CannotSay
+            );
+        }
     }
 
     #[test]

@@ -31,6 +31,7 @@
 pub struct ProtocolKind {
     name: &'static str,
     goes_out: bool,
+    to_the_cluster: bool,
     pub(crate) start: super::Starter,
 }
 
@@ -38,18 +39,28 @@ impl ProtocolKind {
     pub const HTTP: Self = Self {
         name: "http",
         goes_out: true,
+        to_the_cluster: false,
         start: super::http::start,
     };
     pub const GIT: Self = Self {
         name: "git",
         goes_out: true,
+        to_the_cluster: false,
         start: super::git::start,
+    };
+    /// The Kubernetes API of the cluster the pod runs in, which goes no further than that cluster.
+    pub const KUBERNETES: Self = Self {
+        name: "kubernetes",
+        goes_out: false,
+        to_the_cluster: true,
+        start: super::kubernetes::start,
     };
     /// Only in this crate's tests, for the framework alone.
     #[cfg(test)]
     pub const TEST: Self = Self {
         name: "test",
         goes_out: false,
+        to_the_cluster: false,
         start: super::tests::start_test_protocol,
     };
 
@@ -60,6 +71,12 @@ impl ProtocolKind {
     /// Whether it reaches outside the cluster, and so goes out as the egress section says.
     pub(crate) const fn goes_out(self) -> bool {
         self.goes_out
+    }
+
+    /// Whether it goes to [`Location::Cluster`], and nowhere else. Asked of the kind and not by comparing with one: naming a kind in
+    /// code every agent runs would link its library into every agent.
+    pub(crate) const fn to_the_cluster(self) -> bool {
+        self.to_the_cluster
     }
 }
 
@@ -103,6 +120,10 @@ pub enum Location {
     /// To any host: a permission the agent declares for a request not known ahead of time. Always without a credential,
     /// and marked in the record of each request (the maintainer, 2026-11-03).
     Arbitrary,
+    /// To the Kubernetes API of the cluster the pod runs in, where Kubernetes tells every pod it is. It goes with the pod's
+    /// service account token, which no signed section holds and the protocol's client reads for itself: the capability
+    /// declares it, and Kubernetes is the trust base.
+    Cluster,
 }
 
 /// An operation as the agent declares it (`PolarAgent::OPERATIONS`): what the scaffold prints and the catalog carries, so
@@ -180,6 +201,13 @@ pub fn judge(
         }
         Location::Bound { credential } => Some(credential),
         Location::Arbitrary => None,
+        // It names nothing for the CryptoActor to give, and the token goes with it all the same.
+        Location::Cluster => {
+            if !target.encrypted {
+                return Verdict::Deny(Denial::NotEncrypted);
+            }
+            None
+        }
     };
     let credential = match credential {
         None => None,
@@ -369,6 +397,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_request_to_the_cluster_names_no_credential_and_goes_only_encrypted() {
+        const CLUSTER: OperationDecl = declared(Location::Cluster);
+        assert_eq!(
+            judge(
+                &CLUSTER,
+                &[CLUSTER],
+                &target("10.96.0.1", true),
+                None,
+                Some("site")
+            ),
+            allowed(None)
+        );
+        assert_eq!(
+            judge(
+                &CLUSTER,
+                &[CLUSTER],
+                &target("10.96.0.1", false),
+                None,
+                None
+            ),
+            Verdict::Deny(Denial::NotEncrypted)
+        );
+    }
+
     fn credential() -> impl Strategy<Value = Credential> {
         prop_oneof![
             Just(Credential::Named("site")),
@@ -385,6 +438,7 @@ mod tests {
             }),
             credential().prop_map(|credential| Location::Bound { credential }),
             Just(Location::Arbitrary),
+            Just(Location::Cluster),
         ]
     }
 
@@ -440,8 +494,11 @@ mod tests {
                 let declares = match location {
                     Location::Configured { credential, .. } => credential,
                     Location::Bound { credential } => Some(credential),
-                    Location::Arbitrary => None,
+                    Location::Arbitrary | Location::Cluster => None,
                 };
+                if location == Location::Cluster {
+                    prop_assert!(encrypted);
+                }
                 match (declares, credential) {
                     (None, given) => prop_assert_eq!(given, None),
                     (Some(_), None) => prop_assert!(false, "an operation that needs a credential was allowed without one"),

@@ -28,6 +28,7 @@ use attestation_common::{
     AGENT_NAME, CERT_ISSUER_REPLIES_TOPIC, CREDENTIALS_AGENT_REPLIES_TOPIC, REPORTS_TOPIC,
     REQUESTS_TOPIC,
 };
+use polar_agent_builder::protocol::OperationDecl;
 use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
@@ -40,6 +41,7 @@ impl PolarAgent for AttestationAgent {
     const PURPOSE: &'static str =
         "Answers whether an instance is what the deployment made, from what it sees of the cluster";
     const NEEDS: &'static [Capability] = &[Capability::PodRead];
+    const OPERATIONS: &'static [OperationDecl] = &[crate::watch::WATCH];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -109,6 +111,9 @@ mod tests {
         let scaffold = polar_agent_builder::agent::scaffold_document::<AttestationAgent>();
         assert_eq!(scaffold.requires, ["cassini", "pod-read"]);
         assert!(scaffold.graph.is_empty());
+        assert_eq!(scaffold.operations.len(), 1);
+        assert_eq!(scaffold.operations[0].protocol, "kubernetes");
+        assert_eq!(scaffold.operations[0].location, "cluster");
     }
 
     // docs/architecture/runtime-attestation.md: those who vouch are the only askers, so its certificate names their topics and no others.

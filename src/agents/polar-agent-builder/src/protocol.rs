@@ -33,6 +33,7 @@ pub mod credentials;
 pub mod git;
 pub mod http;
 pub mod judge;
+pub mod kubernetes;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub use credentials::CredentialsApplied;
@@ -147,16 +148,18 @@ type Hopped<P> = Pending<Result<Option<<P as Protocol>::Credential>, Failure>>;
 
 /// What a [`Protocol`] has of the handler while it makes a request.
 pub struct Exchange<P: Protocol> {
-    /// Reads one reply and sends the value to the domain.
-    each: Box<dyn FnMut(P::Reply) -> Pending + Send>,
+    /// Reads one reply and sends the value to the domain, saying whether to go on.
+    each: Box<dyn FnMut(P::Reply) -> Pending<bool> + Send>,
     /// Judges where the request goes next, and gets the credential for there.
     hop: Box<dyn FnMut(Target) -> Hopped<P> + Send>,
 }
 
 impl<P: Protocol> Exchange<P> {
     /// Hands a reply on: it is read by the operation, on a thread of its own and within its budget, and the value goes to
-    /// the domain actor. Called once for a request with one reply, and for each change of a stream.
-    pub async fn reply(&mut self, reply: P::Reply) {
+    /// the domain actor. Called once for a request with one reply, and for each change of a stream, which waits here until
+    /// the domain has finished with the last one. A stream goes on only while this says so: what it says next would not
+    /// follow from what the domain has, or nobody is listening.
+    pub async fn reply(&mut self, reply: P::Reply) -> bool {
         (self.each)(reply).await
     }
 
@@ -181,6 +184,10 @@ pub trait Protocol: sealed::Sealed + Send + Sync + Sized + 'static {
     /// What an operation reads. Holds what came back, never what was sent.
     type Reply: Send + 'static;
 
+    /// Where a request goes that has no variable to say so ([`Location::Cluster`]): what the protocol learned when it started.
+    fn own_location(&self) -> Option<String> {
+        None
+    }
     /// The host of a configured location, the value of the operation's variable.
     fn configured_host(base: &str) -> Result<String, String>;
     /// Where `request` goes; `base` is the value of the operation's variable, if it has one.
@@ -278,6 +285,10 @@ pub struct RequestRecord {
     /// `allowed`, or why it was refused.
     pub verdict: String,
 }
+
+/// What the record says a [`Location::Cluster`] request presents: the pod's own token, which the protocol's client reads
+/// and no section holds.
+pub const SERVICE_ACCOUNT: &str = "service-account";
 
 /// Where the records go.
 pub(crate) type Recorder = Arc<dyn Fn(&RequestRecord) + Send + Sync>;
@@ -447,16 +458,19 @@ async fn admit<P: Protocol>(
             }
         }
     };
-    record(name.clone(), "allowed".to_string());
+    let presented = match asked.decl.location {
+        Location::Cluster => Some(SERVICE_ACCOUNT.to_string()),
+        _ => name.clone(),
+    };
+    record(presented, "allowed".to_string());
     Ok((name, credential))
 }
 
+/// How what comes of a request reaches the domain: done when the next may follow, saying whether it should.
+type Deliver<T> = Arc<dyn Fn(Result<T, Failure>) -> Pending<bool> + Send + Sync>;
+
 /// Runs one request: the whole of what the handler does for it.
-async fn run<O: Operation>(
-    shared: Arc<Shared>,
-    operation: O,
-    send: Arc<dyn Fn(Result<O::Output, Failure>) + Send + Sync>,
-) {
+async fn run<O: Operation>(shared: Arc<Shared>, operation: O, send: Deliver<O::Output>) {
     let decl = O::DECL;
     let refuse_early = |failure: Failure| {
         (shared.record)(&RequestRecord {
@@ -467,36 +481,37 @@ async fn run<O: Operation>(
             arbitrary: decl.location == Location::Arbitrary,
             verdict: failure.to_string(),
         });
-        send(Err(failure));
+        let told = send(Err(failure));
+        async move {
+            told.await;
+        }
     };
 
     let Some(protocol) = shared.instances.get::<O::Protocol>() else {
         return refuse_early(Failure::Configuration(format!(
             "the agent did not start the {} protocol: declare the operation",
             decl.protocol.as_str()
-        )));
+        )))
+        .await;
     };
     let request = operation.request();
 
-    let variable = match decl.location {
-        Location::Configured { variable, .. } => Some(variable),
-        Location::Bound { .. } | Location::Arbitrary => None,
-    };
-    let base = match variable {
-        Some(variable) => match shared.configuration.value(variable).await {
+    let base = match decl.location {
+        Location::Configured { variable, .. } => match shared.configuration.value(variable).await {
             Some(base) => Some(base),
-            None => return refuse_early(Failure::Denied(Denial::NotConfigured)),
+            None => return refuse_early(Failure::Denied(Denial::NotConfigured)).await,
         },
-        None => None,
+        Location::Cluster => protocol.own_location(),
+        Location::Bound { .. } | Location::Arbitrary => None,
     };
     let configured_host = match base.as_deref().map(O::Protocol::configured_host) {
         Some(Ok(host)) => Some(host),
-        Some(Err(why)) => return refuse_early(Failure::Configuration(why)),
+        Some(Err(why)) => return refuse_early(Failure::Configuration(why)).await,
         None => None,
     };
     let target = match O::Protocol::target(&request, base.as_deref()) {
         Ok(target) => target,
-        Err(why) => return refuse_early(Failure::Configuration(why)),
+        Err(why) => return refuse_early(Failure::Configuration(why)).await,
     };
 
     // Which credential the host decides once, where the request first goes: a host it goes on to is checked against that
@@ -514,7 +529,8 @@ async fn run<O: Operation>(
             Err(error) => {
                 return refuse_early(Failure::Transient(format!(
                     "the CryptoActor did not say what is bound to the host: {error}"
-                )));
+                )))
+                .await;
             }
         }
     } else {
@@ -527,7 +543,10 @@ async fn run<O: Operation>(
     });
     let (name, credential) = match admit::<O::Protocol>(&shared, &asked, &target).await {
         Ok(admitted) => admitted,
-        Err(failure) => return send(Err(failure)),
+        Err(failure) => {
+            send(Err(failure)).await;
+            return;
+        }
     };
 
     // A hop presents what it is given for where it goes, under the credential's own name: what is refused after it is that
@@ -553,7 +572,8 @@ async fn run<O: Operation>(
                             shared.refused(decl.name, &name, why);
                         }
                     }
-                    send(result);
+                    let unread = result.is_err();
+                    send(result).await && !unread
                 })
             })
         },
@@ -593,7 +613,7 @@ async fn run<O: Operation>(
             }
             _ => {}
         }
-        send(Err(failure));
+        send(Err(failure)).await;
     }
 }
 
@@ -659,40 +679,82 @@ pub struct ProtocolHandle {
     in_force: Arc<Mutex<Option<CredentialsApplied>>>,
 }
 
+/// A change of a stream, as it reaches the domain actor. The next is not read until the actor has let go of this, which it
+/// does by finishing with the message: so a stream goes at the pace of what the domain does with it, as a publish that waits
+/// for room slows a watch (docs/architecture/cassini-backpressure.md), and a message that is dropped lets it go as well.
+#[derive(Debug)]
+pub struct Delivery<T> {
+    /// A failure is the last the stream says: it has ended.
+    pub result: Result<T, Failure>,
+    _taken: tokio::sync::oneshot::Sender<()>,
+}
+
+/// A stream the domain asked for, which ends when this is dropped.
+#[must_use = "a stream ends when this is dropped"]
+#[derive(Debug)]
+pub struct Streaming {
+    _end: tokio::sync::oneshot::Sender<()>,
+}
+
 /// The handler has ended, so the agent is ending.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("the protocol handler has ended")]
 pub struct HandlerEnded;
 
 impl ProtocolHandle {
-    /// Makes `operation`'s request, and sends what comes of it to `to`, wrapped by `wrap`: one message for a request with
-    /// one reply, and one for each change of a stream, in order.
-    pub fn request<O: Operation, M: ractor::Message>(
+    /// Makes `operation`'s request and sends each change that comes of it to `to`, wrapped by `wrap`: one message each, in
+    /// order, the next once the actor has finished with the last ([`Delivery`]). It goes on until the returned [`Streaming`]
+    /// is dropped or it fails, and a failure is its last message: asking again is the domain's to decide, as there are no
+    /// retries in a handler.
+    pub fn stream<O, M, W>(
         &self,
         operation: O,
         to: ActorRef<M>,
-        wrap: fn(Result<O::Output, Failure>) -> M,
-    ) -> Result<(), HandlerEnded> {
-        let send: Arc<dyn Fn(Result<O::Output, Failure>) + Send + Sync> = Arc::new(move |result| {
-            let _ = to.send_message(wrap(result));
+        wrap: W,
+    ) -> Result<Streaming, HandlerEnded>
+    where
+        O: Operation,
+        M: ractor::Message,
+        W: Fn(Delivery<O::Output>) -> M + Send + Sync + 'static,
+    {
+        let send: Deliver<O::Output> = Arc::new(move |result| {
+            let (taken, finished) = tokio::sync::oneshot::channel();
+            let sent = to
+                .send_message(wrap(Delivery {
+                    result,
+                    _taken: taken,
+                }))
+                .is_ok();
+            Box::pin(async move {
+                let _ = finished.await;
+                sent
+            })
         });
+        let (end, ended) = tokio::sync::oneshot::channel::<()>();
         self.actor
             .cast(ProtocolMessage::Run(Box::new(move |shared| {
-                Box::pin(run(shared, operation, send))
+                Box::pin(async move {
+                    tokio::select! {
+                        () = run(shared, operation, send) => {}
+                        _ = ended => {}
+                    }
+                })
             })))
-            .map_err(|_| HandlerEnded)
+            .map_err(|_| HandlerEnded)?;
+        Ok(Streaming { _end: end })
     }
 
     /// Makes `operation`'s request and waits for what comes of it, for a domain actor that goes through its work in order,
-    /// as a pull of pages does. Waiting holds that actor's mailbox and nothing else. A stream's later replies are dropped:
-    /// [`request`](Self::request) is for a stream.
+    /// as a pull of pages does. Waiting holds that actor's mailbox and nothing else. The first reply is the answer, and a
+    /// stream goes no further: [`stream`](Self::stream) is for a stream.
     pub async fn ask<O: Operation>(&self, operation: O) -> Result<O::Output, Failure> {
         let (tell, told) = tokio::sync::oneshot::channel();
         let tell = Mutex::new(Some(tell));
-        let send: Arc<dyn Fn(Result<O::Output, Failure>) + Send + Sync> = Arc::new(move |result| {
+        let send: Deliver<O::Output> = Arc::new(move |result| {
             if let Some(tell) = tell.lock().unwrap().take() {
                 let _ = tell.send(result);
             }
+            Box::pin(std::future::ready(false))
         });
         let ended = || Failure::Transient(HandlerEnded.to_string());
         self.actor
@@ -933,6 +995,7 @@ pub(crate) fn problems(
     credentials: Option<&crate::runtime::RuntimeSection>,
     variables: &[&str],
     cassini_client: bool,
+    needs: &[crate::Capability],
 ) -> Vec<String> {
     let mut problems = Vec::new();
     if let Some(section) = credentials {
@@ -975,8 +1038,22 @@ pub(crate) fn problems(
                 credential
             }
             Location::Bound { credential } => Some(credential),
-            Location::Arbitrary => None,
+            Location::Arbitrary | Location::Cluster => None,
         };
+        let to_the_cluster = operation.location == Location::Cluster;
+        if to_the_cluster != operation.protocol.to_the_cluster() {
+            problems.push(format!(
+                "operation `{name}`: the Kubernetes protocol goes to the cluster and nothing else does"
+            ));
+        }
+        if to_the_cluster
+            && !needs.contains(&crate::Capability::KubeApiRead)
+            && !needs.contains(&crate::Capability::PodRead)
+        {
+            problems.push(format!(
+                "operation `{name}` reads the Kubernetes API, and {agent} needs no capability that gives it a token to"
+            ));
+        }
         if credential.is_some() && credentials.is_none() {
             problems.push(format!(
                 "operation `{name}` uses a credential, and {agent} declares no credentials"
@@ -1003,7 +1080,7 @@ pub struct OperationEntry {
     pub name: String,
     pub doc: String,
     pub protocol: String,
-    /// `configured`, `bound` or `arbitrary`.
+    /// `configured`, `bound`, `arbitrary` or `cluster`.
     pub location: String,
     /// The variable a configured operation goes to the host of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1023,6 +1100,7 @@ impl From<&OperationDecl> for OperationEntry {
             } => ("configured", Some(variable.to_string()), credential),
             Location::Bound { credential } => ("bound", None, Some(credential)),
             Location::Arbitrary => ("arbitrary", None, None),
+            Location::Cluster => ("cluster", None, None),
         };
         Self {
             name: operation.name.to_string(),
@@ -1063,6 +1141,10 @@ pub(crate) mod tests {
         Body(String),
         /// Answers with each of these, as a stream does.
         Stream(Vec<String>),
+        /// These bodies, in order, and then it never says anything again.
+        StreamThenHangs(Vec<String>),
+        /// These bodies, in order, and then it fails.
+        StreamThenFails(Vec<String>),
         /// Refuses the credential.
         Refuses,
         /// Asks for time.
@@ -1134,9 +1216,27 @@ pub(crate) mod tests {
                 }
                 Answer::Stream(bodies) => {
                     for body in bodies {
-                        exchange.reply(TestReply { body }).await;
+                        if !exchange.reply(TestReply { body }).await {
+                            break;
+                        }
                     }
                     Ok(())
+                }
+                Answer::StreamThenHangs(bodies) => {
+                    for body in bodies {
+                        if !exchange.reply(TestReply { body }).await {
+                            return Ok(());
+                        }
+                    }
+                    std::future::pending().await
+                }
+                Answer::StreamThenFails(bodies) => {
+                    for body in bodies {
+                        if !exchange.reply(TestReply { body }).await {
+                            return Ok(());
+                        }
+                    }
+                    Err(Failure::Transient("it lost the far end".to_string()))
                 }
                 Answer::Refuses => Err(Failure::CredentialRefused("the site said no".to_string())),
                 Answer::Busy(wait) => Err(Failure::Backoff { status: 503, wait }),
@@ -1180,6 +1280,9 @@ pub(crate) mod tests {
         };
     }
 
+    /// How many `counted` bodies have been read, by the one test that sends them.
+    static COUNTED_READS: AtomicUsize = AtomicUsize::new(0);
+
     /// What every test operation's `read` does with a body: some bodies say how it should misbehave.
     fn read_body(body: &str) -> Result<String, ReadFailure> {
         match body {
@@ -1192,6 +1295,10 @@ pub(crate) mod tests {
                 "the site answered as if for nobody".to_string(),
             )),
             "garbled" => Err(ReadFailure::Malformed("not what was expected".to_string())),
+            "counted" => {
+                COUNTED_READS.fetch_add(1, Ordering::SeqCst);
+                Ok(body.to_string())
+            }
             _ => Ok(body.to_string()),
         }
     }
@@ -1353,6 +1460,8 @@ pub(crate) mod tests {
         crypto: Arc<FakeCrypto>,
         records: Arc<Mutex<Vec<RequestRecord>>>,
         wire_host: String,
+        /// The streams of what a test asked for, which last as long as it does.
+        streams: Mutex<Vec<Streaming>>,
         /// What a test has taken and wants to look at afterwards.
         kept: Mutex<Vec<Result<String, Failure>>>,
     }
@@ -1423,6 +1532,7 @@ pub(crate) mod tests {
             crypto,
             records,
             wire_host: host,
+            streams: Mutex::default(),
             kept: Mutex::default(),
         }
     }
@@ -1449,9 +1559,11 @@ pub(crate) mod tests {
 
     impl Rig {
         fn ask<O: Operation<Output = String>>(&self, operation: O) {
-            self.protocols
-                .request(operation, self.domain.clone(), |result| result)
+            let stream = self
+                .protocols
+                .stream(operation, self.domain.clone(), |delivery| delivery.result)
                 .unwrap();
+            self.streams.lock().unwrap().push(stream);
         }
 
         /// Waits for the domain to have been sent `count` messages, and takes them.
@@ -1688,6 +1800,180 @@ pub(crate) mod tests {
         assert_eq!(got, bodies);
     }
 
+    /// A domain actor that holds on to each delivery until it is told to let go.
+    struct Holding;
+
+    type Held = Arc<Mutex<Vec<Delivery<String>>>>;
+
+    #[async_trait]
+    impl Actor for Holding {
+        type Msg = Delivery<String>;
+        type State = Held;
+        type Arguments = Held;
+        async fn pre_start(
+            &self,
+            _: ActorRef<Self::Msg>,
+            held: Held,
+        ) -> Result<Held, ActorProcessingErr> {
+            Ok(held)
+        }
+        async fn handle(
+            &self,
+            _: ActorRef<Self::Msg>,
+            message: Self::Msg,
+            held: &mut Held,
+        ) -> Result<(), ActorProcessingErr> {
+            held.lock().unwrap().push(message);
+            Ok(())
+        }
+    }
+
+    async fn holding() -> (ActorRef<Delivery<String>>, Held) {
+        let held = Held::default();
+        let (actor, _) = Actor::spawn(None, Holding, held.clone()).await.unwrap();
+        (actor, held)
+    }
+
+    /// Waits for `held` to hold `count`, and takes the value of the last.
+    async fn held_count(held: &Held, count: usize) -> Option<Result<String, Failure>> {
+        for _ in 0..500 {
+            {
+                let held = held.lock().unwrap();
+                if held.len() >= count {
+                    return held.last().map(|last| last.result.clone());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        panic!(
+            "expected {count} deliveries; got {:?}",
+            held.lock().unwrap()
+        );
+    }
+
+    fn strings(bodies: &[&str]) -> Vec<String> {
+        bodies.iter().map(|body| body.to_string()).collect()
+    }
+
+    /// docs/architecture/cassini-backpressure.md: a watch slows when what it publishes has to wait, so the next change does
+    /// not reach a domain still busy with the last.
+    #[tokio::test]
+    async fn the_next_change_waits_until_the_domain_has_finished_with_the_last() {
+        let r = rig().await;
+        let (domain, held) = holding().await;
+        let stream = r
+            .protocols
+            .stream(
+                r.site(Answer::Stream(strings(&["one", "two"]))),
+                domain,
+                |delivery| delivery,
+            )
+            .unwrap();
+        assert_eq!(held_count(&held, 1).await, Some(Ok("one".to_string())));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(held.lock().unwrap().len(), 1, "it waits");
+        let first = held.lock().unwrap().remove(0);
+        drop(first);
+        assert_eq!(held_count(&held, 1).await, Some(Ok("two".to_string())));
+        drop(stream);
+    }
+
+    #[tokio::test]
+    async fn a_domain_busy_with_one_stream_holds_up_no_other() {
+        let r = rig().await;
+        let (domain, held) = holding().await;
+        let _stuck = r
+            .protocols
+            .stream(
+                r.site(Answer::Stream(strings(&["one", "two"]))),
+                domain,
+                |delivery| delivery,
+            )
+            .unwrap();
+        held_count(&held, 1).await;
+        r.ask(r.site(Answer::Stream(strings(&["other", "more"]))));
+        let got: Vec<String> = r.answers(2).await.into_iter().map(Result::unwrap).collect();
+        assert_eq!(got, strings(&["other", "more"]));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_stream_ends_it() {
+        let r = rig().await;
+        let (domain, held) = holding().await;
+        let stream = r
+            .protocols
+            .stream(
+                r.site(Answer::StreamThenHangs(strings(&["one", "two"]))),
+                domain,
+                |delivery| delivery,
+            )
+            .unwrap();
+        held_count(&held, 1).await;
+        drop(stream);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let first = held.lock().unwrap().remove(0);
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(held.lock().unwrap().is_empty(), "nothing followed");
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_fails_says_so_last() {
+        let r = rig().await;
+        r.ask(r.site(Answer::StreamThenFails(strings(&["one", "two"]))));
+        let got = r.answers(3).await;
+        assert_eq!(got[0], Ok("one".to_string()));
+        assert_eq!(got[1], Ok("two".to_string()));
+        assert_eq!(
+            got[2],
+            Err(Failure::Transient("it lost the far end".to_string()))
+        );
+    }
+
+    /// A stream says each change once, so one that could not be read leaves the domain with a gap: it ends, and what the
+    /// domain asks for next starts afresh.
+    #[tokio::test]
+    async fn a_change_that_cannot_be_read_ends_the_stream() {
+        let r = rig().await;
+        r.ask(r.site(Answer::Stream(strings(&["one", "garbled", "three"]))));
+        let got = r.answers(2).await;
+        assert_eq!(got[0], Ok("one".to_string()));
+        assert!(matches!(got[1], Err(Failure::Read(_))), "{got:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(r.got.lock().unwrap().is_empty(), "nothing followed");
+    }
+
+    /// Nobody listening means nothing more is read, and an answer needs only its first reply.
+    #[tokio::test]
+    async fn a_stream_stops_when_the_domain_has_gone_or_has_its_answer() {
+        COUNTED_READS.store(0, Ordering::SeqCst);
+        let r = rig().await;
+        assert_eq!(
+            r.protocols
+                .ask(r.site(Answer::Stream(strings(&["counted", "counted"]))))
+                .await,
+            Ok("counted".to_string())
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(COUNTED_READS.load(Ordering::SeqCst), 1);
+
+        let (domain, _held) = holding().await;
+        domain
+            .stop_and_wait(None, Some(Duration::from_secs(5)))
+            .await
+            .unwrap();
+        let _stream = r
+            .protocols
+            .stream(
+                r.site(Answer::StreamThenHangs(strings(&["counted", "counted"]))),
+                domain,
+                |delivery| delivery,
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(COUNTED_READS.load(Ordering::SeqCst), 2);
+    }
+
     /// A `read` that does not return stalls nothing else, and one past its budget is reported and its result dropped.
     /// The last thing it does is released, so that the test's thread goes back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1898,12 +2184,12 @@ pub(crate) mod tests {
             .stop_and_wait(None, Some(Duration::from_secs(5)))
             .await
             .unwrap();
-        let ended = r.protocols.request(
+        let ended = r.protocols.stream(
             r.site(Answer::Body("no".to_string())),
             r.domain.clone(),
-            |result| result,
+            |delivery| delivery.result,
         );
-        assert_eq!(ended, Err(HandlerEnded));
+        assert_eq!(ended.err(), Some(HandlerEnded));
     }
 
     #[tokio::test]
@@ -1982,11 +2268,12 @@ pub(crate) mod tests {
                 &DECLARED,
                 Some(&SECTION),
                 &["SITE_URL", "OPEN_URL"],
-                true
+                true,
+                &[],
             )
             .is_empty()
         );
-        let all = problems("a", &DECLARED, None, &[], false).join(" | ");
+        let all = problems("a", &DECLARED, None, &[], false, &[]).join(" | ");
         for expected in [
             "`site.read` goes to the host of SITE_URL",
             "`open.read` goes to the host of OPEN_URL",
@@ -2000,7 +2287,7 @@ pub(crate) mod tests {
             decl("twice", Location::Arbitrary),
             decl("twice", Location::Arbitrary),
         ];
-        let all = problems("a", &bad, Some(&WRONG), &[], false).join(" | ");
+        let all = problems("a", &bad, Some(&WRONG), &[], false, &[]).join(" | ");
         for expected in [
             "`Not A Name` is not a name",
             "`twice` is declared more than once",
@@ -2016,8 +2303,40 @@ pub(crate) mod tests {
                 credential: Some(Credential::ForHost),
             },
         )];
-        let all = problems("a", &confused, Some(&SECTION), &["SITE_URL"], true).join(" | ");
+        let all = problems("a", &confused, Some(&SECTION), &["SITE_URL"], true, &[]).join(" | ");
         assert!(all.contains("name its credential"), "{all}");
+
+        let watches = [OperationDecl {
+            name: "watches",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster,
+        }];
+        for enough in [crate::Capability::KubeApiRead, crate::Capability::PodRead] {
+            assert!(problems("a", &watches, None, &[], true, &[enough]).is_empty());
+        }
+        let all = problems("a", &watches, None, &[], true, &[]).join(" | ");
+        assert!(all.contains("reads the Kubernetes API"), "{all}");
+
+        let nowhere = [decl("elsewhere", Location::Cluster)];
+        let all = problems(
+            "a",
+            &nowhere,
+            None,
+            &[],
+            true,
+            &[crate::Capability::PodRead],
+        )
+        .join(" | ");
+        assert!(all.contains("goes to the cluster"), "{all}");
+        let off = [OperationDecl {
+            name: "off",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Arbitrary,
+        }];
+        let all = problems("a", &off, None, &[], true, &[crate::Capability::PodRead]).join(" | ");
+        assert!(all.contains("goes to the cluster"), "{all}");
     }
 
     #[test]
@@ -2032,10 +2351,43 @@ pub(crate) mod tests {
         let entry = OperationEntry::from(&Anywhere::DECL);
         assert_eq!(entry.location, "arbitrary");
         assert_eq!(entry.credential, None);
+        let entry = OperationEntry::from(&decl("watches", Location::Cluster));
+        assert_eq!(entry.location, "cluster");
+        assert_eq!(entry.credential, None);
+        assert_eq!(entry.variable, None);
     }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// Whatever a stream says, the domain gets each change in order up to the first that cannot be read, that one's
+        /// failure, and nothing after it.
+        #[test]
+        fn a_stream_is_said_in_order_up_to_the_first_it_cannot_read(
+            bodies in proptest::collection::vec(prop_oneof![4 => "[a-z]{1,6}", 1 => Just("garbled".to_string())], 0..12),
+            fails in any::<bool>(),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let readable = bodies.iter().take_while(|body| *body != "garbled").count();
+            let unreadable = readable < bodies.len();
+            let expected = readable + usize::from(unreadable || fails);
+            let got = runtime.block_on(async {
+                let r = rig().await;
+                let answer = if fails { Answer::StreamThenFails(bodies.clone()) } else { Answer::Stream(bodies.clone()) };
+                r.ask(r.site(answer));
+                let got = r.answers(expected).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                assert!(r.got.lock().unwrap().is_empty(), "nothing followed");
+                got
+            });
+            for (at, value) in got.iter().enumerate() {
+                if at < readable {
+                    prop_assert_eq!(value.as_ref().ok(), Some(&bodies[at]));
+                } else {
+                    prop_assert!(value.is_err());
+                }
+            }
+        }
 
         /// For any secret and any sequence of requests, nothing the domain is sent, nothing recorded, and nothing the agent
         /// holds as a problem has the secret in it, and yet it did go out when it should have.

@@ -26,6 +26,7 @@
 
 use super::git::Git;
 use super::http::Http;
+use super::kubernetes::Kubernetes;
 use super::{
     CredentialSource, CredentialsApplied, Holds, Instances, LiveConfiguration, OperationDecl,
     ProtocolActor, ProtocolArgs, ProtocolHandle, ProtocolMessage, RequestRecord,
@@ -238,6 +239,242 @@ pub fn git_ca() -> &'static TestCa {
         let _ = std::fs::remove_dir_all(&dir);
         ca
     })
+}
+
+/// A handler over the Kubernetes API of `api`, over TLS, with `operations` declared.
+pub async fn kubernetes_handle(operations: &'static [OperationDecl], api: &KubeApi) -> Site {
+    let port = polar::egress::testing::https_front(&api.ca, &api.server.uri()).await;
+    let mut config = api.config(&format!("https://localhost:{port}"));
+    let der = base64::engine::general_purpose::STANDARD.decode(
+        api.ca
+            .pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect::<String>(),
+    );
+    config.root_cert = Some(vec![der.expect("the test's CA")]);
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    kubernetes_of(operations, config).await
+}
+
+/// [`kubernetes_handle`] with no TLS at all.
+pub async fn kubernetes_handle_unencrypted(
+    operations: &'static [OperationDecl],
+    api: &KubeApi,
+) -> Site {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    kubernetes_of(operations, api.config(&api.server.uri())).await
+}
+
+async fn kubernetes_of(operations: &'static [OperationDecl], config: kube::Config) -> Site {
+    let kubernetes = Kubernetes::of(config).expect("the test's client");
+    handle_of(Instances::of(kubernetes), operations, Vec::new(), None).await
+}
+
+/// A stand-in Kubernetes API, as much as `kube`'s watcher needs: a list of what a path holds, then what a watch is to say,
+/// and after that a watch that stays open saying nothing, as a real one does between changes.
+pub struct KubeApi {
+    server: MockServer,
+    ca: TestCa,
+    state: Arc<ApiState>,
+    token_file: PathBuf,
+}
+
+#[derive(Default)]
+struct ApiState {
+    paths: Mutex<HashMap<String, ApiPath>>,
+}
+
+#[derive(Default)]
+struct ApiPath {
+    items: Vec<serde_json::Value>,
+    list_refused: Option<u16>,
+    /// What each watch is to say, the next first.
+    watches: std::collections::VecDeque<WatchAnswer>,
+}
+
+enum WatchAnswer {
+    Lines(String),
+    Status(u16),
+}
+
+impl KubeApi {
+    /// The token its client presents, from its file.
+    pub const TOKEN: &'static str = "the-pods-own-token";
+    pub const BEARER: &'static str = "Bearer the-pods-own-token";
+
+    pub async fn start() -> Self {
+        let server = MockServer::start().await;
+        let state = Arc::new(ApiState::default());
+        Mock::given(any())
+            .respond_with(ApiResponder(state.clone()))
+            .mount(&server)
+            .await;
+        let token_file = std::env::temp_dir().join(format!(
+            "polar-kube-test-token-{}-{}",
+            std::process::id(),
+            server.address().port()
+        ));
+        std::fs::write(&token_file, Self::TOKEN).expect("the test's token");
+        Self {
+            server,
+            ca: TestCa::new("kube tests"),
+            state,
+            token_file,
+        }
+    }
+
+    fn config(&self, address: &str) -> kube::Config {
+        let mut config = kube::Config::new(address.parse().expect("the test's address"));
+        config.auth_info.token_file = Some(self.token_file.display().to_string());
+        config
+    }
+
+    /// A list of `path` gives these, without the `apiVersion` and `kind` that a list's items do not carry.
+    pub fn holds(&self, path: &str, items: Vec<serde_json::Value>) {
+        self.state
+            .paths
+            .lock()
+            .unwrap()
+            .entry(path.to_string())
+            .or_default()
+            .items = items;
+    }
+
+    /// A list of `path` is refused with this status.
+    pub fn refuses_the_list(&self, path: &str, status: u16) {
+        self.state
+            .paths
+            .lock()
+            .unwrap()
+            .entry(path.to_string())
+            .or_default()
+            .list_refused = Some(status);
+    }
+
+    /// The next watch of `path` says these, each a type, a name and a resource version, and ends as a real one does when
+    /// its time is up.
+    pub fn then_says(&self, path: &str, events: Vec<(&str, &str, &str)>) {
+        let lines: String = events
+            .into_iter()
+            .map(|(kind, name, version)| {
+                let object = serde_json::json!({
+                    "apiVersion": "v1", "kind": "Whatever",
+                    "metadata": {"name": name, "resourceVersion": version},
+                });
+                format!("{}\n", serde_json::json!({"type": kind, "object": object}))
+            })
+            .collect();
+        self.then(path, WatchAnswer::Lines(lines));
+    }
+
+    /// The next watch of `path` is refused with this status.
+    pub fn then_fails(&self, path: &str, status: u16) {
+        self.then(path, WatchAnswer::Status(status));
+    }
+
+    /// The next watch of `path` is accepted, and says this status in its stream.
+    pub fn then_errs(&self, path: &str, status: u16) {
+        let line = serde_json::json!({"type": "ERROR", "object": api_status(status)});
+        self.then(path, WatchAnswer::Lines(format!("{line}\n")));
+    }
+
+    fn then(&self, path: &str, answer: WatchAnswer) {
+        self.state
+            .paths
+            .lock()
+            .unwrap()
+            .entry(path.to_string())
+            .or_default()
+            .watches
+            .push_back(answer);
+    }
+
+    /// What each request presented, in order: its `Authorization`, or nothing.
+    pub async fn presented(&self) -> Vec<Option<String>> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|request| {
+                request
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// How many requests have been made of `path`.
+    pub async fn asked_of(&self, path: &str) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| request.url.path() == path)
+            .count()
+    }
+
+    /// Each request's query, in order.
+    pub async fn queries(&self) -> Vec<String> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|request| request.url.query().unwrap_or_default().to_string())
+            .collect()
+    }
+}
+
+impl Drop for KubeApi {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.token_file);
+    }
+}
+
+fn api_status(code: u16) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "Status", "apiVersion": "v1", "metadata": {}, "status": "Failure",
+        "message": "the stand-in said so", "reason": "Whatever", "code": code,
+    })
+}
+
+struct ApiResponder(Arc<ApiState>);
+
+impl Respond for ApiResponder {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let mut paths = self.0.paths.lock().unwrap();
+        let Some(path) = paths.get_mut(request.url.path()) else {
+            return ResponseTemplate::new(404).set_body_json(api_status(404));
+        };
+        let watching = request
+            .url
+            .query()
+            .unwrap_or_default()
+            .contains("watch=true");
+        if !watching {
+            if let Some(status) = path.list_refused {
+                return ResponseTemplate::new(status).set_body_json(api_status(status));
+            }
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "v1", "kind": "List",
+                "metadata": {"resourceVersion": "100"},
+                "items": path.items,
+            }));
+        }
+        match path.watches.pop_front() {
+            Some(WatchAnswer::Lines(lines)) => ResponseTemplate::new(200).set_body_string(lines),
+            Some(WatchAnswer::Status(status)) => {
+                ResponseTemplate::new(status).set_body_json(api_status(status))
+            }
+            // Nothing to say: it stays open, for longer than any test.
+            None => ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(600)),
+        }
+    }
 }
 
 /// A stand-in git server: the smart protocol, as little of it as libgit2 needs, over the repository in a directory as it

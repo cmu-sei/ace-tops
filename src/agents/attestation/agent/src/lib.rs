@@ -25,7 +25,7 @@
 //! whether an instance is what the deployment made. It sees and reports; it never acts.
 //!
 //! - [`holdings`]: what it holds of the cluster, and the facts it reads from that;
-//! - [`watch`]: one watch of one kind in one namespace;
+//! - [`watch`]: one watch of one kind in one namespace, as an operation of the protocol handler's;
 //! - [`supervisor`]: the input and output around the judgement, which is `attestation_common::judge`.
 
 #![deny(clippy::disallowed_methods)]

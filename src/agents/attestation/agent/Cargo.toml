@@ -39,9 +39,7 @@ attestation-common.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
 cert-issuer-common = { path = "../../cert-issuer/common" }
-futures.workspace = true
 k8s-openapi.workspace = true
-kube.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true
@@ -54,5 +52,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The real handler and a stand-in Kubernetes API.
+polar-agent-builder = { workspace = true, features = ["testing"] }
 polar-signing = { workspace = true, features = ["testing"] }
 proptest.workspace = true

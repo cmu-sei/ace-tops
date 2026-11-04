@@ -670,6 +670,7 @@ fn surface_problems<A: PolarAgent>() -> Vec<String> {
         A::CREDENTIALS,
         &variables,
         A::CASSINI_CLIENT,
+        A::NEEDS,
     ));
     problems.extend(crate::topics::problems(&topic_facts::<A>(), A::TOPICS));
     problems.extend(crate::topics::family_problems(A::TOPIC_FAMILIES));
