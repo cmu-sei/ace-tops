@@ -312,9 +312,10 @@ Things that look wrong and are not:
   not a crash. After such a restart every container's last state reads exit 137, `RestartingAllContainers`: that is the
   kubelet's own record, not the agent's exit. On a bring-up, a scheduler observer can also restart once if Polar's git
   server is still starting.
-- **`jira-observer` restarting** when no Jira is set up for the target: its site is `workloads.jira-observer.env` in the
-  target's `config.nuon`, and its credential the signed `credentials` section that the seed seals from the target's sops
-  files on a fresh cluster (see **Secrets setup**). Its pod restarts in place each time; nothing piles up.
+- **`jira-observer` unhealthy** when no Jira is set up for the target: it stays up, holds, and says what to set. Its site is
+  `workloads.jira-observer.env` in the target's `config.nuon`, or a signed `--settings` document (step 8), and its credential
+  the signed `credentials` section that the seed seals from the target's sops files on a fresh cluster (see **Secrets
+  setup**).
 - **`ErrImagePull: pull QPS exceeded` or `ImagePullBackOff`, briefly, when many pods start at once.** The kubelet's limit
   on registry requests (step 1). It retries by itself and the pods start.
 - **A port-forward that stops answering** after a pod was replaced: forwards follow one pod. Run `just port-forwards-down`
@@ -323,6 +324,26 @@ Things that look wrong and are not:
   just restarted (it does when its settings change). The step retries and goes on.
 - **`[polar] TLS certs missing -> building .#tlsCerts ... ERROR`** from a dev shell entered before the dev shell's TLS
   hook was retired (there is no dev PKI of its own any more). Leave the dev shell and enter it again, or `direnv reload`.
+
+**Known issues in 3.0.1.** None stops a deployment. All but the last were seen on a clean install from this README:
+
+- **`export` does not work in the dev container's shell.** It prints errors about `cut` and sets nothing, because the
+  image's fish function needs a tool the image does not have. Use `set -x NAME value`, or type `bash` first; `export` on
+  your own machine is fine. The image also has no `cut`, `head`, `wc` or `awk` (`grep` and `sed` are there).
+- **`jira-observer` shows as unhealthy** until you tell it your site: `JIRA_URL is still the example placeholder`, in its
+  log and in `(:AgentHealth)`. It stays up and waits. Set the site with `polar-sign template jira-observer --settings` (step
+  8) or `workloads.jira-observer.env` in the target's `config.nuon`, and give it a token with `jira-observer credentials`.
+- **`kube-observer` restarts when it loses a watch of the Kubernetes API**, for instance when the API server restarts. That
+  is on purpose: it lists everything again rather than going quietly blind to what it lost. Its log says `lost its watch`.
+  Like every agent it also restarts about once an hour to renew its certificate; restarting over and over, minutes apart,
+  with the API healthy is not expected.
+- **The browser step speaks only of Librewolf.** For another browser, or none, follow step 5's note: pressing Enter is
+  fine, and only a browser needs the certificate.
+- **`no polar-scheduler-observer pod is running to probe from`** at the end of `up.nu` can appear while that pod runs. It
+  means only that access to the outside was not checked; `up.nu` has otherwise finished.
+- **The `neo4j` image is tagged `5.26.2`** and holds Neo4j 2025.08.0, built from source. The tag is a label to change later.
+
+What else is open is in `remaining-work.md`.
 
 ### 7. Day to day
 
@@ -487,7 +508,7 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    bin/polar-dev forward        # then https://localhost:7473 (Neo4j) and http://localhost:8050 (ACE)
    ```
 
-   Step 6's checks are the same. Restart counts that grow, and `jira-observer` restarting when no Jira is set up, are
+   Step 6's checks are the same. Restart counts that grow, and `jira-observer` unhealthy when no Jira is set up, are
    expected (**Things that look wrong and are not**).
 
 ### Working environments
