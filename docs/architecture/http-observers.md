@@ -116,9 +116,17 @@ On images built from these commits, through `up.nu`, the broker, the scheduler a
 - **Found:** a source moved from a 3.0 to a 2.0 document held both versions on one node. Fixed (above) and seen cleared.
 - **Restart:** both pods deleted: each replayed what was in force and the hold cleared at once.
 
+**The guard and health, checked the same way the same day, on images with the guard.**
+
+- **An error answered with a 200:** a source moved to `{"error": "...password=hunter2"}`, served with a 200. Refused whole, naming `body.openapi or body.swagger`. The node's title, version and license all stayed, and so did its endpoints, with the last-seen time unchanged. The processor's health held, naming the source, and the password appeared nowhere in its log. Back on the good document, the next read wrote it and the hold cleared by itself.
+- **A mapping with no guard:** `polar-sign --projection` refused it by its type. Signed past that with `--body-file`, the agent refused it (`missing field guard`), and the mapping in force stayed.
+- **The observer:** one 404 was logged and no more. The second in a row held, naming the source and `it answered 404`, while the other source went on being read and published. Taking the source out of the list cleared it at once.
+
+Health was read from the agents' logs. The answer through the state agent was not seen, since its seeded list of agents predates these two.
+
 An endpoint a document dropped stays in the graph, but its `polar_observed_at` falls behind, so it can be told apart: that is the start of handling it.
 
-**Not seen live, tests only:** a document from a publisher other than the observer, a document over the size bound, and a host asking for time. **Not run:** a fresh bring-up with these agents, and their health being asked by the state agent, whose first `agents` was seeded before they existed.
+**Not seen live, tests only:** a document from a publisher other than the observer, a document over the size bound, a host asking for time, and skipped entries as a standing problem. **Not run:** a fresh bring-up with these agents, and their health being asked by the state agent, whose first `agents` was seeded before they existed.
 
 Removed afterwards: the documents, the server, and the test nodes. The two agents remain deployed, the observer reading nothing and the processor holding.
 
