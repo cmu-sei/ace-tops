@@ -72,6 +72,7 @@ fn value_of(scalar: &Scalar) -> GraphValue {
         Scalar::Bool(b) => GraphValue::Bool(*b),
         Scalar::Integer(i) => GraphValue::I64(*i),
         Scalar::Real(r) => GraphValue::F64(*r),
+        Scalar::Null => GraphValue::Null,
     }
 }
 

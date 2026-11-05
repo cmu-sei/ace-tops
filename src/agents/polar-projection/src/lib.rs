@@ -115,6 +115,8 @@ pub enum Scalar {
     Bool(bool),
     Integer(i64),
     Real(f64),
+    /// What a document does not have, which clears the property: a document is a snapshot.
+    Null,
 }
 
 /// A node, by what identifies it.
@@ -484,7 +486,10 @@ impl Projection {
         let mut props: Vec<(String, Scalar)> = rule
             .set
             .iter()
-            .filter_map(|f| scope.scalar(&f.from).map(|v| (f.name.clone(), v)))
+            .map(|f| {
+                let value = scope.scalar(&f.from).unwrap_or(Scalar::Null);
+                (f.name.clone(), value)
+            })
             .collect();
         props.extend_from_slice(stamps);
         push(

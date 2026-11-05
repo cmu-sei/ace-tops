@@ -91,9 +91,11 @@ the type and the tool gives it. The agent judges the JSON again, and against its
 it is flat, because a Dhall type cannot refer to itself: an empty `parent`, `edge` or `only` means none. `polar-projection` has no graph or runtime without its `graph` feature, so the tool that holds an
 administrator's key takes neither.
 
+**A document is a snapshot.** A value it no longer has is cleared from the node, since `SET n += row.p` removes a null. Otherwise a source that moved from a 3.0 document to a 2.0 one held both versions, as was seen live.
+
 **How far it reaches** (from op counts and file sizes): OpenAPI and flat lists yes; GitLab's consumer probably most, but it also publishes follow-on events; the Kubernetes consumer needs `UpdateState` as a rule; Jira's
 issues no, since Jira's field names become labels; build-processor no, since `linker.rs` correlates across messages. **Tried against Jira,** in a test only: a mapping writes exactly what `build_ops_for_projects` writes,
-for any projects. Groups and users would not yet: groups writes an empty text for a missing value where a projection leaves it off, and a user's identity is its key or else its name, which needs a "first present".
+for any projects. Groups and users would not yet: groups writes an empty text for a missing value where a projection clears it, and a user's identity is its key or else its name, which needs a "first present".
 
 ## Mapping the security controls
 

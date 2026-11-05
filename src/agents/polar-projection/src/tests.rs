@@ -179,6 +179,39 @@ fn an_entry_that_cannot_be_identified_is_skipped_and_counted_and_the_rest_are_wr
     assert_eq!(projected.skipped, 1);
 }
 
+/// A document is a snapshot: what it no longer has must not stay on the node beside what it now says. Seen live, when a source
+/// moved from a 3.0 document to a 2.0 one and its node held both versions.
+#[test]
+fn a_value_the_document_no_longer_has_is_cleared_and_not_left_behind() {
+    let document =
+        json!({ "swagger": "2.0", "info": { "title": "t", "license": ["not a value"] } });
+    let projected = openapi().project("s", &document, &stamp()).unwrap();
+    let apps = nodes(&projected, "OpenApiApplication");
+    assert_eq!(prop(&apps[0].1, "swagger"), Some(&text("2.0")));
+    assert_eq!(prop(&apps[0].1, "openapi"), Some(&Scalar::Null), "absent");
+    assert_eq!(
+        prop(&apps[0].1, "license"),
+        Some(&Scalar::Null),
+        "not a value"
+    );
+    assert_eq!(prop(&apps[0].1, "title"), Some(&text("t")));
+}
+
+#[test]
+fn a_key_is_never_null_it_skips_the_node() {
+    let mut body = openapi_body();
+    body["rules"][1]["keys"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "op", "from": "operation.operationId" }));
+    let projection = Projection::well_formed(&body).unwrap();
+    let projected = projection
+        .project("s", &json!({ "paths": { "/a": { "get": {} } } }), &stamp())
+        .unwrap();
+    assert!(nodes(&projected, "OpenApiEndpoint").is_empty());
+    assert_eq!(projected.skipped, 1);
+}
+
 #[test]
 fn every_write_carries_where_it_came_from() {
     let document = json!({ "paths": { "/a": { "get": {} } } });

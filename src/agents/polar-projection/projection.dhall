@@ -46,7 +46,7 @@ let Rule =
       , label : Text
       , -- What identifies the node. Each must be there, or that node is skipped.
         keys : List Field
-      , -- What else it holds. One that is not there is left off.
+      , -- What else it holds. One the document does not have is cleared: a document is a snapshot.
         set : List Field
       , -- The type of the edge from the parent's node to this one.
         edge : Text
