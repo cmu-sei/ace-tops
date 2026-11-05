@@ -396,7 +396,7 @@ macro_rules! impl_namespaced_watcher {
 
             async fn handle(
                 &self,
-                myself: ractor::ActorRef<Self::Msg>,
+                _myself: ractor::ActorRef<Self::Msg>,
                 message: Self::Msg,
                 state: &mut Self::State,
             ) -> Result<(), ractor::ActorProcessingErr> {
@@ -410,8 +410,10 @@ macro_rules! impl_namespaced_watcher {
                         )
                         .await
                         {
+                            // A failure, not a stop: its supervisor must tell a lost watch from
+                            // a watcher stopped on purpose.
                             error!("{e}");
-                            myself.stop(None);
+                            return Err(e);
                         }
                     }
                 }
@@ -459,7 +461,7 @@ macro_rules! impl_global_watcher {
 
             async fn handle(
                 &self,
-                myself: ractor::ActorRef<Self::Msg>,
+                _myself: ractor::ActorRef<Self::Msg>,
                 message: Self::Msg,
                 state: &mut Self::State,
             ) -> Result<(), ractor::ActorProcessingErr> {
@@ -483,8 +485,10 @@ macro_rules! impl_global_watcher {
                                     $kind
                                 );
                             } else {
+                                // A failure, not a stop: ClusterObserverSupervisor ends the agent
+                                // on a child's failure, so a new pod lists everything again.
                                 error!("{e}");
-                                myself.stop(None);
+                                return Err(e);
                             }
                         }
                     }

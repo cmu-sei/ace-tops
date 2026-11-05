@@ -80,6 +80,12 @@ pub enum ObserverSupervisorMessage {
     /// InfrastructureSupervisorMessage::ProceedWithShutdown -- see
     /// this crate's own, real handle() arm for the complete sequence.
     PrepareShutdown,
+    /// A watcher lost its watch. It comes here directly: the NamespaceSupervisor between the two
+    /// is inside its own watch loop for as long as it runs, so it never hears of a child.
+    WatchLost {
+        watcher: String,
+        reason: String,
+    },
 }
 
 pub struct ClusterObserverSupervisor;
@@ -254,6 +260,12 @@ impl Actor for ClusterObserverSupervisor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
+            ObserverSupervisorMessage::WatchLost { watcher, reason } => {
+                // The same fail-fast policy as a child's failure, in handle_supervisor_evt: a new
+                // pod lists everything again, where this one would stay blind to what was lost.
+                error!("CLUSTER_SUPERVISOR: {watcher} lost its watch, exiting: {reason}");
+                std::process::exit(1);
+            }
             ObserverSupervisorMessage::PrepareShutdown => {
                 info!(
                     "CLUSTER_SUPERVISOR: PrepareShutdown received -- stopping this \
@@ -280,6 +292,7 @@ impl Actor for ClusterObserverSupervisor {
 
                     if state.namespace_watcher.is_none() {
                         let ns_watcher_state = NamespaceSupervisorState {
+                            observer: myself.clone(),
                             tcp_client: state.tcp_client.clone(),
                             kube_client: state.kube_client.clone(),
                             supervisors: HashMap::new(),
@@ -374,11 +387,13 @@ impl_namespaced_watcher!(JobWatcher, resource = Job, kind = "Job");
 
 pub struct NamespaceWatcherSupervisor;
 pub struct NamespaceWatcherSupervisorArgs {
+    pub observer: ActorRef<ObserverSupervisorMessage>,
     pub kube_client: Client,
     pub tcp_client: TcpClient,
     pub namespace: String,
 }
 pub struct NamespaceWatcherSupervisorState {
+    pub observer: ActorRef<ObserverSupervisorMessage>,
     pub kube_client: Client,
     pub tcp_client: TcpClient,
     pub namespace: String,
@@ -467,6 +482,7 @@ impl Actor for NamespaceWatcherSupervisor {
         .0;
 
         let state = NamespaceWatcherSupervisorState {
+            observer: args.observer,
             namespace: args.namespace,
             tcp_client: args.tcp_client,
             kube_client: args.kube_client,
@@ -502,11 +518,20 @@ impl Actor for NamespaceWatcherSupervisor {
         &self,
         _: ActorRef<Self::Msg>,
         msg: SupervisionEvent,
-        _: &mut Self::State,
+        state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        // TODO: We do nothing for lifecycle events at the moment,
-        // but we should think about what to do should any of these children fail
-        debug!("Saw supervision event {msg:?}");
+        match msg {
+            // A watcher fails when it has lost its watch; one that only stops was stopped on
+            // purpose, as when its namespace goes. Nothing else would ever watch that kind here
+            // again, so the agent has to start over.
+            SupervisionEvent::ActorFailed(watcher, e) => {
+                let _ = state.observer.cast(ObserverSupervisorMessage::WatchLost {
+                    watcher: watcher.get_name().unwrap_or_default(),
+                    reason: e.to_string(),
+                });
+            }
+            other => debug!("Saw supervision event {other:?}"),
+        }
         Ok(())
     }
 }
@@ -514,6 +539,7 @@ impl Actor for NamespaceWatcherSupervisor {
 struct NamespaceSupervisor;
 
 pub struct NamespaceSupervisorState {
+    pub observer: ActorRef<ObserverSupervisorMessage>,
     pub kube_client: Client,
     pub tcp_client: TcpClient,
     pub supervisors: NamespaceWatcherMap,
@@ -521,9 +547,10 @@ pub struct NamespaceSupervisorState {
 impl NamespaceSupervisor {
     /// A typed specific override of list_and_watch implementations.
     /// When we see namespaces, we want to spawn supervisors that will handle watchers for us.
-    #[instrument(skip(tcp_client, kube_client))]
+    #[instrument(skip(observer, tcp_client, kube_client))]
     pub async fn list_and_watch_namespaces(
         myself: &Watcher,
+        observer: &ActorRef<ObserverSupervisorMessage>,
         tcp_client: &TcpClient,
         kube_client: Client,
         supervisors: &mut NamespaceWatcherMap,
@@ -551,6 +578,7 @@ impl NamespaceSupervisor {
             let ns_name = ns.name_any();
 
             let supervisor_state = NamespaceWatcherSupervisorArgs {
+                observer: observer.clone(),
                 tcp_client: tcp_client.to_owned(),
                 kube_client: kube_client.clone(),
                 namespace: ns_name.clone(),
@@ -626,6 +654,7 @@ impl NamespaceSupervisor {
                         None => {
                             //spawn watcher supervisor
                             let supervisor_state = NamespaceWatcherSupervisorArgs {
+                                observer: observer.clone(),
                                 kube_client: kube_client.clone(),
                                 tcp_client: tcp_client.to_owned(),
                                 namespace: ns_name.clone(),
@@ -717,6 +746,7 @@ impl Actor for NamespaceSupervisor {
             WatcherMsg::Start => {
                 if let Err(e) = Self::list_and_watch_namespaces(
                     &myself,
+                    &state.observer,
                     &state.tcp_client,
                     state.kube_client.clone(),
                     &mut state.supervisors,
@@ -729,5 +759,257 @@ impl Actor for NamespaceSupervisor {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cassini_client::TcpClientMessage;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+    /// What the stand-in for the Kubernetes API does with every request.
+    #[derive(Clone, Copy)]
+    enum StandIn {
+        /// Lists nothing, and a watch is told at once that its version has gone (410), as the
+        /// API server says to a watch that has fallen behind. The watch was going, then lost.
+        ListsThenTheWatchIsGone,
+        /// This cluster has no such kind (404), as for Flux's kinds where Flux is not installed.
+        NoSuchKind,
+        /// Takes the request and never answers, a watch quietly going.
+        Silent,
+    }
+
+    fn answer(api: StandIn, head: &str) -> Option<(&'static str, String)> {
+        match api {
+            StandIn::Silent => None,
+            StandIn::NoSuchKind => Some((
+                "404 Not Found",
+                r#"{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"the server could not find the requested resource","reason":"NotFound","code":404}"#
+                    .to_string(),
+            )),
+            StandIn::ListsThenTheWatchIsGone if head.contains("watch=true") => Some((
+                "200 OK",
+                concat!(
+                    r#"{"type":"ERROR","object":{"kind":"Status","apiVersion":"v1","metadata":{},"#,
+                    r#""status":"Failure","message":"too old resource version","reason":"Expired","code":410}}"#,
+                    "\n"
+                )
+                .to_string(),
+            )),
+            StandIn::ListsThenTheWatchIsGone => Some((
+                "200 OK",
+                r#"{"kind":"List","apiVersion":"v1","metadata":{"resourceVersion":"1"},"items":[]}"#
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// A client of a stand-in for the Kubernetes API, over plain HTTP on a local port.
+    async fn kube_client(api: StandIn) -> Client {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = vec![0; 8192];
+                    let read = stream.read(&mut request).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&request[..read]).to_string();
+                    match answer(api, &head) {
+                        Some((status, body)) => {
+                            let response = format!(
+                                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            let _ = stream.write_all(response.as_bytes()).await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                });
+            }
+        });
+        let config = Config::new(format!("http://127.0.0.1:{port}").parse().unwrap());
+        Client::try_from(config).unwrap()
+    }
+
+    /// A client nothing here publishes through: the stand-in lists nothing, so there is no event.
+    struct NoBroker;
+
+    #[async_trait]
+    impl Actor for NoBroker {
+        type Msg = TcpClientMessage;
+        type State = ();
+        type Arguments = ();
+
+        async fn pre_start(
+            &self,
+            _: ActorRef<Self::Msg>,
+            _: (),
+        ) -> Result<Self::State, ActorProcessingErr> {
+            Ok(())
+        }
+    }
+
+    async fn tcp_client() -> TcpClient {
+        let (broker, _) = Actor::spawn(None, NoBroker, ()).await.unwrap();
+        TcpClient::from_actor_ref(broker)
+    }
+
+    /// Stands in for ClusterObserverSupervisor: says which watcher was reported lost.
+    struct Top;
+
+    #[async_trait]
+    impl Actor for Top {
+        type Msg = ObserverSupervisorMessage;
+        type State = UnboundedSender<String>;
+        type Arguments = UnboundedSender<String>;
+
+        async fn pre_start(
+            &self,
+            _: ActorRef<Self::Msg>,
+            told: Self::Arguments,
+        ) -> Result<Self::State, ActorProcessingErr> {
+            Ok(told)
+        }
+
+        async fn handle(
+            &self,
+            _: ActorRef<Self::Msg>,
+            message: Self::Msg,
+            told: &mut Self::State,
+        ) -> Result<(), ActorProcessingErr> {
+            if let ObserverSupervisorMessage::WatchLost { watcher, .. } = message {
+                let _ = told.send(watcher);
+            }
+            Ok(())
+        }
+    }
+
+    /// Stands in for ClusterObserverSupervisor as a parent: says how a child ended.
+    struct Parent;
+
+    #[async_trait]
+    impl Actor for Parent {
+        type Msg = ();
+        type State = UnboundedSender<&'static str>;
+        type Arguments = UnboundedSender<&'static str>;
+
+        async fn pre_start(
+            &self,
+            _: ActorRef<Self::Msg>,
+            told: Self::Arguments,
+        ) -> Result<Self::State, ActorProcessingErr> {
+            Ok(told)
+        }
+
+        async fn handle_supervisor_evt(
+            &self,
+            _: ActorRef<Self::Msg>,
+            event: SupervisionEvent,
+            told: &mut Self::State,
+        ) -> Result<(), ActorProcessingErr> {
+            match event {
+                SupervisionEvent::ActorFailed(..) => {
+                    let _ = told.send("failed");
+                }
+                SupervisionEvent::ActorTerminated(..) => {
+                    let _ = told.send("stopped");
+                }
+                _ => (),
+            }
+            Ok(())
+        }
+    }
+
+    const LONG_ENOUGH: Duration = Duration::from_secs(10);
+    const QUIET_FOR: Duration = Duration::from_secs(2);
+
+    async fn namespace_under_top(
+        namespace: &str,
+        api: StandIn,
+    ) -> (ActorRef<()>, UnboundedReceiver<String>) {
+        let (told, heard) = unbounded_channel();
+        let (top, _) = Actor::spawn(None, Top, told).await.unwrap();
+        let (supervisor, _) = Actor::spawn(
+            None,
+            NamespaceWatcherSupervisor,
+            NamespaceWatcherSupervisorArgs {
+                observer: top,
+                kube_client: kube_client(api).await,
+                tcp_client: tcp_client().await,
+                namespace: namespace.to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        (supervisor, heard)
+    }
+
+    #[tokio::test]
+    async fn a_namespaced_watch_that_is_lost_reaches_the_top_supervisor() {
+        let (_supervisor, mut heard) =
+            namespace_under_top("lost", StandIn::ListsThenTheWatchIsGone).await;
+
+        let watcher = tokio::time::timeout(LONG_ENOUGH, heard.recv())
+            .await
+            .expect("nobody told the top supervisor that a watch was lost")
+            .unwrap();
+
+        assert!(watcher.starts_with("cluster.lost."), "{watcher}");
+    }
+
+    #[tokio::test]
+    async fn a_watcher_that_ends_without_failing_is_not_a_lost_watch() {
+        // How a watcher goes when its namespace goes: on purpose, by whoever owns it.
+        let (supervisor, mut heard) = namespace_under_top("going", StandIn::Silent).await;
+
+        supervisor.get_children()[0].kill();
+
+        let told = tokio::time::timeout(QUIET_FOR, heard.recv()).await;
+        assert!(told.is_err(), "told of a lost watch: {told:?}");
+    }
+
+    async fn flux_watcher_under_parent(api: StandIn) -> UnboundedReceiver<&'static str> {
+        let (told, heard) = unbounded_channel();
+        let (parent, _) = Actor::spawn(None, Parent, told).await.unwrap();
+        Actor::spawn_linked(
+            None,
+            OciRepositoryWatcher,
+            GlobalWatcherState {
+                kube_client: kube_client(api).await,
+                tcp_client: tcp_client().await,
+                kind: KIND_OCI_REPOSITORY,
+            },
+            parent.get_cell(),
+        )
+        .await
+        .unwrap();
+        heard
+    }
+
+    #[tokio::test]
+    async fn a_cluster_wide_watch_that_is_lost_fails_its_watcher() {
+        // ClusterObserverSupervisor ends the agent on a child's failure, and not on its stopping.
+        let mut heard = flux_watcher_under_parent(StandIn::ListsThenTheWatchIsGone).await;
+
+        let ended = tokio::time::timeout(LONG_ENOUGH, heard.recv())
+            .await
+            .expect("the watcher did not end")
+            .unwrap();
+
+        assert_eq!(ended, "failed");
+    }
+
+    #[tokio::test]
+    async fn a_kind_this_cluster_does_not_have_is_no_failure() {
+        // A cluster without Flux: this must not become a restart loop.
+        let mut heard = flux_watcher_under_parent(StandIn::NoSuchKind).await;
+
+        let ended = tokio::time::timeout(QUIET_FOR, heard.recv()).await;
+
+        assert!(ended.is_err(), "the watcher ended: {ended:?}");
     }
 }
