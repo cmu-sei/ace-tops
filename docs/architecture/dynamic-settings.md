@@ -240,6 +240,25 @@ the file says signing takes it away.
 ever the first policy, so sign the next version with them. Anyone signing documents that name only what they change, relying on a running
 agent keeping the rest, now loses the rest at once, where before it was at the next restart.
 
+**Checked live on u7s, 2026-11-05 UTC**, with every image rebuilt from `a246975d` and the real path: `polar-running-config` over the port-forward,
+`polar-sign`, a push to `polar-schedules`, the scheduler, the agent's verifier.
+
+- **Before the rules:** on the policy of the first bring-up, asking was refused at the broker at once, and the tool said which rules were missing.
+- **Signing them:** policy version 2, the seed's text. The first try after the push was refused while it travelled; the next was answered.
+- **The flow, on jira-observer:** nothing signed, so the file had no live lines and said version 1. Two lines edited (`JIRA_POLL_SECS=120`,
+  `JIRA_PAGE_SIZE=75`) and signed: asked again, both `override`, version 1. Written again and signed unchanged: the same two, version 2. Pod
+  deleted: on the same two after the replay. One line taken out: `JIRA_PAGE_SIZE` back on 50, `default`, at once, the other kept.
+- **Refused:** `JIRA_PAGE_SIZE=0` as version 4. The answer stayed on version 3 with the values in force, and the next file offered version 4 again.
+  Pod deleted with that file in place: back on the rendered 1800, version 0. That is the gap above, and the answer shows it plainly.
+- **Who may ask:** a certificate without `c:update-configuration` (`bootstrap-admin`) was refused at the broker. A policy with
+  `forbid` on `read-configuration` for `Agent::"jira-observer"`: no answer, a warning in its log naming the asker and the reason, and
+  kube-observer still answered.
+- **Every agent:** all 17 running builder agents answered, cert-issuer among them. Every `GRAPH_PASSWORD` and the introspection client
+  secret came back withheld, and no withheld setting carried a value. `cassini` did not, as expected, nor the two harness workloads, which do not run on this target.
+
+**Not seen:** the refusal when the stamp and the signer differ, a replay, a revoked certificate, and a value that repeats a secret, which only the
+tests cover. All removed afterwards: the document deleted and Jira restarted. Policy version 4, the seed's text, stays in force.
+
 ## The protocol handlers' open question
 
 `protocol-handlers.md` asks whether a reaction shrinks when a URL is the handler's to pick up. A little: `Location::Configured`
