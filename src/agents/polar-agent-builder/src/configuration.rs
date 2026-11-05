@@ -40,7 +40,7 @@
 //!   port receive [`ConfigChanged`] and read [`ConfigurationHandle::current`] again. The values are read where the
 //!   follower is, so no closure of theirs runs inside this actor; only an agent's judge does, a pure function.
 //! - **Followed, or says so.** An update to a variable nobody follows applies, and its outcome says it does nothing
-//!   until the next restart. `docs/architecture/dynamic-settings.md`.
+//!   until something that follows it starts. `docs/architecture/dynamic-settings.md`.
 //! - **Recorded.** Every applied and refused update is kept (the latest [`HISTORY`]) and logged,
 //!   with its version. Values are never recorded: a secret's value appears nowhere.
 //!
@@ -172,7 +172,9 @@ pub(crate) fn breaks_what_works(
 
 /// What an outcome says of a variable that changed and that nothing follows.
 fn nothing_follows(name: &str) -> String {
-    format!("nothing follows {name} now, so it takes effect at the agent's next restart")
+    format!(
+        "nothing follows {name} now: what starts next reads it, at the latest at the agent's next restart"
+    )
 }
 
 /// How to see whether a follower's value depends on a variable, for [`ConfigurationHandle::dynamic_settings_problems`].
@@ -2803,6 +2805,7 @@ mod tests {
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said[0].contains("HIGH"), "{said:?}");
         assert!(said[0].contains("next restart"), "{said:?}");
+        assert!(said[0].contains("what starts next"), "{said:?}");
 
         let (actor, _) = keeper::<u64>().await;
         config.follow(&HIGH, &actor, |v| v).await.unwrap();

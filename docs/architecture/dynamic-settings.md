@@ -25,7 +25,7 @@
 
 Step 6 of the order of work (`remaining-work.md`, "EVERY AGENT'S NON-SECRET SETTINGS DYNAMIC"). The maintainer asked for one
 reaction in the builder rather than Jira's by hand in every agent, and a shared test that fails a Dynamic setting nothing
-reacts to. Designed and cleared 2026-11-04. **Built: the builder's half and every variable in the tables below. Not yet seen on a cluster** ("The order", below).
+reacts to. Designed and cleared 2026-11-04. **Built, and checked live on u7s the same day** ("Checked live", below).
 
 ## What holds it together
 
@@ -61,7 +61,8 @@ Built in `polar-agent-builder/src/configuration.rs`:
 **Declaring a variable Dynamic is the opt-in, and it means something follows it.**
 
 - At run time, an update to a variable nothing follows still applies, and its outcome says so in `notes`: "nothing follows X
-  now, so it takes effect at the agent's next restart". That is also the truth when the follower is down. A held supervisor
+  now: what starts next reads it, at the latest at the agent's next restart". That is also the truth when the follower is down,
+  or when none is running yet: a git worker started later reads the signed batch. A held supervisor
   counts as following everything while it runs, since any change asks the agent to try again.
 - In tests, `ConfigurationHandle::dynamic_settings_problems(&[&SECTION])` is the shared check. Once an agent's actors have
   registered, it fails a Dynamic variable nothing follows, a variable whose follower's value does not depend on it, a Static
@@ -75,7 +76,7 @@ design principles rule out. The outcome's note is what catches a missed follower
 registration: an actor could take the message and ignore it, so each agent has a test of its own `handle`. And an agent's test
 calls the same function its `pre_start` does (Jira's `follow_settings`), rather than starting the whole supervisor, whose
 `pre_start` builds the infrastructure. **Marked for review:** the first design said the helper starts the real supervisor; the
-builder has no rig an agent's crate can use for that, and the live check covers `pre_start`.
+builder has no rig an agent's crate can use for that, and the live check below is what covers `pre_start`.
 
 **An update that would break working settings is refused.** `PolarAgent::SETTINGS_JUDGE` is an optional pure function for what
 an agent's settings must satisfy as a whole, beyond what its sections check. The ConfigurationActor runs it on the settings in
@@ -164,6 +165,12 @@ then rests on the table above.
   an agent runs on the render's value until the signed one arrives, and then reacts if the value differs. It is seconds, it is
   true of Jira as it always was, and it is a reason a trust setting cannot be Dynamic: this window would hold the old value.
 - **A signed document removed from the repository stays in force until the agent restarts.** As before.
+- **A running agent's overrides add up, and a restart has only the file.** Updates apply on top of each other, but
+  `permanent/<agent>/configuration.dhall` holds one document, the latest, and that is all the replay can bring. So a document that
+  names only what it changes loses, at the next restart, what the one before it set. And a refused version replaces the good file
+  just the same: seen live, version 1 set `JIRA_POLL_SECS`, a refused version 2 replaced the file, and the restart came back on the
+  rendered 1800. **Until this is settled, name everything you mean to keep in each document, and sign a corrected one over a refused
+  one.** `polar-sign template --settings` gives a whole file; `polar-sign configuration --set` does not. Not changed here.
 - **Every new Dynamic variable widens what `c:update-configuration` can do**, for a signer with no Cedar rule saying otherwise.
 - **While a held agent's work runs, its held supervisor still counts as following everything**, so the note does not appear for
   a variable the work forgets. Jira, the one user, follows all of its own.
@@ -179,6 +186,31 @@ restarts its observers. Nothing here depends on it.
 `CASSINI_QUEUE_PATH` is declared, but read from the process's environment rather than the snapshot (`cassini/client/src/lib.rs:128`),
 so a value given in the `POLAR_CONFIG` document is missed. Not part of this.
 
+## Checked live
+
+On u7s, 2026-11-05 UTC, with every image rebuilt from `304879d6` and the real path: `polar-sign`, a push to `polar-schedules`, the
+scheduler, the agent's verifier. The outcomes were read from the graph (`:ConfigurationOutcome`).
+
+- **Restart:** `JIRA_POLL_SECS=120` on jira-observer. The observers started again in the same second as the push, and pulled at
+  00:24:19 and 00:26:21. `POLAR_STATE_ATTEMPTS` in the same document: one `applied` outcome naming both, with no note.
+- **Timer:** `POLAR_HEALTH_ASK_INTERVAL_SECS=20` with `RUST_LOG` on soft-state-processor: the log filter changed at once, and the
+  rounds went at :33, :53, :13.
+- **Refused:** `JIRA_URL` at the placeholder, by the judge, and `JIRA_PAGE_SIZE=0`, by the section: `invalid`, each with its reason,
+  no restart of the observers, and the corrected version took the same number.
+- **The note:** `POLAR_SCHEDULER_DEPLOYMENT_COPY_SECS` after the handoff said nothing follows it, and `_RECORD_SECS` in the same
+  document had no note. `POLAR_GIT_PUBLISH_BATCH` with no repository configured said so too; with one worker running (a public
+  repository, read with no credential), it did not.
+- **Replay:** jira-observer's pod deleted. It came up on the rendered 1800, the document was applied in the same millisecond, and
+  it was on 120 about 1.4 s later, having started a pull on each.
+- **Held:** `JIRA_URL` set to the placeholder in its ConfigMap, by hand, and the pod deleted. It held `Configuration`, and the replayed
+  version 3, which left the problem in place, applied with no note and kept the hold. Version 4 with the real address: "a signed
+  update mended what held it", the hold released, the observers at 120. Version 5 with the placeholder: refused, and they ran on.
+
+**Registered, and the effect not seen:** `POLAR_GIT_PUBLISH_BATCH`, `POLAR_STATE_GRAPH_TIMEOUT_SECS`, the four `POLAR_STATE_*`,
+`POLAR_KUBE_WATCH_*`, `POLAR_GIT_CONTROLLER_REPUBLISH_SECS` and `_RECORD_SECS`: each outcome had no note, which says an actor follows
+it, and the tests say what the actor does with it. `JIRA_PAGE_SIZE` above its default and `POLAR_SCHEDULER_DEPLOYMENT_COPY_SECS` with
+the copy running were not tried. All removed afterwards: the documents deleted, the agents restarted, the ConfigMap put back.
+
 ## The order
 
 1. **The builder and its first users. Built 2026-11-04.** `follow`, `follow_group`, the outcome's note, `SETTINGS_JUDGE`,
@@ -186,7 +218,6 @@ so a value given in the `POLAR_CONFIG` document is missed. Not part of this.
    stop-and-hold went, and so did its filter of what changed (`touches_the_observers`), which held a branch that could never
    fire (egress is Static).
 2. **The new variables and the constants above. Built 2026-11-04**, each with a test of its `handle` and the shared check.
-3. **Live on u7s:** a signed update to one variable of each reaction, an update that is refused, and a restart to see the
-   replay put the value back.
+3. **Live on u7s. Done 2026-11-05** (above).
 
 No migration is needed: a variable going from Static to Dynamic changes nothing for a deployment that does not sign an update.

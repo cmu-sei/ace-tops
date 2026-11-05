@@ -440,7 +440,7 @@ anonymously (`JIRA_ANONYMOUS` true, `JIRA_DEPLOYMENT` server). The graph still h
   (22:04:34, written by the 22:04 pull); polar-init did not wait on the renewal rule.
 - **Pulled health:** 14 `(:AgentHealth)`, every agent `healthy`.
 - **A signed update that cannot work, then one that can** (`polar-sign sign --push`, settings version 1 then 2; as it was then:
-  since 2026-11-04 the first is refused and the observers run on, `dynamic-settings.md`, and that has not been seen live):
+  since 2026-11-04 the first is refused and the observers run on, seen live on 2026-11-05, `dynamic-settings.md`):
   `JIRA_URL` set to the placeholder was applied the same second (`changed=["JIRA_URL"]`), the observers stopped, the
   agent held `Configuration` and stayed up, the next round wrote `unhealthy` / `configuration` with its transition;
   version 2 (Apache's address) released the hold ("the standing problem (configuration) is resolved"), respawned the
