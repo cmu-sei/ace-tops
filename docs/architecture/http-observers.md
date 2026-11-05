@@ -97,6 +97,26 @@ administrator's key takes neither.
 issues no, since Jira's field names become labels; build-processor no, since `linker.rs` correlates across messages. **Tried against Jira,** in a test only: a mapping writes exactly what `build_ops_for_projects` writes,
 for any projects. Groups and users would not yet: groups writes an empty text for a missing value where a projection clears it, and a user's identity is its key or else its name, which needs a "first present".
 
+## Checked live on u7s, 2026-11-05 UTC
+
+On images built from these commits, through `up.nu`, the broker, the scheduler and `polar-sign`, against a busybox server in the cluster serving test documents. Nothing went to an outside host.
+
+- **With nothing signed:** the observer read nothing; the processor held and said why. Its constraints were made from the built schema, and both answered `polar-running-config`.
+- **The certificate.** Both pods first failed in `polar-init`: a workload stays on cert-issuer until its target moves it, and the test for that needs a cluster. Moved, with a test that does not.
+- **Sources before a mapping:** each read judged (`arbitrary=true`, no credential) and published, and the processor said at each read that it was not written. Signed afterwards, the documents were in the graph at the next read, with no restart.
+- **The documents:** an OpenAPI 3.0 and a Swagger 2.0 document, through one mapping: two applications, five endpoints, including two with no `operationId`, and `parameters` not taken for an operation. A title of `x"}) DETACH DELETE n //` is stored as that text, and the graph's count of nodes did not fall.
+- **One source failing:** a 404 and a document in YAML were each said and touched nothing else.
+- **Refused:** a mapping writing `Pod`, and one with another edge type, were refused by the agent, the last one stayed in force, and neither spent its version. A type error and an import never reached signing. Sources with a password in the URL and an interval of 5 were refused, and the refusal did not repeat the password.
+- **Changed:** a mapping keeping only `get` applied at once and was stamped on what it wrote. A list dropping two sources and moving one read only that one, at once.
+- **Found:** a source moved from a 3.0 to a 2.0 document held both versions on one node. Fixed (above) and seen cleared.
+- **Restart:** both pods deleted: each replayed what was in force and the hold cleared at once.
+
+An endpoint a document dropped stays in the graph, but its `polar_observed_at` falls behind, so it can be told apart: that is the start of handling it.
+
+**Not seen live, tests only:** a document from a publisher other than the observer, a document over the size bound, and a host asking for time. **Not run:** a fresh bring-up with these agents, and their health being asked by the state agent, whose first `agents` was seeded before they existed.
+
+Removed afterwards: the documents, the server, and the test nodes. The two agents remain deployed, the observer reading nothing and the processor holding.
+
 ## Mapping the security controls
 
 The maintainer's requirement: the same properties, and more, from dynamic configuration as from static deployments. A first map, read from the code. **Open** means not answered yet.
@@ -144,7 +164,7 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
   somewhere durable to go. The handlers' `Recorder` is the place to attach it. Not designed.
 - **One workload per kind, or per site?** A kind with credentials may want one workload per site, so two Jira sites are not one identity. OpenAPI has none, so this waits for the second kind.
 - **A signed list cannot hold entries with different fields** (`remaining-work.md`). OpenAPI's `sources` are all required, so it does not stop the first kind. Credentials and paging will need the fix.
-- **An endpoint a document dropped** stays in the graph. Not handled yet.
+- **An endpoint a document dropped** stays in the graph, with an older `polar_observed_at`. Not handled further yet.
 - **A mapping's first version.** A processor with no signed mapping holds and says so. It is not seeded: the mapping is in `polar-projection/examples/openapi.dhall`, to sign. A built-in default or a seed are the alternatives.
 - **Who owns the graph controller.** The processor spawns its own, as the others do, so it moves again when the builder owns it (`remaining-work.md`).
 - **A kind with no binary of its own** would have to reverse `own_name.rs`. This cut does not.
