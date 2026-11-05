@@ -91,7 +91,12 @@ the type and the tool gives it. The agent judges the JSON again, and against its
 it is flat, because a Dhall type cannot refer to itself: an empty `parent`, `edge` or `only` means none. `polar-projection` has no graph or runtime without its `graph` feature, so the tool that holds an
 administrator's key takes neither.
 
-**A document is a snapshot.** A value it no longer has is cleared from the node, since `SET n += row.p` removes a null. Otherwise a source that moved from a 3.0 document to a 2.0 one held both versions, as was seen live.
+**A document is a snapshot, and a guard says it is the right one.** A value a document no longer has is cleared from the node, since `SET n += row.p` removes a null. Otherwise a source that moved from a 3.0 document to a 2.0 one held both versions, as was seen live. That makes a wrong response dangerous: a service
+answering `{"error": ...}` with a 200 would empty the node. So a mapping must have a `guard`, what a document has to say: paths that must have a value, each optionally starting with one of some prefixes, with alternatives. A document that fails it is refused whole, before anything is written or cleared, so the last good data stays.
+
+**A mapping has two things to match, and each is enforced.** The agent's build, by `Bounds`, when the mapping arrives. The service it reads, by the guard, at each document. The maintainer asked whether a mapping must match the service's version exactly: no, since one mapping reads Swagger 2.0 and OpenAPI 3.0 and 3.1 alike. It has to match the shape, and an upgrade that changes the shape is now refused and said, not silently written. A mapping can record the service's own version as a property, as OpenAPI's does (`api_version`, `openapi`, `swagger`).
+
+**Health says which source is in trouble.** A standing problem through the health actor, read by asking the agent or from the state agent's record, naming the source and why, and never what a document said. In the processor, a refused document or skipped entries, at once, since a document was read. In the observer, two failed reads in a row, so a blip is not reported, and a host asking for time is not a failure. It does not end the agent, and the other sources go on. A source taken out of the observer's list drops its problem there at once; the processor does not know the list, so there it stands until the next rejuvenation, about an hour.
 
 **How far it reaches** (from op counts and file sizes): OpenAPI and flat lists yes; GitLab's consumer probably most, but it also publishes follow-on events; the Kubernetes consumer needs `UpdateState` as a rule; Jira's
 issues no, since Jira's field names become labels; build-processor no, since `linker.rs` correlates across messages. **Tried against Jira,** in a test only: a mapping writes exactly what `build_ops_for_projects` writes,
@@ -117,6 +122,22 @@ An endpoint a document dropped stays in the graph, but its `polar_observed_at` f
 
 Removed afterwards: the documents, the server, and the test nodes. The two agents remain deployed, the observer reading nothing and the processor holding.
 
+## Versions and migrations
+
+Decided with the maintainer, 2026-11-05. Not built: the guard below comes first.
+
+**A signed section says which versions of the agent it is for**: a range in its `target`, checked where every signed document is opened, so this is one mechanism for every agent. Open-ended by default, since every binary
+shares one platform version and an exact pin would mean signing everything again at every release. Out of range, the agent holds and says why. Images and sections arrive from two repositories with no atomic switch, so an upgrade signs a range that covers both versions first.
+
+**A migration lives in the repository with the signed configuration change it belongs to, and an administrator applies it.** The maintainer's design: `migrations/<agent>/<id>.cypher` in `polar-schedules`, where the scheduler does not read, and the signed section names it by id and digest. The agent never
+runs it, so no signer gains power over the graph, and `repair.rs`'s rule stands: an agent takes no caller's Cypher. The digest is what binds them: `polar-schedules` takes unsigned commits, so being in the same commit proves nothing.
+
+**Two recorded events:** intended, which the signed change and its `ConfigurationOutcome` say, and applied, a second document the administrator signs: who, when, which digest, and what it reported. Comparing them lists what was meant and never done. The applied record is a signed claim and not proof.
+
+**The agent keeps its old mapping until the applied record arrives** (the maintainer), and health says what it waits on. So a forgotten migration blocks the new mapping visibly, where the alternative mixes old and new data silently. A migration that must run after the new mapping is live needs a flag saying so.
+
+Compiled repairs stay for what a write bug left behind, on every cluster. Whether a migration deletes or supersedes is its author's call; superseding is the documented default, since the graph has to answer what was known at the time.
+
 ## Mapping the security controls
 
 The maintainer's requirement: the same properties, and more, from dynamic configuration as from static deployments. A first map, read from the code. **Open** means not answered yet.
@@ -129,6 +150,7 @@ The maintainer's requirement: the same properties, and more, from dynamic config
 | Who may change it | Build, deployment signature | `c:update-runtime`, Cedar on `Section::"<agent>/<section>"`, version, revocation, replay from git | Same machinery, and one signer |
 | Review and tests | A commit, CI, tests and a signed deployment | The checks above, and no test against a real document | **Weaker.** A dry run in `polar-sign` against a sample would help, and `commands.md` already notes two signers as later |
 | A bad update | Fails to build or deploy | Refused and the last one kept, until a restart: a refused file still replaces the good one (`dynamic-settings.md`) | **Weaker until that gap closes.** The agent would hold, not misbehave |
+| A service that changes under it | Parsing code fails, or silently reads less | The guard refuses the document whole and health names the source | **Stronger**, for what the guard says |
 | Labels it may write | Declared in `GRAPH`, not enforced on writes | Enforced by `Bounds` when the mapping is judged | **Stronger** |
 | Cypher injection | Parameters, by each author's care | By construction, and names judged again by `validate_cypher_identifier` | **Stronger** |
 | Sensitive data in the graph | A reviewer sees what code copies | A signer can project any field of what was fetched. With a credential, that could be a route out | **Weaker, and matters at the first kind with a credential.** OpenAPI has none |

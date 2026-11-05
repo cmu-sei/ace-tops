@@ -24,6 +24,7 @@
 //! The observer's supervisor: the builder's infrastructure, and a schedule of the sources in force. One source's failure is
 //! said and tried again at its next time, and touches no other.
 
+use crate::problems::{Reported, SourceProblems};
 use crate::sources::{self, SECTION_NAME, Source};
 use crate::{MAX_DOCUMENT_BYTES, Observation};
 use cassini_client::{OfflineBehavior, PublishRequest};
@@ -88,6 +89,18 @@ fn read_document(status: u16, body: &[u8]) -> Result<Vec<u8>, ReadFailure> {
         )));
     }
     Ok(body.to_vec())
+}
+
+/// Two reads in a row, so a host's blip is not reported as a problem.
+const FAILED_READS_TO_REPORT: u32 = 2;
+
+/// What a read says of a source's health: a problem, or that it is well, or nothing when the host only asked for time.
+fn note_read(problems: &mut SourceProblems, source: &str, outcome: &Result<Vec<u8>, Failure>) {
+    match outcome {
+        Ok(_) => problems.succeeded(source),
+        Err(Failure::Backoff { .. } | Failure::NotYet { .. }) => {}
+        Err(failure) => problems.failed(source, failure.to_string()),
+    }
 }
 
 /// When a source is read next, given how the last read went: its interval, or longer if the host asked for time.
@@ -168,6 +181,8 @@ pub struct ObserverState {
     configuration: ConfigurationHandle,
     protocols: ProtocolHandle,
     schedule: Schedule,
+    problems: SourceProblems,
+    reported: Reported,
     shutting_down: bool,
 }
 
@@ -219,6 +234,8 @@ impl<K: Kind> Actor for Observer<K> {
             configuration: resources.configuration,
             protocols,
             schedule: Schedule::default(),
+            problems: SourceProblems::new(FAILED_READS_TO_REPORT),
+            reported: Reported::default(),
             shutting_down: false,
         })
     }
@@ -259,6 +276,12 @@ impl<K: Kind> Actor for Observer<K> {
             }
             ObserverMessage::SourcesRead(list) => {
                 info!("{} source(s) in force", list.len());
+                state
+                    .problems
+                    .keep_only(list.iter().map(|s| s.name.as_str()));
+                state
+                    .reported
+                    .tell(&state.healthcheck, state.problems.standing());
                 for (name, generation) in state.schedule.replace(list) {
                     myself.cast(ObserverMessage::Due { name, generation })?;
                 }
@@ -297,6 +320,10 @@ impl<K: Kind> Actor for Observer<K> {
                 };
                 let wait = next_read(Duration::from_secs(source.interval_secs), &outcome);
                 if !state.shutting_down {
+                    note_read(&mut state.problems, &name, &outcome);
+                    state
+                        .reported
+                        .tell(&state.healthcheck, state.problems.standing());
                     match outcome {
                         Ok(body) => publish::<K>(&state.tcp_client, &name, body),
                         Err(failure) => {
@@ -498,6 +525,29 @@ mod tests {
             wait: Duration::from_secs(1),
         });
         assert_eq!(next_read(interval, &short), interval);
+    }
+
+    #[test]
+    fn a_failed_read_counts_against_its_source_and_a_host_asking_for_time_does_not() {
+        let mut problems = SourceProblems::new(2);
+        let failed: Result<Vec<u8>, Failure> = Err(Failure::Read("it answered 404".to_string()));
+        let wait = Duration::from_secs(1);
+        note_read(&mut problems, "a", &failed);
+        note_read(
+            &mut problems,
+            "a",
+            &Err(Failure::Backoff { status: 429, wait }),
+        );
+        note_read(&mut problems, "a", &Err(Failure::NotYet { wait }));
+        assert_eq!(
+            problems.standing(),
+            None,
+            "one failure, and a host asking for time"
+        );
+        note_read(&mut problems, "a", &failed);
+        assert!(problems.standing().unwrap().contains("it answered 404"));
+        note_read(&mut problems, "a", &Ok(vec![]));
+        assert_eq!(problems.standing(), None);
     }
 
     #[test]

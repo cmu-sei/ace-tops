@@ -21,7 +21,16 @@
 
 -- OpenAPI and Swagger documents: an application and its endpoints. `paths` has the same shape in 2.0, 3.0 and 3.1.
 
-{ rules =
+{ guard =
+  [ { any_of =
+      [ { path = "body.openapi", prefixes = [ "3." ] }
+      , { path = "body.swagger", prefixes = [ "2." ] }
+      ]
+    }
+  , { any_of = [ { path = "body.paths", prefixes = [] : List Text } ] }
+  , { any_of = [ { path = "body.info.title", prefixes = [] : List Text } ] }
+  ]
+, rules =
   [ { name = "application"
     , parent = ""
     , each = [] : List { key : Text, value : Text, over : Text, only : List Text }

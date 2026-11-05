@@ -27,6 +27,9 @@
 -- null: an empty `parent`, `edge` or `only` means there is none.
 --
 -- What a path may start from: `source` (the source's signed name), `body` (the document), and what a step binds.
+--
+-- A guard is required. A value a document does not have is cleared, so a response that is not the document (an error
+-- answered with a 200, a service that changed its shape) must be refused before anything is written.
 
 let Field =
     -- A property: its name in the graph, and the path its value comes from.
@@ -36,6 +39,11 @@ let Step =
     -- For each entry at the path `over`, an object's or a list's, binding its key and its value. `only`, if any, keeps
     -- the keys named.
       { key : Text, value : Text, over : Text, only : List Text }
+
+let Check =
+    -- What a document must say, any one of these: the path has a value, and if `prefixes` names any, it is text starting
+    -- with one of them.
+      { any_of : List { path : Text, prefixes : List Text } }
 
 let Rule =
       { -- What another rule names as its parent. Unique.
@@ -52,4 +60,4 @@ let Rule =
         edge : Text
       }
 
-in  { rules : List Rule }
+in  { guard : List Check, rules : List Rule }

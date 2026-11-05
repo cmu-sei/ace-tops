@@ -139,6 +139,7 @@ mod tests {
     fn a_hostile_document_reaches_cypher_only_as_parameters() {
         let hostile = "x\"}) DETACH DELETE n //";
         let body = json!({
+            "openapi": "3.0.3",
             "info": { "title": hostile },
             "paths": { hostile: { "get": { "operationId": hostile, "description": hostile } } }
         });
@@ -173,7 +174,7 @@ mod tests {
         let projected = projection()
             .project(
                 "s",
-                &json!({}),
+                &json!({ "openapi": "3.1.0", "info": { "title": "t" }, "paths": {} }),
                 &Stamp {
                     workload: "w",
                     version: 1,

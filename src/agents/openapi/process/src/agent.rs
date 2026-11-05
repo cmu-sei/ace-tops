@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn a_mapping_cannot_be_signed_for_another_workload_s_part_of_the_graph() {
-        let mut body: Value = serde_json::json!({ "rules": [{
+        let mut body: Value = serde_json::json!({ "guard": [{ "any_of": [{ "path": "body", "prefixes": [] }] }], "rules": [{
             "name": "x", "parent": "", "each": [], "label": "JiraIssue",
             "keys": [{ "name": "key", "from": "source" }], "set": [], "edge": ""
         }]});

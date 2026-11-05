@@ -166,7 +166,7 @@ mod tests {
         use polar_projection::{Projection, Stamp, graph};
         use proptest::prelude::*;
 
-        const MAPPING: &str = r#"{ "rules": [ {
+        const MAPPING: &str = r#"{ "guard": [ { "any_of": [ { "path": "body", "prefixes": [] } ] } ], "rules": [ {
             "name": "project", "parent": "",
             "each": [ { "key": "at", "value": "project", "over": "body", "only": [] } ],
             "label": "JiraProject",

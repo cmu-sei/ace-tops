@@ -32,11 +32,12 @@ use polar::graph::controller::{
     GraphControllerActor, GraphControllerArgs, GraphControllerMsg, GraphOp, GraphSignal, NodeShape,
 };
 use polar_agent_builder::{
-    AgentBuilder, ConfigurationHandle, Configured, Drain, HealthClient, HealthHandle, HoldReason,
+    AgentBuilder, ConfigurationHandle, Configured, Drain, HealthClient, HealthHandle,
     InfrastructureEvent, InfrastructureSupervisorMessage, StartError, Subscription,
     stop_graph_controller,
 };
 use polar_http_observer::Observation;
+use polar_http_observer::problems::{Reported, SourceProblems};
 use polar_projection::{Bounds, Projection, Stamp, graph};
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, OutputPort, SupervisionEvent, async_trait};
@@ -131,6 +132,29 @@ pub fn process(
     }
 }
 
+/// What standing problem a document's outcome leaves its source with. A document was read and refused, so one is enough:
+/// nothing here is a blip of the network, and nothing of it was written.
+pub fn note_outcome(problems: &mut SourceProblems, source: &str, outcome: &Outcome) {
+    match outcome {
+        Outcome::Write { skipped: 0, .. } => problems.succeeded(source),
+        Outcome::Write { skipped, .. } => problems.failed(
+            source,
+            format!("{skipped} entries could not be identified and were skipped"),
+        ),
+        Outcome::Refused(why) => problems.failed(source, format!("not written: {why}")),
+    }
+}
+
+/// What should stand: having no mapping says more than anything a source could say. A source taken out of the observer's list
+/// is not known here, so its problem stands until the next rejuvenation, which is about an hour.
+fn wanted(has_mapping: bool, problems: &SourceProblems) -> Option<String> {
+    if has_mapping {
+        problems.standing()
+    } else {
+        Some(NO_MAPPING.to_string())
+    }
+}
+
 pub enum ProcessorMessage {
     ClientEvent { event: cassini_types::ClientEvent },
     Observed(Observation),
@@ -149,6 +173,8 @@ pub struct ProcessorState {
     configuration: ConfigurationHandle,
     graph_controller: Option<ActorRef<GraphControllerMsg>>,
     projection: Option<(u64, Projection)>,
+    problems: SourceProblems,
+    reported: Reported,
     drain: Drain,
 }
 
@@ -223,9 +249,9 @@ impl<K: Kind> Actor for Processor<K> {
         .await
         .map_err(ActorProcessingErr::from)?;
 
-        resources
-            .healthcheck
-            .hold(HoldReason::Configuration, NO_MAPPING);
+        let problems = SourceProblems::new(1);
+        let mut reported = Reported::default();
+        reported.tell(&resources.healthcheck, wanted(false, &problems));
         myself.cast(ProcessorMessage::ProjectionChanged)?;
         Ok(ProcessorState {
             healthcheck: resources.healthcheck,
@@ -233,6 +259,8 @@ impl<K: Kind> Actor for Processor<K> {
             configuration: resources.configuration,
             graph_controller: Some(graph_controller),
             projection: None,
+            problems,
+            reported,
             drain: Drain::default(),
         })
     }
@@ -280,7 +308,9 @@ impl<K: Kind> Actor for Processor<K> {
                 Ok(Some((version, projection))) => {
                     info!("projection version {version} in force");
                     state.projection = Some((version, projection));
-                    state.healthcheck.release(HoldReason::Configuration);
+                    state
+                        .reported
+                        .tell(&state.healthcheck, wanted(true, &state.problems));
                 }
                 Ok(None) => info!("{NO_MAPPING}"),
                 // Judged when it arrived, so this is not expected. What is in force stays.
@@ -296,7 +326,12 @@ impl<K: Kind> Actor for Processor<K> {
                     warn!("what `{source}` said is not written: {NO_MAPPING}");
                     return Ok(());
                 };
-                match process(projection, *version, K::NAME, &observation) {
+                let outcome = process(projection, *version, K::NAME, &observation);
+                note_outcome(&mut state.problems, &source, &outcome);
+                state
+                    .reported
+                    .tell(&state.healthcheck, wanted(true, &state.problems));
+                match outcome {
                     Outcome::Write { op, skipped } => {
                         info!(
                             "`{source}`: written under projection {version}, {skipped} entries skipped"
@@ -404,7 +439,7 @@ mod tests {
     };
 
     fn body() -> Value {
-        json!({ "rules": [{
+        json!({ "guard": [{ "any_of": [{ "path": "body.title", "prefixes": [] }] }], "rules": [{
             "name": "doc", "parent": "", "each": [], "label": "TestDoc",
             "keys": [{ "name": "source", "from": "source" }],
             "set": [{ "name": "title", "from": "body.title" }],
@@ -459,6 +494,54 @@ mod tests {
                 Outcome::Refused(_)
             ));
         }
+    }
+
+    #[test]
+    fn a_document_that_fails_its_guard_stands_as_a_problem_until_a_good_one_comes() {
+        let projection = Projection::judged(&body(), BOUNDS).unwrap();
+        let mut problems = SourceProblems::new(1);
+        let refused = process(
+            &projection,
+            1,
+            "w",
+            &observation(br#"{"error":"password=hunter2"}"#),
+        );
+        assert!(
+            matches!(&refused, Outcome::Refused(_)),
+            "nothing is written"
+        );
+        note_outcome(&mut problems, "s", &refused);
+        let standing = wanted(true, &problems).unwrap();
+        assert!(
+            standing.contains("`s`") && standing.contains("body.title"),
+            "{standing}"
+        );
+        assert!(!standing.contains("hunter2"), "{standing}");
+        let good = process(&projection, 1, "w", &observation(br#"{"title":"t"}"#));
+        note_outcome(&mut problems, "s", &good);
+        assert_eq!(wanted(true, &problems), None);
+    }
+
+    #[test]
+    fn entries_that_could_not_be_identified_stand_as_a_problem_though_the_rest_are_written() {
+        let mut problems = SourceProblems::new(1);
+        note_outcome(
+            &mut problems,
+            "s",
+            &Outcome::Write {
+                op: None,
+                skipped: 2,
+            },
+        );
+        assert!(wanted(true, &problems).unwrap().contains("2 entries"));
+    }
+
+    #[test]
+    fn having_no_mapping_says_more_than_any_source_can() {
+        let mut problems = SourceProblems::new(1);
+        problems.failed("s", "no");
+        assert_eq!(wanted(false, &problems).as_deref(), Some(NO_MAPPING));
+        assert!(wanted(true, &problems).unwrap().contains("`s`"));
     }
 
     #[test]

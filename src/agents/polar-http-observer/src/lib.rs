@@ -32,6 +32,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod observer;
+pub mod problems;
 pub mod sources;
 
 pub use observer::{Kind, start};

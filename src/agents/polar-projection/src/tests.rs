@@ -67,6 +67,11 @@ pub(crate) fn openapi_body() -> Value {
     .clone()
 }
 
+/// A document the example's guard lets by, with these paths.
+fn doc(paths: Value) -> Value {
+    json!({ "openapi": "3.0.3", "info": { "title": "t" }, "paths": paths })
+}
+
 fn openapi() -> Projection {
     Projection::judged(&openapi_body(), BOUNDS).unwrap()
 }
@@ -143,10 +148,8 @@ fn each_of_the_three_versions_becomes_an_application_and_its_endpoints() {
 
 #[test]
 fn an_operation_with_no_id_keeps_its_own_node_and_a_new_description_keeps_the_same_one() {
-    let one =
-        json!({ "paths": { "/a": { "get": { "description": "old" } }, "/b": { "get": {} } } });
-    let two =
-        json!({ "paths": { "/a": { "get": { "description": "new" } }, "/b": { "get": {} } } });
+    let one = doc(json!({ "/a": { "get": { "description": "old" } }, "/b": { "get": {} } }));
+    let two = doc(json!({ "/a": { "get": { "description": "new" } }, "/b": { "get": {} } }));
     let first = nodes(
         &openapi().project("s", &one, &stamp()).unwrap(),
         "OpenApiEndpoint",
@@ -173,7 +176,7 @@ fn an_entry_that_cannot_be_identified_is_skipped_and_counted_and_the_rest_are_wr
         b
     };
     let projection = Projection::well_formed(&body).unwrap();
-    let document = json!({ "paths": { "/a": { "get": { "operationId": "x" }, "put": {} } } });
+    let document = doc(json!({ "/a": { "get": { "operationId": "x" }, "put": {} } }));
     let projected = projection.project("s", &document, &stamp()).unwrap();
     assert_eq!(nodes(&projected, "OpenApiEndpoint").len(), 1);
     assert_eq!(projected.skipped, 1);
@@ -183,8 +186,7 @@ fn an_entry_that_cannot_be_identified_is_skipped_and_counted_and_the_rest_are_wr
 /// moved from a 3.0 document to a 2.0 one and its node held both versions.
 #[test]
 fn a_value_the_document_no_longer_has_is_cleared_and_not_left_behind() {
-    let document =
-        json!({ "swagger": "2.0", "info": { "title": "t", "license": ["not a value"] } });
+    let document = json!({ "swagger": "2.0", "paths": {}, "info": { "title": "t", "license": ["not a value"] } });
     let projected = openapi().project("s", &document, &stamp()).unwrap();
     let apps = nodes(&projected, "OpenApiApplication");
     assert_eq!(prop(&apps[0].1, "swagger"), Some(&text("2.0")));
@@ -206,15 +208,87 @@ fn a_key_is_never_null_it_skips_the_node() {
         .push(json!({ "name": "op", "from": "operation.operationId" }));
     let projection = Projection::well_formed(&body).unwrap();
     let projected = projection
-        .project("s", &json!({ "paths": { "/a": { "get": {} } } }), &stamp())
+        .project("s", &doc(json!({ "/a": { "get": {} } })), &stamp())
         .unwrap();
     assert!(nodes(&projected, "OpenApiEndpoint").is_empty());
     assert_eq!(projected.skipped, 1);
 }
 
+/// The case the guard exists for: this would otherwise have cleared every value the application holds.
+#[test]
+fn a_response_that_is_not_the_document_writes_and_clears_nothing() {
+    for response in [
+        json!({ "error": "the database is down" }),
+        json!({}),
+        json!([]),
+        json!(null),
+        json!("maintenance"),
+        // Close, but not what it was written for.
+        json!({ "openapi": "4.0.0", "info": { "title": "t" }, "paths": {} }),
+        json!({ "swagger": "1.2", "info": { "title": "t" }, "paths": {} }),
+        json!({ "openapi": 3, "info": { "title": "t" }, "paths": {} }),
+        json!({ "openapi": "3.0.3", "info": { "title": "t" } }),
+        json!({ "openapi": "3.0.3", "paths": {} }),
+        json!({ "openapi": "3.0.3", "info": { "title": null }, "paths": {} }),
+    ] {
+        assert!(
+            matches!(
+                openapi().project("s", &response, &stamp()),
+                Err(Refused::Guard(_))
+            ),
+            "{response}"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_names_the_paths_and_never_what_the_document_said() {
+    let response = json!({ "error": "password=hunter2", "openapi": "hunter2" });
+    let refused = openapi()
+        .project("s", &response, &stamp())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("body.openapi or body.swagger"),
+        "{refused}"
+    );
+    assert!(!refused.contains("hunter2"), "{refused}");
+}
+
+#[test]
+fn a_guard_is_required_and_must_be_able_to_mean_something() {
+    refused_for(|b| b["guard"] = json!([]), "no guard");
+    refused_for(
+        |b| b["guard"][0]["any_of"] = json!([]),
+        "1 to 8 alternatives",
+    );
+    refused_for(
+        |b| b["guard"][0]["any_of"][0]["path"] = json!("operation.id"),
+        "from `source` or `body`",
+    );
+    refused_for(
+        |b| b["guard"][0]["any_of"][0]["path"] = json!("body[0]"),
+        "from `source` or `body`",
+    );
+    refused_for(
+        |b| b["guard"][0]["any_of"][0]["prefixes"] = json!([""]),
+        "empty prefix",
+    );
+    refused_for(
+        |b| {
+            b.as_object_mut().unwrap().remove("guard");
+        },
+        "not a projection",
+    );
+    refused_for(
+        |b| b["guard"] = json!(vec![b["guard"][0].clone(); MAX_CHECKS + 1]),
+        "at most",
+    );
+}
+
 #[test]
 fn every_write_carries_where_it_came_from() {
-    let document = json!({ "paths": { "/a": { "get": {} } } });
+    let document = doc(json!({ "/a": { "get": {} } }));
     let projected = openapi().project("shop", &document, &stamp()).unwrap();
     assert_eq!(projected.writes.len(), 3);
     for write in &projected.writes {
@@ -243,7 +317,7 @@ fn a_document_over_the_bound_is_refused_whole() {
     for i in 0..=MAX_WRITES / 2 {
         paths.insert(format!("/{i}"), json!({ "get": {} }));
     }
-    let document = json!({ "paths": paths });
+    let document = doc(json!(paths));
     assert_eq!(
         openapi().project("s", &document, &stamp()),
         Err(Refused::TooLarge)
@@ -394,7 +468,7 @@ fn a_child_sees_what_its_parent_bound() {
         "edge": "TAGGED"
     }));
     let projection = Projection::well_formed(&body).unwrap();
-    let document = json!({ "paths": { "/a": { "get": { "tags": ["x", "y"] } } } });
+    let document = doc(json!({ "/a": { "get": { "tags": ["x", "y"] } } }));
     let projected = projection.project("s", &document, &stamp()).unwrap();
     let tags = nodes(&projected, "OpenApiTag");
     assert_eq!(tags.len(), 2);
@@ -431,7 +505,9 @@ proptest! {
     /// Whatever a document says: structure from the mapping, the stamps on everything, and it ends.
     #[test]
     fn any_document_writes_only_what_the_mapping_says(document in any_json()) {
-        let projected = openapi().project("s", &document, &stamp()).unwrap();
+        let Ok(projected) = openapi().project("s", &document, &stamp()) else {
+            return Ok(());
+        };
         let shapes = openapi();
         let shapes = shapes.shapes();
         for write in &projected.writes {
@@ -457,10 +533,36 @@ proptest! {
         }
     }
 
+    /// It holds exactly when each check does, whatever else the document says.
+    #[test]
+    fn the_guard_passes_exactly_when_its_checks_do(
+        version in "[ -~]{0,6}|3\\.[0-9]\\.[0-9]",
+        field in prop_oneof![Just("openapi"), Just("swagger"), Just("other")],
+        title in prop::option::of("[ -~]{0,6}"),
+        has_paths in any::<bool>(),
+        extra in any_json(),
+    ) {
+        let mut document = json!({ "extra": extra, field: version });
+        if let Some(title) = &title {
+            document["info"] = json!({ "title": title });
+        }
+        if has_paths {
+            document["paths"] = json!({});
+        }
+        let versioned = (field == "openapi" && version.starts_with("3."))
+            || (field == "swagger" && version.starts_with("2."));
+        let expected = versioned && title.is_some() && has_paths;
+        let got = openapi().project("s", &document, &stamp());
+        prop_assert_eq!(got.is_ok(), expected, "{}", document);
+        if expected {
+            prop_assert!(!got.unwrap().writes.is_empty());
+        }
+    }
+
     #[test]
     fn the_same_document_always_becomes_the_same_writes(document in any_json()) {
-        let first = openapi().project("s", &document, &stamp()).unwrap();
-        let second = openapi().project("s", &document, &stamp()).unwrap();
+        let first = openapi().project("s", &document, &stamp());
+        let second = openapi().project("s", &document, &stamp());
         prop_assert_eq!(first, second);
     }
 

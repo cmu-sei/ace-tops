@@ -49,6 +49,9 @@ pub const MAX_STEPS: usize = 4;
 pub const MAX_FIELDS: usize = 64;
 /// The most writes one document may become. Over it, the document is refused whole.
 pub const MAX_WRITES: usize = 200_000;
+/// The most checks a guard may have, and the most ways one may pass.
+pub const MAX_CHECKS: usize = 16;
+pub const MAX_ALTERNATIVES: usize = 8;
 /// What a property the engine stamps starts with. No rule may write one.
 pub const STAMP_PREFIX: &str = "polar_";
 /// What a path may start from, whatever a rule binds.
@@ -72,6 +75,21 @@ pub struct Step {
     pub only: Vec<String>,
 }
 
+/// One way a check can pass: the path has a value, and if `prefixes` names any, it is text starting with one of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Alternative {
+    pub path: String,
+    pub prefixes: Vec<String>,
+}
+
+/// What a document must say to be the document this mapping was written for: any one of these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Check {
+    pub any_of: Vec<Alternative>,
+}
+
 /// One kind of node a document becomes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,6 +108,7 @@ pub struct Rule {
 /// A projection, judged: only [`Projection::well_formed`] and [`Projection::judged`] make one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Projection {
+    guard: Vec<Check>,
     rules: Vec<Rule>,
 }
 
@@ -161,6 +180,9 @@ pub struct Projected {
 pub enum Refused {
     #[error("the document would become more than {MAX_WRITES} writes")]
     TooLarge,
+    /// It is not the document this mapping was written for. Names the paths and never what the document said.
+    #[error("it is not what the mapping was written for: nothing was as it expects at {0}")]
+    Guard(String),
 }
 
 /// A name that can stand in Cypher, or a variable. The graph side checks a label against Cypher's keywords as well.
@@ -229,6 +251,7 @@ impl Projection {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Body {
+            guard: Vec<Check>,
             rules: Vec<Rule>,
         }
         let body: Body = serde_json::from_value(body.clone())
@@ -236,6 +259,42 @@ impl Projection {
         let mut problems = Vec::new();
         if body.rules.is_empty() {
             problems.push("it has no rules, so it would write nothing".to_string());
+        }
+        // Required: a value a document does not have is cleared, so with no guard an error answered with a 200 would empty
+        // every node it reached.
+        if body.guard.is_empty() {
+            problems.push(
+                "it has no guard, so a response that is not the document would clear what is written"
+                    .to_string(),
+            );
+        }
+        if body.guard.len() > MAX_CHECKS {
+            problems.push(format!(
+                "its guard has {} checks, and at most {MAX_CHECKS} are taken",
+                body.guard.len()
+            ));
+        }
+        for (i, check) in body.guard.iter().enumerate() {
+            let at = format!("`guard[{i}]`");
+            if check.any_of.is_empty() || check.any_of.len() > MAX_ALTERNATIVES {
+                problems.push(format!(
+                    "{at}: `any_of` must have 1 to {MAX_ALTERNATIVES} alternatives"
+                ));
+            }
+            for alternative in &check.any_of {
+                match path_parts(&alternative.path) {
+                    Some(parts) if ROOTS.contains(&parts[0]) => {}
+                    _ => problems.push(format!(
+                        "{at}: `{}` must be a path from `source` or `body`",
+                        alternative.path
+                    )),
+                }
+                if alternative.prefixes.iter().any(String::is_empty) {
+                    problems.push(format!(
+                        "{at}: an empty prefix would match anything: leave `prefixes` empty to ask only that it is there"
+                    ));
+                }
+            }
         }
         if body.rules.len() > MAX_RULES {
             problems.push(format!(
@@ -348,7 +407,10 @@ impl Projection {
             scopes.insert(rule.name.as_str(), scope);
         }
         if problems.is_empty() {
-            Ok(Projection { rules: body.rules })
+            Ok(Projection {
+                guard: body.guard,
+                rules: body.rules,
+            })
         } else {
             Err(problems)
         }
@@ -402,6 +464,11 @@ impl Projection {
         let mut scope = Scope::default();
         scope.bind("source", Bound::Ref(&source));
         scope.bind("body", Bound::Ref(body));
+        // Before anything is written or cleared.
+        if let Some(check) = self.guard.iter().find(|check| !check.holds(&scope)) {
+            let paths: Vec<&str> = check.any_of.iter().map(|a| a.path.as_str()).collect();
+            return Err(Refused::Guard(paths.join(" or ")));
+        }
         for rule in self.rules.iter().filter(|r| r.parent.is_empty()) {
             self.rule(rule, None, &mut scope, &stamps, &mut out)?;
         }
@@ -534,6 +601,29 @@ fn value_scalar(value: &Value) -> Option<Scalar> {
             .map(Scalar::Integer)
             .or_else(|| n.as_f64().map(Scalar::Real)),
         Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+impl Check {
+    fn holds(&self, scope: &Scope<'_>) -> bool {
+        self.any_of
+            .iter()
+            .any(|alternative| match scope.read(&alternative.path) {
+                None | Some(Bound::Ref(Value::Null)) | Some(Bound::Owned(Value::Null)) => false,
+                Some(_) if alternative.prefixes.is_empty() => true,
+                Some(found) => {
+                    let text = match &found {
+                        Bound::Ref(value) => value.as_str(),
+                        Bound::Owned(value) => value.as_str(),
+                    };
+                    text.is_some_and(|text| {
+                        alternative
+                            .prefixes
+                            .iter()
+                            .any(|p| text.starts_with(p.as_str()))
+                    })
+                }
+            })
     }
 }
 
