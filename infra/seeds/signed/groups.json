@@ -1,0 +1,6 @@
+{
+  "first_admin": ["config-writers", "health-readers"],
+  "groups": {
+    "config-writers": { "groups": ["config-readers"] }
+  }
+}

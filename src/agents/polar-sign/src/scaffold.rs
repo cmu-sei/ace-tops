@@ -140,6 +140,36 @@ impl Scaffold {
         })
     }
 
+    /// The agent's scaffold, from a file given or `<dir>/scaffolds/<agent>.json`, the folder
+    /// `nu infra/resolve.nu scaffolds <dir>` fills. It must be that agent's.
+    pub fn load(
+        agent: &str,
+        given: Option<&std::path::Path>,
+        dir: &std::path::Path,
+    ) -> Result<Scaffold, String> {
+        let folder = dir.join("scaffolds");
+        let path = given
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| folder.join(format!("{agent}.json")));
+        let text = std::fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "cannot read the scaffold of {agent} at {}: {e}: make one with `{agent} --scaffold > <file>` and pass \
+                 --scaffold, or fill {} with `nu infra/resolve.nu scaffolds <dir>`",
+                path.display(),
+                folder.display()
+            )
+        })?;
+        let scaffold = Scaffold::parse(&text)?;
+        if scaffold.agent != agent {
+            return Err(format!(
+                "{} is the scaffold of {}, not of {agent}",
+                path.display(),
+                scaffold.agent
+            ));
+        }
+        Ok(scaffold)
+    }
+
     pub fn section(&self, name: &str) -> Option<&RuntimeDecl> {
         self.runtime.iter().find(|r| r.name == name)
     }
@@ -277,6 +307,28 @@ pub fn is_kind(kind: Kind, value: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_scaffold_is_found_in_the_folder_or_given_and_must_be_that_agent_s() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("scaffolds");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("git-repo-controller.json"), sample()).unwrap();
+        let given = dir.path().join("elsewhere.json");
+        std::fs::write(&given, sample()).unwrap();
+
+        let found = Scaffold::load("git-repo-controller", None, dir.path()).unwrap();
+        assert_eq!(found.agent, "git-repo-controller");
+        Scaffold::load("git-repo-controller", Some(&given), dir.path()).unwrap();
+
+        let other = Scaffold::load("jira-observer", Some(&given), dir.path()).unwrap_err();
+        assert!(other.contains("not of jira-observer"), "{other}");
+        let missing = Scaffold::load("jira-observer", None, dir.path()).unwrap_err();
+        assert!(
+            missing.contains("nu infra/resolve.nu scaffolds"),
+            "{missing}"
+        );
+    }
 
     fn sample() -> String {
         json!({

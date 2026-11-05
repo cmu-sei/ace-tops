@@ -56,7 +56,7 @@
 #   pods        wait for the deployed core services                       any of cert-issuer, cassini, credentials-agent, neo4j
 #   forwards    just port-forwards-up <only what is needed>               credentials-agent (observer) or neo4j
 #   admin       admin-bootstrap / admin-provision / admin-claim           credentials-agent deployed
-#   seed        sign the first policy and push it to polar-schedules      credentials-agent, polar-git-server and polar-scheduler-observer deployed
+#   seed        sign first policy and groups, push to polar-schedules     credentials-agent, polar-git-server and polar-scheduler-observer deployed
 #               (and the first sections; on a fresh cluster, jira-observer's credential sealed from the sops files' jira_token)
 #   browser     user-cert-install, then check the Neo4j password          credentials-agent and neo4j deployed
 
@@ -899,6 +899,8 @@ def step_seed [target: string, config: record, username: string, mail: string, a
         # this asks the cluster for nothing new.
         let body = (if (seed computed $d) {
             ^$nu.current-exe ($root | path join "infra/resolve.nu") $d.resolve --target $target | from json
+        } else if (seed from_first_admin $d) {
+            seed first_groups (open ($root | path join $d.file)) $username
         } else { null })
         let signed = (seed body_json $d $root $body
             | ^($sign | first) ...($sign | skip 1) runtime --agent $d.agent --section $d.section --version $d.version --body-file - --user $username)

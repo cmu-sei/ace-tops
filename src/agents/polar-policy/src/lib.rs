@@ -1311,6 +1311,90 @@ mod tests {
             .0
     }
 
+    /// The first policy and groups a cluster is given, as they ship (infra/seed.nu), decide who reads and who writes.
+    #[tokio::test]
+    async fn the_seeded_groups_say_who_reads_configuration_and_who_writes_it() {
+        let seed: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../infra/seeds/signed/groups.json"))
+                .unwrap();
+        let first_admin: Vec<String> = serde_json::from_value(seed["first_admin"].clone()).unwrap();
+        let permissions_actor = spawn_permissions_actor().await;
+        ractor::call!(permissions_actor, |reply| {
+            polar_permissions::PermissionsMessage::UpdateGroups {
+                memberships: [
+                    ("reader".to_string(), vec!["config-readers".to_string()]),
+                    ("writer".to_string(), vec!["config-writers".to_string()]),
+                    ("health".to_string(), vec!["health-readers".to_string()]),
+                    ("admin".to_string(), first_admin),
+                ]
+                .into(),
+                hierarchy: serde_json::from_value(
+                    serde_json::json!({ "groups": seed["groups"].clone() }),
+                )
+                .unwrap(),
+                reply,
+            }
+        })
+        .unwrap();
+        let actor = Actor::spawn(None, PolicyActor, PolicyActorArgs { permissions_actor })
+            .await
+            .unwrap()
+            .0;
+        load(
+            &actor,
+            include_str!("../../../../infra/seeds/signed/policy.cedar"),
+        )
+        .await;
+
+        let topic = || Facts {
+            topic: Some(TopicFacts::default()),
+            ..Default::default()
+        };
+        // Who is allowed, of: (reader, writer, health, admin, nobody).
+        for (action, resource, facts, allowed) in [
+            (
+                r#"Action::"publish""#,
+                r#"Topic::"polar-running-configuration-questions""#,
+                topic(),
+                [true, true, false, true, false],
+            ),
+            (
+                r#"Action::"subscribe""#,
+                r#"Topic::"polar-running-configuration-answers""#,
+                topic(),
+                [true, true, false, true, false],
+            ),
+            (
+                r#"Action::"read-configuration""#,
+                r#"Agent::"jira-observer""#,
+                Facts::default(),
+                [true, true, false, true, false],
+            ),
+            (
+                r#"Action::"update-configuration""#,
+                r#"Variable::"jira-observer/JIRA_POLL_SECS""#,
+                Facts::default(),
+                [false, true, false, true, false],
+            ),
+        ] {
+            for (who, allowed) in ["reader", "writer", "health", "admin", "nobody"]
+                .into_iter()
+                .zip(allowed)
+            {
+                let expected = if allowed {
+                    Decision::Allow
+                } else {
+                    Decision::NotDetermined
+                };
+                assert_eq!(
+                    ask_with(&actor, who, action, resource, facts.clone()).await,
+                    expected,
+                    "{who} {action} {resource}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn membership_follows_nested_groups_and_the_roles_a_group_holds() {
         let actor = arranged(serde_json::json!({

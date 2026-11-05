@@ -183,8 +183,9 @@ file: ask a running agent for its running configuration, and from the answer gen
 where they are now. Cleared the same day. Drawn as built: [`running_configuration`](sequences/general/running_configuration.mmd).
 
 ```
-nu infra/running-config.nu jira-observer --user alice                       # the answer, as JSON
-nu infra/running-config.nu jira-observer --user alice --template > file     # a file to edit and sign
+just port-forwards-up broker                                  # once, from your own machine
+polar-running-config jira-observer --user alice               # the answer, as JSON
+polar-running-config jira-observer --user alice --template > file     # a file to edit and sign
 polar-sign sign file --user alice --push
 ```
 
@@ -214,30 +215,51 @@ and proof of the key, by the path every other signed document takes, and a signa
 direction. The signer must be who the broker says sent it. A window of at most five minutes (`MAX_QUESTION_VALIDITY_SECS`) bounds a
 replay, which would only make the agent answer again.
 
-**Who may ask, marked for review.** Cedar first, `Action::"read-configuration"` on `Agent::"<agent>"`; where it is silent, the certificate:
-`c:update-configuration`. So who may change an agent's settings may ask what they are, and a `forbid` can keep someone off one agent.
-The design first said Cedar alone, with no floor. But `Agent` has no attribute a rule could match, and one rule per agent would have to
-change with the catalog, and "the certificate decides where policy is silent" is the standing rule.
+**Who may ask: the groups `config-readers` and `config-writers` (the maintainer, 2026-11-05).** The first policy permits `config-readers`
+the two topics and `read-configuration`, and `config-writers` `update-configuration`; the first groups document puts `config-writers` in
+`config-readers` and the first administrator in `config-writers`. Anyone else is added by a later groups version, by username, signed by a
+holder of `c:update-groups`. A reader need hold no capability, and is refused if they sign an update. Under that, the decision stays as it
+was: Cedar first, `Action::"read-configuration"` on `Agent::"<agent>"`; where it is silent, the certificate's `c:update-configuration`, and
+a `forbid` can keep someone off one agent. **Marked for review:** the policy gives a person the topics through the group alone, so a holder
+of `c:update-configuration` who is in no group can still sign updates but is refused at the broker when they ask. A workload needs no group
+for the topics, which its catalog entry can declare.
 
 **One topic for all questions, one for all answers** (`QUESTIONS_TOPIC`, `ANSWERS_TOPIC`, implied by the `agent` rule), rather than one per
 agent as health has. A person's certificate names no topics, so a Cedar rule is what lets one use the broker at all, and a rule names a
 topic exactly: a topic per agent would need a rule per agent. `infra/seeds/signed/policy.cedar` holds the two rules, for
-`Capability::"update-configuration"`. Every agent hears every question and reads no further than whom it is for. Everyone who may ask
+`Group::"config-readers"`. Every agent hears every question and reads no further than whom it is for. Everyone who may ask
 hears every answer, and the tool takes only its own: its id, that agent, and stamped with that workload.
 
 **A refused question gets no answer**, as with health, and a warning in the agent's log naming the asker. The tool's wait ends and it says
 where to look. A refusal at the broker is said at once.
 
-**`polar-running-config` is its own tool.** `polar-sign` has no async runtime and needs none, and a Cassini client would bring both to
-what holds an administrator's key for signing. **Marked for review:** the first design said `polar-sign template --running` would ask by
-itself. It now reads the answer from a file or standard input, and `infra/running-config.nu` joins the two.
+**Asking is a library, and `polar-running-config` a thin tool over it (the maintainer, 2026-11-05).** The first build joined two tools with a
+nushell script, so the whole flow existed only as a script, which an agent or a dashboard cannot call. `polar_running_config` now has three layers:
+`question` makes the signed question; `Asking` says what to do on each thing the broker says, for a caller with a Cassini client of its own;
+`ask` connects, asks and waits, and says why with `AskError`. The tool writes the file itself with `polar_sign::template`, and
+`polar-sign template --settings --running <file>` stays for an answer saved earlier. `polar-sign` still has no async runtime or Cassini client. The
+tool that asks does hold the asker's key, which it signs the question with, so that separation protects the signing tool's shape and not the key.
+
+**The broker is 8080 in the cluster, mTLS and not HTTP, and 18081 on your own machine** (`just port-forwards-up broker`, since keycloak
+owns local 8080). The tool looks there by default, as `polar-sign` looks for the observer's forward; `--broker` and `POLAR_BROKER_ADDR` say
+otherwise, and `--server-name` and `POLAR_BROKER_NAME` for a cluster on another domain. A wrong name says only that no answer came, as does a
+missing forward.
+
+**What a later service needs that the library does not give it yet.** Signing takes the key as PEM text (`polar_sign::Identity`), so a key
+held by the CryptoActor would need a signer of another shape. `polar_sign::push` runs the `git` command, which an agent's image may not have.
+`Scaffold::load` reads a person's folder, so a service needs its own source of scaffolds. Depending on `polar_sign` brings its blocking HTTP
+client. None is built for now: the command-line tools come first, and what they do informs the application (`remaining-work.md`).
 
 **What this does not cover.** The broker is not a Cassini client, so it cannot be asked, the same gap as its not hearing updates. An agent
 must be up and connected. A Dynamic secret, which no real agent has, could not be kept by a file (`polar-sign` refuses to set one), and
 the file says signing takes it away.
 
-**For an existing deployment (recorded for the customer's migration, `remaining-work.md`).** Asking needs the two rules: the seed is only
-ever the first policy, so sign the next version with them. Anyone signing documents that name only what they change, relying on a running
+**The group `health-readers` grants nothing yet.** The maintainer asked for it beside the other two, and the first administrator is seeded
+into it, but a person has no way to ask for health: each agent's question topic is its own (`agent.<name>.health`), and Cedar names a topic
+exactly, so it is the one rule per agent the configuration question avoided by sharing a topic. Giving it effect needs that shape settled first.
+
+**For an existing deployment (recorded for the customer's migration, `remaining-work.md`).** Asking needs the rules: the seed is only
+ever the first policy, so sign the next version with them, and a first groups version naming who may read and write. Anyone signing documents that name only what they change, relying on a running
 agent keeping the rest, now loses the rest at once, where before it was at the next restart.
 
 **Checked live on u7s, 2026-11-05 UTC**, with every image rebuilt from `a246975d` and the real path: `polar-running-config` over the port-forward,
@@ -257,7 +279,21 @@ agent keeping the rest, now loses the rest at once, where before it was at the n
   secret came back withheld, and no withheld setting carried a value. `cassini` did not, as expected, nor the two harness workloads, which do not run on this target.
 
 **Not seen:** the refusal when the stamp and the signer differ, a replay, a revoked certificate, and a value that repeats a secret, which only the
-tests cover. All removed afterwards: the document deleted and Jira restarted. Policy version 4, the seed's text, stays in force.
+tests cover. All removed afterwards: the document deleted and Jira restarted.
+
+**Checked live on u7s again, 2026-11-05 UTC, for the groups and the tool in Rust**, with the agents' images unchanged (the change is the tool and the
+seed) and the tool built from the tree, in debug, not from a shipped image. The bodies came from `seed.nu`'s own functions and were signed as the seed step signs them;
+`up.nu`'s seed step itself was not run, and neither was a fresh bring-up.
+
+- **No forward:** no answer in the wait, and the tool said how to start it. **With it,** on the older policy: `djshepard` answered and `bootstrap-admin` was refused at
+  the broker.
+- **The seed's text:** policy version 5 and groups version 1 applied. `djshepard` answered through the group, the capability rules being gone.
+- **A person with no config capability** (`cfgcheck`, provisioned for this, certificate since revoked, key deleted): in no group, refused at the broker; in `config-readers`,
+  answered, and an update they signed refused by the agent, `does not hold c:update-configuration`; in `config-writers`, the same update applied, and still answered, through the nesting.
+- **The whole flow:** `--template` offered version 2 with that value live; one more line edited and signed; both `override`. `just running-config` printed the answer. `polar-sign template --running` read a saved one.
+- **The credentials agent's refusals on the way:** a groups document naming an account ID, or a name with no account, is refused, `would apply to no one`. So a group's members are named by username.
+
+Removed afterwards: the document deleted and Jira restarted, back on 1800 and 50. In force now: policy version 5 and groups version 4, the seed's text for `djshepard`.
 
 ## The protocol handlers' open question
 

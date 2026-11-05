@@ -449,6 +449,7 @@ _admin_dir    := env_var('HOME') + "/.config/polar-admin"
 _runtime      := env_var_or_default('POLAR_CONTAINER_RUNTIME', `if command -v podman >/dev/null 2>&1; then echo podman; elif command -v docker >/dev/null 2>&1; then echo docker; else echo podman; fi`)
 # The admin tool: polar-admin-grant on PATH (see `nu infra/tools.nu install`), else built from this checkout.
 _admin_grant  := `if command -v polar-admin-grant >/dev/null 2>&1; then echo polar-admin-grant; else echo "cargo run -q --manifest-path $(pwd)/src/agents/Cargo.toml -p polar-admin-grant --"; fi`
+_running_config := `if command -v polar-running-config >/dev/null 2>&1; then echo polar-running-config; else echo "cargo run -q --manifest-path $(pwd)/src/agents/Cargo.toml -p polar-running-config --"; fi`
 _observer_url := env_var_or_default('POLAR_OBSERVER_URL', 'http://localhost:8081')
 
 # Step 1: fetch the CA, then redeem the one-shot bootstrap credential.
@@ -584,11 +585,14 @@ cluster-status:
 # listens: POLAR_REGISTRY_FORWARD_PORT picks another port. `deploy` (a gitops
 # target's deployment git server, infra/deploy-repo.nu) starts only when named
 # too, on local 9443 or POLAR_DEPLOY_FORWARD_PORT.
+#
+# `broker` is on local 18081, where polar-running-config looks by default: it listens on
+# 8080 in the cluster, mTLS and not HTTP, and keycloak already owns local 8080.
 port-forwards-up *only:
     #!/usr/bin/env bash
     set -euo pipefail
     # No arguments: start every forward. Otherwise only the named ones
-    # (neo4j keycloak ace jaeger observer git).
+    # (neo4j keycloak ace jaeger observer git broker).
     ONLY=" {{only}} "
     want() { [ "$ONLY" = "  " ] || [[ "$ONLY" == *" $1 "* ]]; }
     start_pf() {
@@ -610,6 +614,7 @@ port-forwards-up *only:
     start_pf jaeger   polar       jaeger-svc                   "4318:4318 16686:16686" /tmp/pf-jaeger.log
     start_pf observer polar       credentials-agent-observer   "8081:8080"             /tmp/pf-credentials-observer.log
     start_pf git      polar       polar-git-server             "8443:8443"             /tmp/pf-polar-git-server.log
+    start_pf broker   polar       cassini-ip-svc               "18081:8080"            /tmp/pf-broker.log
     if [[ "$ONLY" == *" registry "* ]]; then
         start_pf registry polar-registry registry "${POLAR_REGISTRY_FORWARD_PORT:-5000}:5000" /tmp/pf-registry.log
     fi
@@ -672,11 +677,12 @@ polar-git-clone repo dest="" user=env_var('USER'):
 cassini-shutdown user=env_var('USER'):
     nu infra/cassini-shutdown.nu --user {{user}}
 
-# Asks a running agent what configuration is in force, with your certificate. Add --template for a file to edit and sign.
+# Asks a running agent what configuration is in force, with your certificate, through `just port-forwards-up broker`.
+# Add --template for a file to edit and sign.
 # Usage: just running-config jira-observer            (as the current user)
 #        just running-config jira-observer alice --template
 running-config agent user=env_var('USER') *flags='':
-    nu infra/running-config.nu {{agent}} --user {{user}} {{flags}}
+    {{_running_config}} {{agent}} --user {{user}} {{flags}}
 
 # What the secret harness pods say about the credentials agent's secret policy, and whether it held
 # (src/agents/secret-harness). The owner needs two rounds (a minute apart) and the intruder starts after

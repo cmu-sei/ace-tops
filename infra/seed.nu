@@ -40,7 +40,8 @@ export const GIT_PORT = "8443"
 # the resolver from the catalog (`resolve`, the `resolve.nu` command up.nu asks for it; `from` says what it is made of):
 # the state agent's first `schema` from the agents' scaffolds, and its writer's first `agents` from the catalog's
 # workloads (docs/architecture/soft-state.md). `version` is 1 because this is only ever the first: a path that already
-# exists is left alone, and a later change is an author's, at a higher version.
+# exists is left alone, and a later change is an author's, at a higher version. The first `groups` comes from a file and
+# the first administrator (`first-admin`, first_groups below), who did not exist when the file was written.
 export def documents [] {
     [
         {
@@ -51,6 +52,15 @@ export def documents [] {
             capability: "c:update-policy"
             field: "source"
             file: "infra/seeds/signed/policy.cedar"
+        }
+        {
+            path: "permanent/credentials-agent-groups.dhall"
+            agent: "credentials-agent"
+            section: "groups"
+            version: 1
+            capability: "c:update-groups"
+            from: "first-admin"
+            file: "infra/seeds/signed/groups.json"
         }
         {
             path: "permanent/soft-state-observer-schema.dhall"
@@ -80,13 +90,24 @@ export def from_scaffolds [doc: record] {
 
 # Whether a document's body is computed by the resolver (from the scaffolds or the catalog), and not read from a file.
 export def computed [doc: record] {
-    ($doc.from? | default "file") != "file"
+    ($doc.from? | default "file") in ["scaffolds" "catalog"]
+}
+
+# Whether a document's body names the first administrator.
+export def from_first_admin [doc: record] {
+    ($doc.from? | default "file") == "first-admin"
+}
+
+# The first groups document: the groups as the seed arranges them, and the first administrator in the ones it says. Only
+# the administrator is a member: everyone else is added by a later version, by a holder of c:update-groups.
+export def first_groups [seed: record, admin: string] {
+    { memberships: { ($admin): $seed.first_admin }, groups: $seed.groups }
 }
 
 # The body of a section, as the JSON `polar-sign runtime` takes: the file's text, exactly, in its field; or, for a
-# computed body, `schema` (the record its `resolve.nu` command printed), as it is.
+# computed body or the first groups, `schema` (the record made for it), as it is.
 export def body_json [doc: record, root: string, schema?: record] {
-    if (computed $doc) {
+    if (computed $doc) or (from_first_admin $doc) {
         if $schema == null { error make { msg: $"($doc.section) for ($doc.agent) is made from the ($doc.from), and none was given" } }
         $schema | to json --raw
     } else {
@@ -162,7 +183,7 @@ export def lacks [san: string, docs: list] {
 }
 
 export def lacks_hint [user: string, missing: list] {
-    $"($user)'s certificate does not carry ($missing | str join ', '), so the credentials agent would refuse the policy. Provision an account that does \(just admin-provision gives every new administrator these\), and run this again with --user."
+    $"($user)'s certificate does not carry ($missing | str join ', '), so the credentials agent would refuse what it signs. Provision an account that does \(just admin-provision gives every new administrator these\), and run this again with --user."
 }
 
 # ── jira-observer's credential, sealed once from the sops files ──────────────────────────────────────────────

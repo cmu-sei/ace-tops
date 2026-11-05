@@ -224,24 +224,7 @@ fn env_var(name: &str) -> Option<String> {
 
 /// The agent's scaffold, from --scaffold or the folder `nu infra/resolve.nu scaffolds <dir>` fills.
 fn load_scaffold(agent: &str, given: Option<PathBuf>, dir: &std::path::Path) -> Result<Scaffold> {
-    let path = given.unwrap_or_else(|| dir.join("scaffolds").join(format!("{agent}.json")));
-    let text = std::fs::read_to_string(&path).with_context(|| {
-        format!(
-            "cannot read the scaffold of {agent} at {}: make one with `{agent} --scaffold > <file>` and pass \
-             --scaffold, or fill {} with `nu infra/resolve.nu scaffolds <dir>`",
-            path.display(),
-            dir.join("scaffolds").display()
-        )
-    })?;
-    let scaffold = Scaffold::parse(&text).map_err(anyhow::Error::msg)?;
-    if scaffold.agent != agent {
-        bail!(
-            "{} is the scaffold of {}, not of {agent}",
-            path.display(),
-            scaffold.agent
-        );
-    }
-    Ok(scaffold)
+    Scaffold::load(agent, given.as_deref(), dir).map_err(anyhow::Error::msg)
 }
 
 /// Standard input, read when an author wrote `-` for a secret.

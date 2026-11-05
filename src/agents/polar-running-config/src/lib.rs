@@ -22,12 +22,236 @@
 */
 
 //! Asking a running agent for its configuration, the asking side (docs/architecture/dynamic-settings.md, "Asking an
-//! agent what is in force"): what the tool does on each thing the broker says, with nothing running.
+//! agent what is in force"), for anything that asks: the tool, and later a service.
+//!
+//! Three layers, and a caller takes the ones it needs. [`question`] makes the signed question. [`Asking`] says what to do
+//! on each thing the broker says, with nothing running, for a caller that already has a Cassini client. [`ask`] connects,
+//! asks and waits. Writing a file from the answer is `polar_sign::template`, which needs no connection.
 
+use cassini_client::{
+    ClientEventForwarder, ClientEventForwarderArgs, DeliveryMode, TCPClientConfig, TcpClientActor,
+    TcpClientArgs, TcpClientMessage,
+};
 use cassini_types::ClientEvent;
 use polar_scheduler_common::running::{
-    ANSWERS_TOPIC, QUESTIONS_TOPIC, RunningConfiguration, decode_answer,
+    ANSWERS_TOPIC, MAX_QUESTION_VALIDITY_SECS, QUESTIONS_TOPIC, RunningConfiguration,
+    decode_answer, question_payload,
 };
+use polar_sign::Identity;
+use ractor::{Actor, ActorProcessingErr, ActorRef};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::oneshot;
+
+/// Why no answer came.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum AskError {
+    #[error("cannot sign the question: {0}")]
+    Sign(String),
+    #[error("cannot use the certificate to reach the broker: {0}")]
+    Client(String),
+    #[error("cannot start: {0}")]
+    Start(String),
+    /// The broker said no, or could not take it.
+    #[error("{0}")]
+    Refused(String),
+    #[error("the connection to the broker ended before an answer")]
+    ConnectionEnded,
+    #[error(
+        "no answer from {agent} in {secs} s. It answers nothing it refuses, so look for the refusal in its log; or it is \
+         not running, or the broker cannot be reached (from your own machine: `just port-forwards-up broker`)"
+    )]
+    NoAnswer { agent: String, secs: u64 },
+}
+
+/// A question, signed and ready to publish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub id: String,
+    pub agent: String,
+    pub document: Vec<u8>,
+}
+
+/// How long a question stays good, in seconds: long enough to outlast the wait, and never past the most an agent takes.
+pub fn validity_secs(wait_secs: u64) -> u64 {
+    MAX_QUESTION_VALIDITY_SECS.min(wait_secs.max(60))
+}
+
+/// The question for `agent`, signed by `identity`. `now` is seconds since the epoch.
+pub fn question(
+    agent: &str,
+    identity: &Identity,
+    now: u64,
+    wait_secs: u64,
+) -> Result<Question, AskError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let document = polar_signing::sign_in(
+        polar_signing::Domain::RUNNING_CONFIGURATION_QUESTION,
+        question_payload(agent, &id, now, now + validity_secs(wait_secs)),
+        &identity.chain,
+        &identity.key_pem,
+    )
+    .map_err(|e| AskError::Sign(e.to_string()))?
+    .to_value()
+    .to_string()
+    .into_bytes();
+    Ok(Question {
+        id,
+        agent: agent.to_string(),
+        document,
+    })
+}
+
+/// A Cassini client's settings from a person's files: `<dir>/<user>.crt`, `.key` and `ca.pem`.
+pub fn client_config(
+    dir: &Path,
+    user: &str,
+    broker: &str,
+    server_name: &str,
+) -> Result<TCPClientConfig, AskError> {
+    let path = |name: String| dir.join(name).to_string_lossy().to_string();
+    let env: HashMap<String, String> = HashMap::from([
+        ("TLS_CLIENT_CERT".to_string(), path(format!("{user}.crt"))),
+        ("TLS_CLIENT_KEY".to_string(), path(format!("{user}.key"))),
+        ("TLS_CA_CERT".to_string(), path("ca.pem".to_string())),
+        ("BROKER_ADDR".to_string(), broker.to_string()),
+        ("CASSINI_SERVER_NAME".to_string(), server_name.to_string()),
+    ]);
+    TCPClientConfig::from_env(&env).map_err(AskError::Client)
+}
+
+struct Asker;
+
+struct AskerArgs {
+    asking: Asking,
+    document: Vec<u8>,
+    config: TCPClientConfig,
+    done: oneshot::Sender<Result<RunningConfiguration, String>>,
+}
+
+struct AskerState {
+    asking: Asking,
+    document: Vec<u8>,
+    client: ActorRef<TcpClientMessage>,
+    done: Option<oneshot::Sender<Result<RunningConfiguration, String>>>,
+}
+
+#[ractor::async_trait]
+impl Actor for Asker {
+    type Msg = ClientEvent;
+    type State = AskerState;
+    type Arguments = AskerArgs;
+
+    async fn pre_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        args: AskerArgs,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        let (forwarder, _) = Actor::spawn_linked(
+            None,
+            ClientEventForwarder::new(),
+            ClientEventForwarderArgs {
+                target: myself.clone(),
+                mapper: Box::new(Some),
+            },
+            myself.clone().into(),
+        )
+        .await?;
+        let events: Arc<ractor::OutputPort<ClientEvent>> = Arc::new(ractor::OutputPort::default());
+        events.subscribe(forwarder, Some);
+        let (client, _) = Actor::spawn_linked(
+            None,
+            TcpClientActor,
+            TcpClientArgs {
+                config: args.config,
+                registration_id: None,
+                delivery: DeliveryMode::Broadcast(events),
+                answers: None,
+            },
+            myself.clone().into(),
+        )
+        .await?;
+        Ok(AskerState {
+            asking: args.asking,
+            document: args.document,
+            client,
+            done: Some(args.done),
+        })
+    }
+
+    async fn handle(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        event: ClientEvent,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        match state.asking.on(event) {
+            Step::Nothing => {}
+            Step::Subscribe => state.client.send_message(TcpClientMessage::Subscribe {
+                topic: ANSWERS_TOPIC.to_string(),
+                trace_ctx: None,
+            })?,
+            Step::Ask => state.client.send_message(TcpClientMessage::publish(
+                QUESTIONS_TOPIC.to_string(),
+                state.document.clone(),
+                None,
+            ))?,
+            Step::Answered(answer) => {
+                if let Some(done) = state.done.take() {
+                    let _ = done.send(Ok(*answer));
+                }
+                myself.stop(None);
+            }
+            Step::Failed(why) => {
+                if let Some(done) = state.done.take() {
+                    let _ = done.send(Err(why));
+                }
+                myself.stop(None);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Connects with `config`, puts `question`, and waits up to `wait` for its answer.
+pub async fn ask(
+    question: Question,
+    config: TCPClientConfig,
+    wait: Duration,
+) -> Result<RunningConfiguration, AskError> {
+    let (done, answered) = oneshot::channel();
+    let agent = question.agent.clone();
+    let (asker, _handle) = Actor::spawn(
+        None,
+        Asker,
+        AskerArgs {
+            asking: Asking {
+                agent: question.agent,
+                id: question.id,
+            },
+            document: question.document,
+            config,
+            done,
+        },
+    )
+    .await
+    .map_err(|e| AskError::Start(e.to_string()))?;
+
+    let outcome = tokio::time::timeout(wait, answered).await;
+    // A caller that goes on running is not left with a connection.
+    asker.stop(None);
+    match outcome {
+        Ok(Ok(Ok(answer))) => Ok(answer),
+        Ok(Ok(Err(why))) => Err(AskError::Refused(why)),
+        Ok(Err(_)) => Err(AskError::ConnectionEnded),
+        Err(_) => Err(AskError::NoAnswer {
+            agent,
+            secs: wait.as_secs(),
+        }),
+    }
+}
 
 /// What to do next.
 #[derive(Debug, PartialEq, Eq)]
@@ -45,8 +269,8 @@ pub enum Step {
 /// one use them.
 fn refused(what: &str, topic: &str, reason: &str) -> Step {
     Step::Failed(format!(
-        "the broker refused to let you {what} on {topic}: {reason}. Asking needs the rules in \
-         infra/seeds/signed/policy.cedar in the policy in force"
+        "the broker refused to let you {what} on {topic}: {reason}. Asking needs you in the group config-readers, by the \
+         signed groups document, and the rules in infra/seeds/signed/policy.cedar in the policy in force"
     ))
 }
 
@@ -113,8 +337,106 @@ impl Asking {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polar_scheduler_common::running::encode_answer;
+    use polar_scheduler_common::running::{QUESTION_TYPE, encode_answer};
+    use polar_signing::testing;
     use proptest::prelude::*;
+
+    fn signer_identity() -> (testing::Authority, Identity) {
+        let ca = testing::root("Polar Internal CA");
+        let signer = testing::signer(&ca, testing::Spec::default());
+        let identity = Identity {
+            chain: vec![signer.cert_pem.clone()],
+            key_pem: signer.key_pem.clone(),
+        };
+        (ca, identity)
+    }
+
+    #[test]
+    fn a_question_is_signed_for_questions_alone_names_its_agent_and_is_good_now() {
+        let (ca, identity) = signer_identity();
+        let now = testing::now() as u64;
+        let asked = question(AGENT, &identity, now, 15).unwrap();
+        let document =
+            polar_signing::Document::from_value(&serde_json::from_slice(&asked.document).unwrap())
+                .unwrap();
+        let trust = polar_signing::Trust::from_pem(std::slice::from_ref(&ca.pem)).unwrap();
+        polar_signing::verify_in(
+            polar_signing::Domain::RUNNING_CONFIGURATION_QUESTION,
+            &document,
+            &trust,
+            now as i64,
+        )
+        .unwrap();
+        let payload = &document.payload;
+        assert_eq!(payload["type"], QUESTION_TYPE);
+        assert_eq!(payload["target"]["agent"], AGENT);
+        assert_eq!(payload["id"], asked.id.as_str());
+        assert_eq!(payload["issued_at"], now);
+        assert_eq!(payload["not_after"], now + 60);
+        assert!(
+            polar_signing::verify(&document, &trust, now as i64).is_err(),
+            "not a configuration document"
+        );
+    }
+
+    #[test]
+    fn each_question_has_its_own_id() {
+        let (_, identity) = signer_identity();
+        let first = question(AGENT, &identity, 1, 15).unwrap();
+        let second = question(AGENT, &identity, 1, 15).unwrap();
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn a_key_that_is_not_a_key_says_it_cannot_sign() {
+        let (_, mut identity) = signer_identity();
+        identity.key_pem = "not a key".to_string();
+        assert!(matches!(
+            question(AGENT, &identity, 1, 15),
+            Err(AskError::Sign(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn with_no_broker_there_the_wait_ends_and_says_where_to_look() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = testing::root("Polar Internal CA");
+        let signer = testing::signer(&ca, testing::Spec::default());
+        std::fs::write(dir.path().join("alice.crt"), &signer.cert_pem).unwrap();
+        std::fs::write(dir.path().join("alice.key"), &signer.key_pem).unwrap();
+        std::fs::write(dir.path().join("ca.pem"), &ca.pem).unwrap();
+        // A port nothing listens on: bound, read, and let go.
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let broker = free.local_addr().unwrap().to_string();
+        drop(free);
+        let config = client_config(dir.path(), "alice", &broker, "cassini.example").unwrap();
+        let identity = Identity {
+            chain: vec![signer.cert_pem.clone()],
+            key_pem: signer.key_pem.clone(),
+        };
+        let asked = question(AGENT, &identity, testing::now() as u64, 1).unwrap();
+        let got = ask(asked, config, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        // However the client gives up, it is said, and never hangs.
+        assert!(
+            matches!(
+                got,
+                AskError::NoAnswer { .. } | AskError::ConnectionEnded | AskError::Refused(_)
+            ),
+            "{got:?}"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn a_question_outlasts_the_wait_within_reason_and_never_passes_what_an_agent_takes(wait in 0u64..100_000) {
+            let secs = validity_secs(wait);
+            prop_assert!(secs <= MAX_QUESTION_VALIDITY_SECS);
+            prop_assert!(secs >= 60);
+            prop_assert!(secs >= wait.min(MAX_QUESTION_VALIDITY_SECS));
+        }
+    }
 
     const AGENT: &str = "jira-observer";
     const STAMP: &str = "jira-observer.polar.serviceaccount.cluster.local";
@@ -189,6 +511,7 @@ mod tests {
                 panic!("a refusal is the end of it");
             };
             assert!(why.contains("policy.cedar"), "{why}");
+            assert!(why.contains("config-readers"), "{why}");
         }
     }
 

@@ -349,6 +349,22 @@ def main [] {
             }
         }
         {
+            name: "the first groups are seeded for the credentials agent, signed for c:update-groups, and name only the first administrator"
+            body: {
+                let d = (documents | where section == "groups" | first)
+                assert equal $d.agent "credentials-agent"
+                assert equal $d.capability "c:update-groups"
+                assert (from_first_admin $d)
+                assert (not (computed $d))
+                let body = (first_groups (open ((root) | path join $d.file)) "alice")
+                assert equal ($body.memberships | columns) ["alice"]
+                assert ("config-writers" in $body.memberships.alice)
+                assert ("health-readers" in $body.memberships.alice)
+                assert equal $body.groups."config-writers".groups ["config-readers"]
+                assert equal ((body_json $d (root) $body) | from json) $body
+            }
+        }
+        {
             name: "the state agent's first schema is seeded from the scaffolds, signed for c:update-runtime, and is the schema as given"
             body: {
                 let d = (documents | where section == "schema" | first)
@@ -451,6 +467,7 @@ def main [] {
             name: "a seed document is signed for the capability its section needs, and every one of them has one"
             body: {
                 for d in (documents) { assert ($d.capability | str starts-with "c:") }
+                assert ("c:update-groups" in (documents | get capability))
                 assert equal (documents | where section == "policy" | first | get capability) "c:update-policy"
             }
         }
@@ -458,8 +475,8 @@ def main [] {
             name: "a certificate without the capability is told so before anything is signed, one with it is not"
             body: {
                 let without = "X509v3 Subject Alternative Name:\n    DNS:abc, URI:p:u2s:x, URI:c:provision-account, URI:c:grant"
-                let with = "X509v3 Subject Alternative Name:\n    DNS:abc, URI:c:grant, URI:c:update-policy, URI:c:update-runtime"
-                assert equal (lacks $without (documents)) ["c:update-policy" "c:update-runtime"]
+                let with = "X509v3 Subject Alternative Name:\n    DNS:abc, URI:c:grant, URI:c:update-policy, URI:c:update-groups, URI:c:update-runtime"
+                assert equal (lacks $without (documents)) ["c:update-policy" "c:update-groups" "c:update-runtime"]
                 assert equal (lacks $with (documents)) []
                 assert ((lacks_hint "alice" ["c:update-policy"]) | str contains "c:update-policy")
             }

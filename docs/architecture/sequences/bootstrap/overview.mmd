@@ -59,7 +59,7 @@ sequenceDiagram
     Note over Op,W: PHASE 3 - after Flux. up.nu does what needs running workloads
     Up->>W: wait for the core services, port-forwards, then the admin flow (accounts and certificates)
     Up->>Infra: record the first admin as the git server's administrator, publish again, Flux rolls its Deployment
-    Up->>W: sign and push the first policy, the state agent's sections and, from sops, jira-observer's credential
+    Up->>W: sign and push the first policy and groups, the state agent's sections and, from sops, jira-observer's credential
     Note over Up,W: PHASE 4 - the handoff (phase4-handoff)
     Up->>W: wait for the copy, point Flux at Polar's git server, publish there, retire the bootstrap server,<br/>and report what the attestation agent says of itself
     Up->>Op: if the browser lacks it: ask to close the browser, import the certificate. Check Neo4j

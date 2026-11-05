@@ -22,28 +22,20 @@
 */
 
 //! `polar-running-config <agent>`: asks a running agent for its configuration in force, over Cassini, with the asker's
-//! own certificate, and prints the answer as JSON. `polar-sign template <agent> --settings --running -` writes a file to
-//! edit and sign from it. Design: docs/architecture/dynamic-settings.md. It is its own tool because `polar-sign` has no
-//! async runtime and needs none.
+//! own certificate, and prints the answer as JSON; with `--template`, a file to edit and sign, filled in from it. Design:
+//! docs/architecture/dynamic-settings.md. The work is in the library, for whatever else comes to ask.
 
 use anyhow::{Context, Result, anyhow};
-use cassini_client::{
-    ClientEventForwarder, ClientEventForwarderArgs, DeliveryMode, TCPClientConfig, TcpClientActor,
-    TcpClientArgs, TcpClientMessage,
-};
-use cassini_types::ClientEvent;
 use clap::Parser;
-use polar_running_config::{Asking, Step};
-use polar_scheduler_common::running::{
-    ANSWERS_TOPIC, MAX_QUESTION_VALIDITY_SECS, QUESTIONS_TOPIC, RunningConfiguration,
-    question_payload,
-};
-use ractor::{Actor, ActorProcessingErr, ActorRef};
-use std::collections::HashMap;
+use polar_running_config::{ask, client_config, question};
+use polar_sign::scaffold::Scaffold;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+
+/// Where `just port-forwards-up broker` puts the broker on this machine.
+const LOCAL_BROKER: &str = "127.0.0.1:18081";
+/// The name on the broker's certificate, in a cluster on the usual domain.
+const BROKER_NAME: &str = "cassini-ip-svc.polar.svc.cluster.local";
 
 #[derive(Parser)]
 #[command(
@@ -53,115 +45,32 @@ use tokio::sync::oneshot;
 struct Cli {
     /// The agent's name, as it calls itself.
     agent: String,
-    /// Whose certificate and key to ask with: <dir>/<user>.crt and .key. It needs c:update-configuration, or a policy
-    /// that permits it.
+    /// Whose certificate and key to ask with: <dir>/<user>.crt and .key; $USER by default. They need to be in the group
+    /// config-readers, or a policy that permits it.
     #[arg(long)]
-    user: String,
+    user: Option<String>,
     /// Where they are, with ca.pem; ~/.config/polar-admin by default.
     #[arg(long)]
     dir: Option<PathBuf>,
-    /// Where the broker is, as host:port.
+    /// Where the broker is, as host:port; POLAR_BROKER_ADDR, or the forward `just port-forwards-up broker` starts.
     #[arg(long)]
-    broker: String,
-    /// The name on the broker's certificate.
+    broker: Option<String>,
+    /// The name on the broker's certificate; POLAR_BROKER_NAME, or the usual one.
     #[arg(long)]
-    server_name: String,
+    server_name: Option<String>,
     /// How long to wait for the answer, in seconds. A refused question gets none.
     #[arg(long, default_value_t = 15)]
     wait: u64,
+    /// Print a file to edit and sign with `polar-sign sign`, not the answer.
+    #[arg(long)]
+    template: bool,
+    /// The agent's scaffold, for --template; <dir>/scaffolds/<agent>.json by default.
+    #[arg(long, requires = "template")]
+    scaffold: Option<PathBuf>,
 }
 
-struct Asker;
-
-struct AskerArgs {
-    asking: Asking,
-    question: Vec<u8>,
-    config: TCPClientConfig,
-    done: oneshot::Sender<Result<RunningConfiguration, String>>,
-}
-
-struct AskerState {
-    asking: Asking,
-    question: Vec<u8>,
-    client: ActorRef<TcpClientMessage>,
-    done: Option<oneshot::Sender<Result<RunningConfiguration, String>>>,
-}
-
-#[ractor::async_trait]
-impl Actor for Asker {
-    type Msg = ClientEvent;
-    type State = AskerState;
-    type Arguments = AskerArgs;
-
-    async fn pre_start(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        args: AskerArgs,
-    ) -> Result<Self::State, ActorProcessingErr> {
-        let (forwarder, _) = Actor::spawn_linked(
-            None,
-            ClientEventForwarder::new(),
-            ClientEventForwarderArgs {
-                target: myself.clone(),
-                mapper: Box::new(Some),
-            },
-            myself.clone().into(),
-        )
-        .await?;
-        let events: Arc<ractor::OutputPort<ClientEvent>> = Arc::new(ractor::OutputPort::default());
-        events.subscribe(forwarder, Some);
-        let (client, _) = Actor::spawn_linked(
-            None,
-            TcpClientActor,
-            TcpClientArgs {
-                config: args.config,
-                registration_id: None,
-                delivery: DeliveryMode::Broadcast(events),
-                answers: None,
-            },
-            myself.clone().into(),
-        )
-        .await?;
-        Ok(AskerState {
-            asking: args.asking,
-            question: args.question,
-            client,
-            done: Some(args.done),
-        })
-    }
-
-    async fn handle(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        event: ClientEvent,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match state.asking.on(event) {
-            Step::Nothing => {}
-            Step::Subscribe => state.client.send_message(TcpClientMessage::Subscribe {
-                topic: ANSWERS_TOPIC.to_string(),
-                trace_ctx: None,
-            })?,
-            Step::Ask => state.client.send_message(TcpClientMessage::publish(
-                QUESTIONS_TOPIC.to_string(),
-                state.question.clone(),
-                None,
-            ))?,
-            Step::Answered(answer) => {
-                if let Some(done) = state.done.take() {
-                    let _ = done.send(Ok(*answer));
-                }
-                myself.stop(None);
-            }
-            Step::Failed(why) => {
-                if let Some(done) = state.done.take() {
-                    let _ = done.send(Err(why));
-                }
-                myself.stop(None);
-            }
-        }
-        Ok(())
-    }
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
 #[tokio::main]
@@ -170,83 +79,50 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let dir = match cli.dir {
         Some(dir) => dir,
-        None => {
-            PathBuf::from(std::env::var("HOME").context("HOME is not set: say where with --dir")?)
-                .join(".config/polar-admin")
-        }
+        None => PathBuf::from(env_var("HOME").context("HOME is not set: say where with --dir")?)
+            .join(".config/polar-admin"),
     };
-    let identity = polar_sign::load_identity(&dir, &cli.user).map_err(anyhow::Error::msg)?;
+    let user = cli
+        .user
+        .or_else(|| env_var("USER"))
+        .context("USER is not set: say whose certificate with --user")?;
+    let broker = cli
+        .broker
+        .or_else(|| env_var("POLAR_BROKER_ADDR"))
+        .unwrap_or_else(|| LOCAL_BROKER.to_string());
+    let server_name = cli
+        .server_name
+        .or_else(|| env_var("POLAR_BROKER_NAME"))
+        .unwrap_or_else(|| BROKER_NAME.to_string());
+    // Before the broker is troubled: a template it could not write is no use.
+    let scaffold = if cli.template {
+        Some(
+            Scaffold::load(&cli.agent, cli.scaffold.as_deref(), &dir)
+                .map_err(anyhow::Error::msg)?,
+        )
+    } else {
+        None
+    };
+
+    let identity = polar_sign::load_identity(&dir, &user).map_err(|e| {
+        anyhow!("{e}: run `just user-cert-install {user}` or `just admin-claim` first")
+    })?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .context("the clock is before 1970")?
         .as_secs();
-    let id = uuid::Uuid::new_v4().to_string();
-    let question = polar_signing::sign_in(
-        polar_signing::Domain::RUNNING_CONFIGURATION_QUESTION,
-        question_payload(
-            &cli.agent,
-            &id,
-            now,
-            now + MAX_QUESTION_VALIDITY_SECS.min(cli.wait.max(60)),
-        ),
-        &identity.chain,
-        &identity.key_pem,
-    )
-    .map_err(|e| anyhow!("cannot sign the question: {e}"))?
-    .to_value()
-    .to_string()
-    .into_bytes();
+    let asked = question(&cli.agent, &identity, now, cli.wait)?;
+    let config = client_config(&dir, &user, &broker, &server_name)?;
+    let answer = ask(asked, config, Duration::from_secs(cli.wait)).await?;
 
-    let path = |name: String| dir.join(name).to_string_lossy().to_string();
-    let env: HashMap<String, String> = HashMap::from([
-        (
-            "TLS_CLIENT_CERT".to_string(),
-            path(format!("{}.crt", cli.user)),
+    match scaffold {
+        Some(scaffold) => print!(
+            "{}",
+            polar_sign::template::running_settings_template(&scaffold, &answer)
+                .map_err(anyhow::Error::msg)?
         ),
-        (
-            "TLS_CLIENT_KEY".to_string(),
-            path(format!("{}.key", cli.user)),
-        ),
-        ("TLS_CA_CERT".to_string(), path("ca.pem".to_string())),
-        ("BROKER_ADDR".to_string(), cli.broker),
-        ("CASSINI_SERVER_NAME".to_string(), cli.server_name),
-    ]);
-    let config = TCPClientConfig::from_env(&env).map_err(anyhow::Error::msg)?;
-
-    let (done, answered) = oneshot::channel();
-    let (_asker, _handle) = Actor::spawn(
-        None,
-        Asker,
-        AskerArgs {
-            asking: Asking {
-                agent: cli.agent.clone(),
-                id,
-            },
-            question,
-            config,
-            done,
-        },
-    )
-    .await
-    .map_err(|e| anyhow!("cannot start: {e}"))?;
-
-    let answer = match tokio::time::timeout(Duration::from_secs(cli.wait), answered).await {
-        Ok(Ok(Ok(answer))) => answer,
-        Ok(Ok(Err(why))) => return Err(anyhow!(why)),
-        Ok(Err(_)) => {
-            return Err(anyhow!(
-                "the connection to the broker ended before an answer"
-            ));
-        }
-        Err(_) => {
-            return Err(anyhow!(
-                "no answer from {} in {} s. It answers nothing it refuses, so look for the refusal in its log; or it is not running, or the broker cannot be reached",
-                cli.agent,
-                cli.wait
-            ));
-        }
-    };
-    println!("{}", serde_json::to_string_pretty(&answer)?);
+        None => println!("{}", serde_json::to_string_pretty(&answer)?),
+    }
     Ok(())
 }
 

@@ -63,7 +63,7 @@ sequenceDiagram
 
     Note over Up,GS: 4 seed the schedules repository with the first signed policy
     Up->>K: wait_pods: polar-git-server, polar-scheduler-observer, polar-scheduler, credentials-agent
-    Up->>Up: openssl x509 -ext subjectAltName on U.crt: the first DNS name is U's identity,<br/>U's certificate must carry update-policy and update-runtime, and the seed documents must name agents that exist
+    Up->>Up: openssl x509 -ext subjectAltName on U.crt: the first DNS name is U's identity,<br/>U's certificate must carry update-policy, update-groups and update-runtime, and the seed documents must name agents that exist
     alt this cluster's inputs do not yet name U as an administrator of the git server
         Up->>Up: write targets/T/cluster-inputs.nuon (gitignored, tied to this cluster by the sha256 of its CA)
         Up->>Up: render again, so the git server's configuration names U
@@ -75,7 +75,7 @@ sequenceDiagram
     GS-->>Git: the repository (a 403 here means the git server does not know U: seed refused_hint says where to look)
     loop each seed document not yet in the repository
         Up->>Sign: polar-sign runtime --agent A --section S --version N --body-file - --user U<br/>(the body on standard input from seed.nu)
-        Sign-->>Up: a signed document, written in the clone: permanent/credentials-agent-policy.dhall,<br/>soft-state-observer-schema.dhall (computed from the scaffolds), soft-state-processor-agents.dhall (from the catalog)
+        Sign-->>Up: a signed document, written in the clone: permanent/credentials-agent-policy.dhall, credentials-agent-groups.dhall (naming U),<br/>soft-state-observer-schema.dhall (computed from the scaffolds), soft-state-processor-agents.dhall (from the catalog)
     end
     opt the target reads Jira with a credential, sops holds jira_token, and no credentials section is there yet
         Up->>Sign: polar-sign sign, sealing it to jira-observer's escrow certificate: permanent/jira-observer/credentials.dhall.<br/>The token on standard input. A seal that fails is said, and the rest goes on (escrowed_credential_lifecycle)

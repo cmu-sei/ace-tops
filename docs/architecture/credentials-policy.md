@@ -217,7 +217,9 @@ Some policy has to be in force from the first minute, and the schedules reposito
 server creates the bare repository; nothing puts content in it). The cluster setup (`infra/up.nu`) therefore
 gets a step that **seeds `polar-schedules`** with the cluster defaults, signed:
 
-- the credentials agent's baseline `policy` document (the two rules above, no groups);
+- the credentials agent's baseline `policy` document (the two rules above and, since 2026-11-05, who may read and write an agent's settings);
+- since 2026-11-05, its first `groups` document: the first administrator in `config-writers` and `health-readers`, and `config-writers` in
+  `config-readers` (`infra/seeds/signed/groups.json`, `dynamic-settings.md`, "Asking an agent what is in force");
 - anything else a cluster needs from its first minute (later: the credentials agent's own configuration item).
   Since 2026-10-30 the state agents' first `schema` and `agents`, and since 2026-11-01, on a fresh cluster, jira-observer's
   `credentials` sealed from the `jira_token` in the target's sops files, once: only when polar-schedules holds no such

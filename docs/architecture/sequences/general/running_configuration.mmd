@@ -32,13 +32,13 @@ sequenceDiagram
     participant Cfg as its ConfigurationActor
     participant Sign as polar-sign
 
-    Admin->>Tool: nu infra/running-config.nu jira-observer --user alice (over a port-forward it starts)
+    Admin->>Tool: polar-running-config jira-observer --user alice, through just port-forwards-up broker
     Tool->>Bk: connect with alice's certificate
     Tool->>Bk: subscribe polar-running-configuration-answers
-    alt policy permits: the seed's rule for Capability::"update-configuration"
+    alt policy permits: the seed's rule for Group::"config-readers", which config-writers is in
         Bk-->>Tool: subscribed
     else a person's certificate names no topics, so nothing else admits one
-        Bk-->>Tool: refused, and the tool says which rule is missing
+        Bk-->>Tool: refused, and the tool says what is missing: the group, or the rules
     end
     Tool->>Bk: publish on polar-running-configuration-questions: a question signed with alice's key,<br/>under its own signing domain: its id, the agent it is for, and a window of at most 5 minutes
     Note over Bk: the same rule, for the publish, and the broker stamps who sent it
@@ -47,7 +47,7 @@ sequenceDiagram
     Bk->>Sup: delivered, stamped published_by
     Sup->>Cfg: the question, off the supervisor's own thread
     Cfg->>Cfg: the signature holds, under that domain and no other. It is a question, for this agent,<br/>and its signer is who the broker says sent it
-    Cfg->>Cfg: Cedar: Action::"read-configuration" on Agent::"jira-observer".<br/>Where it is silent, the certificate: c:update-configuration
+    Cfg->>Cfg: Cedar: Action::"read-configuration" on Agent::"jira-observer": the seed permits config-readers.<br/>Where it is silent, the certificate: c:update-configuration
     Cfg->>Cfg: not revoked, and within its time
     alt any of those refuses
         Cfg-->>Sup: why

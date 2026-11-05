@@ -30,8 +30,11 @@ when { resource has owner && resource.owner == principal };
 forbid (principal, action, resource)
 when { resource has frozen && resource.frozen };
 
-// Whoever may change an agent's settings may ask what they are now (docs/architecture/dynamic-settings.md, "Asking an
-// agent what is in force"). A person's certificate names no topics, so these two rules are what lets one ask at all. The
-// agent then judges the question itself, by action "read-configuration".
-permit (principal in Capability::"update-configuration", action == Action::"publish", resource == Topic::"polar-running-configuration-questions");
-permit (principal in Capability::"update-configuration", action == Action::"subscribe", resource == Topic::"polar-running-configuration-answers");
+// Who may read what an agent has in force, and who may change it (docs/architecture/dynamic-settings.md, "Asking an agent
+// what is in force"). Membership is the signed groups document's, and config-writers is in config-readers. A person's
+// certificate names no topics, so the two topic rules are what lets one ask at all; the agent then judges the question
+// itself, by action "read-configuration".
+permit (principal in Group::"config-readers", action == Action::"publish", resource == Topic::"polar-running-configuration-questions");
+permit (principal in Group::"config-readers", action == Action::"subscribe", resource == Topic::"polar-running-configuration-answers");
+permit (principal in Group::"config-readers", action == Action::"read-configuration", resource);
+permit (principal in Group::"config-writers", action == Action::"update-configuration", resource);

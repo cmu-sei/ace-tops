@@ -94,6 +94,17 @@ def main [] {
             }
         }
         {
+            name: "the broker's forward is one local port, on its in-cluster 8080, where the tool looks and clear of keycloak's"
+            body: {
+                let root = ($env.FILE_PWD | path dirname | path dirname)
+                let line = (open --raw ($root | path join "Justfile") | lines | where {|l| $l | str contains "start_pf broker" } | first)
+                assert ($line | str contains "polar       cassini-ip-svc")
+                assert ($line | str contains '"18081:8080"')
+                let tool = (open --raw ($root | path join "src/agents/polar-running-config/src/main.rs"))
+                assert ($tool | str contains '"127.0.0.1:18081"')
+            }
+        }
+        {
             name: "a real loop left under another kubeconfig is found, stopped by its pid, and nothing else is"
             body: {
                 # `just port-forwards-up`'s loop, its command line exactly, with a kubectl that only waits.
