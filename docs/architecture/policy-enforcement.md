@@ -279,7 +279,7 @@ Numbered so a plan can refer to them. "Core" gaps block enforcement anywhere; th
    topic vocabulary built 2026-10-21 (stage 4); pods and a record of decisions are not.*
 6. **Seeds and templates are not generated.** One seed exists (the credentials agent's `policy`); no `groups` seed, no
    per-agent templates from scaffolds, and `polar-sign runtime` (what the seed uses) skips the scaffold check; Cedar is
-   not validated when signed. *Cedar is validated when signed since 2026-10-21 (stage 4).*
+   not validated when signed. *Cedar is validated when signed since 2026-10-21 (stage 4). Seeded since: the state agents' sections (2026-10-30, `credentials-policy.md`) and the first `groups` (2026-11-05). Templates from scaffolds: `polar-sign template`.*
 
 **The broker**
 

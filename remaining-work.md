@@ -40,7 +40,7 @@ Each step is taken in bites, each reported before the next.
    Before what follows, so that the Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.
 6. ~~**Every builder agent's non-secret settings Dynamic.**~~ Done, and checked live on u7s, 2026-11-05: `docs/architecture/dynamic-settings.md`.
-7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder.
+7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder. Since 2026-11-05 OpenAPI is the first of the HTTP observers, on a shared library, one workload per kind (`docs/architecture/http-observers.md`), and GitLab moves to the builder on its own, without waiting for that engine.
 8. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 7.
 9. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
 
