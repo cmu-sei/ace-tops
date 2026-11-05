@@ -1169,6 +1169,15 @@ def main [] {
             assert (not ($r.stdout | str contains "pending"))
         }
 
+        # The test above runs each agent's image, so it needs a cluster, and a workload left on cert-issuer was only found when
+        # its pod could not start. This reads the settings alone.
+        "a workload on the sandbox-local target asks the credentials agent for its certificates unless it is a bootstrap identity": {
+            for n in (^nu $RESOLVER names | from json) {
+                let s = (settings $n)
+                assert ($s.bootstrap or $s.issuer == "credentials-agent") $"($n) asks ($s.issuer)"
+            }
+        }
+
         "the floor is written from the catalog: the bootstrap identities, then a vouched-only entry for each server certificate on the credentials agent": {
             let f = (^nu $RESOLVER floor | from json)
             let cassini = ($f | where workload == "system:serviceaccount:polar:cassini" | first)
