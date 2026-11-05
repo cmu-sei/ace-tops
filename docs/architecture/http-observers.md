@@ -23,8 +23,8 @@
 
 # HTTP observers
 
-Status, 2026-11-05: a design from a conversation with the maintainer, not built, and the order of its bites not yet cleared. It replaces the plan to repair the
-OpenAPI agents as they stand. Paths relative to `src/agents/`.
+Status, 2026-11-05: a design from a conversation with the maintainer, with its first cut under way: the projection engine, its Dhall type and `polar-sign`'s check are built and
+tested; no agent uses them yet. It replaces the plan to repair the OpenAPI agents as they stand. Paths relative to `src/agents/`.
 
 ## Why
 
@@ -64,9 +64,60 @@ branches is a Rust walker plugged into the engine, with the engine's scheduling,
 configuration a poor programming language. Jira's observer is about 5,600 lines: a cursor read back through the state agent, JQL date windows, different Cloud and Data Center
 paths, a group picker that ignores `startAt`. GitLab's is about 2,700 lines of typed GraphQL POSTs. Neither would become configuration, though Jira may become a walker.
 
-**The processors stay by hand for now.** A signed mapping (for each item at this path, upsert this label keyed on this field) would cover OpenAPI and flat lists, and
-not Jira's changelogs and custom fields; its labels and constraints would have to be declared and checked too (`GraphDecl`, `GRAPH_KEYS`). Worth looking at again after two or three
-processors exist, to see what really repeats.
+## The generic processor: a projection
+
+The maintainer asked what one would look like, then asked for a first cut on OpenAPI, 2026-11-05. A processor turns a message into graph operations, and `GraphOp` and the graph controller
+are already generic, so what differs by kind is the mapping. That becomes data: `polar-projection`, with its Dhall type in `projection.dhall` and OpenAPI's mapping in `examples/openapi.dhall`.
+
+**Structure comes from the signed mapping, values from the document.** Labels, key names and edge types are written in the mapping and nothing in a document can choose one, so a hostile
+document can give only values, which reach Cypher as parameters. The language walks a finite document, filters on an entry's key and writes. It has no arithmetic, recursion or calls, so it ends.
+
+**Two layers, the maintainer's correction (2026-11-05).** A signed update cannot define everything, because scaffolds are computed from what an agent is built to do:
+
+| | Fixed when built, and given by the scaffold | Changed by a signed update |
+|---|---|---|
+| Observer | what it needs to run: its name, its topic, its operations, its variables | its data tasking: `sources` |
+| Processor | its schema: labels, what identifies each, edge types (`polar_projection::Bounds`) | which data goes where inside that schema: the mapping |
+
+So the agent judges a signed mapping against its `Bounds`, and a mapping can only choose data within them. That settles three things a mapping free to name labels left open: constraints are made at
+the controller's first contact with the graph, from the built schema; the state agent's first schema still comes from scaffolds; and one workload cannot write another's labels. The cost: a new label needs
+a new build of that small crate. So a new endpoint, or new data from one, needs no binary change, and a new kind of thing in the graph does.
+
+**The type is for the author, and the agent trusts none of it.** `polar-sign runtime --projection <file>` checks the Dhall against the type, then that it is well formed. Imports stay off, so a file cannot name
+the type and the tool gives it. The agent judges the JSON again, and against its own bounds, which `polar-sign` does not know. The type has no Optional, because a signed document cannot hold a null, and
+it is flat, because a Dhall type cannot refer to itself: an empty `parent`, `edge` or `only` means none. `polar-projection` has no graph or runtime without its `graph` feature, so the tool that holds an
+administrator's key takes neither.
+
+**How far it reaches** (from op counts and file sizes): OpenAPI and flat lists yes; GitLab's consumer probably most, but it also publishes follow-on events; the Kubernetes consumer needs `UpdateState` as a rule; Jira's
+issues no, since Jira's field names become labels; build-processor no, since `linker.rs` correlates across messages. **Tried against Jira,** in a test only: a mapping writes exactly what `build_ops_for_projects` writes,
+for any projects. Groups and users would not yet: groups writes an empty text for a missing value where a projection leaves it off, and a user's identity is its key or else its name, which needs a "first present".
+
+## Mapping the security controls
+
+The maintainer's requirement: the same properties, and more, from dynamic configuration as from static deployments. A first map, read from the code. **Open** means not answered yet.
+
+| Control | With a static agent | With a signed mapping | |
+|---|---|---|---|
+| Who a workload is | Name constant in the binary, checked against its certificate (`own_name.rs`) | The same in this cut: each kind is a small crate | Same. A kind with no binary of its own would have to reverse this. **Open** |
+| Topics | Computed by the builder, in the certificate, decided at the broker | Fixed by the kind; a mapping cannot name one | Same |
+| Where it may connect | Operations declared when built, each request judged and logged | `Arbitrary`, never a credential, each judged and logged. The signer chooses the host | Weaker: a list of hosts where there was one variable. Same trust as `JIRA_URL` |
+| Who may change it | Build, deployment signature | `c:update-runtime`, Cedar on `Section::"<agent>/<section>"`, version, revocation, replay from git | Same machinery, and one signer |
+| Review and tests | A commit, CI, tests and a signed deployment | The checks above, and no test against a real document | **Weaker.** A dry run in `polar-sign` against a sample would help, and `commands.md` already notes two signers as later |
+| A bad update | Fails to build or deploy | Refused and the last one kept, until a restart: a refused file still replaces the good one (`dynamic-settings.md`) | **Weaker until that gap closes.** The agent would hold, not misbehave |
+| Labels it may write | Declared in `GRAPH`, not enforced on writes | Enforced by `Bounds` when the mapping is judged | **Stronger** |
+| Cypher injection | Parameters, by each author's care | By construction, and names judged again by `validate_cypher_identifier` | **Stronger** |
+| Sensitive data in the graph | A reviewer sees what code copies | A signer can project any field of what was fetched. With a credential, that could be a route out | **Weaker, and matters at the first kind with a credential.** OpenAPI has none |
+| What the graph knows of itself | Whatever the code writes | Every node and edge stamped: source, workload, mapping version, time | **Stronger** |
+| What ran | The image digest, by attestation | The digest no longer says all of what it does: digest and signed section together do, and each signed version is in git | Different. Slice C should count this |
+| A hostile document | Each parser's care | One engine, property-tested on any JSON; a bound on writes, refused whole | **Stronger** |
+
+## Datalog
+
+The maintainer asked whether the credentials agent's engine helps here. `ascent` is a macro: its rules are compiled, and only its facts arrive at run time (`credentials-agent/model/src/rules.rs`), so it cannot run a signed mapping, and
+`authority-model.md` already says rules written by administrators would need a runtime engine. A mapping needs no recursion either, and a more powerful language would be harder to reason about.
+
+It may help with the question this design exists for, though. "This service was compromised: what could it touch?" is reachability, which the authority model already computes over topics. Facts from the catalog and
+from each signed version (a workload's sources, its credentials, the labels in its bounds) would answer it with a rule, and would have caught `polar.web.consumer` going nowhere. Not designed: a place to go when the provenance chain is built.
 
 ## What the OpenAPI pair fixes
 
@@ -89,4 +140,5 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
 - **One workload per kind, or per site?** A kind with credentials may want one workload per site, so two Jira sites are not one identity. OpenAPI has none, so this waits for the second kind.
 - **A signed list cannot hold entries with different fields** (`remaining-work.md`). OpenAPI's `sources` are all required, so it does not stop the first kind. Credentials and paging will need the fix.
 - **An endpoint a document dropped** stays in the graph. Not handled yet.
+- **A mapping's first version.** A processor with no signed mapping holds, which is a choice to confirm when it is built: the alternative is a built-in default.
 - **Linking a document to the service that runs it,** which is what would make this useful to anything else in the graph. Nothing connects them yet.

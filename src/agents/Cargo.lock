@@ -3962,6 +3962,7 @@ dependencies = [
  "once_cell",
  "polar",
  "polar-agent-builder",
+ "polar-projection",
  "polar-scudo",
  "polar-test-graph",
  "proptest",
@@ -6189,6 +6190,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "polar-projection"
+version = "1.0.0"
+dependencies = [
+ "polar",
+ "proptest",
+ "serde",
+ "serde_dhall",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "polar-router"
 version = "1.0.0"
 dependencies = [
@@ -6299,6 +6312,7 @@ dependencies = [
  "polar-env",
  "polar-escrow",
  "polar-policy",
+ "polar-projection",
  "polar-scheduler-common",
  "polar-scudo",
  "polar-signing",

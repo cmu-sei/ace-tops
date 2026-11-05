@@ -35,6 +35,8 @@ polar-env.workspace = true
 polar-policy.workspace = true
 polar-escrow.workspace = true
 polar-signing.workspace = true
+# Checks a projection's file against its type before it is signed. Not its `graph` feature: no graph or runtime here.
+polar-projection.workspace = true
 # What a running agent answers, which `template --settings --running` writes a file from.
 polar-scheduler-common.workspace = true
 serde_dhall.workspace = true

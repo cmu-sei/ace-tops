@@ -434,6 +434,23 @@ pub fn evaluate(source: &str) -> Result<Value, String> {
     serde_json::to_value(&simple).map_err(|e| e.to_string())
 }
 
+/// A projection an author wrote in Dhall, as the body to sign: checked against its type and as a projection, imports off,
+/// so the file cannot name the type and is given it here. The agent judges the result again, and against its own schema.
+pub fn projection_body(source: &str) -> Result<Value, Vec<String>> {
+    let ty: serde_dhall::SimpleType = serde_dhall::from_str(polar_projection::SCHEMA)
+        .imports(false)
+        .parse()
+        .map_err(|e| vec![format!("the projection's type is not valid Dhall: {e}")])?;
+    let simple: serde_dhall::SimpleValue = serde_dhall::from_str(source)
+        .imports(false)
+        .type_annotation(&ty)
+        .parse()
+        .map_err(|e| vec![format!("this is not a projection: {e}")])?;
+    let body = serde_json::to_value(&simple).map_err(|e| vec![e.to_string()])?;
+    polar_projection::Projection::well_formed(&body)?;
+    Ok(body)
+}
+
 /// Checks a signed document the way a receiver does the signature part of it: the layout, the chain
 /// to `trust_pem`, the signer's certificate and the signature. Returns who signed and the payload.
 pub fn verify_source(
@@ -747,6 +764,59 @@ mod tests {
     }
 
     use polar_signing::testing::{Spec, now, root, signer};
+
+    const EXAMPLE: &str = include_str!("../../polar-projection/examples/openapi.dhall");
+
+    #[test]
+    fn a_projection_s_file_survives_being_signed_as_it_was_written() {
+        let body = crate::projection_body(EXAMPLE).unwrap();
+        let rendered = dhall(&body).unwrap();
+        assert_eq!(evaluate(&rendered).unwrap(), body);
+        polar_projection::Projection::well_formed(&evaluate(&rendered).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_not_of_the_projection_s_type_is_refused() {
+        for source in [
+            "{ rules = 1 }",
+            "{ rules = [] : List Natural }",
+            "{ rules = [] : List { name : Text }, extra = 1 }",
+            // Dhall has the record, and the type has no Optional for it to fill.
+            r#"{ rules = [ { name = "a", parent = None Text, each = [] : List { key : Text, value : Text, over : Text, only : List Text }, label = "L", keys = [] : List { name : Text, from : Text }, set = [] : List { name : Text, from : Text }, edge = "" } ] }"#,
+        ] {
+            let problems = crate::projection_body(source).unwrap_err();
+            assert!(
+                problems[0].contains("not a projection"),
+                "{source}: {problems:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_of_the_right_type_that_is_no_projection_is_refused_too() {
+        let problems =
+            crate::projection_body(&EXAMPLE.replace("HAS_ENDPOINT", "HAS ENDPOINT")).unwrap_err();
+        assert!(
+            problems.iter().any(|p| p.contains("edge type")),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_projection_s_file_may_not_import_anything() {
+        for import in [
+            "./other.dhall",
+            "env:HOME as Text",
+            "https://example.invalid/x.dhall",
+        ] {
+            let problems =
+                crate::projection_body(&format!("let x = {import} in {EXAMPLE}")).unwrap_err();
+            assert!(
+                problems[0].contains("not a projection"),
+                "{import}: {problems:?}"
+            );
+        }
+    }
 
     fn identity_for(ca: &polar_signing::testing::Authority) -> Identity {
         let s = signer(ca, Spec::default());

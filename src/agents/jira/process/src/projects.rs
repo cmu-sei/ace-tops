@@ -158,4 +158,88 @@ mod tests {
         assert!(ids.contains(&"1".to_string()));
         assert!(ids.contains(&"2".to_string()));
     }
+
+    /// A first test of the generic processor: the mapping says what this file's code says, for any projects. Nothing in
+    /// production uses it (docs/architecture/http-observers.md).
+    mod as_a_projection {
+        use super::*;
+        use polar_projection::{Projection, Stamp, graph};
+        use proptest::prelude::*;
+
+        const MAPPING: &str = r#"{ "rules": [ {
+            "name": "project", "parent": "",
+            "each": [ { "key": "at", "value": "project", "over": "body", "only": [] } ],
+            "label": "JiraProject",
+            "keys": [ { "name": "project_id", "from": "project.id" } ],
+            "set": [ { "name": "name", "from": "project.name" },
+                     { "name": "key", "from": "project.key" },
+                     { "name": "projectTypeKey", "from": "project.projectTypeKey" } ],
+            "edge": "" } ] }"#;
+
+        type Seen = Vec<(String, String, Vec<String>)>;
+
+        /// A node as a comparison can read it, without the stamps a projection adds.
+        fn seen(
+            key: &dyn polar::graph::controller::GraphNodeKey,
+            props: &[Property],
+        ) -> (String, String, Vec<String>) {
+            let identity = key.identity();
+            (
+                format!("{:?}", identity.labels),
+                format!("{:?}", identity.keys),
+                props
+                    .iter()
+                    .filter(|Property(name, _)| !name.starts_with(polar_projection::STAMP_PREFIX))
+                    .map(|Property(name, value)| format!("{name}={value:?}"))
+                    .collect(),
+            )
+        }
+
+        fn by_hand(projects: &[JiraProject]) -> Seen {
+            let GraphOp::UpsertNodes { items } = build_ops_for_projects(projects) else {
+                panic!("a batch");
+            };
+            items
+                .iter()
+                .map(|(key, props)| seen(key.as_ref(), props))
+                .collect()
+        }
+
+        fn by_mapping(projects: &[JiraProject]) -> Seen {
+            let projection =
+                Projection::well_formed(&serde_json::from_str(MAPPING).unwrap()).unwrap();
+            let body = serde_json::to_value(projects).unwrap();
+            let stamp = Stamp {
+                workload: "jira-processor",
+                version: 1,
+                observed_at_unix_secs: 1,
+            };
+            let projected = projection.project("site", &body, &stamp).unwrap();
+            assert_eq!(projected.skipped, 0);
+            match graph::operation(projected.writes) {
+                None => vec![],
+                Some(GraphOp::Transaction { ops }) => ops
+                    .iter()
+                    .map(|op| match op {
+                        GraphOp::UpsertNode { key, props } => seen(key.as_ref(), props),
+                        other => panic!("{other:?}"),
+                    })
+                    .collect(),
+                Some(other) => panic!("{other:?}"),
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn the_mapping_writes_what_the_code_writes(
+                projects in prop::collection::vec(("[ -~]{1,8}", "[ -~]{0,8}", "[ -~]{0,8}", "[ -~]{0,8}"), 0..6)
+            ) {
+                let projects: Vec<JiraProject> = projects
+                    .into_iter()
+                    .map(|(id, key, name, project_type_key)| JiraProject { id, key, name, project_type_key })
+                    .collect();
+                prop_assert_eq!(by_mapping(&projects), by_hand(&projects));
+            }
+        }
+    }
 }

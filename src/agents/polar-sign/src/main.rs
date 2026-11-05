@@ -97,6 +97,9 @@ enum Command {
         /// A file holding the body as JSON; `-` reads standard input.
         #[arg(long)]
         body_file: Option<PathBuf>,
+        /// A file holding a projection in Dhall, checked against its type: the body, in place of --body or --body-file.
+        #[arg(long, conflicts_with_all = ["body", "body_file"])]
+        projection: Option<PathBuf>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -476,12 +479,14 @@ fn main() -> Result<()> {
             version,
             body,
             body_file,
+            projection,
             id,
             user,
             dir,
             out,
         } => {
             let text = match (body, body_file) {
+                (None, None) if projection.is_some() => String::new(),
                 (Some(text), None) => text,
                 (None, Some(path)) if path.as_os_str() == "-" => {
                     let mut text = String::new();
@@ -493,7 +498,15 @@ fn main() -> Result<()> {
                     .with_context(|| format!("cannot read {}", path.display()))?,
                 _ => bail!("give the body with --body or --body-file"),
             };
-            let body = parse_body(&text).map_err(anyhow::Error::msg)?;
+            let body = match projection {
+                Some(path) => {
+                    let source = std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?;
+                    polar_sign::projection_body(&source)
+                        .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?
+                }
+                None => parse_body(&text).map_err(anyhow::Error::msg)?,
+            };
             // Nothing is signed that every agent would refuse.
             polar_sign::runtime_problems(&section, &body).map_err(anyhow::Error::msg)?;
             let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());

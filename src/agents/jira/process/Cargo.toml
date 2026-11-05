@@ -50,6 +50,8 @@ lazy_static = "1"
 # The write path measured and tested against a real Neo4j (write_bench.rs).
 polar-test-graph.workspace = true
 proptest.workspace = true
+# That a projection can say what build_ops_for_projects says (docs/architecture/http-observers.md).
+polar-projection = { workspace = true, features = ["graph"] }
 
 [[bin]]
 name = "jira-processor"
