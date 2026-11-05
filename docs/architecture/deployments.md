@@ -159,7 +159,7 @@ The plan:
    `revoked_serials`, which makes the publisher send the set (`ledger.rs`, `revocation_changes`), and the test that
    pinned the opposite changes with it.
 6. *One client certificate per pod, in the `local` target too.* The hand charts there (`layers/3-workloads/agents`:
-   gitlab's consumer, build-processor, openapi's processor) still ask for a second client certificate for Neo4j
+   gitlab's consumer, build-processor) still ask for a second client certificate for Neo4j
    (`neo4jClientCertPath`), for the same identity on the same pod. The second supersedes the first, and published,
    that would revoke the Cassini certificate in use. The catalog already settled this: one client certificate,
    presented to Cassini and Neo4j alike (`infra/config/capabilities.nuon`, `graph-write`). The hand charts follow it,

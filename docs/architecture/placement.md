@@ -62,9 +62,9 @@ there: placement is the target's to declare.
 | core | credentials-agent, cert-issuer, cassini | the maintainer, by name |
 | core | git-repo-controller | decides what is observed, holds no graph password (`git-controller.md`): off the writers' host, the power to decide and the graph password stay apart. *Decided, the maintainer, 2026-10-28* |
 | core | polar-git-server | serves signed authority (the schedules, the policy). *Decided, the maintainer, 2026-10-28* |
-| observers | git-repo-observer, jira-observer, kube-observer, polar-scheduler-observer, credentials-agent-observer | the low-trust side; the credentials agent's observer is its low-trust gateway |
+| observers | git-repo-observer, jira-observer, kube-observer, polar-scheduler-observer, credentials-agent-observer, openapi-observer | the low-trust side; the credentials agent's observer is its low-trust gateway |
 | observers | oci-registry-resolver | reads registries outside the cluster and holds no graph password. *Decided by the agent that placed it, for review, 2026-11-02* |
-| writers | kube-consumer, git-repo-processor, jira-processor, polar-scheduler | the graph writers (polar-scheduler writes the ledger to the graph, `git-controller.md`) |
+| writers | kube-consumer, git-repo-processor, jira-processor, polar-scheduler, openapi-processor | the graph writers (polar-scheduler writes the ledger to the graph, `git-controller.md`) |
 | writers | soft-state-observer | reads the graph for other agents (`soft-state.md`) and so holds the graph password, which stays on the writers' pool and off the observers'. *Decided by the agent that built it, 2026-10-30, by the rule of the row above; to confirm* |
 | writers | soft-state-processor | the state agent's writer: asks every agent about its health and writes `AgentHealth` (`soft-state.md`, "As built: pulled health"), so it holds the graph password. *Decided by the agent that built it, 2026-11-01, by the writers' rule; to confirm* |
 | writers | Neo4j (hand chart) | beside its only writers, off the observers' host. *Decided, the maintainer, 2026-10-28* |

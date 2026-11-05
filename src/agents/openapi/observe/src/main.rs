@@ -21,28 +21,13 @@
    DM26-0670
 */
 
-use openapi_observer::actors::{ObserverSupervisor, ObserverSupervisorArgs};
-use ractor::Actor;
-use std::{env, error::Error};
+use openapi_observer::agent::OpenApiObserver;
+use std::process::ExitCode;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    polar::init_logging("polar.openapi.supervisor".to_string());
-
-    let args = ObserverSupervisorArgs {
-        openapi_endpoint: env::var("OPENAPI_ENDPOINT").unwrap(),
-    };
-
-    let (_supervisor, handle) = Actor::spawn(
-        Some("polar.openapi.supervisor".to_string()),
-        ObserverSupervisor,
-        args,
-    )
-    .await
-    .expect("Expected to start observer agent");
-    let _ = handle.await;
-
-    Ok(())
+/// The agent says what it is in `OpenApiObserver`; `run` answers the commands (`--help`, `--scaffold`, `--check`), judges the
+/// configuration and starts it.
+fn main() -> ExitCode {
+    polar_agent_builder::run::<OpenApiObserver>()
 }
 
 // Every Polar binary allocates with Scudo (docs/architecture/broker-baseline.md, "Decided").

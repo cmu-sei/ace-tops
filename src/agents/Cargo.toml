@@ -75,6 +75,8 @@ members = [
     "polar-sign",
     "polar-running-config",
     "polar-projection",
+    "polar-http-observer",
+    "polar-http-processor",
     "polar-agent-builder",
     "polar-permissions",
     "polar-policy",
@@ -176,7 +178,6 @@ tracing-glog = "0.4.1"
 tracing-opentelemetry = "0.33.0"
 tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }
 url = "2.5.8"
-utoipa = "5.4.0"                                           # used in openapi
 uuid = {version = "1.21.0", features = ["v4", "serde"]}
 webpki-roots = "1.0"
 # Error handling
@@ -210,6 +211,8 @@ polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }
 polar-signing = { path = "polar-signing" }
 polar-projection = { path = "polar-projection" }
+polar-http-observer = { path = "polar-http-observer" }
+polar-http-processor = { path = "polar-http-processor" }
 polar-scheduler-common = { path = "polar-scheduler/common" }
 polar-env = { path = "polar-env" }
 polar-custody = { path = "polar-custody" }

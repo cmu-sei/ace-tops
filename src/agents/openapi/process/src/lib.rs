@@ -21,7 +21,9 @@
    DM26-0670
 */
 
-pub mod actors;
+//! The OpenAPI processor: writes what the OpenAPI observer read into the graph, by a signed projection, inside the schema
+//! below. The work is in `polar-http-processor`.
 
-pub const BROKER_CLIENT_NAME: &str = "polar.openapi.tcp.client";
-pub const OPENAPI_PROCESSOR_NAME: &str = "polar.openapi.processor";
+#![deny(clippy::disallowed_methods)]
+
+pub mod agent;

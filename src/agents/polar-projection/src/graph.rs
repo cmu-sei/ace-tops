@@ -29,7 +29,6 @@ use polar::graph::controller::{
     GraphNodeKey, GraphOp, GraphValue, IntoGraphKey, NodeIdentity, Property,
     validate_cypher_identifier,
 };
-use polar::graph::schema::{KeyIndex, KeyIndexKind};
 
 /// Every name a projection would put into Cypher that Cypher's own rule refuses.
 pub fn identifier_problems(projection: &Projection) -> Vec<String> {
@@ -49,19 +48,6 @@ pub fn identifier_problems(projection: &Projection) -> Vec<String> {
         }
     }
     problems
-}
-
-/// A uniqueness constraint for each label a projection writes, on what identifies it.
-pub fn key_indexes(projection: &Projection) -> Vec<KeyIndex> {
-    projection
-        .shapes()
-        .into_iter()
-        .map(|(label, keys)| KeyIndex {
-            label: label.to_string(),
-            keys: keys.into_iter().map(str::to_string).collect(),
-            kind: KeyIndexKind::Unique,
-        })
-        .collect()
 }
 
 #[derive(Debug)]
@@ -145,21 +131,6 @@ mod tests {
         body["rules"][0]["set"][0]["name"] = json!("merge");
         let judged = Projection::well_formed(&body).unwrap();
         assert_eq!(identifier_problems(&judged).len(), 1);
-    }
-
-    #[test]
-    fn constraints_are_one_per_label_on_what_identifies_it() {
-        let names: Vec<String> = key_indexes(&projection())
-            .iter()
-            .map(KeyIndex::name)
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "polar_unique_OpenApiApplication_source",
-                "polar_unique_OpenApiEndpoint_source_method_path",
-            ]
-        );
     }
 
     /// What reaches Cypher from a document is only ever a parameter.

@@ -68,7 +68,7 @@ running workloads. Their pods are replaced once. It then checks the seed and fin
 The default topology is `single`. A cluster that has been deployed keeps its layout; to place workloads on node pools, choose `--topology
 separated` on a fresh cluster, since a deployed one's volumes are bound to their nodes.
 
-## GitLab, OpenAPI and build-processor
+## GitLab and build-processor
 
 These ran only on the `local` target, which is gone with no replacement yet. They return as each joins the catalog (`remaining-work.md`). To run
 them until then, stay on the v3.0.0 tag.

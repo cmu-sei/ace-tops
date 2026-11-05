@@ -5151,61 +5151,29 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "openapi-common"
 version = "1.0.0"
-dependencies = [
- "polar",
- "ractor",
- "rkyv",
- "serde",
- "tokio",
- "tracing",
- "tracing-glog",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "openapi-observer"
 version = "1.0.0"
 dependencies = [
- "cassini-client",
- "cassini-types",
- "native-tls",
  "openapi-common",
- "polar",
+ "polar-agent-builder",
+ "polar-http-observer",
  "polar-scudo",
- "ractor",
- "reqwest 0.12.28",
- "rkyv",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "utoipa",
 ]
 
 [[package]]
 name = "openapi-processor"
 version = "1.0.0"
 dependencies = [
- "cassini-client",
- "cassini-types",
- "futures-lite",
- "neo4rs",
  "openapi-common",
  "polar",
+ "polar-agent-builder",
+ "polar-http-processor",
+ "polar-projection",
  "polar-scudo",
- "ractor",
- "reqwest 0.12.28",
- "rkyv",
- "rustls",
- "rustls-webpki",
- "serde",
+ "serde_dhall",
  "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
- "utoipa",
- "webpki-roots",
 ]
 
 [[package]]
@@ -6110,6 +6078,41 @@ version = "1.0.0"
 dependencies = [
  "polar-health",
  "polar-scudo",
+]
+
+[[package]]
+name = "polar-http-observer"
+version = "1.0.0"
+dependencies = [
+ "cassini-client",
+ "cassini-types",
+ "polar",
+ "polar-agent-builder",
+ "proptest",
+ "ractor",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
+]
+
+[[package]]
+name = "polar-http-processor"
+version = "1.0.0"
+dependencies = [
+ "cassini-types",
+ "cert-issuer-common",
+ "polar",
+ "polar-agent-builder",
+ "polar-http-observer",
+ "polar-projection",
+ "proptest",
+ "ractor",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -8872,29 +8875,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "utoipa"
-version = "5.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
-dependencies = [
- "indexmap 2.14.2",
- "serde",
- "serde_json",
- "utoipa-gen",
-]
-
-[[package]]
-name = "utoipa-gen"
-version = "5.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "uuid"

@@ -148,7 +148,7 @@ A rule the developer has to remember is not the rule asked for. By possession, n
 | its own client, or a `CryptoActor` or custody client of its own | `polar-agent-builder/tests/domain_has_no_way_out.rs`, over `cargo metadata`: no domain crate on the builder has one of them, by itself or through a helper crate, in anything but its tests. A new agent is held to it without being listed |
 | `git2` and `oci-client`, which two crates keep for what they read | `clippy.toml`, since a dependency cannot say which methods: the git observer may not fetch, connect, push or clone, and the resolver may not name `oci_client::Client`. Allowances are listed in the test with their reason, and one nothing needs any more fails it |
 
-Left out of that test by decision, each listed there with why: the credentials agent and cert-issuer (the maintainer, above), the broker, the git server and the custody daemon, which serve. Not on the builder yet, so not held: GitLab, OpenAPI and build-processor, which still have `reqwest` until step 7 and step 9.
+Left out of that test by decision, each listed there with why: the credentials agent and cert-issuer (the maintainer, above), the broker, the git server and the custody daemon, which serve. Not on the builder yet, so not held: GitLab and build-processor, which still have `reqwest` until step 7 and step 9.
 
 To go further would take the process apart, not more checks: a raw socket is not a dependency, and domain code could speak Cassini to the credentials agent itself, though it would then have nothing to open the answer with. What this closes is a developer's mistake and a logic bug, as it set out to.
 

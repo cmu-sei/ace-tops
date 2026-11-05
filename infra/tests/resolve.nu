@@ -175,7 +175,7 @@ def target_file [target: string, file: string, content: string] {
     $content | save --force $p
 }
 
-const EGRESS_AGENTS = ["git-repo-observer" "jira-observer" "oci-registry-resolver"]
+const EGRESS_AGENTS = ["git-repo-observer" "jira-observer" "oci-registry-resolver" "openapi-observer"]
 
 # The tests that run `resolve.nu check`: its agent checks run each agent's image on the cluster (`agent_checks`), so
 # they run only on a cluster named for the tests (infra/test-cluster.nu), and are skipped otherwise.
@@ -321,8 +321,8 @@ def main [] {
         "under the separated topology every workload is placed in its pool, and the open pool's in none": {
             let pools = {
                 core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server attestation-agent]
-                observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer oci-registry-resolver]
-                writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor]
+                observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer oci-registry-resolver openapi-observer]
+                writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor openapi-processor]
             }
             let placed = ($pools | transpose pool names | each {|p| $p.names | each {|n| { name: $n, pool: $p.pool } } } | flatten)
             with_target (laid_out "separated") {|t|

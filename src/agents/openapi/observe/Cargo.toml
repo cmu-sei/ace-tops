@@ -26,20 +26,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-polar-scudo.workspace = true
-cassini-client.workspace = true
-cassini-types.workspace = true
-native-tls = "=0.2.14"
-polar.workspace = true
-ractor.workspace = true
-reqwest = { workspace = true, features = ["json"] }
-rkyv.workspace = true
-serde_json.workspace = true
-serde.workspace = true
-tokio.workspace = true
-tracing.workspace = true
-utoipa.workspace = true
 openapi-common.workspace = true
+polar-agent-builder.workspace = true
+polar-http-observer.workspace = true
+polar-scudo.workspace = true
 
 [[bin]]
 name = "openapi-observer"

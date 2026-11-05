@@ -40,7 +40,7 @@ Each step is taken in bites, each reported before the next.
    Before what follows, so that the Dynamic settings build on it and the OpenAPI and GitLab agents migrate onto it, not twice.
 5. **The sequence diagrams.** Below, under docs.
 6. ~~**Every builder agent's non-secret settings Dynamic.**~~ Done, and checked live on u7s, 2026-11-05: `docs/architecture/dynamic-settings.md`.
-7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder. Since 2026-11-05 OpenAPI is the first of the HTTP observers, on a shared library, one workload per kind (`docs/architecture/http-observers.md`), and GitLab moves to the builder on its own, without waiting for that engine.
+7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder. OpenAPI done as a first cut, 2026-11-05: the first of the HTTP observers, on shared libraries, one workload per kind, with its processor driven by a signed Dhall mapping (`docs/architecture/http-observers.md`). GitLab moves to the builder on its own, without waiting for that engine.
 8. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 7.
 9. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
 
@@ -582,7 +582,7 @@ Each step is taken in bites, each reported before the next.
     was a convenience).
   - **`--version`:** the binaries that do not answer it yet (2026-10-31; `infra/INFRA.md`, "The version a binary reports"):
     `cert-issuer-setup` and `discover_repo` (developer tools), and the binaries that are not on the builder and parse no arguments,
-    which would start on `--version`: gitlab-observer, gitlab-consumer, openapi-observer, openapi-processor, build-processor, the
+    which would start on `--version`: gitlab-observer, gitlab-consumer, build-processor, the
     logger, polar-healthcheck and polar-custody's daemon. Each is one line, `polar_version::exit_if_asked("<name>")`, or nothing
     once it moves onto the builder.
   - polar-scheduler-observer and polar-scheduler-processor: Running on the cluster, 0 restarts (2026-10-14), and the checks of the
@@ -629,7 +629,6 @@ Each step is taken in bites, each reported before the next.
   no test refuses a non-document workload (the resolver reads the real catalog; a test would need a fixture catalog);
   `InitMountEntry` has no `read_only` (polar-init's CA mount is no longer read-only: add one if that matters); the catalog-bypassing
   workloads are their own item, under configuration.
-- [ ] `infra/layers/3-workloads/agents/openapi/deployment.dhall` (the OpenAPI web frontend): still referenced, or safe to remove?
 
 ## Configuration, signed configuration and polar-env
 

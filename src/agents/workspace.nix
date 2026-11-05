@@ -141,6 +141,8 @@ let
       ./Cargo.toml
       ./Cargo.lock
       ./gitlab/schema/src/gitlab.graphql
+      # The type of a projection, which polar-sign checks a file against and so compiles in.
+      ./polar-projection/projection.dhall
     ]);
 
     workspaceFileset = crate: lib.fileset.toSource {

@@ -20,24 +20,14 @@
 
    DM26-0670
 */
-use openapi_processor::actors::{ConsumerSupervisor, ConsumerSupervisorArgs};
-use ractor::Actor;
-use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    polar::init_logging("polar.openapi.processor.supervisor".to_string());
+use openapi_processor::agent::OpenApiProcessor;
+use std::process::ExitCode;
 
-    let (_, handle) = Actor::spawn(
-        Some("polar.openapi.processor.supervisor".to_string()),
-        ConsumerSupervisor,
-        ConsumerSupervisorArgs,
-    )
-    .await
-    .expect("Expected to start processor agent");
-    let _ = handle.await;
-
-    Ok(())
+/// The agent says what it is in `OpenApiProcessor`; `run` answers the commands (`--help`, `--scaffold`, `--check`), judges the
+/// configuration and starts it.
+fn main() -> ExitCode {
+    polar_agent_builder::run::<OpenApiProcessor>()
 }
 
 // Every Polar binary allocates with Scudo (docs/architecture/broker-baseline.md, "Decided").

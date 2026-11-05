@@ -143,7 +143,7 @@ each handler's own (`polar-agent-builder/src/protocol/http.rs`, `git.rs`).
 - No proxy credentials: the value is written into a ConfigMap. A proxy that needs them would need a Secret.
 - The CA comes only from a committed file; an existing ConfigMap or Secret in the cluster cannot be named.
 - gitlab-observer still reads `PROXY_CA_CERT` from the process (nothing sets it; its chart's always-None plumbing is
-  gone), and so does `polar::get_web_client`, which nothing calls. The gitlab agents, openapi and build-processor
+  gone), and so does `polar::get_web_client`, which nothing calls. The gitlab agents and build-processor
   declare the section when they move onto the agent builder.
 - The render asks for the proxy's port spelled out; the agent's own check accepts a URL without one (the scheme's).
 - The init container (polar-init) and the custody daemon reach only the cluster, so they are given nothing.

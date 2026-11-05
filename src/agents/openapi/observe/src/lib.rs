@@ -21,5 +21,9 @@
    DM26-0670
 */
 
-pub mod actors;
-pub const BROKER_CLIENT_NAME: &str = "polar.openapi.cassini.tcp";
+//! The OpenAPI observer: an HTTP observer of the kind that reads OpenAPI and Swagger documents. What to read is its signed
+//! `sources` section; the work is in `polar-http-observer`.
+
+#![deny(clippy::disallowed_methods)]
+
+pub mod agent;

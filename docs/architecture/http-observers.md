@@ -23,8 +23,8 @@
 
 # HTTP observers
 
-Status, 2026-11-05: a design from a conversation with the maintainer, with its first cut under way: the projection engine, its Dhall type and `polar-sign`'s check are built and
-tested; no agent uses them yet. It replaces the plan to repair the OpenAPI agents as they stand. Paths relative to `src/agents/`.
+Status, 2026-11-05: a design from a conversation with the maintainer, with its first cut built on the OpenAPI pair: `polar-http-observer`, `polar-http-processor`, `polar-projection`, and thin
+`openapi-observer` and `openapi-processor` crates on the builder and in the catalog. It replaces the plan to repair the OpenAPI agents as they stand. Paths relative to `src/agents/`.
 
 ## Why
 
@@ -50,8 +50,11 @@ without a deployment. For OpenAPI, `sources`, each with a `name`, a `url` and an
 **Each request is judged as the handlers judge any other** (`protocol-handlers.md`). A URL from a signed section is `Arbitrary`, which never carries a credential, or
 `Bound`, whose host must match its credential's signed binding. The framework needs no new location. OpenAPI's are `Arbitrary`.
 
-**One fixed topic per kind**, declared in code and computed by the builder, which its processor subscribes to. That is the pairing. A signed section cannot name a topic,
-since a hint never widens a signed bound. Each message says which source it is from, when, the status, and the body as it came.
+**One fixed topic per kind**, declared in code and computed by the builder, which its processor subscribes to. That is the pairing, and the processor believes only its own observer, by the broker's stamp, since
+a policy could permit another publisher. A signed section cannot name a topic, since a hint never widens a signed bound. Each message says which source it is from, when, and the body as it came.
+
+**Every read is published, not only a changed one.** The graph's writes are idempotent, and a document published while the processor held no mapping, or was restarting, is written at the next read, with nothing kept anywhere to
+remember what was sent. Its stamp then says when it was last seen. Intervals are signed, at least 60 s.
 
 **The observer does not read the document.** It schedules, pages, backs off as a host asks, and publishes. Only the processor parses what a service sent. Observers never
 touch the graph (`soft-state.md`). One source failing is reported and does not end the agent or stop the others.
@@ -140,5 +143,7 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
 - **One workload per kind, or per site?** A kind with credentials may want one workload per site, so two Jira sites are not one identity. OpenAPI has none, so this waits for the second kind.
 - **A signed list cannot hold entries with different fields** (`remaining-work.md`). OpenAPI's `sources` are all required, so it does not stop the first kind. Credentials and paging will need the fix.
 - **An endpoint a document dropped** stays in the graph. Not handled yet.
-- **A mapping's first version.** A processor with no signed mapping holds, which is a choice to confirm when it is built: the alternative is a built-in default.
+- **A mapping's first version.** A processor with no signed mapping holds and says so. It is not seeded: the mapping is in `polar-projection/examples/openapi.dhall`, to sign. A built-in default or a seed are the alternatives.
+- **Who owns the graph controller.** The processor spawns its own, as the others do, so it moves again when the builder owns it (`remaining-work.md`).
+- **A kind with no binary of its own** would have to reverse `own_name.rs`. This cut does not.
 - **Linking a document to the service that runs it,** which is what would make this useful to anything else in the graph. Nothing connects them yet.
