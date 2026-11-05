@@ -25,6 +25,83 @@
 
 All notable changes to the platform are documented in this file, newest first. It is generated at each release by `nu infra/changelog.nu`, from the same classification of commits that chooses the version. A release is one version for every Polar image.
 
+## [3.0.1] - 2026-11-05
+
+Images built from `5c2672a52aff`, the commit that set VERSION to 3.0.1.
+
+> The fixes the first deployments of 3.0.0 needed. A secret can be sealed to a P-256 escrow key again; a release can be imported by its version; polar-init renews a certificate about to expire instead of keeping it; a supervisor that subscribes late still hears of its registration; a committed Dhall file with an import is refused; and kube-observer restarts when it loses a watch instead of going quietly blind. The same protocol as 3.0.0; import every image of one release together.
+
+### 📦 Images
+
+| Image | Change |
+|---|---|
+| `ace-viz:latest` | `sha256:e4285fb84857` -> `sha256:5d5834b1d8f7` |
+| `build-processor:latest` | `sha256:b0e89d29c3a2` -> `sha256:da7c6d4793ec` |
+| `cassini:latest` | `sha256:7e11fcaca8a1` -> `sha256:46e8bdc2bcbb` |
+| `cert-issuer:latest` | `sha256:9abc3dbd44e5` -> `sha256:a18b0d75d3bb` |
+| `credentials-agent-consumer:latest` | `sha256:87d5fccd5450` -> `sha256:45dd2492df6e` |
+| `credentials-agent-observer:latest` | `sha256:b8976ea1eed7` -> `sha256:ebaf0abe9b73` |
+| `dev:latest` | `sha256:ecb0968eb3b0` -> `sha256:79277ff04d6b` |
+| `git-controller:latest` | `sha256:b40569cc771f` -> `sha256:a895e10940b2` |
+| `git-observer:latest` | `sha256:d6942acf2375` -> `sha256:3f0b2bf0feb8` |
+| `git-processor:latest` | `sha256:026e40e07bed` -> `sha256:f6b89cac2501` |
+| `gitlab-consumer:latest` | `sha256:1fb7296f5d0f` -> `sha256:9c703d452012` |
+| `gitlab-observer:latest` | `sha256:2ecfe332c06d` -> `sha256:2edd8014f23c` |
+| `harness-producer:latest` | `sha256:99457513288a` -> `sha256:4065cb76fa51` |
+| `harness-sink:latest` | `sha256:9c1ca98a4de4` -> `sha256:c144f61696a6` |
+| `jira-observer:latest` | `sha256:8ab09583d992` -> `sha256:f515498ce317` |
+| `jira-processor:latest` | `sha256:2ae1ecf72790` -> `sha256:32e012ae6248` |
+| `kube-consumer:latest` | `sha256:a22398138e02` -> `sha256:da06d4bb4824` |
+| `kube-observer:latest` | `sha256:3da8dc01be06` -> `sha256:affdf8bb328d` |
+| `neo4j:5.26.2` | `sha256:30e755f597ff` -> `sha256:2afa8f42daf4` |
+| `oci-resolver:latest` | `sha256:370bb8da81bd` -> `sha256:2f950d61ac2b` |
+| `openapi-observer:latest` | `sha256:5b74f0623f94` -> `sha256:34df4e9c491b` |
+| `openapi-processor:latest` | `sha256:99701814fd1b` -> `sha256:a96b5068a171` |
+| `polar-custody:latest` | `sha256:64081625e045` -> `sha256:f45766076181` |
+| `polar-git-server:latest` | `sha256:f5bffea5aed1` -> `sha256:ce2430e4c30d` |
+| `polar-init:latest` | `sha256:aa19d9db61fd` -> `sha256:8b9f17aba22d` |
+| `polar-nu-init:latest` | `sha256:eb6c52abdc72` -> `sha256:fe200ff8babf` |
+| `polar-tools:latest` | `sha256:6cb335770027` -> `sha256:8a77e2cf3662` |
+| `scheduler-observer:latest` | `sha256:927e4d7a0aa5` -> `sha256:cea6653dbcbf` |
+| `scheduler-processor:latest` | `sha256:2cdb2976cf25` -> `sha256:62ee230cca2c` |
+| `secret-harness-intruder:latest` | `sha256:7af623a32cf0` -> `sha256:0ae28317a991` |
+| `secret-harness-owner:latest` | `sha256:ae02a007d491` -> `sha256:3f85243f9681` |
+| `soft-state-observer:latest` | `sha256:bd6ecf2b0435` -> `sha256:4c5ee31a171b` |
+| `soft-state-processor:latest` | `sha256:e440f9111e14` -> `sha256:c1d5b5901dad` |
+
+### 🐛 Bug fixes
+
+**dev-pod**
+
+- Bin/polar-dev copies your personal sops files into the pod
+- Bin/polar-dev clones the public repository by default
+
+**infra**
+
+- A release's tag does not rename Neo4j when importing
+
+**kube-observer**
+
+- A lost watch restarts the agent
+
+**polar-agent-builder**
+
+- A supervisor that subscribes late still hears of the registration
+
+**polar-init**
+
+- Keep a certificate only if it outlasts the rejuvenation threshold
+
+**polar-signing**
+
+- A secret can be sealed to a P-256 escrow key again
+
+**scheduler-observer**
+
+- A committed Dhall file with an import is refused
+
+Also in this release, not listed: 3 documentation and 2 housekeeping commits.
+
 ## [3.0.0] - 2026-11-02
 
 Images built from `de146b15cb82`, the commit that set VERSION to 3.0.0.
