@@ -36,6 +36,8 @@ pub const DEPLOYMENT_RECORD_TOPIC: &str = "attestation-deployment-record";
 /// Every signed payload carries one, and a receiver accepts only the kind it expects.
 pub mod routing;
 
+pub mod running;
+
 pub mod document_type {
     /// Desired state for an agent: values for the variables its code declared Dynamic.
     pub const CONFIGURATION: &str = "configuration";

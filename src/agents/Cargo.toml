@@ -73,6 +73,7 @@ members = [
     "polar-custody/daemon",
     "polar-signing",
     "polar-sign",
+    "polar-running-config",
     "polar-agent-builder",
     "polar-permissions",
     "polar-policy",

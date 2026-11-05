@@ -79,6 +79,8 @@ wiremock = { workspace = true, optional = true }
 testing = ["dep:wiremock", "polar/testing"]
 
 [dev-dependencies]
+# What polar-sign writes from an answer, signed unchanged, keeps what is running (running.rs).
+polar-sign = { path = "../polar-sign" }
 # Test CAs, and TLS in front of a stand-in site (polar::egress::testing).
 polar = { workspace = true, features = ["testing"] }
 wiremock.workspace = true

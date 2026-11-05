@@ -23,7 +23,7 @@
 
 # infra/tools.nu
 #
-# The standalone Polar tools (polar-sign, polar-admin-grant, cassini-c2, cassini-client,
+# The standalone Polar tools (polar-sign, polar-admin-grant, polar-running-config, cassini-c2, cassini-client,
 # user-cert-fetcher, cert-client, cert-issuer-setup) are built as static binaries and shipped in
 # the `polar-tools` image. Nothing has to be compiled to use them: copy them out of the image
 # into a directory of your choosing and put that directory on your PATH.

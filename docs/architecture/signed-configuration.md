@@ -128,6 +128,9 @@ the payload, so a command cannot be taken for a configuration whatever else it s
 service name) for now; how a schedule's agent id and agent type map onto that, and where a `ScheduleNode`'s
 `config` becomes `changes`, are the addressing questions still open.
 
+An applied document replaces every override before it: what it does not name goes back to the rendered value, and needs the same
+permission as naming it (`dynamic-settings.md`, "Asking an agent what is in force").
+
 **Built (2026-10-11).** `ConfigurationHandle::submit(document)` is the only way in; the unverified
 `apply` is crate-private and used only by tests. The verifier takes its trust from the CA the agent already
 pins for Cassini (`TLS_CA_CERT`), and an agent with no readable CA refuses every document (it fails

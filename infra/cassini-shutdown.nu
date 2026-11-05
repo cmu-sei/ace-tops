@@ -60,6 +60,25 @@ export def shutdown_env [token: string, admin_dir: string, user: string, local_p
 
 use tools.nu
 
+# Runs `body` with the broker on 127.0.0.1:`port`, by a port-forward started here and stopped when it ends either way.
+export def with_broker_forward [namespace: string, port: int, body: closure] {
+    let pid = (^bash -c $"kubectl -n ($namespace) port-forward svc/cassini-ip-svc ($port):8080 >/dev/null 2>&1 & echo $!" | str trim | into int)
+    try {
+        mut up = false
+        for _ in 1..40 {
+            if (do { ^bash -c $"exec 3<>/dev/tcp/127.0.0.1/($port)" } | complete | get exit_code) == 0 { $up = true; break }
+            sleep 250ms
+        }
+        if not $up { error make { msg: $"the port-forward to the broker never came up on ($port)" } }
+        let result = (do $body)
+        ^kill $pid
+        $result
+    } catch {|e|
+        ^kill $pid
+        error make { msg: $e.msg }
+    }
+}
+
 def main [
     --user: string = ""       # whose certificate to sign in with; the current user by default
     --token: string = ""      # use this instead of the cluster's Secret (to try a wrong one)
@@ -82,14 +101,7 @@ def main [
     let name = (cassini_server_name (open ($INFRA | path join "config/services.nuon")) (open ($INFRA | path join "config/cluster.nuon")))
     let env_vars = (shutdown_env $secret $admin_dir $user $port $name)
 
-    let pid = (^bash -c $"kubectl -n ($namespace) port-forward svc/cassini-ip-svc ($port):8080 >/dev/null 2>&1 & echo $!" | str trim | into int)
-    try {
-        mut up = false
-        for _ in 1..40 {
-            if (do { ^bash -c $"exec 3<>/dev/tcp/127.0.0.1/($port)" } | complete | get exit_code) == 0 { $up = true; break }
-            sleep 250ms
-        }
-        if not $up { error make { msg: $"the port-forward to the broker never came up on ($port)" } }
+    with_broker_forward $namespace $port {
         print $"  asking the broker to shut down, as ($user)"
         let ran = (do {
             let t = (tools command "cassini-c2")
@@ -97,10 +109,6 @@ def main [
         })
         # cargo's own warnings are not the tool's answer
         print ($ran | get stderr | lines | where {|l| not ($l =~ '^(warning|help|\s+(-->|\||=)|\s*[0-9]+ \||\s*$)') } | str join "\n")
-        ^kill $pid
         if $ran.exit_code != 0 { error make { msg: "the shutdown tool failed" } }
-    } catch {|e|
-        ^kill $pid
-        error make { msg: $e.msg }
     }
 }

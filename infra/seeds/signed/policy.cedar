@@ -29,3 +29,9 @@ when { resource has owner && resource.owner == principal };
 // Incident freeze: a secret labelled frozen is retrievable by nobody, whatever else permits it.
 forbid (principal, action, resource)
 when { resource has frozen && resource.frozen };
+
+// Whoever may change an agent's settings may ask what they are now (docs/architecture/dynamic-settings.md, "Asking an
+// agent what is in force"). A person's certificate names no topics, so these two rules are what lets one ask at all. The
+// agent then judges the question itself, by action "read-configuration".
+permit (principal in Capability::"update-configuration", action == Action::"publish", resource == Topic::"polar-running-configuration-questions");
+permit (principal in Capability::"update-configuration", action == Action::"subscribe", resource == Topic::"polar-running-configuration-answers");

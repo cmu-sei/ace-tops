@@ -95,6 +95,11 @@ action "update-configuration" appliesTo {
   resource: [Variable, Agent],
   context: { "now_secs": Long },
 };
+action "read-configuration" appliesTo {
+  principal: Identity,
+  resource: Agent,
+  context: { "now_secs": Long },
+};
 action "update-runtime" appliesTo {
   principal: Identity,
   resource: Section,

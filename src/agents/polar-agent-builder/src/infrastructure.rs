@@ -144,6 +144,12 @@ pub enum InfrastructureSupervisorMessage {
         payload: Vec<u8>,
         published_by: Option<String>,
     },
+    /// Internal: a question about the configuration in force, with the identity the broker stamped on it
+    /// (`running.rs`). Judged and answered off this actor's thread.
+    RunningConfigurationQuestion {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
 }
 
 /// The lifecycle callback the Cassini client is given.
@@ -362,6 +368,7 @@ pub struct InfrastructureSupervisorState {
     self_test: Option<SelfTestState>,
     /// What answers a health question, for a Cassini client.
     health_answerer: Option<crate::health_query::Answerer>,
+    running_answerer: Option<crate::running::Answerer>,
     /// The `Registered` the client is on, until it loses the connection.
     last_registered: Option<ClientEvent>,
 }
@@ -522,6 +529,8 @@ impl InfrastructureSupervisor {
             service_name,
             myself.clone(),
         ));
+        // And questions about its configuration in force, also the builder's to answer.
+        subscriptions.push(crate::running::subscription(myself.clone()));
         // An agent that reads its own soft state hears the state agent on its own reply topic.
         let state_replies = setup.state_agent.map(|expected| {
             let router = Arc::new(soft_state_common::ReplyRouter::new());
@@ -940,6 +949,11 @@ impl Actor for InfrastructureSupervisor {
             )
             .await?;
         }
+        let running_answerer = client.as_ref().map(|client| crate::running::Answerer {
+            agent: args.service_name.clone(),
+            configuration: configuration.clone(),
+            client: client.tcp_client.clone(),
+        });
         let health_answerer = client.as_ref().map(|client| crate::health_query::Answerer {
             topic: polar_health::report::health_topic(&args.service_name),
             writer: args.health_writer.clone(),
@@ -963,6 +977,7 @@ impl Actor for InfrastructureSupervisor {
             process_exit: args.process_exit,
             self_test,
             health_answerer,
+            running_answerer,
             last_registered: None,
         })
     }
@@ -1041,6 +1056,14 @@ impl Actor for InfrastructureSupervisor {
                 published_by,
             } => {
                 if let Some(answerer) = state.health_answerer.clone() {
+                    tokio::spawn(async move { answerer.answer(payload, published_by).await });
+                }
+            }
+            InfrastructureSupervisorMessage::RunningConfigurationQuestion {
+                payload,
+                published_by,
+            } => {
+                if let Some(answerer) = state.running_answerer.clone() {
                     tokio::spawn(async move { answerer.answer(payload, published_by).await });
                 }
             }
@@ -3125,6 +3148,74 @@ mod tests {
                 .state
                 .is_none()
         );
+    }
+
+    // -- a question about the configuration in force -----------------------------------------
+
+    /// Answers on the topic where every agent answers, off the wire.
+    fn running_answers(rig: &Rig) -> Vec<polar_scheduler_common::running::RunningConfiguration> {
+        rig.spawner
+            .published
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(topic, _)| topic == polar_scheduler_common::running::ANSWERS_TOPIC)
+            .map(|(_, payload)| polar_scheduler_common::running::decode_answer(payload).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_question_reaches_the_answer_through_the_one_topic_and_only_its_agent_answers() {
+        use polar_scheduler_common::running::{QUESTIONS_TOPIC, question_payload};
+        use polar_signing::testing::{ALICE_ACCOUNT_ID, Spec, root, signer};
+        let ca = root("Polar Internal CA");
+        let dir = tempfile::tempdir().unwrap();
+        let ca_file = dir.path().join("ca.pem");
+        std::fs::write(&ca_file, &ca.pem).unwrap();
+        let rig = Rig::with_commands(
+            "infra-asked",
+            &[("TLS_CA_CERT", ca_file.to_str().unwrap())],
+            vec![],
+        )
+        .await;
+        rig.registered().await;
+        rig.settle().await;
+        let s = signer(&ca, Spec::default());
+        let issued = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let ask = |agent: &str, id: &str, stamp: Option<&str>| {
+            let document = polar_signing::sign_in(
+                polar_signing::Domain::RUNNING_CONFIGURATION_QUESTION,
+                question_payload(agent, id, issued, issued + 60),
+                std::slice::from_ref(&s.cert_pem),
+                &s.key_pem,
+            )
+            .unwrap()
+            .to_value();
+            rig.resources
+                .router
+                .send_message(polar_router::RouterMessage::Route(
+                    polar_router::IncomingMessage {
+                        topic: QUESTIONS_TOPIC.to_string(),
+                        payload: document.to_string().into_bytes(),
+                        published_by: stamp.map(str::to_string),
+                        published_instance: None,
+                        trace_ctx: None,
+                    },
+                ))
+                .unwrap();
+        };
+        ask("infra-asked", "mine", Some(ALICE_ACCOUNT_ID));
+        ask("another-agent", "theirs", Some(ALICE_ACCOUNT_ID));
+        ask("infra-asked", "unstamped", None);
+        rig.settle().await;
+        let answers = running_answers(&rig);
+        assert_eq!(answers.len(), 1, "{answers:?}");
+        assert_eq!(answers[0].id, "mine");
+        assert_eq!(answers[0].agent, "infra-asked");
+        assert!(!answers[0].settings.is_empty());
     }
 
     // -- pulled health -------------------------------------------------------------------

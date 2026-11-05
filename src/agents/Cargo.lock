@@ -5905,6 +5905,7 @@ dependencies = [
  "polar-policy",
  "polar-router",
  "polar-scheduler-common",
+ "polar-sign",
  "polar-signing",
  "polar-version",
  "proptest",
@@ -6198,6 +6199,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "polar-running-config"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "cassini-client",
+ "cassini-types",
+ "cert-issuer-common",
+ "clap",
+ "polar-scheduler-common",
+ "polar-scudo",
+ "polar-sign",
+ "polar-signing",
+ "polar-version",
+ "proptest",
+ "ractor",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "polar-scheduler"
 version = "1.0.0"
 dependencies = [
@@ -6275,6 +6297,7 @@ dependencies = [
  "polar-env",
  "polar-escrow",
  "polar-policy",
+ "polar-scheduler-common",
  "polar-scudo",
  "polar-signing",
  "polar-version",

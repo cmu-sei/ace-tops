@@ -47,6 +47,7 @@ anywhere else.
 |---|---|
 | `polar-sign` | sign, seal and push configuration documents to the schedules repository |
 | `polar-admin-grant` | create and claim accounts, grant permissions, bootstrap the cluster CA |
+| `polar-running-config` | ask a running agent what configuration is in force |
 | `cassini-c2` | ask the Cassini broker to shut down |
 | `cassini-client` | the broker's command-line client, for applications that are not written in Rust |
 | `user-cert-fetcher` | self-service user certificates |

@@ -55,6 +55,7 @@ use crate::signed::{Rejection, UpdateVerifier, VerifiedDocument};
 use polar_env::{Config, Described, Mutability, Readable, Resolved, Section};
 use polar_policy::PolicyMessage;
 use polar_scheduler_common::ConfigurationOutcome;
+use polar_scheduler_common::running::RunningConfiguration;
 use polar_signing::Authority;
 use ractor::{Actor, ActorProcessingErr, ActorRef, OutputPort, RpcReplyPort};
 use std::collections::{HashMap, VecDeque};
@@ -231,6 +232,12 @@ pub enum ConfigurationMessage {
     },
     /// Who follows what, and the configuration in force.
     Followers(RpcReplyPort<(Arc<Config>, Vec<Follower>)>),
+    /// A signed question about the configuration in force, with the identity the broker stamped on it.
+    Question {
+        document: serde_json::Value,
+        published_by: Option<String>,
+        reply: RpcReplyPort<Result<RunningConfiguration, Rejection>>,
+    },
 }
 
 pub struct ConfigurationActor;
@@ -350,7 +357,7 @@ impl ConfigurationState {
             Some(capability) => polar_signing::RequireCapability(capability)
                 .authorize(opened.signer(), opened.payload()),
             None => {
-                let request = opened.request(&self.agent);
+                let request = opened.request_replacing(&self.agent, &self.config.overridden());
                 // The certificate's answer is cheap and does not change while we ask policy; it is what
                 // policy falls back to when it does not speak to the request.
                 let floor = verifier.floor(&opened);
@@ -472,6 +479,33 @@ impl ConfigurationState {
         outcome
     }
 
+    /// Judges a question about the configuration in force, and answers it if it is admitted: policy first, and where it
+    /// is silent the certificate, as for a signed update. Taken in this actor's turn, so the answer is one configuration.
+    async fn question(
+        &self,
+        document: &serde_json::Value,
+        published_by: Option<&str>,
+    ) -> Result<RunningConfiguration, Rejection> {
+        let Some(verifier) = &self.verifier else {
+            return Err(Rejection::NotConfigured);
+        };
+        let opened = crate::running::open(verifier, document, published_by)?;
+        let floor = verifier.settings_floor(opened.signer(), opened.payload());
+        crate::policy_authority::admit(self.policy.as_ref(), &opened.request(&self.agent), || {
+            floor.clone()
+        })
+        .await
+        .map_err(Rejection::Unauthorized)?;
+        let id = crate::running::close(verifier, opened)?;
+        Ok(crate::running::answer(
+            id,
+            &self.agent,
+            &self.config,
+            self.last_version,
+            &self.runtime,
+        ))
+    }
+
     /// Keeps the outcome in the history and announces it. `version` is what the history keeps; the
     /// event carries `claimed_version`, which is only meaningful for a verified document.
     fn record(
@@ -545,7 +579,7 @@ impl ConfigurationState {
                 .map(|(name, value)| (name.as_str(), value.as_str()))
                 .collect();
             let mut candidate = self.config.clone();
-            match candidate.apply_overrides(&pairs) {
+            match candidate.replace_overrides(&pairs) {
                 Ok(changed) => match self.judged(&candidate, &changed) {
                     Some(why) => ApplyOutcome::Refused(Refusal::Invalid(vec![why])),
                     None => {
@@ -657,6 +691,13 @@ impl Actor for ConfigurationActor {
             ConfigurationMessage::Followers(reply) => {
                 let _ = reply.send((state.current.clone(), state.followers.clone()));
             }
+            ConfigurationMessage::Question {
+                document,
+                published_by,
+                reply,
+            } => {
+                let _ = reply.send(state.question(&document, published_by.as_deref()).await);
+            }
         }
         Ok(())
     }
@@ -762,6 +803,23 @@ impl ConfigurationHandle {
     /// then read [`runtime`](Self::runtime).
     pub fn runtime_changes(&self) -> Arc<OutputPort<RuntimeChanged>> {
         self.runtime_changes.clone()
+    }
+
+    /// Puts a signed question to the actor: the configuration in force, or why it was refused.
+    pub async fn question(
+        &self,
+        document: serde_json::Value,
+        published_by: Option<String>,
+    ) -> Result<Result<RunningConfiguration, Rejection>, ConfigurationError> {
+        self.call_within(
+            |reply| ConfigurationMessage::Question {
+                document,
+                published_by,
+                reply,
+            },
+            None,
+        )
+        .await
     }
 
     /// The configuration as it stands now, with every override applied. Read again after a
@@ -1272,6 +1330,51 @@ mod tests {
                 .unwrap(),
             ApplyOutcome::Refused(Refusal::Stale { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn an_applied_update_replaces_the_updates_before_it() {
+        let (config, seen) = handle().await;
+        config
+            .apply_unchecked(1, vec![("LOW".to_string(), "5".to_string())])
+            .await
+            .unwrap();
+        let outcome = config
+            .apply_unchecked(2, vec![("HIGH".to_string(), "20".to_string())])
+            .await
+            .unwrap();
+        // LOW was not named, so it is back to what it was, and that is a change like any other.
+        assert_eq!(
+            outcome,
+            ApplyOutcome::Applied {
+                changed: vec!["LOW".to_string(), "HIGH".to_string()],
+                notes: vec![nothing_follows("LOW"), nothing_follows("HIGH")],
+            }
+        );
+        let now = config.current().await.unwrap();
+        assert_eq!(now.read(&LOW).unwrap(), 1);
+        assert_eq!(now.read(&HIGH).unwrap(), 20);
+        assert_eq!(now.overridden(), ["HIGH"]);
+        settle().await;
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refused_update_leaves_the_overrides_before_it_in_force() {
+        let (config, _) = handle().await;
+        config
+            .apply_unchecked(1, vec![("LOW".to_string(), "5".to_string())])
+            .await
+            .unwrap();
+        let outcome = config
+            .apply_unchecked(2, vec![("HIGH".to_string(), "1".to_string())])
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            ApplyOutcome::Refused(Refusal::Invalid(_))
+        ));
+        assert_eq!(config.current().await.unwrap().read(&LOW).unwrap(), 5);
     }
 
     #[tokio::test]
@@ -2567,6 +2670,229 @@ mod tests {
             20,
             "nothing of a refused document is applied"
         );
+    }
+
+    /// A document that does not name a variable takes its override away, so that is a change to that variable: a signer
+    /// policy keeps off it cannot do it by leaving it out.
+    #[tokio::test]
+    async fn taking_an_override_away_needs_the_same_permission_as_setting_it() {
+        let signed = Signed::new();
+        let config = policy_handle(
+            signed.verifier(),
+            Some(&format!(
+                r#"forbid(principal == Identity::"{ALICE_ACCOUNT_ID}", action == Action::"update-configuration", resource == Variable::"{AGENT}/LOW");"#
+            )),
+        )
+        .await;
+        // Allowed for HIGH alone: nothing holds LOW yet, so this document touches only HIGH.
+        let first = config.submit(signed.high(1, "20")).await.unwrap();
+        assert!(matches!(first, ApplyOutcome::Applied { .. }), "{first:?}");
+        config
+            .apply_unchecked(2, vec![("LOW".to_string(), "5".to_string())])
+            .await
+            .unwrap();
+        // Now LOW is held, by someone who may: the same signer naming only HIGH would take it away, and may not.
+        let outcome = config.submit(signed.high(3, "30")).await.unwrap();
+        assert!(is_unauthorized(&outcome), "{outcome:?}");
+        assert!(format!("{outcome:?}").contains("LOW"), "{outcome:?}");
+        assert_eq!(config.current().await.unwrap().read(&LOW).unwrap(), 5);
+    }
+
+    // -- a question about the configuration in force --------------------------------------
+
+    /// A question signed by `spec`'s holder, valid for a minute from now.
+    fn question(signed: &Signed, spec: Spec, agent: &str) -> Value {
+        window_question(signed, spec, agent, now() as u64, now() as u64 + 60)
+    }
+
+    fn window_question(signed: &Signed, spec: Spec, agent: &str, from: u64, to: u64) -> Value {
+        let s = signer(&signed.ca, spec);
+        polar_signing::sign_in(
+            polar_signing::Domain::RUNNING_CONFIGURATION_QUESTION,
+            polar_scheduler_common::running::question_payload(agent, "q1", from, to),
+            &[s.cert_pem],
+            &s.key_pem,
+        )
+        .unwrap()
+        .to_value()
+    }
+
+    fn stamped() -> Option<String> {
+        Some(ALICE_ACCOUNT_ID.to_string())
+    }
+
+    #[tokio::test]
+    async fn who_may_change_the_settings_may_ask_what_they_are() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(Some(signed.verifier())).await;
+        config.submit(signed.high(3, "20")).await.unwrap();
+        let answer = config
+            .question(question(&signed, Spec::default(), AGENT), stamped())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((answer.id.as_str(), answer.agent.as_str()), ("q1", AGENT));
+        assert_eq!(answer.version, 3);
+        let high = answer.settings.iter().find(|s| s.name == "HIGH").unwrap();
+        assert_eq!(
+            (high.value.as_deref(), high.source.as_str()),
+            (Some("20"), "override")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_question_from_one_without_the_capability_is_refused() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(Some(signed.verifier())).await;
+        let spec = Spec {
+            capabilities: vec!["c:update-runtime"],
+            ..Spec::default()
+        };
+        let got = config
+            .question(question(&signed, spec, AGENT), stamped())
+            .await
+            .unwrap();
+        assert!(matches!(got, Err(Rejection::Unauthorized(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_question_is_believed_only_from_its_signer() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(Some(signed.verifier())).await;
+        for sender in [None, Some("mallory.polar.svc.cluster.local".to_string())] {
+            let got = config
+                .question(question(&signed, Spec::default(), AGENT), sender)
+                .await
+                .unwrap();
+            assert!(matches!(got, Err(Rejection::Unauthorized(_))), "{got:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_question_for_another_agent_is_refused() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(Some(signed.verifier())).await;
+        let got = config
+            .question(
+                question(&signed, Spec::default(), "another-agent"),
+                stamped(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(got, Err(Rejection::WrongTarget { .. })), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_question_outside_its_time_is_refused() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(Some(signed.verifier())).await;
+        let now = now() as u64;
+        for (from, to) in [
+            (now - 600, now - 300),
+            // Longer than a question may last.
+            (
+                now,
+                now + polar_scheduler_common::running::MAX_QUESTION_VALIDITY_SECS + 1,
+            ),
+        ] {
+            let document = window_question(&signed, Spec::default(), AGENT, from, to);
+            let got = config.question(document, stamped()).await.unwrap();
+            assert!(matches!(got, Err(Rejection::Window(_))), "{got:?}");
+        }
+    }
+
+    /// A signature made for one purpose does not verify for another, in either direction.
+    #[tokio::test]
+    async fn a_question_and_an_update_cannot_stand_in_for_each_other() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(Some(signed.verifier())).await;
+        let got = config
+            .question(signed.high(1, "20"), stamped())
+            .await
+            .unwrap();
+        assert!(matches!(got, Err(Rejection::Signature(_))), "{got:?}");
+        let outcome = config
+            .submit(question(&signed, Spec::default(), AGENT))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ApplyOutcome::Refused(Refusal::Unverified(Rejection::Signature(_)))
+            ),
+            "{outcome:?}"
+        );
+        // The right domain and another kind of payload is refused as well.
+        let s = signer(&signed.ca, Spec::default());
+        let other = polar_signing::sign_in(
+            polar_signing::Domain::RUNNING_CONFIGURATION_QUESTION,
+            json!({"type": "configuration", "id": "u", "target": {"agent": AGENT}, "version": 1, "changes": []}),
+            &[s.cert_pem],
+            &s.key_pem,
+        )
+        .unwrap()
+        .to_value();
+        let got = config.question(other, stamped()).await.unwrap();
+        assert!(matches!(got, Err(Rejection::WrongType { .. })), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_ca_answers_no_question() {
+        let signed = Signed::new();
+        let (config, _) = spawn_handle(None).await;
+        let got = config
+            .question(question(&signed, Spec::default(), AGENT), stamped())
+            .await
+            .unwrap();
+        assert!(matches!(got, Err(Rejection::NotConfigured)), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn a_question_from_a_revoked_certificate_is_refused() {
+        struct All;
+        impl crate::signed::Revocation for All {
+            fn is_revoked(&self, _: &polar_signing::SignerInfo) -> bool {
+                true
+            }
+        }
+        let signed = Signed::new();
+        let (config, _) =
+            spawn_handle(Some(signed.verifier().with_revocation(Arc::new(All)))).await;
+        let got = config
+            .question(question(&signed, Spec::default(), AGENT), stamped())
+            .await
+            .unwrap();
+        assert!(matches!(got, Err(Rejection::Revoked(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn policy_decides_a_question_first_and_the_certificate_where_it_is_silent() {
+        let signed = Signed::new();
+        let no_capability = || Spec {
+            capabilities: vec![],
+            ..Spec::default()
+        };
+        let forbids = format!(
+            r#"forbid(principal == Identity::"{ALICE_ACCOUNT_ID}", action == Action::"read-configuration", resource == Agent::"{AGENT}");"#
+        );
+        let permits = format!(
+            r#"permit(principal == Identity::"{ALICE_ACCOUNT_ID}", action == Action::"read-configuration", resource == Agent::"{AGENT}");"#
+        );
+        let silent = r#"forbid(principal == Identity::"nobody", action == Action::"read-configuration", resource);"#;
+        let cases: [(&str, Spec, bool); 4] = [
+            (&forbids, Spec::default(), false),
+            (&permits, no_capability(), true),
+            (silent, Spec::default(), true),
+            (silent, no_capability(), false),
+        ];
+        for (rules, spec, answered) in cases {
+            let config = policy_handle(signed.verifier(), Some(rules)).await;
+            let got = config
+                .question(question(&signed, spec, AGENT), stamped())
+                .await
+                .unwrap();
+            assert_eq!(got.is_ok(), answered, "{rules}: {got:?}");
+        }
     }
 
     #[tokio::test]

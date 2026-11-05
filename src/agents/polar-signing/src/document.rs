@@ -50,6 +50,10 @@ pub struct Domain(&'static [u8]);
 
 impl Domain {
     pub const CONFIGURATION: Domain = Domain::new(b"polar-config-document-v1\n");
+    /// A question to a running agent about its configuration: what its asker's certificate carries, and nothing a
+    /// configuration document could be mistaken for (docs/architecture/dynamic-settings.md).
+    pub const RUNNING_CONFIGURATION_QUESTION: Domain =
+        Domain::new(b"polar-running-configuration-question-v1\n");
     /// What a deployment says it is made of, signed by the deployment PKI's pipeline (docs/architecture/runtime-attestation.md).
     pub const DEPLOYMENT_RECORD: Domain = Domain::new(b"polar-deployment-record-v1\n");
 

@@ -28,6 +28,7 @@
 //! (see [`crate::lenient`]).
 
 use crate::scaffold::{Field, Kind, Scaffold, fields_of, kind_of};
+use polar_scheduler_common::running::RunningConfiguration;
 use serde_json::{Value, json};
 
 const INDENT: &str = "  ";
@@ -202,32 +203,11 @@ pub fn runtime_template(scaffold: &Scaffold, section: &str) -> Result<String, St
 /// The template for the settings of the agent in `scaffold` that a signed document may change. Every one is
 /// commented out: uncomment those to change. A secret setting is listed and cannot be set this way yet.
 pub fn settings_template(scaffold: &Scaffold) -> Result<String, String> {
-    let dynamic: Vec<_> = scaffold.dynamic_variables().collect();
-    if dynamic.is_empty() {
-        return Err(format!(
-            "{} has no setting a signed document may change",
-            scaffold.agent
-        ));
+    if scaffold.dynamic_variables().next().is_none() {
+        return Err(no_settings(scaffold));
     }
     let mut out = Vec::new();
-    comment(
-        &mut out,
-        0,
-        &format!(
-            "polar-sign template: {}, the settings a signed document may change while it runs.",
-            scaffold.agent
-        ),
-    );
-    comment(
-        &mut out,
-        0,
-        "Uncomment the ones to change (delete the slashes before the name) and give each a value, as text.",
-    );
-    comment(
-        &mut out,
-        0,
-        "Then sign it: polar-sign sign <this file> [--push]. Lines that start with // are ignored.",
-    );
+    settings_head(&mut out, scaffold);
     out.push("{".to_string());
     out.push(format!("{INDENT}\"agent\": \"{}\",", scaffold.agent));
     comment(
@@ -237,21 +217,10 @@ pub fn settings_template(scaffold: &Scaffold) -> Result<String, String> {
     );
     out.push(format!("{INDENT}\"version\": 1,"));
     out.push(format!("{INDENT}\"settings\": {{"));
-    for v in dynamic {
-        let mut head = v.type_name.clone();
-        if let Some(d) = &v.default {
-            head.push_str(&format!(" - default {d}"));
-        }
-        comment(&mut out, 2, &format!("{} ({head})", v.name));
-        if !v.doc.is_empty() {
-            comment(&mut out, 2, &v.doc);
-        }
+    for v in scaffold.dynamic_variables() {
+        setting_head(&mut out, v);
         if v.secret {
-            comment(
-                &mut out,
-                2,
-                "SECRET: a secret setting cannot be changed by a signed document yet.",
-            );
+            secret_note(&mut out);
         } else {
             let value = v.default.clone().unwrap_or(json!(""));
             comment(&mut out, 2, &format!("\"{}\": {value},", v.name));
@@ -260,6 +229,183 @@ pub fn settings_template(scaffold: &Scaffold) -> Result<String, String> {
     out.push(format!("{INDENT}}}"));
     out.push("}".to_string());
     Ok(out.join("\n") + "\n")
+}
+
+/// The same file, from what the running agent says is in force (docs/architecture/dynamic-settings.md, "Asking an agent
+/// what is in force"). What a signed document holds now is a live line, so signing the file as it is keeps what is
+/// running. Anything else is commented out with its value, as a baseline: a live line for it would turn the render's
+/// value into an override, and a later change to the render would not reach the agent.
+pub fn running_settings_template(
+    scaffold: &Scaffold,
+    running: &RunningConfiguration,
+) -> Result<String, String> {
+    if running.agent != scaffold.agent {
+        return Err(format!(
+            "the answer is from `{}` and the scaffold is {}'s",
+            running.agent, scaffold.agent
+        ));
+    }
+    if scaffold.dynamic_variables().next().is_none() {
+        return Err(no_settings(scaffold));
+    }
+    // An override this scaffold has never heard of could not be kept, and signing would take it away.
+    let unknown: Vec<&str> = running
+        .settings
+        .iter()
+        .filter(|s| s.dynamic && s.source == SIGNED)
+        .map(|s| s.name.as_str())
+        .filter(|name| !scaffold.dynamic_variables().any(|v| v.name == *name))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "{} holds {} from a signed document, which its scaffold does not offer: is the scaffold from an older image?",
+            running.agent,
+            unknown.join(", ")
+        ));
+    }
+    let mut out = Vec::new();
+    settings_head(&mut out, scaffold);
+    comment(
+        &mut out,
+        0,
+        &format!(
+            "Filled in from what {} said at {} (seconds since the epoch). Its last applied version was {}.",
+            running.agent, running.at_unix_secs, running.version
+        ),
+    );
+    for section in &running.sections {
+        comment(
+            &mut out,
+            0,
+            &format!(
+                "It also holds its runtime section `{}` at version {}, which this file does not touch.",
+                section.name, section.version
+            ),
+        );
+    }
+    out.push("{".to_string());
+    out.push(format!("{INDENT}\"agent\": \"{}\",", scaffold.agent));
+    comment(
+        &mut out,
+        1,
+        "Must be higher than the last version applied to this agent's settings.",
+    );
+    out.push(format!(
+        "{INDENT}\"version\": {},",
+        running.version.saturating_add(1)
+    ));
+    out.push(format!("{INDENT}\"settings\": {{"));
+    for v in scaffold.dynamic_variables() {
+        setting_head(&mut out, v);
+        let in_force = running.settings.iter().find(|s| s.name == v.name);
+        match in_force {
+            _ if v.secret => {
+                secret_note(&mut out);
+                if in_force.is_some_and(|s| s.source == SIGNED) {
+                    comment(
+                        &mut out,
+                        2,
+                        "A signed document holds a value for it now, and signing this file takes that away.",
+                    );
+                }
+            }
+            None => {
+                comment(&mut out, 2, "The agent did not name it.");
+                let value = v.default.clone().unwrap_or(json!(""));
+                comment(&mut out, 2, &format!("\"{}\": {value},", v.name));
+            }
+            Some(s) if s.withheld => comment(
+                &mut out,
+                2,
+                "In force: withheld, because its value repeats a secret. Name it here only to give it a new value.",
+            ),
+            Some(s) => {
+                let value = json!(s.value.as_deref().unwrap_or(""));
+                let shown = match &s.value {
+                    Some(_) => value.to_string(),
+                    None => "nothing".to_string(),
+                };
+                comment(
+                    &mut out,
+                    2,
+                    &format!("In force: {shown}, {}.", from_where(&s.source)),
+                );
+                if s.source == SIGNED && s.value.is_some() {
+                    out.push(format!("{INDENT}{INDENT}\"{}\": {value},", v.name));
+                } else {
+                    comment(&mut out, 2, &format!("\"{}\": {value},", v.name));
+                }
+            }
+        }
+    }
+    out.push(format!("{INDENT}}}"));
+    out.push("}".to_string());
+    Ok(out.join("\n") + "\n")
+}
+
+/// What an answer calls a value a signed document set.
+const SIGNED: &str = "override";
+
+fn from_where(source: &str) -> &str {
+    match source {
+        SIGNED => "from a signed document",
+        "env" | "file" => "as rendered",
+        "default" => "the default",
+        _ => "not set",
+    }
+}
+
+fn no_settings(scaffold: &Scaffold) -> String {
+    format!(
+        "{} has no setting a signed document may change",
+        scaffold.agent
+    )
+}
+
+/// What every settings file says first.
+fn settings_head(out: &mut Vec<String>, scaffold: &Scaffold) {
+    comment(
+        out,
+        0,
+        &format!(
+            "polar-sign template: {}, the settings a signed document may change while it runs.",
+            scaffold.agent
+        ),
+    );
+    comment(
+        out,
+        0,
+        "Uncomment the ones to change (delete the slashes before the name) and give each a value, as text.",
+    );
+    comment(
+        out,
+        0,
+        "This file replaces the last one: a setting it does not name goes back to its rendered value, now and at a restart.",
+    );
+    comment(
+        out,
+        0,
+        "Then sign it: polar-sign sign <this file> [--push]. Lines that start with // are ignored.",
+    );
+}
+
+fn setting_head(out: &mut Vec<String>, v: &crate::scaffold::Variable) {
+    let mut head = v.type_name.clone();
+    if let Some(d) = &v.default {
+        head.push_str(&format!(" - default {d}"));
+    }
+    comment(out, 2, &format!("{} ({head})", v.name));
+    if !v.doc.is_empty() {
+        comment(out, 2, &v.doc);
+    }
+}
+
+fn secret_note(out: &mut Vec<String>) {
+    comment(
+        out,
+        2,
+        "SECRET: a secret setting cannot be changed by a signed document yet.",
+    );
 }
 
 #[cfg(test)]
@@ -494,5 +640,155 @@ mod tests {
                 .unwrap_err()
                 .contains("no setting a signed document may change")
         );
+    }
+
+    // -- from what the running agent says ---------------------------------------------------
+
+    use polar_scheduler_common::running::{RunningSection, RunningSetting};
+
+    fn in_force(name: &str, value: Option<&str>, source: &str) -> RunningSetting {
+        RunningSetting {
+            section: "s".to_string(),
+            name: name.to_string(),
+            value: value.map(str::to_string),
+            source: source.to_string(),
+            dynamic: true,
+            withheld: false,
+        }
+    }
+
+    fn running_for(settings: Vec<RunningSetting>) -> RunningConfiguration {
+        RunningConfiguration {
+            id: "q".to_string(),
+            agent: "git-repo-observer".to_string(),
+            version: 6,
+            settings,
+            sections: vec![RunningSection {
+                name: "repositories".to_string(),
+                version: 3,
+            }],
+            at_unix_secs: 1000,
+        }
+    }
+
+    fn many() -> Scaffold {
+        scaffold(
+            json!([]),
+            json!([
+                {"name": "RUST_LOG", "type": "text", "required": false, "secret": false, "default": "info",
+                 "mutability": "dynamic", "doc": "log filter"},
+                {"name": "POLL", "type": "whole number", "required": false, "secret": false, "default": "60",
+                 "mutability": "dynamic", "doc": "how often"},
+                {"name": "URL", "type": "text", "required": false, "secret": false, "default": null,
+                 "mutability": "dynamic", "doc": "where"},
+                {"name": "PATH_TO", "type": "text", "required": false, "secret": false, "default": null,
+                 "mutability": "static", "doc": "a path"},
+                {"name": "API_TOKEN", "type": "text", "required": false, "secret": true, "default": null,
+                 "mutability": "dynamic", "doc": "a token"}
+            ]),
+        )
+    }
+
+    #[test]
+    fn only_what_a_signed_document_set_is_a_live_line_and_the_rest_show_their_value() {
+        let text = running_settings_template(
+            &many(),
+            &running_for(vec![
+                in_force("RUST_LOG", Some("debug"), "override"),
+                in_force("POLL", Some("90"), "env"),
+                in_force("URL", None, "unset"),
+                in_force("API_TOKEN", None, "unset"),
+            ]),
+        )
+        .unwrap();
+        let value = strict(&text);
+        assert_eq!(value["settings"], json!({"RUST_LOG": "debug"}));
+        assert_eq!(value["version"], 7, "one above the last it applied");
+        assert!(
+            text.contains("In force: \"debug\", from a signed document."),
+            "{text}"
+        );
+        assert!(text.contains("In force: \"90\", as rendered."), "{text}");
+        assert!(text.contains("// \"POLL\": \"90\","), "{text}");
+        assert!(text.contains("In force: nothing, not set."), "{text}");
+        assert!(
+            text.contains("runtime section `repositories` at version 3"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("PATH_TO"),
+            "a static setting is not offered: {text}"
+        );
+    }
+
+    #[test]
+    fn neither_a_secret_nor_a_withheld_value_is_ever_a_live_line() {
+        let mut withheld = in_force("URL", None, "override");
+        withheld.withheld = true;
+        let mut secret = in_force("API_TOKEN", None, "override");
+        secret.withheld = true;
+        let text =
+            running_settings_template(&many(), &running_for(vec![withheld, secret])).unwrap();
+        assert_eq!(strict(&text)["settings"], json!({}));
+        assert!(text.contains("In force: withheld"), "{text}");
+        assert!(text.contains("signing this file takes that away"), "{text}");
+    }
+
+    #[test]
+    fn an_answer_from_another_agent_is_refused() {
+        let mut running = running_for(vec![]);
+        running.agent = "jira-observer".to_string();
+        let err = running_settings_template(&many(), &running).unwrap_err();
+        assert!(err.contains("jira-observer"), "{err}");
+    }
+
+    #[test]
+    fn an_override_the_scaffold_does_not_offer_is_refused_rather_than_lost() {
+        let err = running_settings_template(
+            &many(),
+            &running_for(vec![in_force("NEWER", Some("1"), "override")]),
+        )
+        .unwrap_err();
+        assert!(err.contains("NEWER"), "{err}");
+    }
+
+    #[test]
+    fn a_setting_the_agent_did_not_name_is_offered_with_its_default() {
+        let text = running_settings_template(&many(), &running_for(vec![])).unwrap();
+        assert!(text.contains("The agent did not name it."), "{text}");
+        assert_eq!(strict(&text)["settings"], json!({}));
+    }
+
+    proptest::proptest! {
+        /// Whatever the values say, even one that looks like another line of the file, what the file sets is exactly
+        /// what a signed document holds now, so signing it unchanged keeps what is running.
+        #[test]
+        fn the_file_sets_exactly_what_signed_documents_hold(
+            log in "(\\PC|\n|\"|\\\\|//|,){0,20}",
+            poll in "(\\PC|\n|\"){0,12}",
+            url in proptest::option::of("(\\PC|\n){0,12}"),
+            log_signed in proptest::bool::ANY,
+            poll_signed in proptest::bool::ANY,
+            version in 0u64..u64::MAX,
+        ) {
+            let source = |signed: bool| if signed { "override" } else { "env" };
+            let mut running = running_for(vec![
+                in_force("RUST_LOG", Some(&log), source(log_signed)),
+                in_force("POLL", Some(&poll), source(poll_signed)),
+                in_force("URL", url.as_deref(), if url.is_some() { "env" } else { "unset" }),
+            ]);
+            running.version = version;
+            let text = running_settings_template(&many(), &running).unwrap();
+            let value = strict(&text);
+            let mut want = serde_json::Map::new();
+            if log_signed {
+                want.insert("RUST_LOG".to_string(), json!(log));
+            }
+            if poll_signed {
+                want.insert("POLL".to_string(), json!(poll));
+            }
+            proptest::prop_assert_eq!(&value["settings"], &Value::Object(want));
+            proptest::prop_assert_eq!(value["version"].as_u64(), Some(version + 1));
+        }
     }
 }

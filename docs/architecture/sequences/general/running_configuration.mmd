@@ -1,0 +1,68 @@
+%% ACE Tool
+%%
+%% Copyright 2026 Carnegie Mellon University.
+%%
+%% NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+%% FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+%% EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+%% PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+%% MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+%% TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+%%
+%% Licensed under a MIT (SEI)-style license, please see license.txt or contact
+%% permission@sei.cmu.edu for full terms.
+%%
+%% [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+%% distribution.  Please see Copyright notice for non-US Government use and distribution.
+%%
+%% This Software includes and/or makes use of Third-Party Software each subject to its own license.
+%%
+%% DM26-0670
+
+%% Asking a running agent for its configuration, and the file written from the answer, as built (2026-11-05,
+%% docs/architecture/dynamic-settings.md, "Asking an agent what is in force"). Signing the file and how it reaches the agent:
+%% general/configuration_authoring. How a value then reaches the actor that holds it: general/held_agent_and_dynamic_setting.
+sequenceDiagram
+    autonumber
+    actor Admin as Administrator
+    participant Tool as polar-running-config
+    participant Bk as Cassini broker
+    participant Other as every other agent
+    participant Sup as the agent's<br/>InfrastructureSupervisor
+    participant Cfg as its ConfigurationActor
+    participant Sign as polar-sign
+
+    Admin->>Tool: nu infra/running-config.nu jira-observer --user alice (over a port-forward it starts)
+    Tool->>Bk: connect with alice's certificate
+    Tool->>Bk: subscribe polar-running-configuration-answers
+    alt policy permits: the seed's rule for Capability::"update-configuration"
+        Bk-->>Tool: subscribed
+    else a person's certificate names no topics, so nothing else admits one
+        Bk-->>Tool: refused, and the tool says which rule is missing
+    end
+    Tool->>Bk: publish on polar-running-configuration-questions: a question signed with alice's key,<br/>under its own signing domain: its id, the agent it is for, and a window of at most 5 minutes
+    Note over Bk: the same rule, for the publish, and the broker stamps who sent it
+    Bk->>Other: delivered: every agent hears every question
+    Other->>Other: it says it is for someone else: not read any further
+    Bk->>Sup: delivered, stamped published_by
+    Sup->>Cfg: the question, off the supervisor's own thread
+    Cfg->>Cfg: the signature holds, under that domain and no other. It is a question, for this agent,<br/>and its signer is who the broker says sent it
+    Cfg->>Cfg: Cedar: Action::"read-configuration" on Agent::"jira-observer".<br/>Where it is silent, the certificate: c:update-configuration
+    Cfg->>Cfg: not revoked, and within its time
+    alt any of those refuses
+        Cfg-->>Sup: why
+        Note over Sup: a warning naming the asker, and no answer: the tool's wait ends and it says to look there
+    else admitted
+        Cfg-->>Sup: every declared variable: its value, where it came from, whether it is Dynamic.<br/>A secret's value, or one that repeats it, is withheld. The last version applied, and each runtime section's version, never its body
+        Sup->>Bk: publish on polar-running-configuration-answers, with its identity
+        Bk->>Tool: delivered to whoever may listen
+        Tool->>Tool: its id, that agent, and stamped with that workload: otherwise not the answer
+        Tool-->>Admin: the answer as JSON
+    end
+
+    opt --template
+        Tool->>Sign: polar-sign template jira-observer --settings --running -
+        Sign-->>Admin: the file: version one above the last applied. What a signed document holds is a live line, and the rest<br/>are commented out with their value and where it came from, so signing does not pin what the render gave
+        Admin->>Sign: edit it, polar-sign sign --push
+        Note over Admin,Cfg: Applied, the document replaces every override before it: what it does not name goes back to the rendered value,<br/>and asks Cedar for that variable too. A running agent and a restarted one then agree
+    end

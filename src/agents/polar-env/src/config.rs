@@ -299,7 +299,15 @@ impl Config {
             .collect()
     }
 
-    /// Applies runtime overrides, all or none.
+    /// The variables a runtime override holds now, in the order they are declared.
+    pub fn overridden(&self) -> Vec<&'static str> {
+        self.declarations()
+            .map(|(_, desc)| desc.name)
+            .filter(|name| self.overrides.contains_key(name))
+            .collect()
+    }
+
+    /// Applies runtime overrides on top of those in force, all or none.
     ///
     /// A blank value removes that override, returning the variable to the environment or
     /// default. Returns the names whose effective value changed, or every problem found, in
@@ -309,8 +317,25 @@ impl Config {
         &mut self,
         changes: &[(&str, &str)],
     ) -> Result<Vec<&'static str>, Vec<String>> {
+        self.settle_overrides(self.overrides.clone(), changes)
+    }
+
+    /// Makes `changes` the only runtime overrides, all or none: anything it does not name returns to the environment or
+    /// default. What a signed document does, since the next restart will have only that document. Otherwise as
+    /// [`apply_overrides`](Self::apply_overrides).
+    pub fn replace_overrides(
+        &mut self,
+        changes: &[(&str, &str)],
+    ) -> Result<Vec<&'static str>, Vec<String>> {
+        self.settle_overrides(HashMap::new(), changes)
+    }
+
+    fn settle_overrides(
+        &mut self,
+        mut candidate: HashMap<&'static str, String>,
+        changes: &[(&str, &str)],
+    ) -> Result<Vec<&'static str>, Vec<String>> {
         let mut problems = Vec::new();
-        let mut candidate = self.overrides.clone();
 
         for (name, value) in changes {
             match self.declared(name) {
@@ -611,6 +636,45 @@ mod tests {
     }
 
     #[test]
+    fn replacing_the_overrides_returns_what_is_not_named_to_what_it_was() {
+        let mut c = config(&[("HOST", "h"), ("PORT", "80"), ("LOW", "3")]);
+        c.apply_overrides(&[("LOW", "5"), ("HIGH", "20")]).unwrap();
+        let changed = c.replace_overrides(&[("HIGH", "30")]).unwrap();
+        assert_eq!(changed, ["LOW", "HIGH"]);
+        assert_eq!(c.read(&LOW).unwrap(), 3, "back to the environment");
+        assert_eq!(resolved(&c, "LOW").source, Source::Env);
+        assert_eq!(c.read(&HIGH).unwrap(), 30);
+        assert_eq!(c.overridden(), ["HIGH"]);
+    }
+
+    #[test]
+    fn replacing_with_nothing_removes_every_override() {
+        let mut c = config(&[("HOST", "h"), ("PORT", "80")]);
+        c.apply_overrides(&[("LOW", "5")]).unwrap();
+        assert_eq!(c.replace_overrides(&[]).unwrap(), ["LOW"]);
+        assert_eq!(c.read(&LOW).unwrap(), 1, "back to the default");
+        assert!(c.overridden().is_empty());
+    }
+
+    #[test]
+    fn a_replacement_that_would_not_start_changes_nothing() {
+        let mut c = config(&[("HOST", "h"), ("PORT", "80")]);
+        c.apply_overrides(&[("LOW", "5")]).unwrap();
+        // LOW returns to 1 when it is not named, so HIGH=1 breaks the relation between them.
+        assert!(c.replace_overrides(&[("HIGH", "1")]).is_err());
+        assert_eq!(c.read(&LOW).unwrap(), 5);
+        assert_eq!(c.overridden(), ["LOW"]);
+    }
+
+    #[test]
+    fn a_replacement_refuses_what_an_update_refuses() {
+        let mut c = sound();
+        assert!(c.replace_overrides(&[("HOST", "other")]).is_err());
+        assert!(c.replace_overrides(&[("NOPE", "1")]).is_err());
+        assert!(c.overridden().is_empty());
+    }
+
+    #[test]
     fn a_blank_override_removes_it() {
         let mut c = config(&[("HOST", "h"), ("PORT", "80"), ("LOW", "3")]);
         c.apply_overrides(&[("LOW", "5")]).unwrap();
@@ -761,5 +825,31 @@ mod tests {
         assert_eq!(Source::Env.as_str(), "env");
         assert_eq!(Source::Default.as_str(), "default");
         assert_eq!(Source::Unset.as_str(), "unset");
+    }
+
+    proptest::proptest! {
+        /// Whatever came before, the overrides in force are exactly what the last replacement named: a running agent
+        /// and one that has just restarted and been given only that document read the same.
+        #[test]
+        fn what_is_in_force_depends_only_on_the_last_replacement(
+            earlier in proptest::collection::vec((1u64..50, 51u64..100), 0..5),
+            last in proptest::option::of((1u64..50, 51u64..100)),
+        ) {
+            let mut running = config(&[("HOST", "h"), ("PORT", "80")]);
+            for (low, high) in earlier {
+                let (low, high) = (low.to_string(), high.to_string());
+                running.replace_overrides(&[("LOW", &low), ("HIGH", &high)]).unwrap();
+            }
+            let mut restarted = config(&[("HOST", "h"), ("PORT", "80")]);
+            let (low, high) = last.map_or((String::new(), String::new()), |(l, h)| (l.to_string(), h.to_string()));
+            let named: Vec<(&str, &str)> = if low.is_empty() {
+                vec![]
+            } else {
+                vec![("LOW", &low), ("HIGH", &high)]
+            };
+            running.replace_overrides(&named).unwrap();
+            restarted.replace_overrides(&named).unwrap();
+            proptest::prop_assert_eq!(running.report(), restarted.report());
+        }
     }
 }

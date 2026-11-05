@@ -672,6 +672,12 @@ polar-git-clone repo dest="" user=env_var('USER'):
 cassini-shutdown user=env_var('USER'):
     nu infra/cassini-shutdown.nu --user {{user}}
 
+# Asks a running agent what configuration is in force, with your certificate. Add --template for a file to edit and sign.
+# Usage: just running-config jira-observer            (as the current user)
+#        just running-config jira-observer alice --template
+running-config agent user=env_var('USER') *flags='':
+    nu infra/running-config.nu {{agent}} --user {{user}} {{flags}}
+
 # What the secret harness pods say about the credentials agent's secret policy, and whether it held
 # (src/agents/secret-harness). The owner needs two rounds (a minute apart) and the intruder starts after
 # 90 seconds, so run it a few minutes after the pods are up; it exits non-zero until the policy has held.

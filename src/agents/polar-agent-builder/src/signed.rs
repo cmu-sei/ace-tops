@@ -219,6 +219,18 @@ impl Common {
         Ok((document, signer))
     }
 
+    /// As [`signed`](Self::signed), for a document signed under `domain`.
+    pub(crate) fn signed_in(
+        &self,
+        domain: polar_signing::Domain,
+        document: &Value,
+    ) -> Result<(Document, SignerInfo), Rejection> {
+        let document = Document::from_value(document).map_err(Rejection::Layout)?;
+        let signer = polar_signing::verify_in(domain, &document, &self.trust, self.now())
+            .map_err(Rejection::Signature)?;
+        Ok((document, signer))
+    }
+
     /// What kind of document this says it is, and a refusal if it is not `wanted`.
     pub(crate) fn expect_kind(
         &self,
@@ -387,6 +399,16 @@ impl UpdateVerifier {
         authority.authorize(&opened.signer, &opened.payload)
     }
 
+    /// Whether the certificate carries what signing this agent's settings needs: who may change them may ask what
+    /// they are.
+    pub(crate) fn settings_floor(
+        &self,
+        signer: &SignerInfo,
+        payload: &Value,
+    ) -> Result<(), AuthorityRefusal> {
+        self.authority.authorize(signer, payload)
+    }
+
     /// Stage three: the signer's certificate has not been revoked, and the document is what the agent acts on.
     pub fn close(&self, opened: Opened) -> Result<VerifiedDocument, Rejection> {
         self.common.check_not_revoked(&opened.signer)?;
@@ -442,6 +464,25 @@ impl Opened {
             OpenedBody::Runtime(payload) => Some(&payload.section),
             OpenedBody::Configuration(_) => None,
         }
+    }
+
+    /// What is being asked of policy when `held` are the variables overridden now: a configuration document replaces
+    /// them all, so one it does not name is a change to that variable too, and a signer kept off it cannot make that
+    /// change by leaving it out.
+    pub fn request_replacing(
+        &self,
+        agent: &str,
+        held: &[&str],
+    ) -> crate::policy_authority::AuthorityRequest {
+        let mut request = self.request(agent);
+        if let OpenedBody::Configuration(payload) = &self.body {
+            request.resources.extend(
+                held.iter()
+                    .filter(|name| !payload.changes.iter().any(|c| c.name == **name))
+                    .map(|name| ("Variable", format!("{agent}/{name}"))),
+            );
+        }
+        request
     }
 
     /// What is being asked of policy: who, to do what, to which things.

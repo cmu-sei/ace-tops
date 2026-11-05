@@ -61,7 +61,8 @@ enum Command {
         /// Must be higher than the last version the agent applied.
         #[arg(long)]
         version: u64,
-        /// A change, NAME=VALUE. Only variables the agent declares dynamic can be changed.
+        /// A change, NAME=VALUE. Only variables the agent declares dynamic can be changed. The document replaces the
+        /// last one: a setting it does not name goes back to its rendered value.
         #[arg(long = "set", value_name = "NAME=VALUE", required = true)]
         changes: Vec<String>,
         /// The item's id; a new one if not given.
@@ -118,6 +119,10 @@ enum Command {
         /// Print the template for the agent's settings instead.
         #[arg(long, conflicts_with = "section")]
         settings: bool,
+        /// Fill the settings in from what the agent says is in force: a file holding what `polar-running-config`
+        /// printed, or `-` for standard input.
+        #[arg(long, requires = "settings", value_name = "ANSWER")]
+        running: Option<PathBuf>,
         /// The agent's scaffold (`<agent> --scaffold`); <dir>/scaffolds/<agent>.json by default.
         #[arg(long)]
         scaffold: Option<PathBuf>,
@@ -259,6 +264,18 @@ fn write_or_print(text: &str, out: Option<&std::path::Path>, what: &str) -> Resu
     Ok(())
 }
 
+/// What a running agent said, as `polar-running-config` printed it: from a file, or standard input for `-`.
+fn read_answer(
+    path: &std::path::Path,
+) -> Result<polar_scheduler_common::running::RunningConfiguration> {
+    let text = if path == std::path::Path::new("-") {
+        std::io::read_to_string(std::io::stdin()).context("cannot read standard input")?
+    } else {
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?
+    };
+    serde_json::from_str(&text).context("that is not what polar-running-config prints")
+}
+
 fn main() -> Result<()> {
     polar_version::exit_if_asked("polar-sign");
     match Cli::parse().command {
@@ -266,6 +283,7 @@ fn main() -> Result<()> {
             agent,
             section,
             settings,
+            running,
             scaffold,
             dir,
             out,
@@ -285,7 +303,12 @@ fn main() -> Result<()> {
             }
             let text = match section {
                 Some(section) => template::runtime_template(&scaffold, &section),
-                None => template::settings_template(&scaffold),
+                None => match running {
+                    Some(answer) => {
+                        template::running_settings_template(&scaffold, &read_answer(&answer)?)
+                    }
+                    None => template::settings_template(&scaffold),
+                },
             }
             .map_err(anyhow::Error::msg)?;
             write_or_print(

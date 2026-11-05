@@ -165,15 +165,80 @@ then rests on the table above.
   an agent runs on the render's value until the signed one arrives, and then reacts if the value differs. It is seconds, it is
   true of Jira as it always was, and it is a reason a trust setting cannot be Dynamic: this window would hold the old value.
 - **A signed document removed from the repository stays in force until the agent restarts.** As before.
-- **A running agent's overrides add up, and a restart has only the file.** Updates apply on top of each other, but
-  `permanent/<agent>/configuration.dhall` holds one document, the latest, and that is all the replay can bring. So a document that
-  names only what it changes loses, at the next restart, what the one before it set. And a refused version replaces the good file
-  just the same: seen live, version 1 set `JIRA_POLL_SECS`, a refused version 2 replaced the file, and the restart came back on the
-  rendered 1800. **Until this is settled, name everything you mean to keep in each document, and sign a corrected one over a refused
-  one.** `polar-sign template --settings` gives a whole file; `polar-sign configuration --set` does not. Not changed here.
+- **A signed document replaces the one before it** ("Asking an agent what is in force", below). A running agent and one that has
+  restarted and heard only the latest document now agree. What this does not settle: **a refused version still replaces the good file
+  in the repository**, so the next restart comes back on the rendered values until a corrected version is signed. The answer shows it,
+  since the version in force stays below the file's. Stopping it needs a check before signing or before the merge, which is its own change.
+- **A variable-by-variable Cedar rule now reaches further.** A document is judged for every variable it names and every override it would
+  take away, and the file is replayed whole at a restart. So one signer has to be permitted everything in the file: a signer kept to one
+  variable cannot sign while another's override is held. No seeded policy does this.
 - **Every new Dynamic variable widens what `c:update-configuration` can do**, for a signer with no Cedar rule saying otherwise.
 - **While a held agent's work runs, its held supervisor still counts as following everything**, so the note does not appear for
   a variable the work forgets. Jira, the one user, follows all of its own.
+
+## Asking an agent what is in force
+
+Asked for by the maintainer, 2026-11-04, on hearing that overrides add up in a running agent and a restart has only the latest
+file: ask a running agent for its running configuration, and from the answer generate a document that someone can edit, and that says
+where they are now. Cleared the same day. Drawn as built: [`running_configuration`](sequences/general/running_configuration.mmd).
+
+```
+nu infra/running-config.nu jira-observer --user alice                       # the answer, as JSON
+nu infra/running-config.nu jira-observer --user alice --template > file     # a file to edit and sign
+polar-sign sign file --user alice --push
+```
+
+**An applied document replaces every override before it.** `Config::replace_overrides`, from `ConfigurationState::apply`: what a
+document does not name goes back to the rendered value, now as it would at a restart. Commenting a line out of the file therefore means
+what it looks like. A refused document changes nothing. `apply_overrides` stays for the shared check, which changes copies one variable
+at a time. An empty `settings` is still refused by `polar-sign`, as more likely a mistake; to return everything to the render, name one
+setting with an empty value.
+
+**Leaving a variable out is a change to it, so it needs the same permission** (`Opened::request_replacing`). Otherwise a signer Cedar
+keeps off a variable could still take away its value by not naming it.
+
+**The file holds what a signed document set as live lines, and the rest commented out with their value and source**
+(`polar_sign::template::running_settings_template`). Signing it unchanged keeps what is running, which a test holds across the
+agent's answer, the template and a fresh `Config`. If every value were live, signing would turn each rendered value into an override,
+and a later change to the catalog would silently not reach the agent. The version is one above the last applied. A secret or withheld
+value is never a live line. An override the scaffold does not offer is refused rather than lost, since signing would take it away.
+
+**The answer** (`polar_scheduler_common::running::RunningConfiguration`, built in `polar-agent-builder/src/running.rs`): every declared
+variable, Static ones included, with its value, source and whether it is Dynamic; the last version applied; each runtime section's
+version, never its body. A declared secret's value does not leave the agent, nor does any value that repeats one. Other values go as
+they are, Jira's address for one, so the answer goes back to whoever may ask and not to the graph.
+
+**A question is a signed document, under its own signing domain** (`Domain::RUNNING_CONFIGURATION_QUESTION`). The broker stamps an
+identity and nothing more, so the agent alone cannot learn what the asker's certificate carries. Signing gives it the certificate
+and proof of the key, by the path every other signed document takes, and a signature made for this can do nothing else, in either
+direction. The signer must be who the broker says sent it. A window of at most five minutes (`MAX_QUESTION_VALIDITY_SECS`) bounds a
+replay, which would only make the agent answer again.
+
+**Who may ask, marked for review.** Cedar first, `Action::"read-configuration"` on `Agent::"<agent>"`; where it is silent, the certificate:
+`c:update-configuration`. So who may change an agent's settings may ask what they are, and a `forbid` can keep someone off one agent.
+The design first said Cedar alone, with no floor. But `Agent` has no attribute a rule could match, and one rule per agent would have to
+change with the catalog, and "the certificate decides where policy is silent" is the standing rule.
+
+**One topic for all questions, one for all answers** (`QUESTIONS_TOPIC`, `ANSWERS_TOPIC`, implied by the `agent` rule), rather than one per
+agent as health has. A person's certificate names no topics, so a Cedar rule is what lets one use the broker at all, and a rule names a
+topic exactly: a topic per agent would need a rule per agent. `infra/seeds/signed/policy.cedar` holds the two rules, for
+`Capability::"update-configuration"`. Every agent hears every question and reads no further than whom it is for. Everyone who may ask
+hears every answer, and the tool takes only its own: its id, that agent, and stamped with that workload.
+
+**A refused question gets no answer**, as with health, and a warning in the agent's log naming the asker. The tool's wait ends and it says
+where to look. A refusal at the broker is said at once.
+
+**`polar-running-config` is its own tool.** `polar-sign` has no async runtime and needs none, and a Cassini client would bring both to
+what holds an administrator's key for signing. **Marked for review:** the first design said `polar-sign template --running` would ask by
+itself. It now reads the answer from a file or standard input, and `infra/running-config.nu` joins the two.
+
+**What this does not cover.** The broker is not a Cassini client, so it cannot be asked, the same gap as its not hearing updates. An agent
+must be up and connected. A Dynamic secret, which no real agent has, could not be kept by a file (`polar-sign` refuses to set one), and
+the file says signing takes it away.
+
+**For an existing deployment (recorded for the customer's migration, `remaining-work.md`).** Asking needs the two rules: the seed is only
+ever the first policy, so sign the next version with them. Anyone signing documents that name only what they change, relying on a running
+agent keeping the rest, now loses the rest at once, where before it was at the next restart.
 
 ## The protocol handlers' open question
 

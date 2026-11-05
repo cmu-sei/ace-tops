@@ -193,7 +193,7 @@ pub fn prepare(
             };
             if object.is_empty() {
                 return Err(vec![
-                    "`settings` is empty: there is nothing to change".to_string(),
+                    "`settings` is empty: there is nothing to change. To return every setting to its rendered value, name one with an empty value".to_string(),
                 ]);
             }
             let mut problems = Vec::new();

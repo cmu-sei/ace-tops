@@ -390,6 +390,16 @@ pub fn implied_by(rule: Rule, name: &str) -> Vec<(String, Access)> {
                 polar_health::report::HEALTH_REPLIES_TOPIC.to_string(),
                 Access::Publish,
             ),
+            // Asked what its configuration is now, by whoever policy lets: the question on the one topic, for every
+            // agent, and the answer, which the builder gives (running.rs). The other side is a person, not a workload.
+            (
+                scheduler::running::QUESTIONS_TOPIC.to_string(),
+                Access::Subscribe,
+            ),
+            (
+                scheduler::running::ANSWERS_TOPIC.to_string(),
+                Access::Publish,
+            ),
         ],
         Rule::SelfTest => {
             let topic = crate::infrastructure::self_test_topic(name);
@@ -467,6 +477,12 @@ fn implied_causes(rule: Rule, name: &str) -> BTreeMap<(String, Access), Causes> 
                 caused(vec![CauseEntry::Topic(polar_health::report::health_topic(
                     name,
                 ))]),
+            ),
+            (
+                (scheduler::running::ANSWERS_TOPIC.to_string(), Access::Publish),
+                caused(vec![CauseEntry::Topic(
+                    scheduler::running::QUESTIONS_TOPIC.to_string(),
+                )]),
             ),
         ]),
         Rule::SelfTest => {
@@ -1101,6 +1117,19 @@ mod tests {
         );
         assert!(said.contains("is declared twice"), "{said}");
         assert!(family_problems(&[FAMILY]).is_empty());
+    }
+
+    /// Every client hears questions about its configuration and may answer, whatever else it is: the broker's floor
+    /// and the agent's own gate both come from this.
+    #[test]
+    fn every_client_may_be_asked_what_is_in_force_and_may_answer() {
+        use polar_scheduler_common::running::{ANSWERS_TOPIC, QUESTIONS_TOPIC};
+        let implied = implied_by(Rule::Agent, "jira-observer");
+        assert!(implied.contains(&(QUESTIONS_TOPIC.to_string(), Access::Subscribe)));
+        assert!(implied.contains(&(ANSWERS_TOPIC.to_string(), Access::Publish)));
+        // It only hears them and only answers: asking is a person's, and policy's to permit.
+        assert!(!implied.contains(&(QUESTIONS_TOPIC.to_string(), Access::Publish)));
+        assert!(!implied.contains(&(ANSWERS_TOPIC.to_string(), Access::Subscribe)));
     }
 
     #[test]
