@@ -77,7 +77,8 @@ kubectl get storageclass                          # step 1: a cluster with stora
 bin/polar-dev up                                  # step 3: your dev container, in the cluster; you land in it
 
 # In the dev container, from /workspace:
-nu infra/up.nu local-minimal --dev --user <you> --email <your email>      # step 4: Polar
+nu infra/up.nu local-minimal --import-from docker.io/daveman1010220 --import-tag 3.0.1 --user <you> --email <your email>   # step 4: Polar, from this release's images
+nu infra/up.nu local-minimal --dev --user <you> --email <your email>      # or built from source: the way when you change code
 # when it pauses at the browser step, on your machine:
 bin/polar-dev cert <you>                          # step 5: your certificate into the browser
 bin/polar-dev forward                             # step 6: then https://localhost:7473 and http://localhost:8050
@@ -176,8 +177,10 @@ What Polar asks of the cluster:
 ### 2. Access to the target's secrets
 
 The target's secrets (the Neo4j password, tokens for the systems Polar observes) are in a SOPS file encrypted to the SSH
-keys of the people who may deploy it. Yours has to be one of them: send your SSH *public* key to someone who can already
-decrypt the file, and once they have added it, pull. Then check, with the private key you were added with, here if you
+keys of the people who may deploy it. **If you are deploying this release for yourself, you are not one of them, and the
+file in the repository is not for you:** write your own, in the dev container after step 3, as **Secrets setup** says
+under "If nobody can add you". It takes two values. Otherwise yours has to be one of the keys: send your SSH *public* key
+to someone who can already decrypt the file, and once they have added it, pull. Then check, with the private key you were added with, here if you
 have `sops`, or in the dev container after step 3 (where the key is already set, so `sops --decrypt` alone):
 
 ```bash
@@ -199,8 +202,8 @@ bin/polar-dev up
 ```
 
 The first time takes several minutes: it pulls the dev container image (about 2.7 GB) and copies its Nix store to a volume
-(about 9.7 GB). It says what it is doing as it goes, then clones the sources into `/workspace` with your forwarded SSH
-agent (`POLAR_DEV_REPO`, `POLAR_DEV_BRANCH`) and logs you in: the dev container's banner, a fish shell, `/workspace`. Inside
+(about 9.7 GB). It says what it is doing as it goes, then clones the sources into `/workspace` (`POLAR_DEV_REPO`, this
+project's public repository by default, and `POLAR_DEV_BRANCH`; for a private remote, with your forwarded SSH agent) and logs you in: the dev container's banner, a fish shell, `/workspace`. Inside
 it, `kubectl` reaches the cluster as the pod's own account and `sops` decrypts with your key. Later logins are
 `bin/polar-dev attach`. What it makes and every setting are in **Working environments**.
 
@@ -236,7 +239,8 @@ whether it is already done, and picks up where it stopped.
   .#neo4j-image -o result-neo4j-image`), or set `POLAR_NEO4J_IMAGE` to the archive. That image sets the `neo4j` user's
   password from `NEO4J_AUTH` on its first start, so there is no password to change by hand.
 - **`--import-from docker.io/<account>`** copies the published images the target runs, Neo4j included, for this
-  machine's architecture into the registry: nothing is built (**Loading prebuilt images**).
+  machine's architecture into the registry: nothing is built (**Loading prebuilt images**). The published account is
+  `docker.io/daveman1010220`; add `--import-tag 3.0.1` so a later `latest` cannot change what you run.
 
 Either way it is one step, before the render: `up.nu` works out every image the target runs (its charts, rendered alone,
 and its catalog name them), then builds or copies each once. A build's log is shown only if it fails.
@@ -280,7 +284,8 @@ browser step it pauses. On **your machine**, close Librewolf, then:
 bin/polar-dev cert <name>
 ```
 
-and press Enter in the dev container. It copies your certificate out of the dev container and imports it, with the
+and press Enter in the dev container. (Only a browser needs the certificate: if you are not going to use Neo4j's browser
+now, or you use another browser, pressing Enter here without importing is fine.) It copies your certificate out of the dev container and imports it, with the
 cluster's CA, into Librewolf's certificate store, replacing any Polar certificate from before (it needs NSS's `certutil`
 and `pk12util`: from Nix, or your package manager). `up.nu` then checks the Neo4j password and goes on. For another
 browser, import `~/.config/polar-admin/<name>.crt`, its key and `ca.pem` yourself: **On a Mac, with minikube**, step 5, has
@@ -437,7 +442,8 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    kubectl get storageclass     # standard (default)
    ```
 
-2. **Access to the secrets** (step 2): send your SSH public key to someone who can add it, pull, and check with `sops`.
+2. **Access to the secrets** (step 2): write your own in the dev container, or if you are on the team, send your SSH public
+   key to someone who can add it, pull, and check with `sops`.
 
 3. **Your dev container in the cluster** (step 3), from your clone of the repository:
 
@@ -450,7 +456,7 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    image from source, which takes hours on a Mac.
 
    ```bash
-   nu infra/up.nu local-minimal --import-from docker.io/daveman1010220 --user <name> --email <email>
+   nu infra/up.nu local-minimal --import-from docker.io/daveman1010220 --import-tag 3.0.1 --user <name> --email <email>
    ```
 
    It copies the `arm64` images into the cluster, then deploys. Run the same command again after a failure or a pause.
@@ -712,7 +718,7 @@ just registry-host-up                                  # a registry on this mach
 nu infra/images.nu import --from docker.io/<account>   # amd64 or arm64, from `uname -m`; --arch to choose
 ```
 
-Every release is published under its version as well as `latest`: `--tag 3.0.0` imports that release, so a later
+Every release is published under its version as well as `latest`: `--tag 3.0.1` imports that release, so a later
 `latest` cannot change what you run. 3.0.0 changes the broker's protocol, so import every image of one release
 together; a 2.x client and a 3.0 broker refuse each other.
 

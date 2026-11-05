@@ -157,7 +157,6 @@ Comprehensive documentation including architecture and operational guides.
 #### `docs/operations/` - Operations Guides
 
 - `git-private-repository.md` - Bring a cluster up and have it observe a private repository, step by step
-- `gitea-add-user.md` - Add a user to the Gitea that hosts the repository
 
 ### `scripts/` - Utility Scripts
 
