@@ -364,7 +364,7 @@ Run all of it in the dev container (`bin/polar-dev attach`), from `/workspace`. 
 just port-forwards-up observer git          # the credentials agent's gateway (8081) and the Polar git server (8443)
 eval "$(just polar-git-config <you> | grep '^git config')"   # git presents your certificate to the git server
 nu infra/resolve.nu scaffolds ~/.config/polar-admin/scaffolds   # what each agent accepts; again after a git pull
-export POLAR_SCHEDULES_URL=https://polar-git-server.polar.svc.cluster.local:8443/polar-schedules.git
+set -x POLAR_SCHEDULES_URL https://polar-git-server.polar.svc.cluster.local:8443/polar-schedules.git   # fish, the dev container's shell; `export` is broken there in 3.0.1
 ```
 
 Your admin certificate is already in `~/.config/polar-admin` (`<you>.crt`, `<you>.key`): step 4's admin flow made it for
@@ -986,15 +986,20 @@ whichever key you use) and ask them to:
 **If nobody can add you** (you are starting without access to anyone's key),
 write a secrets file of your own for the target. The cluster cannot run
 without two values, `neo4j_auth` (`neo4j/<password>`) and `graph_password`
-(the same password); everything else is optional and the secrets step warns
-about what it skips. From the repository root:
+(the same password). Keycloak and its Postgres need `keycloak_admin_password`
+and `keycloak_db_password`, or they stay in `CreateContainerConfigError`, which
+stops nothing else. Everything further is optional, and the secrets step warns
+about what it skips. From the repository root, in `bash` (the dev container's
+shell is fish, so type `bash` first; these lines were run there):
 
-```sh
+```bash
 cd infra/targets/local-minimal
-PUB=$(cut -d' ' -f1,2 ~/.ssh/id_ed25519.pub)       # your public key, not the private one
-printf 'creation_rules:\n  - path_regex: secrets\\.sops\\.yaml$\n    age: >-\n      %s\n' "$PUB" > .sops.yaml
+KEY=${SOPS_AGE_SSH_PRIVATE_KEY_FILE:-$HOME/.ssh/id_ed25519}   # your private key; the dev container has this set
+read -r TYPE BLOB _ < <(ssh-keygen -y -f "$KEY")
+printf 'creation_rules:\n  - path_regex: secrets\\.sops\\.yaml$\n    age: >-\n      %s %s\n' "$TYPE" "$BLOB" > .sops.yaml
 PW=$(openssl rand -hex 16)
-printf 'neo4j_auth: "neo4j/%s"\ngraph_password: "%s"\n' "$PW" "$PW" > secrets.sops.yaml
+printf 'neo4j_auth: "neo4j/%s"\ngraph_password: "%s"\nkeycloak_admin_password: "%s"\nkeycloak_db_password: "%s"\n' \
+  "$PW" "$PW" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" > secrets.sops.yaml
 SOPS_CONFIG=.sops.yaml sops --encrypt --in-place secrets.sops.yaml
 ```
 

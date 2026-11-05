@@ -26,6 +26,12 @@
 The single source of truth for what is left. Update it as items finish; do not rely on conversation memory.
 Last updated: 2026-10-10.
 
+## Found by a clean install of 3.0.1 (2026-11-05, u7c, as a stranger: a dev pod, a new key, the README)
+
+- [ ] **The dev image's `export` is broken.** `/etc/fish/vendor_functions.d/export.fish` calls `cut`, and the image has no `cut`, `head`, `wc` or `awk` (uutils-micro), so `export X=y` in the pod's shell sets nothing and prints errors. The README uses `set -x` meanwhile. Fix it in the image: the function in fish alone, or the tools; that is a new release of the dev image.
+- [ ] `images.lock.nuon` keeps rows nothing builds, and a mirror's old digest. A release's sync only adds to what the registry has: `secret-harness:latest` is carried from before it split, and `postgres:16` keeps its v3.0.0 digest, where a fresh registry has what upstream's moving tag says now.
+- [ ] `up.nu` ends saying no `polar-scheduler-observer` pod is running to probe from, while it runs: so access to the outside was not checked.
+
 ## Done (2026-09-29 to 2026-10-06)
 
 - [x] Observer `/admin-action` relay; admin CLI over HTTP (`--observer-url` explicit, no default)
