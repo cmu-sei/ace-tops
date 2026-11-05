@@ -80,14 +80,23 @@ document can give only values, which reach Cypher as parameters. The language wa
 | | Fixed when built, and given by the scaffold | Changed by a signed update |
 |---|---|---|
 | Observer | what it needs to run: its name, its topic, its operations, its variables | its data tasking: `sources` |
-| Processor | its schema: labels, what identifies each, edge types (`polar_projection::Bounds`) | which data goes where inside that schema: the mapping |
+| Processor | its schema: labels, what identifies each, and edges, each a type between two of its labels (`polar_projection::Bounds`) | which data goes where inside that schema: the mapping |
 
 So the agent judges a signed mapping against its `Bounds`, and a mapping can only choose data within them. That settles three things a mapping free to name labels left open: constraints are made at
 the controller's first contact with the graph, from the built schema; the state agent's first schema still comes from scaffolds; and one workload cannot write another's labels. The cost: a new label needs
 a new build of that small crate. So a new endpoint, or new data from one, needs no binary change, and a new kind of thing in the graph does.
 
+**The scaffold is the contract (built 2026-11-05, the first bite of "Evidence" below).** A kind declares its schema once, with `polar_http_processor::schema!`: each label with its keys and
+purpose, each edge with the labels at both ends. That one declaration makes the `Bounds` a mapping is judged by and the kind's `GRAPH` and `GRAPH_EDGES`, so they cannot drift. The scaffold
+prints each owned label's keys (`graph[].keys`, the sets its constraints are made on, `graph_key_indexes`) and its edges (`graph_edges`), so `<processor> --scaffold` says exactly what the binary
+may write. `polar-sign runtime --projection` reads the agent's scaffold (`--scaffold`, or `<dir>/scaffolds/<agent>.json`), refuses a section the scaffold does not take, and judges the mapping
+by the agent's own rule (`Projection::judged`), so nothing is signed that the agent would refuse; without a scaffold it signs no projection. An edge is a triple: `HAS_ENDPOINT` is allowed from an
+application to an endpoint and nowhere else. A property test holds the tool and the agent to the same verdict (`openapi/process/src/agent.rs`), and another holds the schema read back from the
+printed scaffold to the one built in. Marked for review: requiring a scaffold to sign a projection, and edges as triples rather than types. Cypher's rule for a name moved into `polar-cypher`,
+shared by the graph controller and `polar-projection`, so the tool judges names as the graph does without taking a graph. A projection signed with `--body-file` instead is still judged by the agent alone.
+
 **The type is for the author, and the agent trusts none of it.** `polar-sign runtime --projection <file>` checks the Dhall against the type, then that it is well formed. Imports stay off, so a file cannot name
-the type and the tool gives it. The agent judges the JSON again, and against its own bounds, which `polar-sign` does not know. The type has no Optional, because a signed document cannot hold a null, and
+the type and the tool gives it. The agent judges the JSON again, against its own bounds, which `polar-sign` knows only from the scaffold. The type has no Optional, because a signed document cannot hold a null, and
 it is flat, because a Dhall type cannot refer to itself: an empty `parent`, `edge` or `only` means none. `polar-projection` has no graph or runtime without its `graph` feature, so the tool that holds an
 administrator's key takes neither.
 
@@ -160,7 +169,7 @@ The maintainer's requirement: the same properties, and more, from dynamic config
 | A bad update | Fails to build or deploy | Refused and the last one kept, until a restart: a refused file still replaces the good one (`dynamic-settings.md`) | **Weaker until that gap closes.** The agent would hold, not misbehave |
 | A service that changes under it | Parsing code fails, or silently reads less | The guard refuses the document whole and health names the source | **Stronger**, for what the guard says |
 | Labels it may write | Declared in `GRAPH`, not enforced on writes | Enforced by `Bounds` when the mapping is judged | **Stronger** |
-| Cypher injection | Parameters, by each author's care | By construction, and names judged again by `validate_cypher_identifier` | **Stronger** |
+| Cypher injection | Parameters, by each author's care | By construction, and names judged by Cypher's rule (`polar-cypher`) before signing, at the agent and by the graph controller | **Stronger** |
 | Sensitive data in the graph | A reviewer sees what code copies | A signer can project any field of what was fetched. With a credential, that could be a route out | **Weaker, and matters at the first kind with a credential.** OpenAPI has none |
 | What the graph knows of itself | Whatever the code writes | Every node and edge stamped: source, workload, mapping version, time | **Stronger** |
 | What ran | The image digest, by attestation | The digest no longer says all of what it does: digest and signed section together do, and each signed version is in git | Different. Slice C should count this |
@@ -173,6 +182,45 @@ The maintainer asked whether the credentials agent's engine helps here. `ascent`
 
 It may help with the question this design exists for, though. "This service was compromised: what could it touch?" is reachability, which the authority model already computes over topics. Facts from the catalog and
 from each signed version (a workload's sources, its credentials, the labels in its bounds) would answer it with a rule, and would have caught `polar.web.consumer` going nowhere. Not designed: a place to go when the provenance chain is built.
+
+## Evidence: tests, invariants and facts (planned 2026-11-05)
+
+The maintainer chose to settle this architecture before GitLab, so the agents rewritten onto it do not have to move again, and asked for the most use of tests, invariants and facts tied to a
+version and an instance. Cleared the same day. Three layers, each true of something different:
+
+| Layer | Proves | True of |
+|---|---|---|
+| Properties | The engine obeys its rules for any input | A build of the code |
+| Examples | This mapping does the right thing with these documents | A mapping, a schema and samples |
+| Facts and invariants | This deployment's declared state is sound, and which evidence still applies | One version of one instance |
+
+An instance is the target and its CA fingerprint, and the pod (`Instance.uid`, stamped by the broker). A version is the image digest and platform version, the scaffold's digest, and each signed
+section's id, version and digest. The sources are the catalog and scaffolds, the signed deployment record, the `polar-schedules` history, and `polar-running-config` for what is in force (which needs the
+platform version added to its answer).
+
+The bites, in order:
+
+1. **The scaffold becomes the contract.** Built: above.
+2. **Pure cores and engine properties.** The observer's and processor's decisions out of their actors, and a generator of valid mappings: for any valid mapping and any JSON, no panic, the same writes
+   each time, only the labels and edges it names, every write stamped, nothing written on a failed guard, no null key, no document text in Cypher, a round trip through signing. The state machines
+   against a simple model: the last good document under the last accepted mapping.
+3. **A test kit for every kind.** `polar_http_tests!(Kind)` and a pair harness: the real handler, a stand-in service, the real signing path and real Neo4j, with samples and expected writes beside
+   each mapping.
+4. **`polar-sign projection test`.** The same checks for a deployment's own mapping, writing a signed evidence record (the digests of mapping, scaffold and samples, the tool's version and the
+   result) into `polar-schedules`, where the scheduler does not read.
+5. **A fact base and invariants.** The authority model's facts and rules split into a crate with no runtime, and `polar-sign check` giving each instance holds, no longer covered or violated, with
+   a witness. Each invariant has a test that a bad fact base breaks it; report-only first. The first ones: every pair connected and allowed; one owner per label; each mapping inside its binary's
+   schema; every path a mapping reads in a tested sample; signed sections as in force; every non-bootstrap workload certified by the credentials agent; every catalog workload in the state agent's
+   list; no credentialed fetch reaching the graph unreviewed; what each workload could touch.
+6. **Version ranges and migrations**, as designed above, both becoming facts.
+7. **Harder shapes.** Paging, `Bound` credentials and the signed-list fix, with Jira's projects, groups and users through the kit in tests, and a fresh bring-up.
+
+What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
+what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one
+(5; the fix is a server-side check at push), and a forgotten migration (5, 6). Narrowed: a service changing its shape (the guard; a field outside it can still clear), one signer and no review (4, 5),
+a sensitive field reaching the graph (5 sees the flow, not which field is sensitive), the signer choosing hosts (reported, not bounded). Remaining: what a workload actually touched (the request
+record is only in logs; the fix is a durable `Recorder`), evidence and applied records being signed claims rather than proof, facts against real behaviour (2 and 3 tie code to facts; "should" stays
+"should"), and dropped endpoints with the processor's stale problem (small, needs a decision).
 
 ## What the OpenAPI pair fixes
 

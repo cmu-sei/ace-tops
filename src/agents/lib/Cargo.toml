@@ -39,6 +39,8 @@ opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry.workspace = true
 polar-custody.workspace = true
+# The rule for a name in Cypher, which the graph controller holds every query to (graph/controller.rs).
+polar-cypher.workspace = true
 rustls.workspace = true
 polar-env.workspace = true
 polar-health.workspace = true

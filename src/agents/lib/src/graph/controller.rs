@@ -84,70 +84,8 @@ pub mod rel {
     pub const HAS_LAYER: &str = "HAS_LAYER";
 }
 
-/// Cypher keywords that would be dangerous to interpolate directly into
-/// a query as a label, relationship type, or property name -- not
-/// exhaustive against every reserved word, but covers every keyword that
-/// could actually mutate or destroy data if smuggled in this way.
-const CYPHER_KEYWORD_BLACKLIST: &[&str] = &[
-    "MATCH",
-    "MERGE",
-    "CREATE",
-    "DELETE",
-    "DETACH",
-    "SET",
-    "REMOVE",
-    "RETURN",
-    "WHERE",
-    "WITH",
-    "UNWIND",
-    "CALL",
-    "YIELD",
-    "FOREACH",
-    "LOAD",
-    "CSV",
-    "UNION",
-    "OPTIONAL",
-    "DROP",
-    "CONSTRAINT",
-    "INDEX",
-];
-
-#[derive(Debug, thiserror::Error)]
-pub enum CypherIdentifierError {
-    #[error("identifier cannot be empty")]
-    Empty,
-    #[error("identifier '{0}' contains characters other than ASCII alphanumerics and underscores")]
-    InvalidCharacters(String),
-    #[error("identifier '{0}' cannot start with a digit")]
-    StartsWithDigit(String),
-    #[error("identifier '{0}' is a reserved Cypher keyword")]
-    ReservedKeyword(String),
-}
-
-/// Validates that `s` is safe to interpolate directly into a Cypher query
-/// as a label, relationship type, or property name. Cypher can only
-/// parameterize property *values* -- never labels, relationship types, or
-/// property names -- so anything derived from external/untrusted input
-/// (a Jira custom field name, for example) that ends up in one of those
-/// positions must pass this check first.
-pub fn validate_cypher_identifier(s: &str) -> Result<(), CypherIdentifierError> {
-    if s.is_empty() {
-        return Err(CypherIdentifierError::Empty);
-    }
-    if s.chars().next().unwrap().is_ascii_digit() {
-        return Err(CypherIdentifierError::StartsWithDigit(s.to_string()));
-    }
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == 'Σ')
-    {
-        return Err(CypherIdentifierError::InvalidCharacters(s.to_string()));
-    }
-    if CYPHER_KEYWORD_BLACKLIST.contains(&s.to_ascii_uppercase().as_str()) {
-        return Err(CypherIdentifierError::ReservedKeyword(s.to_string()));
-    }
-    Ok(())
-}
+use polar_cypher::KEYWORD_BLACKLIST as CYPHER_KEYWORD_BLACKLIST;
+pub use polar_cypher::{CypherIdentifierError, validate_cypher_identifier};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GraphOpError {

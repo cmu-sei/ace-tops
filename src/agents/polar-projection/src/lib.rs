@@ -114,17 +114,26 @@ pub struct Projection {
 
 /// A label a workload may write and what identifies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Shape {
-    pub label: &'static str,
-    pub keys: &'static [&'static str],
+pub struct Shape<'a> {
+    pub label: &'a str,
+    pub keys: &'a [&'a str],
+}
+
+/// An edge a workload may write: of this type, from a node of one label to a node of another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Edge<'a> {
+    pub from: &'a str,
+    pub kind: &'a str,
+    pub to: &'a str,
 }
 
 /// What the workload was built to write, which no signed mapping can widen: the schema its scaffold gives, from which its
-/// constraints and the state agent's first schema come. A signed mapping says which data goes where inside it.
+/// constraints and the state agent's first schema come. A signed mapping says which data goes where inside it. Built into a
+/// workload as a constant, and read back from its scaffold by the tool that signs a mapping, which judges by the same rule.
 #[derive(Debug, Clone, Copy)]
-pub struct Bounds {
-    pub shapes: &'static [Shape],
-    pub edges: &'static [&'static str],
+pub struct Bounds<'a> {
+    pub shapes: &'a [Shape<'a>],
+    pub edges: &'a [Edge<'a>],
 }
 
 /// A value in the graph.
@@ -185,7 +194,8 @@ pub enum Refused {
     Guard(String),
 }
 
-/// A name that can stand in Cypher, or a variable. The graph side checks a label against Cypher's keywords as well.
+/// A name that can stand in Cypher, or a variable. A name that goes into Cypher is held to Cypher's own rule as well
+/// (`polar_cypher`), the one the graph controller holds every query to.
 fn is_identifier(name: &str) -> bool {
     let mut chars = name.chars();
     chars
@@ -208,9 +218,14 @@ fn path_parts(path: &str) -> Option<Vec<&str>> {
 impl Projection {
     /// Judges a body as it arrives at the agent: that it is well formed, and inside what the workload was built to write.
     /// Every problem, by name. Nothing about it is believed until this says so.
-    pub fn judged(body: &Value, bounds: Bounds) -> Result<Projection, Vec<String>> {
+    pub fn judged(body: &Value, bounds: Bounds<'_>) -> Result<Projection, Vec<String>> {
         let projection = Self::well_formed(body)?;
         let mut problems = Vec::new();
+        let label_of: BTreeMap<&str, &str> = projection
+            .rules
+            .iter()
+            .map(|r| (r.name.as_str(), r.label.as_str()))
+            .collect();
         for rule in &projection.rules {
             let at = format!("rule `{}`", rule.name);
             match bounds.shapes.iter().find(|s| s.label == rule.label) {
@@ -232,11 +247,23 @@ impl Projection {
                     }
                 }
             }
-            if !rule.edge.is_empty() && !bounds.edges.contains(&rule.edge.as_str()) {
-                problems.push(format!(
-                    "{at}: the edge `{}` is not in this workload's part of the graph",
-                    rule.edge
-                ));
+            // A well-formed edge has a parent, which is an earlier rule.
+            if !rule.edge.is_empty() {
+                let from = label_of
+                    .get(rule.parent.as_str())
+                    .copied()
+                    .unwrap_or_default();
+                let edge = Edge {
+                    from,
+                    kind: &rule.edge,
+                    to: &rule.label,
+                };
+                if !bounds.edges.contains(&edge) {
+                    problems.push(format!(
+                        "{at}: the edge `{}` from `{from}` to `{}` is not in this workload's part of the graph",
+                        rule.edge, rule.label
+                    ));
+                }
             }
         }
         if problems.is_empty() {
@@ -315,6 +342,8 @@ impl Projection {
             }
             if !is_identifier(&rule.label) {
                 problems.push(format!("{at}: the label is not an identifier"));
+            } else if let Err(e) = polar_cypher::validate_cypher_identifier(&rule.label) {
+                problems.push(format!("{at}: the label: {e}"));
             }
             let mut scope: BTreeSet<&str> = ROOTS.into_iter().collect();
             match (rule.parent.as_str(), rule.edge.as_str()) {
@@ -329,6 +358,10 @@ impl Projection {
                     }
                     if !edge.is_empty() && !is_identifier(edge) {
                         problems.push(format!("{at}: the edge type is not an identifier"));
+                    } else if !edge.is_empty()
+                        && let Err(e) = polar_cypher::validate_cypher_identifier(edge)
+                    {
+                        problems.push(format!("{at}: the edge type: {e}"));
                     }
                 }
             }
@@ -380,6 +413,8 @@ impl Projection {
                         "{at}: the property `{}` is not an identifier",
                         field.name
                     ));
+                } else if let Err(e) = polar_cypher::validate_cypher_identifier(&field.name) {
+                    problems.push(format!("{at}: the property: {e}"));
                 }
                 if field.name.starts_with(STAMP_PREFIX) {
                     problems.push(format!(

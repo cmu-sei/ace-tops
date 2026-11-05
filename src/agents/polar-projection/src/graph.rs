@@ -21,34 +21,13 @@
    DM26-0670
 */
 
-//! Writes as graph operations. Names were judged when the projection was, and are judged again here against Cypher's own
-//! rule, since a name is the one thing Cypher cannot take as a parameter.
+//! Writes as graph operations. Names were judged against Cypher's own rule when the projection was (`polar_cypher`), and the
+//! graph controller holds every query to the same rule, since a name is the one thing Cypher cannot take as a parameter.
 
-use crate::{NodeId, Projection, Scalar, Write};
+use crate::{NodeId, Scalar, Write};
 use polar::graph::controller::{
     GraphNodeKey, GraphOp, GraphValue, IntoGraphKey, NodeIdentity, Property,
-    validate_cypher_identifier,
 };
-
-/// Every name a projection would put into Cypher that Cypher's own rule refuses.
-pub fn identifier_problems(projection: &Projection) -> Vec<String> {
-    let mut problems = Vec::new();
-    let mut check = |what: String, name: &str| {
-        if let Err(e) = validate_cypher_identifier(name) {
-            problems.push(format!("{what}: {e}"));
-        }
-    };
-    for rule in projection.rules() {
-        check(format!("rule `{}`: the label", rule.name), &rule.label);
-        if !rule.edge.is_empty() {
-            check(format!("rule `{}`: the edge", rule.name), &rule.edge);
-        }
-        for field in rule.keys.iter().chain(&rule.set) {
-            check(format!("rule `{}`: a property", rule.name), &field.name);
-        }
-    }
-    problems
-}
 
 #[derive(Debug)]
 struct ProjectedKey(NodeId);
@@ -114,24 +93,11 @@ pub fn operation(writes: Vec<Write>) -> Option<GraphOp> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Stamp;
+    use crate::{Projection, Stamp};
     use serde_json::json;
 
     fn projection() -> Projection {
         Projection::well_formed(&crate::tests::openapi_body()).unwrap()
-    }
-
-    #[test]
-    fn the_openapi_projection_passes_cypher_s_own_rule() {
-        assert_eq!(identifier_problems(&projection()), Vec::<String>::new());
-    }
-
-    #[test]
-    fn a_keyword_a_plain_name_check_lets_by_is_refused_for_the_graph() {
-        let mut body = crate::tests::openapi_body();
-        body["rules"][0]["set"][0]["name"] = json!("merge");
-        let judged = Projection::well_formed(&body).unwrap();
-        assert_eq!(identifier_problems(&judged).len(), 1);
     }
 
     /// What reaches Cypher from a document is only ever a parameter.

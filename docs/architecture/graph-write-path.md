@@ -146,7 +146,9 @@ declares it owns, on the properties that label's node key merges on, derived fro
 - **Declared once.** `PolarAgent::GRAPH` says which labels the agent owns; `PolarAgent::GRAPH_KEYS` lists the
   vocabularies it writes with (`&[shapes_of::<JiraNodeKey>]`). `graph_key_indexes::<A>()`
   (`polar-agent-builder/src/agent.rs`) derives the constraints with `polar::graph::schema::key_indexes`;
-  `Configured::graph_key_indexes` hands them to `GraphControllerArgs::with_key_indexes`.
+  `Configured::graph_key_indexes` hands them to `GraphControllerArgs::with_key_indexes`. The scaffold prints the key
+  sets of each owned label (`graph[].keys`), and `PolarAgent::GRAPH_EDGES` the edges an agent writes, each between two
+  labels it owns (`graph_edges`); an agent that declares no edge says nothing about its edges.
 - **The rule.** For each owned label, each distinct set of key properties a shape merges it on; a shape with no key
   (the `State` anchor) needs none, and a label owned but in no shape (raw Cypher, a run-time label) gets none. One key
   set: a property uniqueness constraint, `polar_unique_<Label>_<keys>`. Several key sets on one label: a range index

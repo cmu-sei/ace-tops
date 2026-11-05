@@ -451,6 +451,25 @@ pub fn projection_body(source: &str) -> Result<Value, Vec<String>> {
     Ok(body)
 }
 
+/// A projection for `agent`'s section `section`, as the body to sign: [`projection_body`], then judged by the agent's own
+/// rule against the schema its scaffold gives (`Scaffold::judge_projection`), so nothing is signed that the agent this
+/// scaffold came from would refuse. The scaffold must be the agent's and must take that section.
+pub fn projection_for(
+    scaffold: &scaffold::Scaffold,
+    section: &str,
+    source: &str,
+) -> Result<Value, Vec<String>> {
+    if scaffold.section(section).is_none() {
+        return Err(vec![format!(
+            "{} takes no runtime section `{section}`, by its scaffold",
+            scaffold.agent
+        )]);
+    }
+    let body = projection_body(source)?;
+    scaffold.judge_projection(&body)?;
+    Ok(body)
+}
+
 /// Checks a signed document the way a receiver does the signature part of it: the layout, the chain
 /// to `trust_pem`, the signer's certificate and the signature. Returns who signed and the payload.
 pub fn verify_source(
@@ -773,6 +792,79 @@ mod tests {
         let rendered = dhall(&body).unwrap();
         assert_eq!(evaluate(&rendered).unwrap(), body);
         polar_projection::Projection::well_formed(&evaluate(&rendered).unwrap()).unwrap();
+    }
+
+    /// What `openapi-processor --scaffold` says of its graph, and the one section it takes.
+    fn processor_scaffold(graph_edges: Value) -> crate::scaffold::Scaffold {
+        crate::scaffold::Scaffold::parse(
+            &json!({
+                "agent": {"name": "openapi-processor"},
+                "runtime": [{"name": "projection", "doc": "d", "body": {}}],
+                "graph": [
+                    {"label": "OpenApiApplication", "access": "owns", "purpose": "p", "keys": [["source"]]},
+                    {"label": "OpenApiEndpoint", "access": "owns", "purpose": "p", "keys": [["source", "method", "path"]]},
+                    {"label": "Pod", "access": "reads", "purpose": "p"}
+                ],
+                "graph_edges": graph_edges
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn has_endpoint() -> Value {
+        json!([{"from": "OpenApiApplication", "kind": "HAS_ENDPOINT", "to": "OpenApiEndpoint", "purpose": "p"}])
+    }
+
+    #[test]
+    fn a_projection_is_signed_only_inside_the_schema_the_agent_s_scaffold_gives() {
+        let scaffold = processor_scaffold(has_endpoint());
+        crate::projection_for(&scaffold, "projection", EXAMPLE).unwrap();
+
+        let no_section = crate::projection_for(&scaffold, "sources", EXAMPLE).unwrap_err();
+        assert!(
+            no_section[0].contains("takes no runtime section `sources`"),
+            "{no_section:?}"
+        );
+
+        // A label it only reads is not one it writes.
+        let pod = crate::projection_for(
+            &scaffold,
+            "projection",
+            &EXAMPLE.replace("OpenApiApplication", "Pod"),
+        )
+        .unwrap_err();
+        assert!(
+            pod.iter()
+                .any(|p| p.contains("`Pod` is not in this workload's part")),
+            "{pod:?}"
+        );
+
+        // A scaffold that declares no edge, as one printed before edges were declared, lets no edge be signed.
+        let without = crate::projection_for(&processor_scaffold(json!([])), "projection", EXAMPLE)
+            .unwrap_err();
+        assert!(
+            without
+                .iter()
+                .any(|p| p.contains("the edge `HAS_ENDPOINT`")),
+            "{without:?}"
+        );
+
+        // Other keys than the ones it merges on.
+        let keys = crate::projection_for(
+            &scaffold,
+            "projection",
+            &EXAMPLE.replacen(
+                "{ name = \"source\", from = \"source\" }",
+                "{ name = \"id\", from = \"source\" }",
+                1,
+            ),
+        )
+        .unwrap_err();
+        assert!(
+            keys.iter().any(|p| p.contains("is identified by")),
+            "{keys:?}"
+        );
     }
 
     #[test]

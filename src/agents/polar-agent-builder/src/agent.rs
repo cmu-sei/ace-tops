@@ -69,7 +69,7 @@
 use crate::capability::Capability;
 use crate::command::{CommandSpec, spec_problems};
 use crate::environment;
-use crate::graph_schema::{GraphDecl, GraphEntry};
+use crate::graph_schema::{EdgeDecl, EdgeEntry, GraphDecl, GraphEntry};
 use crate::protocol::{OperationDecl, OperationEntry, ProtocolSetup};
 use crate::runtime::RuntimeSection;
 use crate::startup::{self, Startup};
@@ -163,6 +163,10 @@ pub trait PolarAgent: Sized + 'static {
     /// label is merged on, and its graph controller makes them at start (docs/architecture/graph-write-path.md,
     /// "Constraints and indexes"). Read nowhere else: a label is never declared twice.
     const GRAPH_KEYS: &'static [fn() -> Vec<polar::graph::controller::NodeShape>] = &[];
+    /// The edges the agent writes, each between two labels it owns in `GRAPH`, with its purpose. The scaffold prints them
+    /// under `graph_edges`, so what a workload could touch is in its scaffold, and the tool that signs a mapping for it
+    /// judges the mapping by them. An agent that declares none says nothing about its edges.
+    const GRAPH_EDGES: &'static [EdgeDecl] = &[];
 
     /// The agent proper. It is given the configuration the infrastructure judged, and builds
     /// its infrastructure from it (see `AgentBuilder::into_configured`). It returns when the
@@ -346,6 +350,10 @@ pub struct AgentDocument {
     /// when there is one, so every other agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graph: Vec<GraphEntry>,
+    /// The edges the agent writes ([`PolarAgent::GRAPH_EDGES`]), each (from, kind, to) once. Written only when there is
+    /// one, so every other agent's scaffold is as it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_edges: Vec<EdgeEntry>,
     /// What the agent asks the outside for ([`PolarAgent::OPERATIONS`]). Written only when there is one, so every other
     /// agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -564,6 +572,22 @@ fn sections_of<A: PolarAgent>() -> Vec<(Option<Capability>, &'static Section)> {
     sections
 }
 
+/// `A`'s labels, each it owns with the keys its constraints are made on ([`graph_key_indexes`]).
+fn graph_with_keys<A: PolarAgent>() -> Vec<GraphEntry> {
+    let indexes = graph_key_indexes::<A>();
+    let mut graph = crate::graph_schema::graph_set(A::GRAPH);
+    for entry in &mut graph {
+        if entry.access == crate::graph_schema::GraphAccess::Owns {
+            entry.keys = indexes
+                .iter()
+                .filter(|i| i.label == entry.label)
+                .map(|i| i.keys.clone())
+                .collect();
+        }
+    }
+    graph
+}
+
 /// The scaffold of `A`: every value empty.
 pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
     let tagged: Vec<(&Section, Option<&str>)> = sections_of::<A>()
@@ -627,7 +651,8 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
                 over: crate::topics::SERVED_WORKLOADS.name().to_string(),
             })
             .collect(),
-        graph: crate::graph_schema::graph_set(A::GRAPH),
+        graph: graph_with_keys::<A>(),
+        graph_edges: crate::graph_schema::edge_set(A::GRAPH_EDGES),
         operations: A::OPERATIONS.iter().map(OperationEntry::from).collect(),
         document: Document::scaffold(&tagged),
         problems: Vec::new(),
@@ -684,6 +709,7 @@ fn surface_problems<A: PolarAgent>() -> Vec<String> {
         A::GRAPH,
         A::CASSINI_CLIENT || cassini_optional::<A>(),
     ));
+    problems.extend(crate::graph_schema::edge_problems(A::GRAPH_EDGES, A::GRAPH));
     if !A::RUNTIME.is_empty() && !A::CASSINI_CLIENT {
         problems.push(format!(
             "{} declares runtime sections but is not a Cassini client, so no document can reach it",
@@ -1374,6 +1400,85 @@ mod tests {
         assert_eq!(names, ["polar_unique_Thing_id"]);
         // An agent that declares no keys makes nothing.
         assert!(graph_key_indexes::<Reading>().is_empty());
+    }
+
+    /// One that writes two labels and an edge between them.
+    struct Linking;
+
+    fn linked_shapes() -> Vec<polar::graph::controller::NodeShape> {
+        vec![
+            polar::graph::controller::NodeShape {
+                labels: vec!["Thing".into()],
+                keys: vec!["id".into()],
+            },
+            polar::graph::controller::NodeShape {
+                labels: vec!["Part".into()],
+                keys: vec!["id".into(), "n".into()],
+            },
+        ]
+    }
+
+    impl PolarAgent for Linking {
+        const NAME: &'static str = "linking";
+        const PURPOSE: &'static str = "Writes things and their parts";
+        const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
+        const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+        const GRAPH: &'static [GraphDecl] = &[
+            GraphDecl::owns("Thing", "the things"),
+            GraphDecl::owns("Part", "their parts"),
+        ];
+        const GRAPH_KEYS: &'static [fn() -> Vec<polar::graph::controller::NodeShape>] =
+            &[linked_shapes];
+        const GRAPH_EDGES: &'static [EdgeDecl] = &[EdgeDecl::new(
+            "Thing",
+            "HAS_PART",
+            "Part",
+            "each thing's parts",
+        )];
+        async fn start(_: Configured) -> Result<(), StartError> {
+            Ok(())
+        }
+    }
+
+    /// What a workload could touch is in its scaffold: each label it owns with what identifies it, and each edge with the
+    /// labels at both ends. One that declares neither prints neither, so its scaffold is as it was.
+    #[test]
+    fn the_scaffold_says_what_identifies_each_label_and_which_edges_join_them() {
+        let json: serde_json::Value =
+            serde_json::from_str(&scaffold_json::<Linking>(None, |_: &str| None).unwrap()).unwrap();
+        assert_eq!(json["graph"][0]["label"], "Part");
+        assert_eq!(json["graph"][0]["keys"], serde_json::json!([["id", "n"]]));
+        assert_eq!(json["graph"][1]["keys"], serde_json::json!([["id"]]));
+        assert_eq!(
+            json["graph_edges"],
+            serde_json::json!([{ "from": "Thing", "kind": "HAS_PART", "to": "Part", "purpose": "each thing's parts" }])
+        );
+        assert!(declaration_problems::<Linking>().is_empty());
+        // A label it only reads has no keys of its own.
+        let json: serde_json::Value =
+            serde_json::from_str(&scaffold_json::<Keyed>(None, |_: &str| None).unwrap()).unwrap();
+        assert_eq!(json["graph"][0]["label"], "Other");
+        assert!(json["graph"][0].get("keys").is_none(), "{json}");
+        assert!(json.get("graph_edges").is_none(), "{json}");
+    }
+
+    #[test]
+    fn an_edge_to_a_label_the_agent_does_not_own_is_a_declaration_problem() {
+        struct Reaching;
+        impl PolarAgent for Reaching {
+            const NAME: &'static str = "reaching";
+            const PURPOSE: &'static str = "Writes things";
+            const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const GRAPH: &'static [GraphDecl] = &[GraphDecl::owns("Thing", "the things")];
+            const GRAPH_EDGES: &'static [EdgeDecl] =
+                &[EdgeDecl::new("Thing", "RUNS_ON", "Pod", "where it runs")];
+            async fn start(_: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let problems = declaration_problems::<Reaching>().join(" | ");
+        assert!(problems.contains("`Pod` at one end"), "{problems}");
     }
 
     /// One that declares a topic it is given anyway.

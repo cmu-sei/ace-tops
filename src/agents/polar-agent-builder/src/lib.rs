@@ -62,7 +62,7 @@ pub use floor::Floor;
 pub mod graph;
 pub mod graph_schema;
 pub use graph::{Drain, spawn_graph_controller, stop_graph_controller};
-pub use graph_schema::{GraphAccess, GraphDecl};
+pub use graph_schema::{EdgeDecl, GraphAccess, GraphDecl};
 pub mod health;
 pub use health::{HealthClient, HealthHandle};
 pub mod health_query;

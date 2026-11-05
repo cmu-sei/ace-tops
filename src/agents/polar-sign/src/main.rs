@@ -97,9 +97,13 @@ enum Command {
         /// A file holding the body as JSON; `-` reads standard input.
         #[arg(long)]
         body_file: Option<PathBuf>,
-        /// A file holding a projection in Dhall, checked against its type: the body, in place of --body or --body-file.
+        /// A file holding a projection in Dhall, checked against its type and against the agent's schema in its
+        /// scaffold: the body, in place of --body or --body-file.
         #[arg(long, conflicts_with_all = ["body", "body_file"])]
         projection: Option<PathBuf>,
+        /// With --projection, the agent's scaffold (`<agent> --scaffold`); <dir>/scaffolds/<agent>.json by default.
+        #[arg(long, requires = "projection")]
+        scaffold: Option<PathBuf>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -480,6 +484,7 @@ fn main() -> Result<()> {
             body,
             body_file,
             projection,
+            scaffold,
             id,
             user,
             dir,
@@ -502,7 +507,9 @@ fn main() -> Result<()> {
                 Some(path) => {
                     let source = std::fs::read_to_string(&path)
                         .with_context(|| format!("cannot read {}", path.display()))?;
-                    polar_sign::projection_body(&source)
+                    // Judged as the agent would judge it, by its scaffold: a projection is never signed blind.
+                    let scaffold = load_scaffold(&agent, scaffold, &default_dir(dir.clone())?)?;
+                    polar_sign::projection_for(&scaffold, &section, &source)
                         .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?
                 }
                 None => parse_body(&text).map_err(anyhow::Error::msg)?,

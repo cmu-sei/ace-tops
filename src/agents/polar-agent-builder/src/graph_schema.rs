@@ -84,6 +84,48 @@ pub struct GraphEntry {
     pub label: String,
     pub access: GraphAccess,
     pub purpose: String,
+    /// For a label the agent owns, each set of properties its nodes are merged on ([`PolarAgent::GRAPH_KEYS`]), from which
+    /// its constraints are made. Written only when there is one, so a scaffold without keys is as it was.
+    ///
+    /// [`PolarAgent::GRAPH_KEYS`]: crate::PolarAgent::GRAPH_KEYS
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<Vec<String>>,
+}
+
+/// An edge an agent writes: of type `kind`, from a node labelled `from` to one labelled `to`, both labels it owns, and
+/// what for. What a workload could touch is the labels it owns and the edges between them; one that declares no edge
+/// says nothing about its edges (the agents written before edges were declared).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EdgeDecl {
+    pub from: &'static str,
+    pub kind: &'static str,
+    pub to: &'static str,
+    pub purpose: &'static str,
+}
+
+impl EdgeDecl {
+    pub const fn new(
+        from: &'static str,
+        kind: &'static str,
+        to: &'static str,
+        purpose: &'static str,
+    ) -> Self {
+        Self {
+            from,
+            kind,
+            to,
+            purpose,
+        }
+    }
+}
+
+/// One edge of an agent's graph schema, as the scaffold prints it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct EdgeEntry {
+    pub from: String,
+    pub kind: String,
+    pub to: String,
+    pub purpose: String,
 }
 
 /// Whether `name` is a label or a property name the state agent will put in a query: `[A-Za-z_][A-Za-z0-9_]*`.
@@ -116,8 +158,71 @@ pub fn graph_set(declared: &[GraphDecl]) -> Vec<GraphEntry> {
             label: label.to_string(),
             access,
             purpose: purpose.to_string(),
+            keys: Vec::new(),
         })
         .collect()
+}
+
+/// An agent's edges: each (from, kind, to) once, in that order, whatever the order or the repetition of the declarations,
+/// keeping the least of a repeated one's purposes, as [`graph_set`] does.
+pub fn edge_set(declared: &[EdgeDecl]) -> Vec<EdgeEntry> {
+    let mut set: BTreeMap<(&str, &str, &str), &str> = BTreeMap::new();
+    for decl in declared {
+        set.entry((decl.from, decl.kind, decl.to))
+            .and_modify(|purpose| {
+                if decl.purpose < *purpose {
+                    *purpose = decl.purpose;
+                }
+            })
+            .or_insert(decl.purpose);
+    }
+    set.into_iter()
+        .map(|((from, kind, to), purpose)| EdgeEntry {
+            from: from.to_string(),
+            kind: kind.to_string(),
+            to: to.to_string(),
+            purpose: purpose.to_string(),
+        })
+        .collect()
+}
+
+/// What is wrong with an agent's edges: a type that is not an identifier, one with no purpose, an edge declared twice, and
+/// an end that is not a label the agent owns, since an edge is written with the nodes at its ends.
+pub fn edge_problems(edges: &[EdgeDecl], graph: &[GraphDecl]) -> Vec<String> {
+    let owned = |label: &str| {
+        graph
+            .iter()
+            .any(|d| d.access == GraphAccess::Owns && d.label == label)
+    };
+    let mut problems = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for edge in edges {
+        let what = format!(
+            "the edge `{}` from `{}` to `{}`",
+            edge.kind, edge.from, edge.to
+        );
+        if !is_identifier(edge.kind) {
+            problems.push(format!(
+                "{what} is not an edge type: it must match [A-Za-z_][A-Za-z0-9_]*"
+            ));
+        }
+        if edge.purpose.trim().is_empty() {
+            problems.push(format!(
+                "{what} has no purpose: say what the agent writes it for"
+            ));
+        }
+        for end in [edge.from, edge.to] {
+            if !owned(end) {
+                problems.push(format!(
+                    "{what} has `{end}` at one end, which the agent does not own: declare it in GRAPH"
+                ));
+            }
+        }
+        if !seen.insert((edge.from, edge.kind, edge.to)) {
+            problems.push(format!("{what} is declared twice"));
+        }
+    }
+    problems
 }
 
 /// What is wrong with an agent's graph declarations: a label that is not an identifier, one with no purpose, a pair
@@ -227,6 +332,58 @@ mod tests {
         assert!(problems(&[GraphDecl::reads("JiraIssue", "x")], true).is_empty());
     }
 
+    #[test]
+    fn an_edge_joins_labels_the_agent_owns_and_says_what_for() {
+        let graph = [
+            GraphDecl::owns("OpenApiApplication", "x"),
+            GraphDecl::owns("OpenApiEndpoint", "x"),
+            GraphDecl::reads("Pod", "x"),
+        ];
+        let good = EdgeDecl::new("OpenApiApplication", "HAS_ENDPOINT", "OpenApiEndpoint", "x");
+        assert!(edge_problems(&[good], &graph).is_empty());
+        // One type between other labels is another edge, not the same one twice.
+        let back = EdgeDecl::new("OpenApiEndpoint", "HAS_ENDPOINT", "OpenApiApplication", "x");
+        let to_itself = EdgeDecl::new(
+            "OpenApiApplication",
+            "HAS_ENDPOINT",
+            "OpenApiApplication",
+            "x",
+        );
+        assert!(edge_problems(&[good, back, to_itself], &graph).is_empty());
+        let found = edge_problems(
+            &[
+                EdgeDecl::new("OpenApiApplication", "HAS ENDPOINT", "OpenApiEndpoint", "x"),
+                EdgeDecl::new("OpenApiApplication", "RUNS_ON", "Pod", "x"),
+                EdgeDecl::new("Nowhere", "FROM", "OpenApiEndpoint", "x"),
+                EdgeDecl::new("OpenApiApplication", "HAS_ENDPOINT", "OpenApiEndpoint", " "),
+                good,
+            ],
+            &graph,
+        );
+        assert!(found.iter().any(|p| p.contains("not an edge type")));
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("`Pod` at one end") && p.contains("does not own"))
+        );
+        assert!(found.iter().any(|p| p.contains("`Nowhere` at one end")));
+        assert!(found.iter().any(|p| p.contains("no purpose")));
+        assert!(found.iter().any(|p| p.contains("declared twice")));
+    }
+
+    fn edges() -> impl Strategy<Value = Vec<(String, String, String, String)>> {
+        prop::collection::vec(("[A-B]", "[X-Y]", "[A-B]", "[a-c]{1,3}"), 0..10)
+    }
+
+    fn leak_edges(raw: &[(String, String, String, String)]) -> Vec<EdgeDecl> {
+        let leak = |s: &String| -> &'static str { Box::leak(s.clone().into_boxed_str()) };
+        raw.iter()
+            .map(|(from, kind, to, purpose)| {
+                EdgeDecl::new(leak(from), leak(kind), leak(to), leak(purpose))
+            })
+            .collect()
+    }
+
     fn decls() -> impl Strategy<Value = Vec<(String, bool, String)>> {
         prop::collection::vec(("[A-C][a-c]{0,2}", any::<bool>(), "[a-c]{1,3}"), 0..12)
     }
@@ -278,6 +435,38 @@ mod tests {
             let declared_pairs: std::collections::BTreeSet<(String, GraphAccess)> =
                 declared.iter().map(|d| (d.label.to_string(), d.access)).collect();
             prop_assert_eq!(pairs.into_iter().collect::<std::collections::BTreeSet<_>>(), declared_pairs);
+        }
+
+        /// The edges are a function of what is declared, as the labels are: the same however they are ordered or
+        /// repeated, each (from, kind, to) once, and exactly the edges declared.
+        #[test]
+        fn the_edges_are_deterministic_order_independent_and_each_once(
+            raw in edges(),
+            seed in any::<u64>(),
+        ) {
+            let declared = leak_edges(&raw);
+            let mut shuffled = declared.clone();
+            let mut s = seed;
+            for i in (1..shuffled.len()).rev() {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                shuffled.swap(i, (s >> 33) as usize % (i + 1));
+            }
+            if seed % 3 == 0 {
+                shuffled.extend(declared.iter().copied());
+            }
+            let set = edge_set(&declared);
+            prop_assert_eq!(&set, &edge_set(&shuffled));
+            let triples: Vec<(String, String, String)> =
+                set.iter().map(|e| (e.from.clone(), e.kind.clone(), e.to.clone())).collect();
+            let mut unique = triples.clone();
+            unique.sort();
+            unique.dedup();
+            prop_assert_eq!(&triples, &unique);
+            let declared_triples: std::collections::BTreeSet<(String, String, String)> = declared
+                .iter()
+                .map(|e| (e.from.to_string(), e.kind.to_string(), e.to.to_string()))
+                .collect();
+            prop_assert_eq!(triples.into_iter().collect::<std::collections::BTreeSet<_>>(), declared_triples);
         }
 
         /// No name that is not a plain identifier is ever accepted, whatever it holds.

@@ -29,6 +29,8 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Cypher's rule for a name, the one the graph controller holds every query to, so a mapping is refused for it before it is signed.
+polar-cypher.workspace = true
 # Only for turning writes into graph operations. The tool that signs a mapping has no use for a graph, or a runtime.
 polar = { workspace = true, optional = true }
 

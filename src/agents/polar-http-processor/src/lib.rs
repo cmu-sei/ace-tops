@@ -65,23 +65,74 @@ pub trait Kind: Send + Sync + 'static {
     const OBSERVER: &'static str;
     /// Where they arrive.
     const TOPIC: &'static str;
-    /// What it may write.
-    const BOUNDS: Bounds;
+    /// What it may write: the `SCHEMA` its [`schema!`] made.
+    const BOUNDS: Bounds<'static>;
 }
 
-/// Judges a section's body, for a kind's `RuntimeSection`: a projection, inside what it was built to write, whose names Cypher takes.
-pub fn judge(body: &Value, bounds: Bounds) -> Result<(), Vec<String>> {
-    let projection = Projection::judged(body, bounds)?;
-    let problems = graph::identifier_problems(&projection);
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(problems)
-    }
+/// A kind's schema, declared once: each label it writes with what identifies it, and each edge with the labels at its ends,
+/// each with its purpose. Makes, in the calling module, `SCHEMA` (the [`Bounds`] a signed mapping is judged by), and `LABELS`
+/// and `EDGES` for the kind's `GRAPH` and `GRAPH_EDGES`, so what the scaffold prints and what a mapping is held to are one
+/// declaration and cannot drift.
+///
+/// ```
+/// polar_http_processor::schema! {
+///     labels {
+///         OpenApiApplication [source] "each source's application",
+///         OpenApiEndpoint [source, method, path] "each operation of each application",
+///     }
+///     edges {
+///         OpenApiApplication HAS_ENDPOINT OpenApiEndpoint "each operation of an application",
+///     }
+/// }
+/// assert_eq!(SCHEMA.shapes[1].keys, ["source", "method", "path"]);
+/// assert_eq!(LABELS[0].label, "OpenApiApplication");
+/// assert_eq!(EDGES[0].to, "OpenApiEndpoint");
+/// ```
+#[macro_export]
+macro_rules! schema {
+    (
+        labels { $( $label:ident [ $( $key:ident ),+ ] $purpose:literal ),+ $(,)? }
+        edges { $( $from:ident $kind:ident $to:ident $edge_purpose:literal ),* $(,)? }
+    ) => {
+        /// What this workload was built to write. A signed mapping chooses data inside it, and cannot widen it.
+        pub const SCHEMA: $crate::__private::Bounds<'static> = $crate::__private::Bounds {
+            shapes: &[ $( $crate::__private::Shape {
+                label: stringify!($label),
+                keys: &[ $( stringify!($key) ),+ ],
+            } ),+ ],
+            edges: &[ $( $crate::__private::Edge {
+                from: stringify!($from),
+                kind: stringify!($kind),
+                to: stringify!($to),
+            } ),* ],
+        };
+        /// The labels of [`SCHEMA`], for the kind's `GRAPH`.
+        pub const LABELS: &[$crate::__private::GraphDecl] =
+            &[ $( $crate::__private::GraphDecl::owns(stringify!($label), $purpose) ),+ ];
+        /// The edges of [`SCHEMA`], for the kind's `GRAPH_EDGES`.
+        pub const EDGES: &[$crate::__private::EdgeDecl] = &[ $( $crate::__private::EdgeDecl::new(
+            stringify!($from),
+            stringify!($kind),
+            stringify!($to),
+            $edge_purpose,
+        ) ),* ];
+    };
+}
+
+#[doc(hidden)]
+pub mod __private {
+    pub use polar_agent_builder::{EdgeDecl, GraphDecl};
+    pub use polar_projection::{Bounds, Edge, Shape};
+}
+
+/// Judges a section's body, for a kind's `RuntimeSection`: a projection, inside what it was built to write. Names are held to
+/// Cypher's own rule in judging, so the tool that signs a mapping, judging it by the kind's scaffold, refuses what this does.
+pub fn judge(body: &Value, bounds: Bounds<'_>) -> Result<(), Vec<String>> {
+    Projection::judged(body, bounds).map(|_| ())
 }
 
 /// The shapes the graph's constraints are made from, for a kind's `GRAPH_KEYS`.
-pub fn node_shapes(bounds: Bounds) -> Vec<NodeShape> {
+pub fn node_shapes(bounds: Bounds<'_>) -> Vec<NodeShape> {
     bounds
         .shapes
         .iter()
@@ -430,13 +481,71 @@ mod tests {
     use proptest::prelude::*;
     use serde_json::json;
 
-    const BOUNDS: Bounds = Bounds {
+    const BOUNDS: Bounds<'static> = Bounds {
         shapes: &[Shape {
             label: "TestDoc",
             keys: &["source"],
         }],
         edges: &[],
     };
+
+    mod declared {
+        crate::schema! {
+            labels {
+                TestDoc [source] "each source's document",
+                TestPart [source, n] "each part of a document",
+            }
+            edges {
+                TestDoc HAS_PART TestPart "each part of a document",
+            }
+        }
+    }
+
+    /// One declaration is the bound a mapping is judged by and what the scaffold prints, in the same order.
+    #[test]
+    fn a_schema_is_declared_once_for_the_bound_and_the_scaffold() {
+        use declared::{EDGES, LABELS, SCHEMA};
+        let shapes: Vec<(&str, &[&str])> =
+            SCHEMA.shapes.iter().map(|s| (s.label, s.keys)).collect();
+        assert_eq!(
+            shapes,
+            [
+                ("TestDoc", &["source"][..]),
+                ("TestPart", &["source", "n"][..])
+            ]
+        );
+        let labels: Vec<(&str, &str)> = LABELS.iter().map(|l| (l.label, l.purpose)).collect();
+        assert_eq!(
+            labels,
+            [
+                ("TestDoc", "each source's document"),
+                ("TestPart", "each part of a document")
+            ]
+        );
+        assert!(
+            LABELS
+                .iter()
+                .all(|l| l.access == polar_agent_builder::GraphAccess::Owns)
+        );
+        assert_eq!(
+            SCHEMA.edges,
+            [polar_projection::Edge {
+                from: "TestDoc",
+                kind: "HAS_PART",
+                to: "TestPart"
+            }]
+        );
+        assert_eq!(
+            EDGES,
+            [polar_agent_builder::EdgeDecl::new(
+                "TestDoc",
+                "HAS_PART",
+                "TestPart",
+                "each part of a document"
+            )]
+        );
+        assert!(polar_agent_builder::graph_schema::edge_problems(EDGES, LABELS).is_empty());
+    }
 
     fn body() -> Value {
         json!({ "guard": [{ "any_of": [{ "path": "body.title", "prefixes": [] }] }], "rules": [{

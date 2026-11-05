@@ -37,6 +37,9 @@ serde_json.workspace = true
 [dev-dependencies]
 # The example mapping is read as an author's file is.
 serde_dhall.workspace = true
+# The tool that signs a mapping judges it by this agent's scaffold; the tests hold it to the agent's own judgment.
+polar-sign = { path = "../../polar-sign" }
+proptest.workspace = true
 
 [[bin]]
 name = "openapi-processor"

@@ -74,6 +74,7 @@ members = [
     "polar-signing",
     "polar-sign",
     "polar-running-config",
+    "polar-cypher",
     "polar-projection",
     "polar-http-observer",
     "polar-http-processor",
@@ -210,6 +211,7 @@ uninit = "0.3"
 polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }
 polar-signing = { path = "polar-signing" }
+polar-cypher = { path = "polar-cypher" }
 polar-projection = { path = "polar-projection" }
 polar-http-observer = { path = "polar-http-observer" }
 polar-http-processor = { path = "polar-http-processor" }

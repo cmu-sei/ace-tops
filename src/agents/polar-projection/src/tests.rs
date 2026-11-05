@@ -25,7 +25,7 @@ use super::*;
 use proptest::prelude::*;
 use serde_json::json;
 
-const BOUNDS: Bounds = Bounds {
+const BOUNDS: Bounds<'static> = Bounds {
     shapes: &[
         Shape {
             label: "OpenApiApplication",
@@ -36,7 +36,11 @@ const BOUNDS: Bounds = Bounds {
             keys: &["source", "method", "path"],
         },
     ],
-    edges: &["HAS_ENDPOINT"],
+    edges: &[Edge {
+        from: "OpenApiApplication",
+        kind: "HAS_ENDPOINT",
+        to: "OpenApiEndpoint",
+    }],
 };
 
 fn stamp() -> Stamp<'static> {
@@ -365,6 +369,57 @@ fn a_signed_mapping_cannot_widen_what_the_workload_was_built_to_write() {
 }
 
 #[test]
+fn an_edge_of_a_type_the_workload_writes_between_labels_it_does_not_join_is_refused() {
+    // `HAS_ENDPOINT` from an endpoint to an endpoint: the type is in the schema, the edge is not.
+    let mut body = openapi_body();
+    let mut again = body["rules"][1].clone();
+    again["name"] = json!("again");
+    again["parent"] = json!("endpoint");
+    again["each"] = json!([]);
+    again["set"] = json!([]);
+    body["rules"].as_array_mut().unwrap().push(again);
+    Projection::well_formed(&body).unwrap();
+    let problems = Projection::judged(&body, BOUNDS).unwrap_err();
+    assert_eq!(
+        problems,
+        [
+            "rule `again`: the edge `HAS_ENDPOINT` from `OpenApiEndpoint` to `OpenApiEndpoint` is not in this workload's part of the graph"
+        ]
+    );
+}
+
+/// Cypher's own rule, the one the graph controller holds every query to, is a mapping's rule before it is signed, so the
+/// tool that signs one and the agent that takes it refuse the same names.
+#[test]
+fn a_name_cypher_would_refuse_is_refused_before_signing() {
+    for (change, says) in [
+        (
+            &(|b: &mut Value| b["rules"][0]["set"][0]["name"] = json!("merge"))
+                as &dyn Fn(&mut Value),
+            "the property",
+        ),
+        (
+            &|b: &mut Value| b["rules"][0]["label"] = json!("Delete"),
+            "the label",
+        ),
+        (
+            &|b: &mut Value| b["rules"][1]["edge"] = json!("DETACH"),
+            "the edge type",
+        ),
+    ] {
+        let mut body = openapi_body();
+        change(&mut body);
+        let problems = Projection::well_formed(&body).unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains(says) && p.contains("reserved Cypher keyword")),
+            "{says}: {problems:?}"
+        );
+    }
+}
+
+#[test]
 fn inside_the_schema_a_signed_mapping_chooses_the_data() {
     let mut body = openapi_body();
     body["rules"][0]["set"][0]["from"] = json!("body.info.contact.name");
@@ -566,11 +621,16 @@ proptest! {
         prop_assert_eq!(first, second);
     }
 
-    /// Judging never panics, and nothing it lets by names a label outside the bound.
+    /// Judging never panics, and nothing it lets by names a label, or an edge between two labels, outside the bound.
     #[test]
     fn any_body_is_judged_and_a_passed_one_stays_in_bounds(body in any_json()) {
         if let Ok(projection) = Projection::judged(&body, BOUNDS) {
-            prop_assert!(projection.rules().iter().all(|r| BOUNDS.shapes.iter().any(|s| s.label == r.label)));
+            let rules = projection.rules();
+            prop_assert!(rules.iter().all(|r| BOUNDS.shapes.iter().any(|s| s.label == r.label)));
+            for rule in rules.iter().filter(|r| !r.edge.is_empty()) {
+                let from = rules.iter().find(|p| p.name == rule.parent).map(|p| p.label.as_str());
+                prop_assert!(BOUNDS.edges.iter().any(|e| Some(e.from) == from && e.kind == rule.edge && e.to == rule.label));
+            }
         }
     }
 

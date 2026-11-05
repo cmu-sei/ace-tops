@@ -5172,6 +5172,8 @@ dependencies = [
  "polar-http-processor",
  "polar-projection",
  "polar-scudo",
+ "polar-sign",
+ "proptest",
  "serde_dhall",
  "serde_json",
 ]
@@ -5805,6 +5807,7 @@ dependencies = [
  "opentelemetry_sdk",
  "polar",
  "polar-custody",
+ "polar-cypher",
  "polar-env",
  "polar-health",
  "polar-router",
@@ -5981,6 +5984,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "polar-cypher"
+version = "1.0.0"
+dependencies = [
+ "proptest",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -6197,6 +6208,7 @@ name = "polar-projection"
 version = "1.0.0"
 dependencies = [
  "polar",
+ "polar-cypher",
  "proptest",
  "serde",
  "serde_dhall",

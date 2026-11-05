@@ -55,6 +55,25 @@ pub struct Scaffold {
     pub agent: String,
     pub variables: Vec<Variable>,
     pub runtime: Vec<RuntimeDecl>,
+    /// The labels the agent owns, each with the sets of properties its nodes are merged on (`graph`).
+    pub owns: Vec<Owned>,
+    /// The edges it writes, each between two labels it owns (`graph_edges`).
+    pub edges: Vec<EdgeType>,
+}
+
+/// A label an agent owns, and each set of properties its nodes are merged on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Owned {
+    pub label: String,
+    pub keys: Vec<Vec<String>>,
+}
+
+/// An edge an agent writes: of type `kind`, from a node labelled `from` to one labelled `to`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeType {
+    pub from: String,
+    pub kind: String,
+    pub to: String,
 }
 
 fn text(value: &Value, key: &str) -> String {
@@ -133,11 +152,88 @@ impl Scaffold {
                 body,
             });
         }
+        let entries = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mut owns = Vec::new();
+        for entry in entries("graph") {
+            if entry.get("access").and_then(Value::as_str) != Some("owns") {
+                continue;
+            }
+            let keys = match entry.get("keys") {
+                None => Vec::new(),
+                Some(keys) => serde_json::from_value(keys.clone()).map_err(|_| {
+                    format!(
+                        "the keys of `{}` in the scaffold are not lists of names",
+                        text(&entry, "label")
+                    )
+                })?,
+            };
+            owns.push(Owned {
+                label: text(&entry, "label"),
+                keys,
+            });
+        }
+        let edges = entries("graph_edges")
+            .iter()
+            .map(|edge| EdgeType {
+                from: text(edge, "from"),
+                kind: text(edge, "kind"),
+                to: text(edge, "to"),
+            })
+            .collect();
         Ok(Scaffold {
             agent,
             variables,
             runtime,
+            owns,
+            edges,
         })
+    }
+
+    /// Judges a projection as the agent this is the scaffold of would: well formed, and inside the labels it owns, by the
+    /// keys it merges each on, and the edges it declares (`polar_projection::Projection::judged`, the agent's own rule). A
+    /// label merged on more than one set of keys is not one a projection writes.
+    pub fn judge_projection(&self, body: &Value) -> Result<(), Vec<String>> {
+        let keys: Vec<Vec<&str>> = self
+            .owns
+            .iter()
+            .map(|o| match o.keys.as_slice() {
+                [only] => only.iter().map(String::as_str).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let shapes: Vec<polar_projection::Shape> = self
+            .owns
+            .iter()
+            .zip(&keys)
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(owned, keys)| polar_projection::Shape {
+                label: &owned.label,
+                keys,
+            })
+            .collect();
+        let edges: Vec<polar_projection::Edge> = self
+            .edges
+            .iter()
+            .map(|e| polar_projection::Edge {
+                from: &e.from,
+                kind: &e.kind,
+                to: &e.to,
+            })
+            .collect();
+        polar_projection::Projection::judged(
+            body,
+            polar_projection::Bounds {
+                shapes: &shapes,
+                edges: &edges,
+            },
+        )
+        .map(|_| ())
     }
 
     /// The agent's scaffold, from a file given or `<dir>/scaffolds/<agent>.json`, the folder
