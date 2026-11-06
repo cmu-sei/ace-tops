@@ -1,0 +1,42 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "JiraTestProject",
+      "keys": {
+        "id": "10002"
+      },
+      "set": {
+        "key": "DATA",
+        "name": "Data",
+        "project_type": "software"
+      }
+    },
+    {
+      "label": "JiraTestUser",
+      "keys": {
+        "account_id": "u-2"
+      },
+      "set": {
+        "display_name": "Grace"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "JiraTestProject",
+        "keys": {
+          "id": "10002"
+        }
+      },
+      "type": "LED_BY",
+      "to": {
+        "label": "JiraTestUser",
+        "keys": {
+          "account_id": "u-2"
+        }
+      }
+    }
+  ]
+}

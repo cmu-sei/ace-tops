@@ -1,0 +1,4 @@
+{"self": "https://jira.example.org/rest/api/3/group/member?groupId=g-1&startAt=0&maxResults=2", "maxResults": 2, "startAt": 0, "total": 3, "isLast": false, "values": [
+  {"accountId": "u-1", "displayName": "Ada", "active": true, "accountType": "atlassian"},
+  {"accountId": "u-3", "displayName": "Linus", "active": false, "accountType": "atlassian"}
+]}

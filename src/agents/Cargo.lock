@@ -6139,6 +6139,7 @@ dependencies = [
  "neo4rs",
  "polar",
  "polar-agent-builder",
+ "polar-crypto",
  "polar-env",
  "polar-http-observer",
  "polar-http-processor",
@@ -6147,6 +6148,7 @@ dependencies = [
  "polar-signing",
  "polar-test-graph",
  "ractor",
+ "serde_json",
  "tokio",
  "wiremock",
 ]

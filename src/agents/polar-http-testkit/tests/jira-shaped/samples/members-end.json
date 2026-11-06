@@ -1,0 +1,1 @@
+{"self": "https://jira.example.org/rest/api/3/group/member?groupId=g-1&startAt=3&maxResults=2", "maxResults": 2, "startAt": 3, "total": 3, "isLast": true, "values": []}

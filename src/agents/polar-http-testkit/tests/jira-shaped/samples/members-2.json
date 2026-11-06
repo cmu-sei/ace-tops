@@ -1,0 +1,3 @@
+{"self": "https://jira.example.org/rest/api/3/group/member?groupId=g-1&startAt=2&maxResults=2", "maxResults": 2, "startAt": 2, "total": 3, "isLast": false, "values": [
+  {"displayName": "an app whose account is not shown", "active": true, "accountType": "app"}
+]}

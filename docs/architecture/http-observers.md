@@ -527,6 +527,13 @@ identify. Marked for review: the checks are read for each entry, where the keys 
 to the guard's model. Breaking for authors only: `projection.dhall`'s type now has `when`, so a mapping's Dhall says it on every rule (`[] : List {...}` for every
 entry); a body signed before reads it as left out, and no target deploys an HTTP pair, so nothing signed needs migrating.
 
+The Jira-shaped kind, done (`polar-http-testkit/tests/jira_shaped.rs`, `tests/jira-shaped/`): a test kind only, an observer with a `Bound` credentialed operation
+and `CREDENTIALED_SOURCES`, a processor writing `JiraTestProject`, `JiraTestGroup` and `JiraTestUser` with a project's lead as `LED_BY`, and a mapping whose rules
+say by `when` which entries are theirs. It has the kit's tests, as every kind does, and two of its own through what the kit gained for them: `Pair::credentialed`
+(the stand-in behind TLS on `localhost`, a token bound to it by the real binding rule) and `Pair::read_paged` (a source's pages served in its style). Projects are
+read by cursor over two pages and members by offset to an empty page, every page with the token, each published and written as it is read; a member Jira does not
+identify is skipped, and that is the only skip. Dropping the source's paging, or the credential the fetch presents, fails both.
+
 ## What the OpenAPI pair fixes
 
 Seen reading the code, 2026-11-05. No target deploys them, so there is no data to migrate.

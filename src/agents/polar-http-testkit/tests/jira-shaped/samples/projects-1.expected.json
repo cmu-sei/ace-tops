@@ -1,0 +1,53 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "JiraTestProject",
+      "keys": {
+        "id": "10000"
+      },
+      "set": {
+        "key": "OPS",
+        "name": "Operations",
+        "project_type": "software"
+      }
+    },
+    {
+      "label": "JiraTestProject",
+      "keys": {
+        "id": "10001"
+      },
+      "set": {
+        "key": "WEB",
+        "name": "Website",
+        "project_type": "business"
+      }
+    },
+    {
+      "label": "JiraTestUser",
+      "keys": {
+        "account_id": "u-1"
+      },
+      "set": {
+        "display_name": "Ada"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "JiraTestProject",
+        "keys": {
+          "id": "10000"
+        }
+      },
+      "type": "LED_BY",
+      "to": {
+        "label": "JiraTestUser",
+        "keys": {
+          "account_id": "u-1"
+        }
+      }
+    }
+  ]
+}

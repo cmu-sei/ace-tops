@@ -36,6 +36,10 @@
 //! - `polar-sign projection test`, which a deployment holds its own mapping to, passes for the kind's by the processor's
 //!   own scaffold.
 //!
+//! Beyond those, a kind's own tests can read as a deployment does: [`Pair::credentialed`] puts the stand-in behind TLS with a
+//! token bound to it, and [`Pair::read_paged`] serves a source's pages linked in its paging style, each published and
+//! written as it is read (`tests/jira_shaped.rs`).
+//!
 //! A sample is `<name>.json`, the document as a service returns it, beside `<name>.expected.json`, what it becomes:
 //! the nodes and edges it writes, without the stamps, and how many entries were skipped, or why it was refused. Run with
 //! `POLAR_BLESS=1` to write what each sample becomes now; read it before committing it, since it is then what is
@@ -43,8 +47,10 @@
 
 use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{ConfigurationHandle, PolarAgent, UpdateVerifier};
+use polar_crypto::registry::{SecretBinding, SecretKind};
 use polar_http_observer::Observation;
 use polar_http_observer::observing::{self, Observing};
+use polar_http_observer::paging::{Paging, Style};
 use polar_http_observer::sources::Source;
 use polar_http_processor::processing::{self, Outcome, Processing};
 use polar_http_processor::{Kind as ProcessorKind, SECTION_NAME};
@@ -133,6 +139,22 @@ impl Kit {
     /// Every sample, by name. A kind with none has not said what its mapping does, so that is a failure.
     pub fn samples(&self) -> Vec<Sample> {
         samples::read(&self.samples).unwrap_or_else(|problem| panic!("{problem}"))
+    }
+
+    /// The documents of the samples named, in that order: the pages of a paged source.
+    pub fn documents(&self, names: &[&str]) -> Vec<Vec<u8>> {
+        let samples = self.samples();
+        names
+            .iter()
+            .map(|name| {
+                samples
+                    .iter()
+                    .find(|s| s.name == *name)
+                    .unwrap_or_else(|| panic!("no sample `{name}`"))
+                    .document
+                    .clone()
+            })
+            .collect()
     }
 }
 
@@ -255,13 +277,19 @@ pub fn a_deployment_s_test_passes<P: ProcessorKind + PolarAgent>(kit: &Kit) {
 }
 
 /// An observer and its processor as their actors run them, without the actors or a broker: the observer's core says what
-/// to read and the real protocol handler reads it from a stand-in service as the observer's one operation; what it
+/// to read and the real protocol handler reads it from a stand-in service as one of the observer's operations; what it
 /// publishes is encoded and decoded as the broker carries it; the processor's core says what to write.
 pub struct Pair<O> {
     server: wiremock::MockServer,
+    /// Where the stand-in is reached: itself, or a TLS front on `localhost` for a credentialed pair.
+    base: String,
+    /// The credential every source names, for a credentialed pair.
+    credential: Option<String>,
     protocols: ProtocolHandle,
     observing: Observing,
     processing: Processing,
+    workload: &'static str,
+    mapping: (u64, Projection),
     sources: Vec<Source>,
     /// The generation each source's next read is at, from the observer's last `Again`.
     due: BTreeMap<String, u64>,
@@ -269,10 +297,12 @@ pub struct Pair<O> {
     observer: std::marker::PhantomData<fn() -> O>,
 }
 
-/// What a read through the pair came to: the observation the processor was given, and what it said to write.
+/// What a page read through the pair came to: the observation the processor was given, what it said to write, and how many
+/// entries the mapping could not identify.
 pub struct Observed {
     pub observation: Observation,
     pub writes: Vec<Write>,
+    pub skipped: usize,
 }
 
 impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
@@ -285,14 +315,66 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             None,
         )
         .await;
+        let server = wiremock::MockServer::start().await;
+        let base = server.uri();
+        Self::of(server, base, None, site.handle, workload, mapping)
+    }
+
+    /// A pair whose sources all name `credential`: the stand-in behind TLS on `localhost`, and a handler holding `token` as
+    /// that credential, bound to `localhost` by the real binding rule. So each page goes as a deployment's would, through
+    /// the kind's credentialed operation.
+    pub async fn credentialed(
+        workload: &'static str,
+        mapping: (u64, Projection),
+        credential: &str,
+        token: &str,
+    ) -> Self {
+        let ca = polar::egress::testing::TestCa::new("the kit's CA");
+        let server = wiremock::MockServer::start().await;
+        let port = polar::egress::testing::https_front(&ca, &server.uri()).await;
+        let binding = SecretBinding {
+            host_pattern: "localhost".to_string(),
+            kind: SecretKind::Token,
+            username: None,
+        };
+        let site = polar_agent_builder::protocol::testing::http_handle_for(
+            &ca.pem,
+            O::OPERATIONS,
+            vec![],
+            Some((credential, token, binding)),
+        )
+        .await;
+        let base = format!("https://localhost:{port}");
+        Self::of(
+            server,
+            base,
+            Some(credential.to_string()),
+            site.handle,
+            workload,
+            mapping,
+        )
+    }
+
+    fn of(
+        server: wiremock::MockServer,
+        base: String,
+        credential: Option<String>,
+        protocols: ProtocolHandle,
+        workload: &'static str,
+        mapping: (u64, Projection),
+    ) -> Self {
         let mut processing = Processing::new(workload);
         processing.on(processing::Event::Started);
-        processing.on(processing::Event::Mapping(Ok(Some(mapping))));
+        processing.on(processing::Event::Mapping(Ok(Some(mapping.clone()))));
         Self {
-            server: wiremock::MockServer::start().await,
-            protocols: site.handle,
+            server,
+            base,
+            credential,
+            protocols,
             observing: Observing::default(),
             processing,
+            workload,
+            mapping,
             sources: Vec::new(),
             due: BTreeMap::new(),
             clock: 0,
@@ -318,59 +400,194 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             None => {
                 self.sources.push(Source {
                     name: source.to_string(),
-                    url: format!("{}{at}", self.server.uri()),
+                    url: format!("{}{at}", self.base),
                     interval_secs: 60,
-                    credential: None,
+                    credential: self.credential.clone(),
                     paging: None,
                 });
                 observing::Event::Sources(self.sources.clone())
             }
         };
-        let fetches: Vec<observing::Step> = self.observing.on(event);
-        let [
-            observing::Step::Fetch {
-                name,
-                generation,
-                url,
-                credential,
-                paging,
-                page,
-            },
-        ] = &fetches[..]
-        else {
-            panic!("the observer reads `{source}` and only it: {fetches:?}");
-        };
-        let outcome = polar_http_observer::observer::read::<O>(
-            &self.protocols,
-            url.clone(),
-            credential.clone(),
-            paging.clone(),
-        )
-        .await;
-        let steps = self.observing.on(observing::Event::Read {
-            name: name.clone(),
-            generation: *generation,
-            page: *page,
-            outcome,
-        });
-        let mut published = None;
-        for step in steps {
-            match step {
-                observing::Step::Publish { source, body } => published = Some((source, body)),
-                observing::Step::Again {
-                    name, generation, ..
-                } => {
-                    self.due.insert(name, generation);
+        let observed = self
+            .follow(source, event, &[format!("{}{at}", self.base)])
+            .await;
+        let [observed] = <[Observed; 1]>::try_from(observed)
+            .unwrap_or_else(|o| panic!("`{source}` is one page, and {} were read", o.len()));
+        observed
+    }
+
+    /// The service answers `pages` for a new source, linked in the style `paging` says, and the source is read to its last
+    /// page: each page published as it is read and given to the processor. A link names the next page in a header; a
+    /// cursor's address is written into the page at its pointer; an offset's page is served at the items read before it,
+    /// and the last of `pages` must hold none.
+    pub async fn read_paged(
+        &mut self,
+        source: &str,
+        paging: Paging,
+        pages: &[Vec<u8>],
+    ) -> Vec<Observed> {
+        assert!(
+            self.sources.iter().all(|s| s.name != source),
+            "`{source}` is already listed"
+        );
+        assert!(!pages.is_empty(), "a source has at least one page");
+        let at = format!("/{source}");
+        let first = format!("{}{at}", self.base);
+        // Where each page is, and what selects it there.
+        let mut urls = vec![first.clone()];
+        let mut selectors: Vec<Option<(String, String)>> = vec![None];
+        let mut read = 0usize;
+        for i in 1..pages.len() {
+            let (param, value) = match &paging.style {
+                Style::Link | Style::Cursor { .. } => ("page".to_string(), i.to_string()),
+                Style::Offset { param, items } => {
+                    read += items_in(&pages[i - 1], items);
+                    (param.clone(), read.to_string())
                 }
-                observing::Step::Health(_) => {}
-                other => panic!("not a step a read comes to: {other:?}"),
+            };
+            urls.push(format!("{first}?{param}={value}"));
+            selectors.push(Some((param, value)));
+        }
+        self.server.reset().await;
+        for (i, page) in pages.iter().enumerate() {
+            let next = urls.get(i + 1);
+            let mut answer = wiremock::ResponseTemplate::new(200);
+            let mut body = page.clone();
+            match (&paging.style, next) {
+                (Style::Link, Some(next)) => {
+                    answer =
+                        answer.insert_header("Link", format!("<{next}>; rel=\"next\"").as_str());
+                }
+                (Style::Cursor { next: pointer }, Some(next)) => {
+                    body = with_cursor(page, pointer, next)
+                }
+                _ => {}
+            }
+            let selector = match &paging.style {
+                Style::Offset { param, .. } => Some(param.clone()),
+                _ => Some("page".to_string()),
+            };
+            let mut mock = wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::path(at.as_str()));
+            mock = match (&selectors[i], selector) {
+                (Some((param, value)), _) => mock.and(wiremock::matchers::query_param(
+                    param.as_str(),
+                    value.as_str(),
+                )),
+                (None, Some(param)) => {
+                    mock.and(wiremock::matchers::query_param_is_missing(param.as_str()))
+                }
+                (None, None) => mock,
+            };
+            mock.respond_with(answer.set_body_bytes(body))
+                .mount(&self.server)
+                .await;
+        }
+        self.sources.push(Source {
+            name: source.to_string(),
+            url: first,
+            interval_secs: 60,
+            credential: self.credential.clone(),
+            paging: Some(paging),
+        });
+        let event = observing::Event::Sources(self.sources.clone());
+        self.follow(source, event, &urls).await
+    }
+
+    /// Each request the stand-in has had since it last served, with the `Authorization` it carried.
+    pub async fn authorizations(&self) -> Vec<Option<String>> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|r| {
+                r.headers
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap_or("not text").to_string())
+            })
+            .collect()
+    }
+
+    /// Carries out what the observer decides from `event` for `source`, page by page, until it waits for the next read:
+    /// each page fetched where `urls` says, in order, published and given to the processor.
+    async fn follow(
+        &mut self,
+        source: &str,
+        event: observing::Event,
+        urls: &[String],
+    ) -> Vec<Observed> {
+        let mut steps = self.observing.on(event);
+        let mut observed = Vec::new();
+        loop {
+            let fetches: Vec<&observing::Step> = steps
+                .iter()
+                .filter(|s| matches!(s, observing::Step::Fetch { .. }))
+                .collect();
+            let [
+                observing::Step::Fetch {
+                    name,
+                    generation,
+                    url,
+                    credential,
+                    paging,
+                    page,
+                },
+            ] = fetches[..]
+            else {
+                break;
+            };
+            assert_eq!(
+                name, source,
+                "the observer reads `{source}` and only it: {steps:?}"
+            );
+            assert_eq!(
+                Some(url),
+                urls.get(*page as usize),
+                "page {page} of `{source}` is read where it is"
+            );
+            let outcome = polar_http_observer::observer::read::<O>(
+                &self.protocols,
+                url.clone(),
+                credential.clone(),
+                paging.clone(),
+            )
+            .await;
+            let read = observing::Event::Read {
+                name: name.clone(),
+                generation: *generation,
+                page: *page,
+                outcome,
+            };
+            steps = self.observing.on(read);
+            for step in &steps {
+                match step {
+                    observing::Step::Publish { source, body } => {
+                        observed.push(self.deliver(source, body.clone()));
+                    }
+                    observing::Step::Again {
+                        name, generation, ..
+                    } => {
+                        self.due.insert(name.clone(), *generation);
+                    }
+                    observing::Step::Health(_) | observing::Step::Fetch { .. } => {}
+                    other => panic!("not a step a read comes to: {other:?}"),
+                }
             }
         }
-        let (source, body) =
-            published.unwrap_or_else(|| panic!("`{source}` was read and not published"));
+        assert_eq!(
+            observed.len(),
+            urls.len(),
+            "`{source}`: every page is read and published, and nothing else: {steps:?}"
+        );
+        observed
+    }
+
+    /// What the observer published, carried as the broker carries it and given to the processor.
+    fn deliver(&mut self, source: &str, body: Vec<u8>) -> Observed {
         self.clock += 1;
         let sent = Observation {
-            source,
+            source: source.to_string(),
             observed_at_unix_secs: self.clock,
             body,
         };
@@ -385,11 +602,43 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                 writes.extend(these);
             }
         }
+        let (version, projection) = &self.mapping;
+        let skipped = match processing::process(projection, *version, self.workload, &observation) {
+            Outcome::Write { skipped, .. } => skipped,
+            Outcome::Refused(_) => 0,
+        };
         Observed {
             observation,
             writes,
+            skipped,
         }
     }
+}
+
+/// How many items a page holds at `pointer`, for an offset; none when it holds no list there.
+fn items_in(page: &[u8], pointer: &str) -> usize {
+    serde_json::from_slice::<serde_json::Value>(page)
+        .ok()
+        .and_then(|page| {
+            page.pointer(pointer)
+                .and_then(|v| v.as_array().map(Vec::len))
+        })
+        .unwrap_or(0)
+}
+
+/// A page with the next page's address written at `pointer`, as a service that pages by cursor writes it.
+fn with_cursor(page: &[u8], pointer: &str, next: &str) -> Vec<u8> {
+    let mut page: serde_json::Value =
+        serde_json::from_slice(page).expect("a cursor's page is JSON");
+    let (parent, field) = pointer.rsplit_once('/').expect("a pointer to a field");
+    page.pointer_mut(parent)
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("the cursor's field is in an object")
+        .insert(
+            field.to_string(),
+            serde_json::Value::String(next.to_string()),
+        );
+    serde_json::to_vec(&page).expect("JSON")
 }
 
 pub use samples::plainly;

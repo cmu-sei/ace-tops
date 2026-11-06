@@ -1,0 +1,28 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "JiraTestUser",
+      "keys": {
+        "account_id": "u-1"
+      },
+      "set": {
+        "display_name": "Ada",
+        "active": true,
+        "account_type": "atlassian"
+      }
+    },
+    {
+      "label": "JiraTestUser",
+      "keys": {
+        "account_id": "u-3"
+      },
+      "set": {
+        "display_name": "Linus",
+        "active": false,
+        "account_type": "atlassian"
+      }
+    }
+  ],
+  "edges": []
+}

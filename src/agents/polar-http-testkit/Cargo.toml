@@ -35,11 +35,15 @@ polar-agent-builder = { workspace = true, features = ["testing"] }
 polar-env.workspace = true
 polar-http-observer.workspace = true
 polar-http-processor.workspace = true
+# A token's signed binding, for a credentialed pair.
+polar-crypto.workspace = true
 polar-projection = { workspace = true, features = ["graph", "testing"] }
 # The signing path a deployment's mapping takes: judged by the processor's scaffold, signed, committed as Dhall.
 polar-sign = { path = "../polar-sign" }
 polar-signing = { workspace = true, features = ["testing"] }
 polar-test-graph.workspace = true
 ractor.workspace = true
+# A cursor written into a page, and the items an offset counts.
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 wiremock.workspace = true

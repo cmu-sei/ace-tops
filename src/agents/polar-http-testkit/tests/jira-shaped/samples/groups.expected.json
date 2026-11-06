@@ -1,0 +1,24 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "JiraTestGroup",
+      "keys": {
+        "group_id": "g-1"
+      },
+      "set": {
+        "name": "developers"
+      }
+    },
+    {
+      "label": "JiraTestGroup",
+      "keys": {
+        "group_id": "g-2"
+      },
+      "set": {
+        "name": "administrators"
+      }
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,3 @@
+{"self": "https://jira.example.org/rest/api/3/project/search?startAt=2&maxResults=2&expand=lead", "maxResults": 2, "startAt": 2, "total": 3, "isLast": true, "values": [
+  {"id": "10002", "key": "DATA", "name": "Data", "projectTypeKey": "software", "lead": {"accountId": "u-2", "displayName": "Grace"}}
+]}

@@ -1,0 +1,4 @@
+{"maxResults": 50, "startAt": 0, "total": 2, "isLast": true, "values": [
+  {"groupId": "g-1", "name": "developers"},
+  {"groupId": "g-2", "name": "administrators"}
+]}
