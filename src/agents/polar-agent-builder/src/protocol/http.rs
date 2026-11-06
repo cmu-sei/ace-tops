@@ -98,6 +98,14 @@ impl Request {
         }
     }
 
+    /// A POST of a whole address, for an operation that learns its host at run time: a GraphQL source's query.
+    pub fn post_at(url: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            body: Some(body),
+            ..Self::of(Method::POST, At::Url(url.into()))
+        }
+    }
+
     /// The request is at a container registry, which authenticates in a way of its own, and `scope` is what a token for it
     /// must allow (`repository:<name>:pull`): it goes with nothing at first, and only a challenge brings anything. A token
     /// is presented to the registry as it is. A login goes to the registry if it asks for Basic; if it names an auth host, the
@@ -739,6 +747,48 @@ mod tests {
             .headers
             .get("authorization")
             .map(|value| value.to_str().unwrap().to_string())
+    }
+
+    /// A POST of a whole address, as a GraphQL source is read: the body and its headers go as given, with the credential
+    /// the operation's binding allows, to the host the address names.
+    #[tokio::test]
+    async fn a_post_at_a_whole_address_goes_with_its_body_and_headers() {
+        let f = fixture(SecretKind::Token).await;
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"data\": {}}"))
+            .mount(&f.server)
+            .await;
+        let body = br#"{"query": "query { currentUser { id } }"}"#.to_vec();
+        let reply = f
+            .site
+            .handle
+            .ask(LearnedRead(
+                Request::post_at(
+                    format!("https://localhost:{}/api/graphql", f.port),
+                    body.clone(),
+                )
+                .header("content-type", "application/json"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply.body, b"{\"data\": {}}");
+        let received = f.server.received_requests().await.unwrap();
+        assert_eq!(received[0].method.as_str(), "POST");
+        assert_eq!(received[0].body, body);
+        assert_eq!(
+            received[0]
+                .headers
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            authorization(&received[0]),
+            Some(format!("Bearer {SECRET}"))
+        );
     }
 
     #[tokio::test]

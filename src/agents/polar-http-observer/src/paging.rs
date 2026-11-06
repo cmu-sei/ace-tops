@@ -46,6 +46,16 @@ pub enum Style {
     /// A query parameter, absent on the first page, set to how many items were read so far, as Jira's `startAt`; the items
     /// are the list at a JSON pointer, and a page with none is the last.
     Offset { param: String, items: String },
+    /// A GraphQL connection at a JSON pointer, as GitLab's: while its `pageInfo.hasNextPage`, the same query again with
+    /// `$after` its `endCursor`. Only for a source read as GraphQL.
+    GraphQl { connection: String },
+}
+
+/// Where the next page is: an address to GET, or a cursor to ask the same query after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next {
+    At(String),
+    After(String),
 }
 
 /// How a source is paged.
@@ -60,7 +70,7 @@ pub struct Paging {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub body: Vec<u8>,
-    pub next: Option<String>,
+    pub next: Option<Next>,
 }
 
 /// A source's `paging`, or every problem with it, each naming its field.
@@ -72,7 +82,9 @@ pub fn parse(value: &Value) -> Result<Paging, Vec<String>> {
     let given = |key: &str| object.get(key).filter(|v| !v.is_null());
     let mut problems: Vec<String> = object
         .keys()
-        .filter(|k| !["style", "next", "param", "items", "max_pages"].contains(&k.as_str()))
+        .filter(|k| {
+            !["style", "next", "param", "items", "connection", "max_pages"].contains(&k.as_str())
+        })
         .map(|k| format!("`paging`: `{k}` is not a field"))
         .collect();
     let text = |key: &str,
@@ -114,8 +126,17 @@ pub fn parse(value: &Value) -> Result<Paging, Vec<String>> {
                 .zip(items)
                 .map(|(param, items)| Style::Offset { param, items })
         }
+        Some("graphql") => text(
+            "connection",
+            &mut problems,
+            |t| t.starts_with('/') && is_pointer(t),
+            "a JSON pointer to the connection, starting with `/`",
+        )
+        .map(|connection| Style::GraphQl { connection }),
         _ => {
-            problems.push("`paging`: `style` must be `link`, `cursor` or `offset`".to_string());
+            problems.push(
+                "`paging`: `style` must be `link`, `cursor`, `offset` or `graphql`".to_string(),
+            );
             None
         }
     };
@@ -124,9 +145,10 @@ pub fn parse(value: &Value) -> Result<Paging, Vec<String>> {
         Some(Style::Link) => &[],
         Some(Style::Cursor { .. }) => &["next"],
         Some(Style::Offset { .. }) => &["param", "items"],
-        None => &["next", "param", "items"],
+        Some(Style::GraphQl { .. }) => &["connection"],
+        None => &["next", "param", "items", "connection"],
     };
-    for key in ["next", "param", "items"] {
+    for key in ["next", "param", "items", "connection"] {
         if !takes.contains(&key) && given(key).is_some() {
             problems.push(format!("`paging`: `{key}` is not taken by this style"));
         }
@@ -160,8 +182,43 @@ fn is_param(t: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
-/// The next page's address, given the page at `current` and what came back with it: `link`, each `Link` header's value;
-/// `body`, the page. None on the last page.
+/// Where the next page is, given the page at `current`, asked after the cursor `after` for a GraphQL source, and what came
+/// back with it: `link`, each `Link` header's value; `body`, the page. None on the last page.
+pub fn following(
+    style: &Style,
+    current: &str,
+    after: Option<&str>,
+    link: &[String],
+    body: &[u8],
+) -> Result<Option<Next>, String> {
+    let Style::GraphQl { connection } = style else {
+        return next(style, current, link, body).map(|at| at.map(Next::At));
+    };
+    let page = object(body)?;
+    let Some(info) = page.pointer(&format!("{connection}/pageInfo")) else {
+        return Err(format!("the page has no `pageInfo` at `{connection}`"));
+    };
+    match info.get("hasNextPage") {
+        Some(Value::Bool(false)) => Ok(None),
+        Some(Value::Bool(true)) => match info.get("endCursor") {
+            Some(Value::String(end)) if !end.is_empty() => {
+                if Some(end.as_str()) == after {
+                    Err("the next page is the page itself: its `endCursor` is the cursor it was asked after".to_string())
+                } else {
+                    Ok(Some(Next::After(end.clone())))
+                }
+            }
+            _ => Err(format!(
+                "`{connection}/pageInfo` says there is a next page and has no `endCursor`"
+            )),
+        },
+        _ => Err(format!(
+            "`{connection}/pageInfo/hasNextPage` is not true or false"
+        )),
+    }
+}
+
+/// The next address of a page paged by address: [`following`] for every style but GraphQL's.
 pub fn next(
     style: &Style,
     current: &str,
@@ -172,6 +229,9 @@ pub fn next(
         url::Url::parse(current).map_err(|_| "the page's address cannot be read".to_string())?;
     let named = match style {
         Style::Link => link.iter().find_map(|value| next_in_link(value)),
+        Style::GraphQl { .. } => {
+            return Err("a GraphQL page's next is a cursor, not an address".to_string());
+        }
         Style::Cursor { next } => match object(body)?.pointer(next) {
             None | Some(Value::Null) => None,
             Some(Value::String(t)) if t.is_empty() => None,
@@ -440,6 +500,107 @@ mod tests {
         assert!(next(&Style::Link, at, &link, b"").is_err());
     }
 
+    #[test]
+    fn a_graphql_paging_names_where_its_connection_is() {
+        assert_eq!(
+            parse(&json!({ "style": "graphql", "connection": "/data/projects", "max_pages": 5 }))
+                .unwrap(),
+            Paging {
+                style: Style::GraphQl {
+                    connection: "/data/projects".into()
+                },
+                max_pages: 5
+            }
+        );
+        for (value, field) in [
+            (json!({ "style": "graphql" }), "`connection`"),
+            (
+                json!({ "style": "graphql", "connection": "data.projects" }),
+                "`connection`",
+            ),
+            (
+                json!({ "style": "graphql", "connection": "/data/projects", "next": "/x" }),
+                "`next`",
+            ),
+            (
+                json!({ "style": "link", "connection": "/data/projects" }),
+                "`connection`",
+            ),
+        ] {
+            let problems = problems_of(value.clone());
+            assert!(
+                problems.iter().any(|p| p.contains(field)),
+                "{value}: {problems:?}"
+            );
+        }
+    }
+
+    /// A GraphQL page's next is its connection's `endCursor` while `hasNextPage` says there is one: a cursor for the same
+    /// query, not an address.
+    #[test]
+    fn a_graphql_page_s_next_is_its_cursor_while_there_is_a_next_page() {
+        let style = Style::GraphQl {
+            connection: "/data/projects".into(),
+        };
+        let at = "https://gitlab.example/api/graphql";
+        let page = |has: Value, end: Value| {
+            json!({ "data": { "projects": { "nodes": [], "pageInfo": { "hasNextPage": has, "endCursor": end } } } })
+                .to_string()
+        };
+        assert_eq!(
+            following(
+                &style,
+                at,
+                None,
+                &[],
+                page(json!(true), json!("c1")).as_bytes()
+            )
+            .unwrap(),
+            Some(Next::After("c1".into()))
+        );
+        assert_eq!(
+            following(
+                &style,
+                at,
+                Some("c1"),
+                &[],
+                page(json!(false), json!("c2")).as_bytes()
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            following(
+                &style,
+                at,
+                Some("c1"),
+                &[],
+                page(json!(false), Value::Null).as_bytes()
+            )
+            .unwrap(),
+            None
+        );
+        for (bad, why) in [
+            (page(json!(true), Value::Null), "endCursor"),
+            (page(json!(true), json!("")), "endCursor"),
+            (page(json!(true), json!("c1")), "itself"),
+            (page(json!("yes"), json!("c2")), "hasNextPage"),
+            (json!({ "data": { "other": {} } }).to_string(), "pageInfo"),
+        ] {
+            let got = following(&style, at, Some("c1"), &[], bad.as_bytes());
+            assert!(
+                got.as_ref().is_err_and(|e| e.contains(why)),
+                "{bad}: {got:?}"
+            );
+        }
+        // The address styles' next is an address, as `next` says.
+        let link = vec![format!("<{at}?page=2>; rel=\"next\"")];
+        assert_eq!(
+            following(&Style::Link, at, None, &link, b"").unwrap(),
+            Some(Next::At(format!("{at}?page=2")))
+        );
+    }
+
     fn param() -> impl Strategy<Value = String> {
         "[a-zA-Z][a-zA-Z0-9_]{0,8}"
     }
@@ -502,6 +663,24 @@ mod tests {
                 let current = url::Url::parse(current).unwrap();
                 prop_assert_eq!(next.origin(), current.origin());
                 prop_assert_ne!(next, current);
+            }
+        }
+
+        /// A cursor is followed only forward: whatever cursor a page names, it is the next page's exactly when the page
+        /// says there is one and it is not the cursor the page was asked for.
+        #[test]
+        fn a_cursor_is_followed_exactly_while_the_page_says_there_is_more(
+            has in any::<bool>(),
+            end in prop::option::of("[a-z0-9=]{1,8}"),
+            asked in prop::option::of("[a-z0-9=]{1,8}"),
+        ) {
+            let style = Style::GraphQl { connection: "/data/c".into() };
+            let page = json!({ "data": { "c": { "pageInfo": { "hasNextPage": has, "endCursor": end } } } }).to_string();
+            let got = following(&style, "https://h.example/api/graphql", asked.as_deref(), &[], page.as_bytes());
+            match (has, &end) {
+                (false, _) => prop_assert_eq!(got, Ok(None)),
+                (true, Some(end)) if Some(end) != asked.as_ref() => prop_assert_eq!(got, Ok(Some(Next::After(end.clone())))),
+                (true, _) => prop_assert!(got.is_err()),
             }
         }
     }

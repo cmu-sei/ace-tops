@@ -49,6 +49,7 @@ use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{ConfigurationHandle, PolarAgent, UpdateVerifier};
 use polar_crypto::registry::{SecretBinding, SecretKind};
 use polar_http_observer::Observation;
+use polar_http_observer::observer::PageRequest;
 use polar_http_observer::observing::{self, Observing};
 use polar_http_observer::paging::{Paging, Style};
 use polar_http_observer::sources::Source;
@@ -404,6 +405,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                     interval_secs: 60,
                     credential: self.credential.clone(),
                     paging: None,
+                    graphql: None,
                 });
                 observing::Event::Sources(self.sources.clone())
             }
@@ -431,6 +433,10 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             "`{source}` is already listed"
         );
         assert!(!pages.is_empty(), "a source has at least one page");
+        assert!(
+            !matches!(paging.style, Style::GraphQl { .. }),
+            "the stand-in serves pages by address; a GraphQL source's are not served yet"
+        );
         let at = format!("/{source}");
         let first = format!("{}{at}", self.base);
         // Where each page is, and what selects it there.
@@ -444,6 +450,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                     read += items_in(&pages[i - 1], items);
                     (param.clone(), read.to_string())
                 }
+                Style::GraphQl { .. } => unreachable!("refused above"),
             };
             urls.push(format!("{first}?{param}={value}"));
             selectors.push(Some((param, value)));
@@ -489,6 +496,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             interval_secs: 60,
             credential: self.credential.clone(),
             paging: Some(paging),
+            graphql: None,
         });
         let event = observing::Event::Sources(self.sources.clone());
         self.follow(source, event, &urls).await
@@ -532,6 +540,8 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                     credential,
                     paging,
                     page,
+                    query,
+                    after,
                 },
             ] = fetches[..]
             else {
@@ -548,9 +558,13 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             );
             let outcome = polar_http_observer::observer::read::<O>(
                 &self.protocols,
-                url.clone(),
-                credential.clone(),
-                paging.clone(),
+                PageRequest {
+                    url: url.clone(),
+                    credential: credential.clone(),
+                    paging: paging.clone(),
+                    query: query.clone(),
+                    after: after.clone(),
+                },
             )
             .await;
             let read = observing::Event::Read {

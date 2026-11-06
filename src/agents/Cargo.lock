@@ -6102,6 +6102,7 @@ version = "1.0.0"
 dependencies = [
  "cassini-client",
  "cassini-types",
+ "cynic-parser",
  "polar",
  "polar-agent-builder",
  "polar-crypto",

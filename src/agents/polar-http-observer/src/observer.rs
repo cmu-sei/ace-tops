@@ -24,6 +24,7 @@
 //! The observer's supervisor: the builder's infrastructure, and what [`Observing`] decides, carried out. One source's
 //! failure is said and tried again at its next time, and touches no other.
 
+use crate::graphql;
 use crate::observing::{Event, Observing, Step};
 use crate::paging::{self, Page, Style};
 use crate::sources::{self, SECTION_NAME, Source};
@@ -60,10 +61,55 @@ pub trait Kind: Send + Sync + 'static {
     const CREDENTIALED: Option<OperationDecl> = None;
 }
 
-/// A GET of a page of a source, with no credential.
+/// What a page is asked with: where, with which credential, how the source is paged, and, for a GraphQL source, its
+/// query and the cursor this page comes after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageRequest {
+    pub url: String,
+    pub credential: Option<String>,
+    pub paging: Option<Style>,
+    pub query: Option<String>,
+    pub after: Option<String>,
+}
+
+impl PageRequest {
+    /// A page read by GET.
+    pub fn new(url: String, credential: Option<String>, paging: Option<Style>) -> Self {
+        Self {
+            url,
+            credential,
+            paging,
+            query: None,
+            after: None,
+        }
+    }
+
+    /// The page is `query`, POSTed, after the cursor `after`, none on the first page.
+    pub fn graphql(mut self, query: impl Into<String>, after: Option<String>) -> Self {
+        self.query = Some(query.into());
+        self.after = after;
+        self
+    }
+
+    fn request(&self) -> Request {
+        match &self.query {
+            None => Request::get_at(self.url.clone()),
+            Some(query) => Request::post_at(
+                self.url.clone(),
+                graphql::request_body(query, self.after.as_deref()),
+            )
+            .header("content-type", "application/json"),
+        }
+    }
+
+    fn read(&self, reply: &Reply) -> Result<Page, ReadFailure> {
+        read_page(self, reply)
+    }
+}
+
+/// A page of a source, with no credential.
 struct Fetch<K> {
-    url: String,
-    paging: Option<Style>,
+    asked: PageRequest,
     kind: PhantomData<fn() -> K>,
 }
 
@@ -73,19 +119,18 @@ impl<K: Kind> Operation for Fetch<K> {
     const DECL: OperationDecl = K::OPERATION;
 
     fn request(&self) -> Request {
-        Request::get_at(self.url.clone())
+        self.asked.request()
     }
 
     fn read(&self, reply: &Reply) -> Result<Page, ReadFailure> {
-        read_page(&self.url, self.paging.as_ref(), reply)
+        self.asked.read(reply)
     }
 }
 
-/// A GET of a page of a source, with the credential the source names.
+/// A page of a source, with the credential the source names.
 struct FetchWith<K> {
-    url: String,
+    asked: PageRequest,
     credential: String,
-    paging: Option<Style>,
     kind: PhantomData<fn() -> K>,
 }
 
@@ -99,7 +144,7 @@ impl<K: Kind> Operation for FetchWith<K> {
     };
 
     fn request(&self) -> Request {
-        Request::get_at(self.url.clone())
+        self.asked.request()
     }
 
     fn credential(&self) -> Option<String> {
@@ -107,7 +152,7 @@ impl<K: Kind> Operation for FetchWith<K> {
     }
 
     fn read(&self, reply: &Reply) -> Result<Page, ReadFailure> {
-        read_page(&self.url, self.paging.as_ref(), reply)
+        self.asked.read(reply)
     }
 }
 
@@ -116,16 +161,13 @@ impl<K: Kind> Operation for FetchWith<K> {
 /// tests read through the same handler (`polar-http-testkit`).
 pub async fn read<K: Kind>(
     protocols: &ProtocolHandle,
-    url: String,
-    credential: Option<String>,
-    paging: Option<Style>,
+    asked: PageRequest,
 ) -> Result<Page, Failure> {
-    match (credential, K::CREDENTIALED) {
+    match (asked.credential.clone(), K::CREDENTIALED) {
         (None, _) => {
             protocols
                 .ask(Fetch::<K> {
-                    url,
-                    paging,
+                    asked,
                     kind: PhantomData,
                 })
                 .await
@@ -133,9 +175,8 @@ pub async fn read<K: Kind>(
         (Some(credential), Some(_)) => {
             protocols
                 .ask(FetchWith::<K> {
-                    url,
+                    asked,
                     credential,
-                    paging,
                     kind: PhantomData,
                 })
                 .await
@@ -149,9 +190,14 @@ pub async fn read<K: Kind>(
 
 /// A page, and where the next is when the source is paged: a next page that cannot be found, or is on another host, is a
 /// failure of the read, so a paging that cannot work is said rather than taken for the last page.
-fn read_page(url: &str, paging: Option<&Style>, reply: &Reply) -> Result<Page, ReadFailure> {
+fn read_page(asked: &PageRequest, reply: &Reply) -> Result<Page, ReadFailure> {
     let body = read_document(reply.status.as_u16(), &reply.body)?;
-    let next = match paging {
+    if asked.query.is_some() && graphql::failed(&body) {
+        return Err(ReadFailure::Malformed(
+            "the GraphQL answer holds errors and no data".to_string(),
+        ));
+    }
+    let next = match &asked.paging {
         None => None,
         Some(style) => {
             let link: Vec<String> = reply
@@ -161,7 +207,8 @@ fn read_page(url: &str, paging: Option<&Style>, reply: &Reply) -> Result<Page, R
                 .filter_map(|value| value.to_str().ok())
                 .map(str::to_string)
                 .collect();
-            paging::next(style, url, &link, &body).map_err(ReadFailure::Malformed)?
+            paging::following(style, &asked.url, asked.after.as_deref(), &link, &body)
+                .map_err(ReadFailure::Malformed)?
         }
     };
     Ok(Page { body, next })
@@ -366,12 +413,21 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
                 credential,
                 paging,
                 page,
+                query,
+                after,
             } => {
                 let protocols = state.protocols.clone();
                 let to = myself.clone();
+                let asked = PageRequest {
+                    url,
+                    credential,
+                    paging,
+                    query,
+                    after,
+                };
                 // Off the actor, so a slow host holds up no other source.
                 tokio::spawn(async move {
-                    let outcome = read::<K>(&protocols, url, credential, paging).await;
+                    let outcome = read::<K>(&protocols, asked).await;
                     let _ = to.cast(ObserverMessage::Read {
                         name,
                         generation,
@@ -446,7 +502,7 @@ pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
 mod tests {
     use super::*;
     use crate::observing::next_read;
-    use crate::paging::{Page, Style};
+    use crate::paging::{Next, Page, Style};
     use polar_agent_builder::protocol::testing::{http_handle, http_handle_for};
     use polar_agent_builder::protocol::{Credential, Location, ProtocolKind};
     use polar_crypto::registry::{SecretBinding, SecretKind};
@@ -477,8 +533,7 @@ mod tests {
 
     fn fetch(url: String) -> Fetch<TestKind> {
         Fetch {
-            url,
-            paging: None,
+            asked: PageRequest::new(url, None, None),
             kind: PhantomData,
         }
     }
@@ -589,10 +644,13 @@ mod tests {
     async fn a_source_that_names_a_credential_is_read_with_it_and_one_that_names_none_with_nothing()
     {
         let (server, url, protocols) = credentialed_site().await;
-        let with =
-            read::<CredentialedKind>(&protocols, url.clone(), Some("jira".to_string()), None).await;
+        let with = read::<CredentialedKind>(
+            &protocols,
+            PageRequest::new(url.clone(), Some("jira".to_string()), None),
+        )
+        .await;
         assert_eq!(with.unwrap().body, b"[]".to_vec());
-        let without = read::<CredentialedKind>(&protocols, url, None, None).await;
+        let without = read::<CredentialedKind>(&protocols, PageRequest::new(url, None, None)).await;
         assert_eq!(without.unwrap().body, b"[]".to_vec());
         assert_eq!(
             authorizations(&server).await,
@@ -603,7 +661,11 @@ mod tests {
     #[tokio::test]
     async fn a_credential_the_agent_does_not_hold_is_a_failure_and_nothing_is_sent() {
         let (server, url, protocols) = credentialed_site().await;
-        let got = read::<CredentialedKind>(&protocols, url, Some("gitlab".to_string()), None).await;
+        let got = read::<CredentialedKind>(
+            &protocols,
+            PageRequest::new(url, Some("gitlab".to_string()), None),
+        )
+        .await;
         assert!(
             matches!(got, Err(Failure::NoCredential { ref name }) if name == "gitlab"),
             "{got:?}"
@@ -615,7 +677,11 @@ mod tests {
     async fn a_kind_that_reads_with_no_credential_refuses_a_source_that_names_one_and_sends_nothing()
      {
         let (server, url, protocols) = credentialed_site().await;
-        let got = read::<TestKind>(&protocols, url, Some("jira".to_string()), None).await;
+        let got = read::<TestKind>(
+            &protocols,
+            PageRequest::new(url, Some("jira".to_string()), None),
+        )
+        .await;
         assert!(matches!(got, Err(Failure::Configuration(_))), "{got:?}");
         assert!(authorizations(&server).await.is_empty());
     }
@@ -654,16 +720,17 @@ mod tests {
         let link = Some(Style::Link);
         let first = read::<TestKind>(
             &protocols,
-            format!("{}/projects", site.uri()),
-            None,
-            link.clone(),
+            PageRequest::new(format!("{}/projects", site.uri()), None, link.clone()),
         )
         .await
         .unwrap();
         assert_eq!(first.body, b"[1]".to_vec());
         let next = first.next.expect("the first page names the next");
+        let Next::At(next) = next else {
+            panic!("a link names an address: {next:?}")
+        };
         assert_eq!(next, format!("{}/projects?page=2", site.uri()));
-        let second = read::<TestKind>(&protocols, next, None, link.clone())
+        let second = read::<TestKind>(&protocols, PageRequest::new(next, None, link.clone()))
             .await
             .unwrap();
         assert_eq!(
@@ -674,15 +741,87 @@ mod tests {
             }
         );
         // Unpaged, a Link header is not followed: the source is one page.
-        let unpaged = read::<TestKind>(&protocols, format!("{}/projects", site.uri()), None, None)
-            .await
-            .unwrap();
+        let unpaged = read::<TestKind>(
+            &protocols,
+            PageRequest::new(format!("{}/projects", site.uri()), None, None),
+        )
+        .await
+        .unwrap();
         assert_eq!(unpaged.next, None);
-        let elsewhere =
-            read::<TestKind>(&protocols, format!("{}/elsewhere", site.uri()), None, link).await;
+        let elsewhere = read::<TestKind>(
+            &protocols,
+            PageRequest::new(format!("{}/elsewhere", site.uri()), None, link),
+        )
+        .await;
         assert!(
             matches!(&elsewhere, Err(Failure::Read(why)) if why.contains("another host")),
             "{elsewhere:?}"
+        );
+    }
+
+    /// A GraphQL source through the handler as the observer reads it: its query POSTed as JSON, each page asked after the
+    /// cursor the last named, and an answer of errors with no data a failure of the read, not a page published.
+    #[tokio::test]
+    async fn a_graphql_source_is_posted_and_paged_by_its_cursor() {
+        const QUERY: &str = "query($after: String) { projects(after: $after) { nodes { id } pageInfo { endCursor hasNextPage } } }";
+        let site = MockServer::start().await;
+        let page = |ids: &[&str], next: Option<&str>| {
+            serde_json::json!({ "data": { "projects": {
+                "nodes": ids.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>(),
+                "pageInfo": { "endCursor": next, "hasNextPage": next.is_some() }
+            } } })
+            .to_string()
+        };
+        for (after, answer) in [
+            (serde_json::Value::Null, page(&["1", "2"], Some("c1"))),
+            (serde_json::json!("c1"), page(&["3"], None)),
+        ] {
+            Mock::given(method("POST"))
+                .and(path("/api/graphql"))
+                .and(wiremock::matchers::header(
+                    "content-type",
+                    "application/json",
+                ))
+                .and(wiremock::matchers::body_json(
+                    serde_json::json!({ "query": QUERY, "variables": { "after": after } }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_string(answer))
+                .mount(&site)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/broken/graphql"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"errors": [{"message": "secret detail"}], "data": null}"#),
+            )
+            .mount(&site)
+            .await;
+        let protocols = handler().await;
+        let paging = Some(Style::GraphQl {
+            connection: "/data/projects".to_string(),
+        });
+        let url = format!("{}/api/graphql", site.uri());
+        let asked = |after: Option<&str>| {
+            PageRequest::new(url.clone(), None, paging.clone())
+                .graphql(QUERY, after.map(str::to_string))
+        };
+        let first = read::<TestKind>(&protocols, asked(None)).await.unwrap();
+        assert_eq!(first.next, Some(Next::After("c1".to_string())));
+        let second = read::<TestKind>(&protocols, asked(Some("c1")))
+            .await
+            .unwrap();
+        assert_eq!(second.next, None, "hasNextPage false: the last page");
+        assert!(String::from_utf8_lossy(&second.body).contains("\"3\""));
+        let broken = read::<TestKind>(
+            &protocols,
+            PageRequest::new(format!("{}/broken/graphql", site.uri()), None, None)
+                .graphql("{ a }", None),
+        )
+        .await;
+        assert!(
+            matches!(&broken, Err(Failure::Read(why)) if !why.contains("secret detail")),
+            "{broken:?}"
         );
     }
 

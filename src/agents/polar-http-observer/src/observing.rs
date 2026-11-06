@@ -25,7 +25,7 @@
 //! reads, publishes, waits and tells health; this says when, so a property can hold it to a simple model over any
 //! sequence of lists, reads and a shutdown (docs/architecture/http-observers.md, "Evidence").
 
-use crate::paging::{Page, Style};
+use crate::paging::{Next, Page, Style};
 use crate::problems::{HealthChange, Reported, SourceProblems};
 use crate::sources::Source;
 use polar_agent_builder::protocol::Failure;
@@ -70,6 +70,10 @@ pub enum Step {
         paging: Option<Style>,
         /// Which page of the read this is, from 0.
         page: u32,
+        /// Its GraphQL query, for a source that is one: POSTed rather than a GET.
+        query: Option<String>,
+        /// The cursor this page is asked after, for a GraphQL page past the first.
+        after: Option<String>,
     },
     /// Publish what a source said: one page of it, and the origin it was read from.
     Publish {
@@ -199,13 +203,22 @@ impl Observing {
                 let after = next_read(Duration::from_secs(source.interval_secs), &outcome);
                 let origin = crate::sources::origin(&source.url);
                 let max_pages = source.paging.as_ref().map_or(1, |p| p.max_pages);
-                let following = |url: String| Step::Fetch {
-                    name: name.clone(),
-                    generation,
-                    url,
-                    credential: source.credential.clone(),
-                    paging: source.paging.as_ref().map(|p| p.style.clone()),
-                    page: page + 1,
+                // An address is the next page's; a cursor asks the source's own address again, after it.
+                let following = |next: Next| {
+                    let (url, after) = match next {
+                        Next::At(url) => (url, None),
+                        Next::After(cursor) => (source.url.clone(), Some(cursor)),
+                    };
+                    Step::Fetch {
+                        name: name.clone(),
+                        generation,
+                        url,
+                        credential: source.credential.clone(),
+                        paging: source.paging.as_ref().map(|p| p.style.clone()),
+                        page: page + 1,
+                        query: source.graphql.as_ref().map(|g| g.query.clone()),
+                        after,
+                    }
                 };
                 let next = match outcome {
                     Err(failure) => {
@@ -267,6 +280,8 @@ impl Observing {
                 credential: source.credential.clone(),
                 paging: source.paging.as_ref().map(|p| p.style.clone()),
                 page: 0,
+                query: source.graphql.as_ref().map(|g| g.query.clone()),
+                after: None,
             });
         }
     }
@@ -281,7 +296,8 @@ impl Observing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paging::{Paging, Style};
+    use crate::graphql::GraphQl;
+    use crate::paging::{Next, Paging, Style};
     use proptest::prelude::*;
     use proptest::sample::Index;
     use std::collections::BTreeSet;
@@ -293,23 +309,39 @@ mod tests {
             interval_secs: secs,
             credential: None,
             paging: None,
+            graphql: None,
         }
     }
 
     /// A generated source: its address, interval, credential and paging, each from a few, so lists repeat and differ by
     /// one.
-    fn generated(name: &str, (u, secs, credential, pages): &Generated) -> Source {
+    fn generated(name: &str, (u, secs, credential, pages, graphql): &Generated) -> Source {
         Source {
             credential: credential.map(|c| format!("credential-{c}")),
             paging: pages.map(|max_pages| Paging {
-                style: Style::Link,
+                style: if *graphql {
+                    Style::GraphQl {
+                        connection: "/data/c".to_string(),
+                    }
+                } else {
+                    Style::Link
+                },
                 max_pages: u32::from(max_pages),
+            }),
+            graphql: graphql.then(|| GraphQl {
+                query: "query($after: String) { c(after: $after) { pageInfo { endCursor hasNextPage } } }".to_string(),
             }),
             ..source(name, &format!("http://h/{u}"), *secs)
         }
     }
 
-    type Generated = (u8, u64, Option<u8>, Option<u8>);
+    /// A source's address, interval, credential, pages, and whether it is a GraphQL query.
+    type Generated = (u8, u64, Option<u8>, Option<u8>, bool);
+
+    /// The query a source asks, by name, for what a fetch of it carries.
+    fn query_of(source: &Source) -> Option<String> {
+        source.graphql.as_ref().map(|g| g.query.clone())
+    }
 
     #[test]
     fn a_failure_or_success_waits_its_interval_and_a_shorter_wait_from_a_host_does_not_shorten_it()
@@ -460,7 +492,8 @@ mod tests {
     #[derive(Debug, Clone)]
     enum Outcome {
         /// A page, and the next page's address if it names one.
-        Document(u8, Option<u8>),
+        /// A page, and the next one if it names one: by cursor (true) or by address.
+        Document(u8, Option<(bool, u8)>),
         Failed,
         Backoff(u64),
         NotYet(u64),
@@ -471,7 +504,13 @@ mod tests {
             match self {
                 Outcome::Document(b, next) => Ok(Page {
                     body: vec![*b],
-                    next: next.map(|n| format!("http://h/next/{n}")),
+                    next: next.map(|(cursor, n)| {
+                        if cursor {
+                            Next::After(format!("c{n}"))
+                        } else {
+                            Next::At(format!("http://h/next/{n}"))
+                        }
+                    }),
                 }),
                 Outcome::Failed => Err(Failure::Read("it answered 404".to_string())),
                 Outcome::Backoff(secs) => Err(Failure::Backoff {
@@ -490,13 +529,13 @@ mod tests {
         prop_oneof![
             2 => prop::collection::btree_map(
                 "[a-c]",
-                (0u8..2, 60u64..62, prop::option::of(0u8..2), prop::option::of(1u8..3)),
+                (0u8..2, 60u64..62, prop::option::of(0u8..2), prop::option::of(1u8..3), any::<bool>()),
                 0..4,
             )
             .prop_map(Happens::Sources),
             3 => (name(), any::<Index>()).prop_map(|(n, g)| Happens::Due(n, g)),
             6 => (name(), any::<Index>(), 0u32..3, prop_oneof![
-                (any::<u8>(), prop::option::of(0u8..3)).prop_map(|(b, n)| Outcome::Document(b, n)),
+                (any::<u8>(), prop::option::of((any::<bool>(), 0u8..3))).prop_map(|(b, n)| Outcome::Document(b, n)),
                 Just(Outcome::Failed),
                 (0u64..120).prop_map(Outcome::Backoff),
                 (0u64..120).prop_map(Outcome::NotYet),
@@ -540,7 +579,7 @@ mod tests {
                         let mut fetched = BTreeSet::new();
                         for step in &steps {
                             match step {
-                                Step::Fetch { name, generation, url, credential, paging, page } => {
+                                Step::Fetch { name, generation, url, credential, paging, page, query, after } => {
                                     prop_assert!(!shut);
                                     prop_assert!(!issued.contains(generation), "a new version, a new generation");
                                     let of = list.iter().find(|s| &s.name == name).unwrap();
@@ -548,6 +587,8 @@ mod tests {
                                     prop_assert_eq!(credential, &of.credential, "read with the credential it names");
                                     prop_assert_eq!(paging, &of.paging.as_ref().map(|p| p.style.clone()));
                                     prop_assert_eq!(*page, 0, "a read starts at its first page");
+                                    prop_assert_eq!(query, &query_of(of), "asked with its query");
+                                    prop_assert_eq!(after, &None, "from the first page");
                                     issued.push(*generation);
                                     live.insert(name.clone(), *generation);
                                     fetched.insert(name.clone());
@@ -580,6 +621,8 @@ mod tests {
                                 credential: listed[name].credential.clone(),
                                 paging: listed[name].paging.as_ref().map(|p| p.style.clone()),
                                 page: 0,
+                                query: query_of(&listed[name]),
+                                after: None,
                             }],
                             _ => vec![],
                         };
@@ -611,13 +654,16 @@ mod tests {
                             // A page that names the next is followed at the same generation while the bound allows; the
                             // last page, a failure, or a next page beyond the bound waits for the next read.
                             let following = match outcome {
-                                Outcome::Document(_, Some(n)) if page + 1 < max_pages => Some(Step::Fetch {
+                                // An address is the next page's; a cursor asks the source's own address again, after it.
+                                Outcome::Document(_, Some((cursor, n))) if page + 1 < max_pages => Some(Step::Fetch {
                                     name: name.clone(),
                                     generation,
-                                    url: format!("http://h/next/{n}"),
+                                    url: if *cursor { listed[name].url.clone() } else { format!("http://h/next/{n}") },
                                     credential: listed[name].credential.clone(),
                                     paging: listed[name].paging.as_ref().map(|p| p.style.clone()),
                                     page: page + 1,
+                                    query: query_of(&listed[name]),
+                                    after: cursor.then(|| format!("c{n}")),
                                 }),
                                 _ => None,
                             };

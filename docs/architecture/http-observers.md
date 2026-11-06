@@ -594,6 +594,16 @@ The bites:
   first holds of a real source. Which GitLab it reads is asked first, since that sends a credential to an outside host.
 - **G5, the old pair goes.** The five crates, the hand-written chart, `gitlab-secret` and the GitLab variables, once G4 has shown the new pair working.
 
+G1, done (`polar-http-observer/src/graphql.rs`, `paging.rs`, `observer.rs`; `polar-projection`'s `Stamp`). A source may carry `graphql: {query}`, POSTed as
+`{query, variables: {after}}` to its URL with `Request::post_at`, the builder's POST of a whole address. The query is judged when signed by `cynic-parser`: one
+operation, a `query`; a paged one declares `$after`. The `graphql` paging style reads `<connection>/pageInfo`: `hasNextPage` false is the last page, true asks the
+same query after its `endCursor`, and a missing cursor, or the one just asked after, fails the read. A page's next is an address or a cursor (`paging::Next`), and the
+fetch step carries the query and the cursor, so the property model holds both kinds of next to the same rule. An answer of `errors` with no `data` fails the read
+without repeating its messages. An observation carries its source's origin; a mapping reads it as `origin`, every write is stamped `polar_origin`, and samples are
+read at `https://samples.example`. Marked for review: a GraphQL source signs only its query, constants written in it, and its one variable is the cursor: arbitrary
+variables in a signed list would make every source's Dhall type carry them, and G2's follow-up fills its variables from the item it follows. The kit's stand-in does
+not serve GraphQL pages yet; G3 does, for GitLab's tests.
+
 ## Open
 
 - **What it did touch.** What a workload could reach is answerable: the catalog, and each signed version of its sections, in git history. What it did reach is one log line per

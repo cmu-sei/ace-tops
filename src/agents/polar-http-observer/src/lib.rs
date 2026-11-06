@@ -31,6 +31,7 @@
 
 #![deny(clippy::disallowed_methods)]
 
+pub mod graphql;
 pub mod observer;
 pub mod observing;
 pub mod paging;

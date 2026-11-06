@@ -121,6 +121,7 @@ clap = { version = "4.5.60", features = ["derive"] }   # only used in one place,
 clokwerk = "0.4.0"
 cyclonedx-bom = "0.8.0"                                 # used in provenance
 cynic = "3.12.0"                                        # used in gitlab, jira?
+cynic-parser = "0.11"                                   # judges a GraphQL source's query (polar-http-observer)
 futures = "0.3.32"                                       # used in kube-observer
 futures-lite = "2.6.1"
 git2 = "0.20"

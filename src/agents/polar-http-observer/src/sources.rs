@@ -24,7 +24,8 @@
 //! The `sources` runtime section: what an observer reads, and how often. A pure reading of a body; nothing here touches a
 //! network or the clock.
 
-use crate::paging::{self, Paging};
+use crate::graphql::{self, GraphQl};
+use crate::paging::{self, Paging, Style};
 use polar_agent_builder::RuntimeSection;
 use polar_agent_builder::runtime::SectionAuthority;
 use serde_json::Value;
@@ -48,7 +49,7 @@ pub static SOURCES: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: DOC,
-    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name", "required": true, "doc": "what is read, with a GET and no credential"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "paging": {"type": "object, or left out for a source of one page", "required": false, "doc": "how its pages follow one another, each published as it is read: {style: link} (the Link header's rel=next), {style: cursor, next: <JSON pointer to the next page's address>}, or {style: offset, param: <query parameter set to the items read so far>, items: <JSON pointer to the page's list>}; max_pages, 1 to 1000 (default 100), bounds one read. A next page is on the source's own host"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
+    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name", "required": true, "doc": "what is read, with a GET, or a POST of its graphql query, and no credential"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "paging": {"type": "object, or left out for a source of one page", "required": false, "doc": "how its pages follow one another, each published as it is read: {style: link} (the Link header's rel=next), {style: cursor, next: <JSON pointer to the next page's address>}, {style: offset, param: <query parameter set to the items read so far>, items: <JSON pointer to the page's list>}, or, for a graphql source and only for one, {style: graphql, connection: <JSON pointer to the connection, whose pageInfo it follows>}; max_pages, 1 to 1000 (default 100), bounds one read. A next page is on the source's own host"}, "graphql": {"type": "object, or left out for a source read by GET", "required": false, "doc": "{query: <one GraphQL query operation>}, POSTed as JSON to url; paged by graphql, it declares $after, set to each page's cursor. A mutation or a subscription is refused: an observer only reads"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
     validate,
 };
 
@@ -58,7 +59,7 @@ pub static CREDENTIALED_SOURCES: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: DOC,
-    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name; https when it names a credential", "required": true, "doc": "what is read, with a GET"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "credential": {"type": "name of a credential", "required": false, "doc": "an entry of the observer's credentials section, whose signed binding must name the host; left out, the source is read with none"}, "paging": {"type": "object, or left out for a source of one page", "required": false, "doc": "how its pages follow one another, each published as it is read: {style: link} (the Link header's rel=next), {style: cursor, next: <JSON pointer to the next page's address>}, or {style: offset, param: <query parameter set to the items read so far>, items: <JSON pointer to the page's list>}; max_pages, 1 to 1000 (default 100), bounds one read. A next page is on the source's own host"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
+    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name; https when it names a credential", "required": true, "doc": "what is read, with a GET, or a POST of its graphql query"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "credential": {"type": "name of a credential", "required": false, "doc": "an entry of the observer's credentials section, whose signed binding must name the host; left out, the source is read with none"}, "paging": {"type": "object, or left out for a source of one page", "required": false, "doc": "how its pages follow one another, each published as it is read: {style: link} (the Link header's rel=next), {style: cursor, next: <JSON pointer to the next page's address>}, {style: offset, param: <query parameter set to the items read so far>, items: <JSON pointer to the page's list>}, or, for a graphql source and only for one, {style: graphql, connection: <JSON pointer to the connection, whose pageInfo it follows>}; max_pages, 1 to 1000 (default 100), bounds one read. A next page is on the source's own host"}, "graphql": {"type": "object, or left out for a source read by GET", "required": false, "doc": "{query: <one GraphQL query operation>}, POSTed as JSON to url; paged by graphql, it declares $after, set to each page's cursor. A mutation or a subscription is refused: an observer only reads"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
     validate: validate_credentialed,
 };
 
@@ -72,6 +73,8 @@ pub struct Source {
     pub credential: Option<String>,
     /// How its pages follow one another; none for a source of one page.
     pub paging: Option<Paging>,
+    /// Its GraphQL query, POSTed to its address; none for a source read by GET.
+    pub graphql: Option<GraphQl>,
 }
 
 /// Whether `name` can name a credential: as the `credentials` section names its entries.
@@ -178,7 +181,15 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
             entry
                 .keys()
                 .filter(|k| {
-                    !["name", "url", "interval_secs", "credential", "paging"].contains(&k.as_str())
+                    ![
+                        "name",
+                        "url",
+                        "interval_secs",
+                        "credential",
+                        "paging",
+                        "graphql",
+                    ]
+                    .contains(&k.as_str())
                 })
                 .map(|k| format!("{at}: `{k}` is not a field")),
         );
@@ -239,6 +250,31 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
                 }
             },
         };
+        let paged_as_graphql = matches!(
+            paging.as_ref().map(|p| &p.style),
+            Some(Style::GraphQl { .. })
+        );
+        let graphql = match entry.get("graphql") {
+            None | Some(Value::Null) => None,
+            Some(value) => match graphql::parse(value, paged_as_graphql) {
+                Ok(graphql) => Some(graphql),
+                Err(these) => {
+                    problems.extend(these.into_iter().map(|p| format!("{at}: {p}")));
+                    None
+                }
+            },
+        };
+        let is_graphql = entry.get("graphql").is_some_and(|v| !v.is_null());
+        match (is_graphql, &paging) {
+            (true, Some(p)) if !paged_as_graphql => problems.push(format!(
+                "{at}: `paging` of a graphql source is graphql's or none: {:?} follows addresses, not cursors",
+                p.style
+            )),
+            (false, Some(_)) if paged_as_graphql => problems.push(format!(
+                "{at}: `paging` graphql is only for a source with a `graphql` query"
+            )),
+            _ => {}
+        }
         if let (Some(name), Some(url), Some(interval_secs)) = (name, url, interval) {
             sources.push(Source {
                 name: name.to_string(),
@@ -246,6 +282,7 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
                 interval_secs,
                 credential,
                 paging,
+                graphql,
             });
         }
     }
@@ -277,9 +314,55 @@ mod tests {
                 interval_secs: 900,
                 credential: None,
                 paging: None,
+                graphql: None,
             }]
         );
         assert!(parse(&json!({ "sources": [] })).unwrap().is_empty());
+    }
+
+    /// A source may be a GraphQL query, POSTed to its address; it is paged by GraphQL's cursor or not at all, and a source
+    /// read by GET is never paged as GraphQL.
+    #[test]
+    fn a_source_may_be_a_graphql_query_paged_only_by_its_cursor() {
+        let query = "query P($after: String) { projects(after: $after) { nodes { id } pageInfo { endCursor hasNextPage } } }";
+        let mut graphql = entry("projects", "https://gitlab.example/api/graphql", 900);
+        graphql["graphql"] = json!({ "query": query });
+        graphql["paging"] = json!({ "style": "graphql", "connection": "/data/projects" });
+        let mut unpaged = entry("metadata", "https://gitlab.example/api/graphql", 900);
+        unpaged["graphql"] = json!({ "query": "{ metadata { version } }" });
+        let mut left_null = entry("plain", "https://h.example/x", 60);
+        left_null["graphql"] = Value::Null;
+        let read = parse(&json!({ "sources": [graphql, unpaged, left_null] })).unwrap();
+        assert_eq!(
+            read[0].graphql.as_ref().map(|g| g.query.as_str()),
+            Some(query)
+        );
+        assert!(read[1].graphql.is_some() && read[1].paging.is_none());
+        assert_eq!(read[2].graphql, None);
+        for section in [&SOURCES, &CREDENTIALED_SOURCES] {
+            assert!(section.body.contains("\"graphql\""));
+        }
+        let refused = |e: Value, says: &str| {
+            let problems = parse(&json!({ "sources": [e] })).unwrap_err();
+            assert!(
+                problems.iter().any(|p| p.contains(says)),
+                "{says}: {problems:?}"
+            );
+        };
+        let mut mutation = entry("x", "https://gitlab.example/api/graphql", 60);
+        mutation["graphql"] = json!({ "query": "mutation { a }" });
+        refused(mutation, "observer only reads");
+        let mut linked = entry("x", "https://gitlab.example/api/graphql", 60);
+        linked["graphql"] = json!({ "query": query });
+        linked["paging"] = json!({ "style": "link" });
+        refused(linked, "`paging`");
+        let mut get_as_graphql = entry("x", "https://h.example/x", 60);
+        get_as_graphql["paging"] = json!({ "style": "graphql", "connection": "/data/x" });
+        refused(get_as_graphql, "`paging`");
+        let mut no_after = entry("x", "https://gitlab.example/api/graphql", 60);
+        no_after["graphql"] = json!({ "query": "{ projects { nodes { id } } }" });
+        no_after["paging"] = json!({ "style": "graphql", "connection": "/data/projects" });
+        refused(no_after, "$after");
     }
 
     /// A source may say how it is paged, in either section; one that says nothing, or null, is one page.

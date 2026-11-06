@@ -28,6 +28,8 @@ license.workspace = true
 [dependencies]
 cassini-client.workspace = true
 cassini-types.workspace = true
+# A GraphQL source's query, parsed to judge that it only reads.
+cynic-parser.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
 ractor.workspace = true
