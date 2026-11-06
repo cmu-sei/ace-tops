@@ -37,9 +37,14 @@ use std::time::Duration;
 // Each node is keyed by the origin of the GitLab it came from and GitLab's own id, which is unique only within one GitLab.
 polar_http_processor::schema! {
     labels {
+        GitlabInstance [origin] "each GitLab instance read",
         GitlabProject [origin, id] "each project",
+        GitlabUser [origin, id] "each user",
+        GitlabGroup [origin, id] "each group",
+        GitlabRunner [origin, id] "each runner",
     }
     edges {
+        GitlabGroup SUBGROUP_OF GitlabGroup "a group within its parent group",
     }
 }
 

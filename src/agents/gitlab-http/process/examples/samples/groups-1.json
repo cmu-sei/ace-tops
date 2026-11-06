@@ -1,0 +1,4 @@
+{"data": {"groups": {"nodes": [
+  {"id": "gid://gitlab/Group/10", "fullPath": "polar", "name": "polar", "visibility": "private", "createdAt": "2026-09-05T00:00:00Z", "webUrl": "https://gitlab.example/groups/polar", "parent": null},
+  {"id": "gid://gitlab/Group/11", "fullPath": "polar/infra", "name": "infra", "visibility": "private", "createdAt": "2026-09-06T00:00:00Z", "webUrl": "https://gitlab.example/groups/polar/infra", "parent": {"id": "gid://gitlab/Group/10"}}
+], "pageInfo": {"endCursor": "eyJpZCI6IjExIn0", "hasNextPage": false}}}}

@@ -65,7 +65,14 @@ fn query(name: &str) -> String {
 }
 
 /// Each sample, and the query it is an answer to.
-const ANSWERS: &[(&str, &str)] = &[("projects-1", "projects"), ("projects-2", "projects")];
+const ANSWERS: &[(&str, &str)] = &[
+    ("projects-1", "projects"),
+    ("projects-2", "projects"),
+    ("metadata", "metadata"),
+    ("users-1", "users"),
+    ("groups-1", "groups"),
+    ("runners-1", "runners"),
+];
 
 fn sample(name: &str) -> serde_json::Value {
     let path = here().join("examples/samples").join(format!("{name}.json"));

@@ -169,7 +169,15 @@ impl GraphQlSchema {
             Some(ExtendedType::Object(_) | ExtendedType::Interface(_) | ExtendedType::Union(_)) => {
                 self.object(document, selection, value, at, problems)
             }
-            Some(ExtendedType::Scalar(_) | ExtendedType::Enum(_)) => {
+            Some(ExtendedType::Enum(e)) => {
+                let named = value
+                    .as_str()
+                    .is_some_and(|v| e.values.keys().any(|k| k.as_str() == v));
+                if !named {
+                    problems.push(format!("`{at}` is not one of {name}'s values"));
+                }
+            }
+            Some(ExtendedType::Scalar(_)) => {
                 let fits = match name.as_str() {
                     "Boolean" => value.is_boolean(),
                     "Int" => value.is_i64() || value.is_u64(),
@@ -177,7 +185,7 @@ impl GraphQlSchema {
                     "String" | "ID" => {
                         value.is_string() || (name.as_str() == "ID" && value.is_number())
                     }
-                    // A custom scalar or an enum is any JSON that is not a list or an object.
+                    // A custom scalar is any JSON that is not a list or an object.
                     _ => !value.is_array() && !value.is_object(),
                 };
                 if !fits {
@@ -241,10 +249,11 @@ mod tests {
         type Query { projects(first: Int, after: String): ProjectConnection!  project(fullPath: ID!): Project }
         type ProjectConnection { nodes: [Project] pageInfo: PageInfo! }
         type PageInfo { endCursor: String hasNextPage: Boolean! }
-        type Project { id: ID! fullPath: ID! name: String! starCount: Int! topics: [String!] lead: User }
+        type Project { id: ID! fullPath: ID! name: String! starCount: Int! topics: [String!] lead: User visibility: Visibility }
+        enum Visibility { private internal public }
         type User { id: ID! username: String! }
     "#;
-    const QUERY: &str = "query($after: String) { projects(first: 10, after: $after) { nodes { id fullPath lead { username } } pageInfo { endCursor hasNextPage } } }";
+    const QUERY: &str = "query($after: String) { projects(first: 10, after: $after) { nodes { id fullPath lead { username } visibility } pageInfo { endCursor hasNextPage } } }";
 
     fn schema() -> GraphQlSchema {
         GraphQlSchema::parse(SDL, "test.graphql").unwrap()
@@ -274,8 +283,8 @@ mod tests {
     #[test]
     fn an_answer_with_the_query_s_shape_is_taken() {
         let a = answer(json!([
-            { "id": "gid://gitlab/Project/1", "fullPath": "g/a", "lead": { "username": "ada" } },
-            { "id": "gid://gitlab/Project/2", "fullPath": "g/b", "lead": null },
+            { "id": "gid://gitlab/Project/1", "fullPath": "g/a", "lead": { "username": "ada" }, "visibility": "private" },
+            { "id": "gid://gitlab/Project/2", "fullPath": "g/b", "lead": null, "visibility": null },
             null
         ]));
         schema().check_answer(QUERY, &a).unwrap();
@@ -315,6 +324,13 @@ mod tests {
             (
                 json!({ "data": { "projects": { "nodes": node(), "pageInfo": { "endCursor": null, "hasNextPage": false } } } }),
                 "nodes",
+            ),
+            // An enum's value that is not one of its values.
+            (
+                answer(
+                    json!([ { "id": "1", "fullPath": "g/a", "lead": null, "visibility": "secret" } ]),
+                ),
+                "visibility",
             ),
             // A Boolean that is not one.
             (

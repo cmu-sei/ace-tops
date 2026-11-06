@@ -1,0 +1,4 @@
+{"data": {"runners": {"nodes": [
+  {"id": "gid://gitlab/Ci::Runner/1", "description": "polar-kubernetes", "runnerType": "INSTANCE_TYPE", "status": "ONLINE", "paused": false, "createdAt": "2026-09-10T00:00:00Z"},
+  {"id": "gid://gitlab/Ci::Runner/2", "description": null, "runnerType": "GROUP_TYPE", "status": "NEVER_CONTACTED", "paused": true, "createdAt": "2026-09-11T00:00:00Z"}
+], "pageInfo": {"endCursor": "eyJpZCI6IjIifQ", "hasNextPage": false}}}}

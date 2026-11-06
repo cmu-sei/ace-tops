@@ -1,0 +1,51 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/1"
+      },
+      "set": {
+        "username": "root",
+        "name": "Administrator",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-09-01T00:00:00Z",
+        "web_url": "https://gitlab.example/root"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/2"
+      },
+      "set": {
+        "username": "ada",
+        "name": "Ada Lovelace",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-09-02T00:00:00Z",
+        "web_url": "https://gitlab.example/ada"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/3"
+      },
+      "set": {
+        "username": "project_1_bot",
+        "name": "polar bot",
+        "state": "blocked",
+        "bot": true,
+        "created_at": "2026-09-03T00:00:00Z",
+        "web_url": "https://gitlab.example/project_1_bot"
+      }
+    }
+  ],
+  "edges": []
+}

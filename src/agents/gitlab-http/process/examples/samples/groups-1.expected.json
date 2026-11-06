@@ -1,0 +1,60 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/10"
+      },
+      "set": {
+        "full_path": "polar",
+        "name": "polar",
+        "visibility": "private",
+        "created_at": "2026-09-05T00:00:00Z",
+        "web_url": "https://gitlab.example/groups/polar"
+      }
+    },
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/10"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/11"
+      },
+      "set": {
+        "full_path": "polar/infra",
+        "name": "infra",
+        "visibility": "private",
+        "created_at": "2026-09-06T00:00:00Z",
+        "web_url": "https://gitlab.example/groups/polar/infra"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/11"
+        }
+      },
+      "type": "SUBGROUP_OF",
+      "to": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/10"
+        }
+      }
+    }
+  ]
+}

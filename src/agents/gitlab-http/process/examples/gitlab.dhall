@@ -30,6 +30,12 @@ let over =
       \(list : Text) ->
         [ { key = "i", value = "item", over = list, only = [] : List Text } ]
 
+let once = [] : List { key : Text, value : Text, over : Text, only : List Text }
+
+let has = \(path : Text) -> [ { any_of = [ { path = path, prefixes = [] : List Text } ] } ]
+
+let keyed = [ { name = "origin", from = "origin" }, { name = "id", from = "item.id" } ]
+
 in  { guard = [ { any_of = [ { path = "body.data", prefixes = [] : List Text } ] } ]
     , rules =
       [ { name = "project"
@@ -37,7 +43,7 @@ in  { guard = [ { any_of = [ { path = "body.data", prefixes = [] : List Text } ]
         , each = over "body.data.projects.nodes"
         , when = every
         , label = "GitlabProject"
-        , keys = [ { name = "origin", from = "origin" }, { name = "id", from = "item.id" } ]
+        , keys = keyed
         , set =
           [ { name = "full_path", from = "item.fullPath" }
           , { name = "name", from = "item.name" }
@@ -47,6 +53,74 @@ in  { guard = [ { any_of = [ { path = "body.data", prefixes = [] : List Text } ]
           , { name = "created_at", from = "item.createdAt" }
           , { name = "last_activity_at", from = "item.lastActivityAt" }
           , { name = "web_url", from = "item.webUrl" }
+          ]
+        , edge = ""
+        }
+      , { name = "instance"
+        , parent = ""
+        , each = once
+        , when = has "body.data.metadata"
+        , label = "GitlabInstance"
+        , keys = [ { name = "origin", from = "origin" } ]
+        , set =
+          [ { name = "version", from = "body.data.metadata.version" }
+          , { name = "revision", from = "body.data.metadata.revision" }
+          , { name = "enterprise", from = "body.data.metadata.enterprise" }
+          ]
+        , edge = ""
+        }
+      , { name = "user"
+        , parent = ""
+        , each = over "body.data.users.nodes"
+        , when = every
+        , label = "GitlabUser"
+        , keys = keyed
+        , set =
+          [ { name = "username", from = "item.username" }
+          , { name = "name", from = "item.name" }
+          , { name = "state", from = "item.state" }
+          , { name = "bot", from = "item.bot" }
+          , { name = "created_at", from = "item.createdAt" }
+          , { name = "web_url", from = "item.webUrl" }
+          ]
+        , edge = ""
+        }
+      , { name = "group"
+        , parent = ""
+        , each = over "body.data.groups.nodes"
+        , when = every
+        , label = "GitlabGroup"
+        , keys = keyed
+        , set =
+          [ { name = "full_path", from = "item.fullPath" }
+          , { name = "name", from = "item.name" }
+          , { name = "visibility", from = "item.visibility" }
+          , { name = "created_at", from = "item.createdAt" }
+          , { name = "web_url", from = "item.webUrl" }
+          ]
+        , edge = ""
+        }
+      , { name = "parent_group"
+        , parent = "group"
+        , each = once
+        , when = has "item.parent"
+        , label = "GitlabGroup"
+        , keys = [ { name = "origin", from = "origin" }, { name = "id", from = "item.parent.id" } ]
+        , set = [] : List { name : Text, from : Text }
+        , edge = "SUBGROUP_OF"
+        }
+      , { name = "runner"
+        , parent = ""
+        , each = over "body.data.runners.nodes"
+        , when = every
+        , label = "GitlabRunner"
+        , keys = keyed
+        , set =
+          [ { name = "description", from = "item.description" }
+          , { name = "runner_type", from = "item.runnerType" }
+          , { name = "status", from = "item.status" }
+          , { name = "paused", from = "item.paused" }
+          , { name = "created_at", from = "item.createdAt" }
           ]
         , edge = ""
         }

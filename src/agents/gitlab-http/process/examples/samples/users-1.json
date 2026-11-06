@@ -1,0 +1,5 @@
+{"data": {"users": {"nodes": [
+  {"id": "gid://gitlab/User/1", "username": "root", "name": "Administrator", "state": "active", "bot": false, "createdAt": "2026-09-01T00:00:00Z", "webUrl": "https://gitlab.example/root"},
+  {"id": "gid://gitlab/User/2", "username": "ada", "name": "Ada Lovelace", "state": "active", "bot": false, "createdAt": "2026-09-02T00:00:00Z", "webUrl": "https://gitlab.example/ada"},
+  {"id": "gid://gitlab/User/3", "username": "project_1_bot", "name": "polar bot", "state": "blocked", "bot": true, "createdAt": "2026-09-03T00:00:00Z", "webUrl": "https://gitlab.example/project_1_bot"}
+], "pageInfo": {"endCursor": "eyJpZCI6IjMifQ", "hasNextPage": false}}}}
