@@ -542,6 +542,13 @@ one with no projection in force holds, since it writes nothing; an observer whos
 known. A source read with no credential is not this invariant's. Marked for review: where it overlaps `projections-tested`, it says the same thing of the same
 projection, from the source's side, so a reader of one credential's claim finds it under that credential's name.
 
+Bite 7 live, a fresh u7c from main at `df4b09de` (2026-11-06): `up.nu sandbox-local --dev --topology separated` ran its 17 steps; the scheduler observer sat idle
+with the seeded schedules in its checkout (its CPU time unchanged over ten seconds) now that `72169bdc` stops its endless rescan. The OpenAPI mapping, every rule
+saying `when`, signed as version 1: the processor verified it and held it in force within seconds. `polar-sign projection test` passed and was pushed, and `polar-sign
+check --ask` asked 18 agents: 12 of 12 invariants hold. `credentialed-reads-reviewed` holds only as "no source names a credential": no deployed kind can carry one
+yet, since the OpenAPI observer declares `SOURCES`, which refuses a credential when signed. The credentialed, paged path is shown by the Jira-shaped kind's tests,
+and the invariant's holds and violations by its own tests; a deployed kind that declares `CREDENTIALED_SOURCES` (GitLab, next) is where it first holds of something.
+
 ## What the OpenAPI pair fixes
 
 Seen reading the code, 2026-11-05. No target deploys them, so there is no data to migrate.
