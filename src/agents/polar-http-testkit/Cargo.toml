@@ -29,6 +29,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# A kind's queries and samples, held to its service's GraphQL schema.
+apollo-compiler.workspace = true
 neo4rs.workspace = true
 polar = { workspace = true, features = ["testing"] }
 polar-agent-builder = { workspace = true, features = ["testing"] }

@@ -45,6 +45,8 @@
 //! `POLAR_BLESS=1` to write what each sample becomes now; read it before committing it, since it is then what is
 //! expected.
 
+pub mod graphql_schema;
+
 use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{ConfigurationHandle, PolarAgent, UpdateVerifier};
 use polar_crypto::registry::{SecretBinding, SecretKind};
