@@ -43,6 +43,9 @@ serde_dhall.workspace = true
 # `--push` and the certificate request use the blocking client: the tool has no async runtime and needs none.
 reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true
+# An evidence record names what it is true of by digest.
+sha2.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 

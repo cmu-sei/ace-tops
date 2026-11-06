@@ -32,7 +32,9 @@
 //!   decided on by the observer's and the processor's own cores, and carried between them as an encoded observation,
 //!   becomes what is written beside it, which a person reads and reviews;
 //! - written to real Neo4j, one sample to a source and then all to one source in turn, the graph is what the model graph
-//!   says ([`polar_projection::testing::MemoryGraph`]), which is what the processor's property is held to.
+//!   says ([`polar_projection::testing::MemoryGraph`]), which is what the processor's property is held to;
+//! - `polar-sign projection test`, which a deployment holds its own mapping to, passes for the kind's by the processor's
+//!   own scaffold.
 //!
 //! A sample is `<name>.json`, the document as a service returns it, beside `<name>.expected.json`, what it becomes:
 //! the nodes and edges it writes, without the stamps, and how many entries were skipped, or why it was refused. Run with
@@ -46,10 +48,10 @@ use polar_http_observer::observing::{self, Observing};
 use polar_http_observer::sources::Source;
 use polar_http_processor::processing::{self, Outcome, Processing};
 use polar_http_processor::{Kind as ProcessorKind, SECTION_NAME};
+use polar_projection::samples::{self, Sample};
 use polar_projection::testing::MemoryGraph;
-use polar_projection::{Projection, Scalar, Write};
+use polar_projection::{Projection, Write};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -89,6 +91,11 @@ macro_rules! polar_http_tests {
         }
 
         #[test]
+        fn a_deployment_s_test_of_the_mapping_passes_by_the_processor_s_own_scaffold() {
+            $crate::a_deployment_s_test_passes::<$processor>(&kit());
+        }
+
+        #[test]
         fn the_samples_written_to_neo4j_make_the_graph_the_model_says() {
             $crate::block_on($crate::neo4j_is_what_the_model_says::<$observer, $processor>(&kit()));
         }
@@ -110,14 +117,6 @@ pub struct Kit {
     pub samples: PathBuf,
 }
 
-/// A document as a service returns it, and what it should become.
-pub struct Sample {
-    pub name: String,
-    pub document: Vec<u8>,
-    pub expected: Option<Value>,
-    expected_at: PathBuf,
-}
-
 impl Kit {
     pub fn new(mapping: impl Into<PathBuf>, samples: impl Into<PathBuf>) -> Self {
         Self {
@@ -133,38 +132,7 @@ impl Kit {
 
     /// Every sample, by name. A kind with none has not said what its mapping does, so that is a failure.
     pub fn samples(&self) -> Vec<Sample> {
-        let entries = std::fs::read_dir(&self.samples)
-            .unwrap_or_else(|e| panic!("cannot read the samples {}: {e}", self.samples.display()));
-        let mut samples: Vec<Sample> = entries
-            .map(|entry| entry.expect("a directory entry").path())
-            .filter_map(|path| {
-                let name = path.file_name()?.to_str()?;
-                let name = name.strip_suffix(".json")?;
-                (!name.ends_with(".expected")).then(|| name.to_string())
-            })
-            .map(|name| {
-                let at = |suffix: &str| self.samples.join(format!("{name}{suffix}"));
-                let document = std::fs::read(at(".json")).expect("the sample");
-                let expected_at = at(".expected.json");
-                let expected = std::fs::read_to_string(&expected_at).ok().map(|text| {
-                    serde_json::from_str(&text)
-                        .unwrap_or_else(|e| panic!("{} is not JSON: {e}", expected_at.display()))
-                });
-                Sample {
-                    name,
-                    document,
-                    expected,
-                    expected_at,
-                }
-            })
-            .collect();
-        samples.sort_by(|a, b| a.name.cmp(&b.name));
-        assert!(
-            !samples.is_empty(),
-            "no samples in {}: a kind says what its mapping does with documents a service returns",
-            self.samples.display()
-        );
-        samples
+        samples::read(&self.samples).unwrap_or_else(|problem| panic!("{problem}"))
     }
 }
 
@@ -249,6 +217,40 @@ pub async fn the_mapping_is_signed_and_taken<P: ProcessorKind + PolarAgent>(kit:
     assert_eq!(
         projection,
         Projection::judged(&written, P::BOUNDS).expect("judged")
+    );
+}
+
+/// What `polar-sign projection test` finds of the kind's mapping and samples by the processor's own scaffold, which is
+/// what a deployment's own mapping is held to: the same checks, so a deployment's test passing means what the kind's does.
+pub fn a_deployment_s_test_passes<P: ProcessorKind + PolarAgent>(kit: &Kit) {
+    let agent = <P as ProcessorKind>::NAME;
+    let scaffold = polar_agent_builder::agent::scaffold_json::<P>(None, |_: &str| None)
+        .expect("the processor's scaffold");
+    let ca = polar_signing::testing::root("Polar Internal CA");
+    let someone = polar_signing::testing::signer(&ca, polar_signing::testing::Spec::default());
+    let identity = polar_sign::Identity {
+        chain: vec![someone.cert_pem],
+        key_pem: someone.key_pem,
+    };
+    let tested = polar_sign::evidence::projection_test(
+        &polar_sign::evidence::ProjectionTest {
+            scaffold: &scaffold,
+            section: SECTION_NAME,
+            mapping: &kit.mapping_source(),
+            mapping_name: "the kit's mapping",
+            samples: &kit.samples,
+        },
+        &identity,
+        std::slice::from_ref(&ca.pem),
+        polar_signing::testing::now(),
+    )
+    .expect("a test");
+    assert!(tested.passed(), "{}", tested.details.join("\n\n"));
+    assert_eq!(tested.record["subject"]["agent"], agent);
+    assert_eq!(tested.record["scaffold"]["agent_version"]["name"], agent);
+    assert_eq!(
+        tested.record["samples"].as_array().map(Vec::len),
+        Some(kit.samples().len())
     );
 }
 
@@ -378,67 +380,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
     }
 }
 
-fn scalar(value: &Scalar) -> Value {
-    match value {
-        Scalar::Text(s) => json!(s),
-        Scalar::Bool(b) => json!(b),
-        Scalar::Integer(i) => json!(i),
-        Scalar::Real(r) => json!(r),
-        Scalar::Null => Value::Null,
-    }
-}
-
-fn plain_props(props: &[(String, Scalar)]) -> Map<String, Value> {
-    props
-        .iter()
-        .filter(|(name, _)| !name.starts_with(polar_projection::STAMP_PREFIX))
-        .map(|(name, value)| (name.clone(), scalar(value)))
-        .collect()
-}
-
-fn plain_id(id: &polar_projection::NodeId) -> Value {
-    json!({ "label": id.label, "keys": plain_props(&id.keys) })
-}
-
-/// What a document became, written plainly for a person to review: each node by its label and keys with what it sets (a
-/// null clears what was there), each edge by its ends and type, and how many entries could not be identified; or why it
-/// was refused. Without the stamps, which a property holds to what they should be.
-pub fn plainly(outcome: &Outcome) -> Value {
-    match outcome {
-        Outcome::Refused(why) => json!({ "refused": why }),
-        Outcome::Write { writes, skipped } => {
-            let mut nodes = Vec::new();
-            let mut edges = Vec::new();
-            for write in writes {
-                match write {
-                    Write::Node { id, props } => {
-                        let mut node = plain_id(id);
-                        node["set"] = Value::Object(plain_props(props));
-                        nodes.push(node);
-                    }
-                    Write::Edge {
-                        from,
-                        to,
-                        kind,
-                        props,
-                    } => {
-                        let mut edge =
-                            json!({ "from": plain_id(from), "type": kind, "to": plain_id(to) });
-                        let set = plain_props(props);
-                        if !set.is_empty() {
-                            edge["set"] = Value::Object(set);
-                        }
-                        edges.push(edge);
-                    }
-                }
-            }
-            let by_text = |a: &Value, b: &Value| a.to_string().cmp(&b.to_string());
-            nodes.sort_by(by_text);
-            edges.sort_by(by_text);
-            json!({ "skipped": skipped, "nodes": nodes, "edges": edges })
-        }
-    }
-}
+pub use samples::plainly;
 
 fn blessing() -> bool {
     std::env::var_os("POLAR_BLESS").is_some_and(|v| !v.is_empty())
@@ -469,24 +411,11 @@ where
         );
         let got = plainly(&outcome);
         if blessing() {
-            let text = serde_json::to_string_pretty(&got).expect("JSON") + "\n";
-            std::fs::write(&sample.expected_at, text).expect("written");
+            sample.bless(&got).expect("written");
             continue;
         }
-        match &sample.expected {
-            None => wrong.push(format!(
-                "`{}` has no {}: write it with POLAR_BLESS=1, and read it before committing it",
-                sample.name,
-                sample.expected_at.display()
-            )),
-            Some(expected) if *expected != got => wrong.push(format!(
-                "`{}` became\n{}\nand {} says\n{}",
-                sample.name,
-                serde_json::to_string_pretty(&got).expect("JSON"),
-                sample.expected_at.display(),
-                serde_json::to_string_pretty(expected).expect("JSON"),
-            )),
-            Some(_) => {}
+        if let Err(differs) = sample.check(&got) {
+            wrong.push(differs.fully(&sample));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n\n"));

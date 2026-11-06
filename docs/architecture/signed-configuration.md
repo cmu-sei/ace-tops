@@ -354,7 +354,9 @@ warning at first, an error if configured so.
 - **`polar-sign` (binary).** (Built 2026-10-15: `template`, `sign` and `--push` as in "The author's flow".) Git signing mode; `sign`, `check` and `verify` for configuration documents
   (`check` and `verify` usable as CI on the schedules repository); `template` (generate an agent's
   typed template); `setup`. Good `--help`, and an optional configuration file for the key and
-  certificate paths, in the platform's standard configuration directory, so no `just` is needed.
+  certificate paths, in the platform's standard configuration directory, so no `just` is needed. (Built 2026-11-06:
+  `projection test`, a deployment's mapping held to its samples, with a signed evidence record to the `polar-evidence`
+  repository, and `verify --evidence`; `http-observers.md`, "Evidence".)
 - **`polar-admin-grant` stays as it is.** Binaries are named `polar-<name>` so an umbrella `polar`
   command can dispatch to them later, as `git` and `cargo` do, if the set of tools keeps growing.
 - **Platforms.** Linux on AMD64 and ARM64 (static) and Windows on AMD64 build with nix cross

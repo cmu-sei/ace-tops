@@ -29,20 +29,12 @@
 use polar_http_observer::Observation;
 use polar_http_observer::problems::{HealthChange, Reported, SourceProblems};
 use polar_projection::{Projection, Stamp, Write};
-use serde_json::Value;
 use tracing::{error, info, warn};
 
 pub(crate) const NO_MAPPING: &str = "no projection is signed yet, so what the observer publishes is not written. Sign one: \
                                      polar-sign runtime --section projection --projection <file>";
 
-/// What became of a document.
-#[derive(Debug, PartialEq)]
-pub enum Outcome {
-    /// What to write, and how many entries could not be identified and were skipped.
-    Write { writes: Vec<Write>, skipped: usize },
-    /// Nothing is written, and why.
-    Refused(String),
-}
+pub use polar_projection::Outcome;
 
 /// A document, through a mapping, into writes.
 pub fn process(
@@ -51,22 +43,12 @@ pub fn process(
     workload: &str,
     observation: &Observation,
 ) -> Outcome {
-    let body: Value = match serde_json::from_slice(&observation.body) {
-        Ok(body) => body,
-        Err(e) => return Outcome::Refused(format!("it is not JSON: {e}")),
-    };
     let stamp = Stamp {
         workload,
         version,
         observed_at_unix_secs: observation.observed_at_unix_secs,
     };
-    match projection.project(&observation.source, &body, &stamp) {
-        Ok(projected) => Outcome::Write {
-            writes: projected.writes,
-            skipped: projected.skipped,
-        },
-        Err(refused) => Outcome::Refused(refused.to_string()),
-    }
+    projection.outcome(&observation.source, &observation.body, &stamp)
 }
 
 /// What standing problem a document's outcome leaves its source with. A document was read and refused, so one is enough:
@@ -181,7 +163,7 @@ mod tests {
     use polar_projection::testing::{EdgeKey, MemoryGraph, Props};
     use polar_projection::{Bounds, Edge, Scalar, Shape};
     use proptest::prelude::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::{BTreeMap, BTreeSet};
 
     const BOUNDS: Bounds<'static> = Bounds {

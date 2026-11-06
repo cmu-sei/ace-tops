@@ -199,6 +199,12 @@ impl Scaffold {
     /// keys it merges each on, and the edges it declares (`polar_projection::Projection::judged`, the agent's own rule). A
     /// label merged on more than one set of keys is not one a projection writes.
     pub fn judge_projection(&self, body: &Value) -> Result<(), Vec<String>> {
+        self.projection(body).map(|_| ())
+    }
+
+    /// The projection the agent this is the scaffold of would take from `body`, judged as [`Scaffold::judge_projection`]
+    /// says.
+    pub fn projection(&self, body: &Value) -> Result<polar_projection::Projection, Vec<String>> {
         let keys: Vec<Vec<&str>> = self
             .owns
             .iter()
@@ -233,7 +239,17 @@ impl Scaffold {
                 edges: &edges,
             },
         )
-        .map(|_| ())
+    }
+
+    /// Where [`Scaffold::load`] reads the agent's scaffold from.
+    pub fn path(
+        agent: &str,
+        given: Option<&std::path::Path>,
+        dir: &std::path::Path,
+    ) -> std::path::PathBuf {
+        given
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| dir.join("scaffolds").join(format!("{agent}.json")))
     }
 
     /// The agent's scaffold, from a file given or `<dir>/scaffolds/<agent>.json`, the folder
@@ -244,9 +260,7 @@ impl Scaffold {
         dir: &std::path::Path,
     ) -> Result<Scaffold, String> {
         let folder = dir.join("scaffolds");
-        let path = given
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| folder.join(format!("{agent}.json")));
+        let path = Scaffold::path(agent, given, dir);
         let text = std::fs::read_to_string(&path).map_err(|e| {
             format!(
                 "cannot read the scaffold of {agent} at {}: {e}: make one with `{agent} --scaffold > <file>` and pass \

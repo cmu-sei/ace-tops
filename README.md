@@ -390,6 +390,15 @@ with its reason (`kubectl -n polar logs deploy/<agent> -c <agent> | grep -i conf
 `(:AgentHealth)` in the graph shows the agent's status: an agent given a setting or a credential that cannot work holds
 it as `Configuration` or `Credentials`, stays up and says why, and the next signed version that works releases it.
 
+**A mapping** (an HTTP processor's `projection` section) is tested before it is signed: each sample beside it,
+`<name>.json` as the service returns it, must become what `<name>.expected.json` says (`--bless` writes them, to read
+before committing). The record of the test is signed and pushed to the evidence repository, whether it passes or not:
+
+```bash
+export POLAR_EVIDENCE_URL=https://polar-git-server.polar.svc.cluster.local:8443/polar-evidence.git
+polar-sign projection test mapping.dhall --agent openapi-processor --section projection --user <you> --push
+```
+
 **Afterwards, on your machine:** `bin/polar-dev sync` brings `~/.config/polar-admin` and `~/.config/polar-deploy` back.
 
 | You want to | Agent and section | Walk-through |

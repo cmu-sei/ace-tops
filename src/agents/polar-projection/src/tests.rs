@@ -729,6 +729,22 @@ proptest! {
         prop_assert_eq!(first, second);
     }
 
+    /// A document as a service returns it is what the mapping makes of it as JSON, and anything that is not JSON is refused
+    /// as that and writes nothing.
+    #[test]
+    fn a_document_s_bytes_become_what_its_json_does(document in any_json(), junk in proptest::collection::vec(any::<u8>(), 0..64)) {
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let expected = match openapi().project("s", &document, &stamp()) {
+            Ok(projected) => Outcome::Write { writes: projected.writes, skipped: projected.skipped },
+            Err(refused) => Outcome::Refused(refused.to_string()),
+        };
+        prop_assert_eq!(openapi().outcome("s", &bytes, &stamp()), expected);
+        if serde_json::from_slice::<Value>(&junk).is_err() {
+            let got = openapi().outcome("s", &junk, &stamp());
+            prop_assert!(matches!(&got, Outcome::Refused(why) if why.starts_with("it is not JSON")), "{got:?}");
+        }
+    }
+
     /// Judging never panics, and nothing it lets by names a label, or an edge between two labels, outside the bound.
     #[test]
     fn any_body_is_judged_and_a_passed_one_stays_in_bounds(body in any_json()) {

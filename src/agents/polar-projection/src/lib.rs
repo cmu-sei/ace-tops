@@ -37,6 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "graph")]
 pub mod graph;
+pub mod samples;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -184,6 +185,15 @@ pub struct Stamp<'a> {
 pub struct Projected {
     pub writes: Vec<Write>,
     pub skipped: usize,
+}
+
+/// What became of a document as a service returned it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    /// What to write, and how many entries could not be identified and were skipped.
+    Write { writes: Vec<Write>, skipped: usize },
+    /// Nothing is written, and why.
+    Refused(String),
 }
 
 /// Why a document was refused whole.
@@ -468,6 +478,22 @@ impl Projection {
                 )
             })
             .collect()
+    }
+
+    /// A document as a service returned it, read as JSON and then [`Projection::project`]ed: what the processor does with
+    /// each, and what a sample is held to.
+    pub fn outcome(&self, source: &str, body: &[u8], stamp: &Stamp<'_>) -> Outcome {
+        let body: Value = match serde_json::from_slice(body) {
+            Ok(body) => body,
+            Err(e) => return Outcome::Refused(format!("it is not JSON: {e}")),
+        };
+        match self.project(source, &body, stamp) {
+            Ok(projected) => Outcome::Write {
+                writes: projected.writes,
+                skipped: projected.skipped,
+            },
+            Err(refused) => Outcome::Refused(refused.to_string()),
+        }
     }
 
     /// What a document says, as writes. A document can skip its own entries, by leaving out what identifies them, and

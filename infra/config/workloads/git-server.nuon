@@ -41,13 +41,15 @@
       name: "{polar-git-server.name}"
       ports: [ { name: "git-https", port: "{polar-git-server.port}" } ]
     }
-    # The repositories it creates (and seeds, once) at start, and who may read and write each.
+    # The repositories it creates (and seeds, once) at start, and who may read and write each. polar-evidence holds
+    # evidence records, each signed by the collector that made it (docs/architecture/http-observers.md, "Evidence");
+    # only the administrators reach it until a workload reads one.
     # Identities are the DNS SANs of the callers' certificates; a workload's is
     # <serviceaccount>.<namespace>.serviceaccount.<cluster domain> (cert-issuer's normalisation).
     env: [
       {
         name: "POLAR_GIT_SERVER_REPOS"
-        value: '{"admins":[],"repos":[{"name":"polar-schedules","readers":["polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"seed":"polar-schedules"},{"name":"deployment","readers":["deployment:flux","polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":{deployment-writers},"signed_by":{"ca":"/etc/polar-deploy-ca/ca.pem","signer":"pipeline"}}]}'
+        value: '{"admins":[],"repos":[{"name":"polar-schedules","readers":["polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"seed":"polar-schedules"},{"name":"polar-evidence","readers":[],"writers":[],"seed":"polar-evidence"},{"name":"deployment","readers":["deployment:flux","polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":{deployment-writers},"signed_by":{"ca":"/etc/polar-deploy-ca/ca.pem","signer":"pipeline"}}]}'
       }
     ]
   }

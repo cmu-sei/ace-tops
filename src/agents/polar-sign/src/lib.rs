@@ -32,6 +32,7 @@
 
 pub mod author;
 pub mod check;
+pub mod evidence;
 pub mod fetch;
 pub mod flow;
 pub mod lenient;

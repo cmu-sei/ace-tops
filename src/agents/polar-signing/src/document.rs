@@ -56,6 +56,9 @@ impl Domain {
         Domain::new(b"polar-running-configuration-question-v1\n");
     /// What a deployment says it is made of, signed by the deployment PKI's pipeline (docs/architecture/runtime-attestation.md).
     pub const DEPLOYMENT_RECORD: Domain = Domain::new(b"polar-deployment-record-v1\n");
+    /// What a collector says it found, signed by the collector, in the evidence repository
+    /// (docs/architecture/http-observers.md, "Evidence"). Nothing that acts reads one as an order.
+    pub const EVIDENCE_RECORD: Domain = Domain::new(b"polar-evidence-record-v1\n");
 
     /// `line` is one line: something, then a newline, and no other newline. Then no domain's input is a prefix of
     /// another's, since a canonical payload starts with `{`. Checked when it is made, which for a constant is at
@@ -352,6 +355,21 @@ mod tests {
             b"polar-deployment-record-v1\n"
         );
         assert_ne!(Domain::DEPLOYMENT_RECORD, Domain::CONFIGURATION);
+    }
+
+    #[test]
+    fn evidence_is_a_domain_of_its_own() {
+        assert_eq!(
+            Domain::EVIDENCE_RECORD.line(),
+            b"polar-evidence-record-v1\n"
+        );
+        for other in [
+            Domain::CONFIGURATION,
+            Domain::RUNNING_CONFIGURATION_QUESTION,
+            Domain::DEPLOYMENT_RECORD,
+        ] {
+            assert_ne!(Domain::EVIDENCE_RECORD, other);
+        }
     }
 
     #[test]

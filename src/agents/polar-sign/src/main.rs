@@ -24,7 +24,9 @@
 //! `polar-sign template` gives a file to fill in for an agent's runtime section or settings; `polar-sign sign`
 //! checks it, seals its secrets, signs it and, with `--push`, puts it in the schedules repository;
 //! `polar-sign configuration` and `runtime` sign a change given on the command line; `polar-sign verify`
-//! checks a signed document. Design: `docs/architecture/signed-configuration.md`.
+//! checks a signed document; `polar-sign projection test` holds a deployment's mapping to its samples and signs a
+//! record of what it found. Design: `docs/architecture/signed-configuration.md`, and for the test
+//! `docs/architecture/http-observers.md`, "Evidence".
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -32,7 +34,7 @@ use polar_env::Env;
 use polar_sign::flow::{Signing, sign_file};
 use polar_sign::scaffold::Scaffold;
 use polar_sign::{
-    author, configuration_payload, fetch, load_identity, parse_body, parse_change, push,
+    author, configuration_payload, evidence, fetch, load_identity, parse_body, parse_change, push,
     runtime_payload, sign_to_dhall, split_pem, template, verify_source,
 };
 use std::path::PathBuf;
@@ -194,6 +196,65 @@ enum Command {
         ca: Option<PathBuf>,
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// The file is an evidence record (`polar-sign projection test`), not a configuration document.
+        #[arg(long)]
+        evidence: bool,
+    },
+    /// What a projection, a mapping an HTTP processor writes the graph by, does.
+    Projection {
+        #[command(subcommand)]
+        command: ProjectionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectionCommand {
+    /// Hold a deployment's mapping to the checks a kind's own is held to, and sign a record of what was found.
+    ///
+    /// The mapping must be inside the schema the agent's scaffold gives; signed as the section and read back as the
+    /// agent reads its file, it must be the same projection; and each sample beside it, <name>.json as a service
+    /// returns it, must become what <name>.expected.json says, read with the sample's name as its source. The record
+    /// names all of them by digest, with this tool's version and the result, and is signed with your certificate and
+    /// key in the evidence domain, so it is never taken for a configuration document. It is written whether the mapping
+    /// passes or not (to standard output unless --out or --push), and the tool fails if it does not pass.
+    Test {
+        /// The mapping, in Dhall, as it is signed with `polar-sign runtime --projection`.
+        mapping: PathBuf,
+        /// The agent the mapping is for, as it calls itself.
+        #[arg(long)]
+        agent: String,
+        /// Its runtime section that takes the mapping.
+        #[arg(long)]
+        section: String,
+        /// The samples' folder; beside the mapping, named as it is without `.dhall`, by default.
+        #[arg(long)]
+        samples: Option<PathBuf>,
+        /// The agent's scaffold (`<agent> --scaffold`); <dir>/scaffolds/<agent>.json by default.
+        #[arg(long)]
+        scaffold: Option<PathBuf>,
+        /// Write what each sample becomes now beside it, as what it is expected to become, and sign nothing. Read
+        /// each before committing it: it is then what the mapping is held to.
+        #[arg(long, conflicts_with_all = ["push", "out"])]
+        bless: bool,
+        /// Whose certificate and key to sign the record with: <dir>/<user>.crt and .key.
+        #[arg(long, required_unless_present = "bless")]
+        user: Option<String>,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Commit the record to the evidence repository and push it.
+        #[arg(long)]
+        push: bool,
+        /// The evidence repository (anything `git clone` takes); POLAR_EVIDENCE_URL by default.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Where the tool keeps its clone; ~/.cache/polar-sign/evidence by default.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// KEY=VALUE for every git command of the push (`git -c`).
+        #[arg(long = "git-config", value_name = "KEY=VALUE")]
+        git_config: Vec<String>,
     },
 }
 
@@ -227,6 +288,66 @@ fn default_dir(given: Option<PathBuf>) -> Result<PathBuf> {
 
 fn env_var(name: &str) -> Option<String> {
     polar_env::ProcessEnv.var(name).filter(|v| !v.is_empty())
+}
+
+/// The time now, in seconds since the epoch.
+fn now() -> Result<i64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("the clock is before 1970")?
+        .as_secs() as i64)
+}
+
+/// The CA certificates in `path`.
+fn read_trust(path: &std::path::Path) -> Result<Vec<String>> {
+    let trust = split_pem(
+        &std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?,
+    );
+    if trust.is_empty() {
+        bail!("{} holds no certificate", path.display());
+    }
+    Ok(trust)
+}
+
+/// Where the tool keeps its clone of a repository: --workdir, or polar-sign/<name> in the user's cache.
+fn workdir_for(given: Option<PathBuf>, name: &str) -> Result<PathBuf> {
+    if let Some(w) = given {
+        return Ok(w);
+    }
+    let base = env_var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env_var("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    Ok(base
+        .context("HOME is not set: say where to keep the clone with --workdir")?
+        .join("polar-sign")
+        .join(name))
+}
+
+/// `git -c` for a push: the user's certificate and the CA for the Polar git server over HTTPS, then whatever was given.
+fn git_config_for(
+    remote: &str,
+    dir: &std::path::Path,
+    user: &str,
+    given: &[String],
+) -> Result<Vec<(String, String)>> {
+    let mut config: Vec<(String, String)> = Vec::new();
+    if remote.starts_with("https://") {
+        for (key, name) in [
+            ("http.sslCAInfo", "ca.pem".to_string()),
+            ("http.sslCert", format!("{user}.crt")),
+            ("http.sslKey", format!("{user}.key")),
+        ] {
+            config.push((
+                key.to_string(),
+                dir.join(name).to_string_lossy().to_string(),
+            ));
+        }
+    }
+    for item in given {
+        config.push(parse_change(item).map_err(anyhow::Error::msg)?);
+    }
+    Ok(config)
 }
 
 /// The agent's scaffold, from --scaffold or the folder `nu infra/resolve.nu scaffolds <dir>` fills.
@@ -335,18 +456,8 @@ fn main() -> Result<()> {
             let input = author::read_input(&text).map_err(anyhow::Error::msg)?;
             let scaffold = load_scaffold(&input.agent, scaffold, &dir)?;
             let identity = load_identity(&dir, &user).map_err(anyhow::Error::msg)?;
-            let ca_path = dir.join("ca.pem");
-            let trust = split_pem(
-                &std::fs::read_to_string(&ca_path)
-                    .with_context(|| format!("cannot read {}", ca_path.display()))?,
-            );
-            if trust.is_empty() {
-                bail!("{} holds no certificate", ca_path.display());
-            }
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .context("the clock is before 1970")?
-                .as_secs() as i64;
+            let trust = read_trust(&dir.join("ca.pem"))?;
+            let now = now()?;
             let observer_url = observer_url
                 .or_else(|| env_var("POLAR_OBSERVER_URL"))
                 .unwrap_or_else(|| "http://localhost:8081".to_string());
@@ -389,32 +500,8 @@ fn main() -> Result<()> {
                 let remote = repo.or_else(|| env_var("POLAR_SCHEDULES_URL")).context(
                     "--push needs the schedules repository: --repo, or POLAR_SCHEDULES_URL",
                 )?;
-                let workdir = match workdir {
-                    Some(w) => w,
-                    None => {
-                        let base = env_var("XDG_CACHE_HOME")
-                            .map(PathBuf::from)
-                            .or_else(|| env_var("HOME").map(|h| PathBuf::from(h).join(".cache")));
-                        base.context("HOME is not set: say where to keep the clone with --workdir")?
-                            .join("polar-sign/schedules")
-                    }
-                };
-                let mut config: Vec<(String, String)> = Vec::new();
-                if remote.starts_with("https://") {
-                    for (key, name) in [
-                        ("http.sslCAInfo", "ca.pem".to_string()),
-                        ("http.sslCert", format!("{user}.crt")),
-                        ("http.sslKey", format!("{user}.key")),
-                    ] {
-                        config.push((
-                            key.to_string(),
-                            dir.join(name).to_string_lossy().to_string(),
-                        ));
-                    }
-                }
-                for item in &git_config {
-                    config.push(parse_change(item).map_err(anyhow::Error::msg)?);
-                }
+                let workdir = workdir_for(workdir, "schedules")?;
+                let config = git_config_for(&remote, &dir, &user, &git_config)?;
                 let relative = push::place(&signed.agent, signed.section.as_deref());
                 let username = signer.username.clone().unwrap_or_else(|| user.clone());
                 let message = push::message(
@@ -532,26 +619,130 @@ fn main() -> Result<()> {
                 None => print!("{file}"),
             }
         }
-        Command::Verify { file, ca, dir } => {
+        Command::Projection {
+            command:
+                ProjectionCommand::Test {
+                    mapping,
+                    agent,
+                    section,
+                    samples,
+                    scaffold,
+                    bless,
+                    user,
+                    dir,
+                    out,
+                    push: push_it,
+                    repo,
+                    workdir,
+                    git_config,
+                },
+        } => {
+            let dir = default_dir(dir)?;
+            let source = std::fs::read_to_string(&mapping)
+                .with_context(|| format!("cannot read {}", mapping.display()))?;
+            let samples = samples.unwrap_or_else(|| mapping.with_extension(""));
+            let parsed = load_scaffold(&agent, scaffold.clone(), &dir)?;
+            if bless {
+                let written = evidence::bless(&parsed, &section, &source, &samples)
+                    .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?;
+                for path in &written {
+                    eprintln!("wrote {path}");
+                }
+                eprintln!("read each before committing it: it is now what the mapping is held to");
+                return Ok(());
+            }
+            let user = user.context("--user: whose certificate and key sign the record")?;
+            let scaffold_path = Scaffold::path(&agent, scaffold.as_deref(), &dir);
+            let scaffold_text = std::fs::read_to_string(&scaffold_path)
+                .with_context(|| format!("cannot read {}", scaffold_path.display()))?;
+            let identity = load_identity(&dir, &user).map_err(anyhow::Error::msg)?;
+            let trust = read_trust(&dir.join("ca.pem"))?;
+            let now = now()?;
+            let mapping_name = mapping
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let tested = evidence::projection_test(
+                &evidence::ProjectionTest {
+                    scaffold: &scaffold_text,
+                    section: &section,
+                    mapping: &source,
+                    mapping_name: &mapping_name,
+                    samples: &samples,
+                },
+                &identity,
+                &trust,
+                now,
+            )
+            .map_err(anyhow::Error::msg)?;
+            for detail in &tested.details {
+                eprintln!("{detail}\n");
+            }
+            let signed = evidence::sign_record(tested.record.clone(), &identity)
+                .map_err(anyhow::Error::msg)?;
+            let what = format!(
+                "{}'s {section} mapping {}",
+                tested.agent,
+                if tested.passed() { "passes" } else { "fails" }
+            );
+            if push_it {
+                let (signer, _) =
+                    evidence::verify_record(&signed, &trust, now).map_err(anyhow::Error::msg)?;
+                let remote = repo.or_else(|| env_var("POLAR_EVIDENCE_URL")).context(
+                    "--push needs the evidence repository: --repo, or POLAR_EVIDENCE_URL",
+                )?;
+                let workdir = workdir_for(workdir, "evidence")?;
+                let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                let relative = evidence::place(&tested.agent, &section, &signed);
+                let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                let message = evidence::message(&tested.agent, &section, &tested, &username);
+                let plan = push::Plan {
+                    remote: &remote,
+                    workdir: &workdir,
+                    relative: &relative,
+                    content: &signed,
+                    message: &message,
+                    author_name: &username,
+                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                    git_config: &config,
+                };
+                match push::push(&plan).map_err(anyhow::Error::msg)? {
+                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                    push::Pushed::Unchanged => {
+                        eprintln!(
+                            "{relative} already holds exactly this record; nothing was pushed"
+                        )
+                    }
+                }
+            } else {
+                write_or_print(&signed, out.as_deref(), &what)?;
+            }
+            if !tested.passed() {
+                bail!(
+                    "{what}: {} problem(s), and the record says so",
+                    tested.details.len()
+                );
+            }
+        }
+        Command::Verify {
+            file,
+            ca,
+            dir,
+            evidence: is_evidence,
+        } => {
             let ca_path = match ca {
                 Some(path) => path,
                 None => default_dir(dir)?.join("ca.pem"),
             };
-            let trust = split_pem(
-                &std::fs::read_to_string(&ca_path)
-                    .with_context(|| format!("cannot read {}", ca_path.display()))?,
-            );
-            if trust.is_empty() {
-                bail!("{} holds no certificate", ca_path.display());
-            }
+            let trust = read_trust(&ca_path)?;
             let source = std::fs::read_to_string(&file)
                 .with_context(|| format!("cannot read {}", file.display()))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .context("the clock is before 1970")?
-                .as_secs() as i64;
-            let (signer, payload) =
-                verify_source(&source, &trust, now).map_err(anyhow::Error::msg)?;
+            let (signer, payload) = if is_evidence {
+                evidence::verify_record(&source, &trust, now()?)
+            } else {
+                verify_source(&source, &trust, now()?)
+            }
+            .map_err(anyhow::Error::msg)?;
             println!(
                 "signed by {} <{}> (identity {}, certificate {})",
                 signer.username.as_deref().unwrap_or("?"),
@@ -559,6 +750,28 @@ fn main() -> Result<()> {
                 signer.identity.as_deref().unwrap_or("?"),
                 signer.serial
             );
+            if is_evidence {
+                println!(
+                    "{} of {}'s {} mapping (sha256 {}): {}",
+                    payload["type"].as_str().unwrap_or("?"),
+                    payload["subject"]["agent"].as_str().unwrap_or("?"),
+                    payload["subject"]["section"].as_str().unwrap_or("?"),
+                    payload["mapping"]["sha256"].as_str().unwrap_or("?"),
+                    if payload["result"]["passed"] == true {
+                        "passed"
+                    } else {
+                        "failed"
+                    }
+                );
+                for problem in payload["result"]["problems"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    println!("  {}", problem.as_str().unwrap_or("?"));
+                }
+                return Ok(());
+            }
             let capabilities: Vec<String> = signer
                 .capabilities
                 .iter()

@@ -44,3 +44,4 @@ testing = ["dep:proptest"]
 proptest.workspace = true
 # The example is read as an author's file is.
 serde_dhall.workspace = true
+tempfile.workspace = true

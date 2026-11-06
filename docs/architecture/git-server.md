@@ -26,7 +26,10 @@
 Status, 2026-11-04: built, and running on clusters. Built: transport and identity, the read and write paths, push
 authorization, the `RepoChanged` topic, seeding, runtime repository creation, the push log, and every commit of a
 repository that names a signer verified on push (`server/src/signed.rs`, the deployment repository). `polar-sign` signs
-the documents; `polar-schedules` has no signer of its own. Not built: the Cedar authorizer.
+the documents; `polar-schedules` has no signer of its own. `polar-evidence` holds evidence records, each signed by the
+collector that made it (`polar-sign projection test` first; `http-observers.md`, "Evidence"), and has no signer of its own
+either, since its records have many. Not built: the Cedar authorizer, and a rule refusing a commit that removes or changes
+an evidence record.
 Crates: `src/agents/polar-git-server/{common,server}`. Drawn as built: [`git_server_push`](sequences/general/git_server_push.mmd).
 
 ## Purpose

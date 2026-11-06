@@ -41,6 +41,5 @@ polar-sign = { path = "../polar-sign" }
 polar-signing = { workspace = true, features = ["testing"] }
 polar-test-graph.workspace = true
 ractor.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 wiremock.workspace = true

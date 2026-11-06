@@ -6143,7 +6143,6 @@ dependencies = [
  "polar-signing",
  "polar-test-graph",
  "ractor",
- "serde_json",
  "tokio",
  "wiremock",
 ]
@@ -6235,6 +6234,7 @@ dependencies = [
  "serde",
  "serde_dhall",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
 ]
 
@@ -6346,6 +6346,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "hex",
  "polar-env",
  "polar-escrow",
  "polar-policy",
@@ -6361,6 +6362,7 @@ dependencies = [
  "rsa 0.10.0-rc.18",
  "serde_dhall",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 1.0.69",
  "uuid",

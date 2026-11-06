@@ -207,7 +207,7 @@ The bites, in order:
 3. **A test kit for every kind.** `polar_http_tests!(Kind)` and a pair harness: the real handler, a stand-in service, the real signing path and real Neo4j, with samples and expected writes beside
    each mapping. Built: below.
 4. **`polar-sign projection test`.** The same checks for a deployment's own mapping, writing a signed evidence record (the digests of mapping, scaffold and samples, the tool's version and the
-   result) into `polar-schedules`, where the scheduler does not read.
+   result) into the evidence repository (planned for `polar-schedules`; moved by the maintainer's choice, 2026-11-06, to follow the evidence registry's decision). Built: below.
 5. **A fact base and invariants.** The authority model's facts and rules split into a crate with no runtime, and `polar-sign check` giving each instance holds, no longer covered or violated, with
    a witness. Each invariant has a test that a bad fact base breaks it; report-only first. The first ones: every pair connected and allowed; one owner per label; each mapping inside its binary's
    schema; every path a mapping reads in a tested sample; signed sections as in force; every non-bootstrap workload certified by the credentials agent; every catalog workload in the state agent's
@@ -270,6 +270,33 @@ Marked for review: the kit is on the builder and reaches `reqwest` (through `pol
 a workload; the day a crate takes it as one, it is walked from that crate as any helper is, and a test says so. In the workspace today that is the kit alone. It is not on the list of what is
 not the domain, which holds the maintainer's decisions.
 
+**Bite 4, built 2026-11-06.** `polar-sign projection test <mapping.dhall> --agent <agent> --section <section>` holds a deployment's own mapping to the checks a kind's is held to,
+by the agent's scaffold as `polar-sign` already reads it, and signs a record of what it found (`polar-sign/src/evidence.rs`):
+
+- the mapping is inside the schema the scaffold gives; signed as the section with the user's own key and read back as the agent reads its committed file, verified against their CA, it is
+  the same projection; and each sample beside it, the folder named as the mapping is without `.dhall`, becomes what is written beside that. `--bless` writes those, and signs nothing;
+- the record names what it is true of by digest: the mapping's file, the scaffold (with the agent version it carries), each sample and, canonically, what is written beside it; and this
+  tool's version record, the time, and the result, in lines that name a sample and never say what it holds (what it became is said whole on the terminal only). It is written whether the
+  mapping passes or not, and the tool fails if it does not;
+- it is signed in a new domain, `polar-evidence-record-v1` (`Domain::EVIDENCE_RECORD`), so no evidence record is ever taken for a configuration document or the other way round, and
+  `polar-sign verify --evidence` checks one;
+- `--push` commits it to `polar-evidence` (`POLAR_EVIDENCE_URL`), at `projection-test/<agent>/<section>/<sha256 of the signed record>.json`, so a new record never replaces another. The
+  git server now declares that repository, seeded once and written by its administrators, as `polar-schedules` is (`infra/config/workloads/git-server.nuon`, `infra/seeds/polar-evidence`).
+
+The sample checks moved from the kit into `polar-projection` (`src/samples.rs`), with the processor's `Outcome` (`Projection::outcome`), so the kit and the tool run the same code, and
+the kit has a fourth test: the tool's checks pass for the kind's own mapping by the processor's real scaffold. The order of what a sample becomes is now taken from what identifies each
+node and edge, with names sorted, where before it was the text of each, which is in a different order when a build keeps JSON objects in insertion order (`serde_json`'s
+`preserve_order`, which the workspace's other crates turn on): `polar-projection`'s own tests saw the other order. The expected files did not change.
+
+Where the record goes was the maintainer's choice (2026-11-06): the plan said `polar-schedules`, and the evidence registry's decision (`agentic-control-plane.md`, on the
+`agentic-control-plane` branch) says a repository of its own, each record signed by its collector in a domain of its own; the evidence repository was chosen. Marked for review:
+
+- **No commit rule on it yet.** The git server's commit rule names one signer (`signed_by`, the pipeline for `deployment`), and evidence has as many signers as people who test. Each record
+  carries its own signature, so a forged record does not verify; but a commit that removes or changes one is taken, as on every repository but `deployment`. Open, below.
+- **Who may record evidence.** Anyone with a certificate from the CA: the record says who, and nothing takes a record as an order. No capability is asked for. The round trip signs the
+  mapping with the same key and keeps nothing of it.
+- **No Neo4j in the tool.** The kit holds the model graph to Neo4j for the engine; the tool checks what a mapping makes of its samples, which is what a deployment changes.
+
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one
 (5; the fix is a server-side check at push), and a forgotten migration (5, 6). Narrowed: a service changing its shape (the guard; a field outside it can still clear), one signer and no review (4, 5),
@@ -298,6 +325,8 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
 - **One workload per kind, or per site?** A kind with credentials may want one workload per site, so two Jira sites are not one identity. OpenAPI has none, so this waits for the second kind.
 - **A signed list cannot hold entries with different fields** (`remaining-work.md`). OpenAPI's `sources` are all required, so it does not stop the first kind. Credentials and paging will need the fix.
 - **An endpoint a document dropped** stays in the graph, with an older `polar_observed_at`. Not handled further yet. So does a property a new version of the mapping no longer sets (bite 2).
+- **The evidence repository takes any commit that keeps history.** A commit that removes or changes a record, or is unsigned, is taken (bite 4). The fix is a rule for the repository:
+  every commit only adds files, each a record that verifies in the evidence domain, signed by a commit signer chaining to the CA. Not designed.
 - **Dhall evaluation is exponential in nesting** (bite 2, above). A signed projection is within it today. Finding whether the parser or the type checker is the cause, and fixing it in the
   Dhall fork, comes before any section body nested much deeper than a projection's.
 - **A mapping's first version.** A processor with no signed mapping holds and says so. It is not seeded: the mapping is in `polar-projection/examples/openapi.dhall`, to sign. A built-in default or a seed are the alternatives.

@@ -477,6 +477,19 @@ def main [] {
             }
         }
 
+        "the git server holds the evidence repository, seeded once, written by its administrators, each record signed by its collector": {
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)
+                let evidence = ($repos | where name == "polar-evidence" | first)
+                assert equal $evidence.seed "polar-evidence"
+                assert equal $evidence.readers []
+                assert equal $evidence.writers []
+                # A record is signed by whoever collected it, so no one signer is required of a commit (an open question, docs/architecture/http-observers.md)
+                assert (($evidence | get -o signed_by) == null)
+                assert ($INFRA | path join "seeds/polar-evidence/README.md" | path exists)
+            }
+        }
+
         # nix-usernetes' contract: the selector and the toleration both, or the pod stays Pending on a tainted node.
         "a placed pod has the pool's selector and its toleration, in both templates": {
             with_target (laid_out "separated") {|t|
