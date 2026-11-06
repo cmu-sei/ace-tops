@@ -40,6 +40,9 @@ polar-projection.workspace = true
 # The authority model and the topic types, to judge a deployment's facts as the credentials agent and the agents do.
 credentials-agent-model.workspace = true
 polar-topics.workspace = true
+# Asking the running agents what they hold in force (`check --ask`, and the polar-running-config tool).
+polar-running-config = { path = "../polar-running-config" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # A deployment's rendered manifests, where the authority model is; a CA's certificate, to name it by its digest.
 serde_yaml.workspace = true
 serde.workspace = true
@@ -59,6 +62,12 @@ uuid.workspace = true
 [[bin]]
 name = "polar-sign"
 path = "src/main.rs"
+
+# Asks a running agent what is in force, over Cassini: here, and not in polar-running-config's package, so that the
+# library it uses is also what `polar-sign check --ask` asks with (the maintainer, 2026-11-06).
+[[bin]]
+name = "polar-running-config"
+path = "src/bin/polar-running-config.rs"
 
 [dev-dependencies]
 polar-signing = { workspace = true, features = ["testing"] }

@@ -6254,16 +6254,11 @@ dependencies = [
 name = "polar-running-config"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "cassini-client",
  "cassini-types",
  "cert-issuer-common",
- "clap",
  "polar-scheduler-common",
- "polar-scudo",
- "polar-sign",
  "polar-signing",
- "polar-version",
  "proptest",
  "ractor",
  "serde_json",
@@ -6355,6 +6350,7 @@ dependencies = [
  "polar-escrow",
  "polar-policy",
  "polar-projection",
+ "polar-running-config",
  "polar-scheduler-common",
  "polar-scudo",
  "polar-signing",
@@ -6372,6 +6368,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 1.0.69",
+ "tokio",
  "uuid",
 ]
 

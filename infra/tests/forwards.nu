@@ -100,7 +100,7 @@ def main [] {
                 let line = (open --raw ($root | path join "Justfile") | lines | where {|l| $l | str contains "start_pf broker" } | first)
                 assert ($line | str contains "polar       cassini-ip-svc")
                 assert ($line | str contains '"18081:8080"')
-                let tool = (open --raw ($root | path join "src/agents/polar-running-config/src/main.rs"))
+                let tool = (open --raw ($root | path join "src/agents/polar-sign/src/bin/polar-running-config.rs"))
                 assert ($tool | str contains '"127.0.0.1:18081"')
             }
         }

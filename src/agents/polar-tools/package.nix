@@ -28,7 +28,7 @@
 #
 #   polar-sign          sign, seal and push configuration
 #   polar-admin-grant   provision and claim accounts, bootstrap the CA
-#   polar-running-config  ask a running agent what configuration is in force
+#   polar-running-config  ask a running agent what configuration is in force (a binary of the polar-sign package)
 #   cassini-c2          ask the broker to shut down
 #   cassini-client      the broker's client, for applications that are not written in Rust
 #   user-cert-fetcher   self-service user certificate issuance
@@ -68,7 +68,6 @@ let
     "polar-sign"
     "polar-admin-grant"
     "cassini-c2"
-    "polar-running-config"
     "cassini-client"
     "user-cert-fetcher"
     "cert-client"

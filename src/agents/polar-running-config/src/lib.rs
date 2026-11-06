@@ -26,7 +26,8 @@
 //!
 //! Three layers, and a caller takes the ones it needs. [`question`] makes the signed question. [`Asking`] says what to do
 //! on each thing the broker says, with nothing running, for a caller that already has a Cassini client. [`ask`] connects,
-//! asks and waits. Writing a file from the answer is `polar_sign::template`, which needs no connection.
+//! asks and waits. Writing a file from the answer is `polar_sign::template`, which needs no connection. The tool is
+//! `polar-sign`'s binary `polar-running-config`.
 
 use cassini_client::{
     ClientEventForwarder, ClientEventForwarderArgs, DeliveryMode, TCPClientConfig, TcpClientActor,
@@ -37,7 +38,7 @@ use polar_scheduler_common::running::{
     ANSWERS_TOPIC, MAX_QUESTION_VALIDITY_SECS, QUESTIONS_TOPIC, RunningConfiguration,
     decode_answer, question_payload,
 };
-use polar_sign::Identity;
+use polar_signing::identity::Identity;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use std::collections::HashMap;
 use std::path::Path;

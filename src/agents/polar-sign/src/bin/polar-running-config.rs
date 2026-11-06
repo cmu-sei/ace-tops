@@ -27,6 +27,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
+use polar_env::Env;
 use polar_running_config::{ask, client_config, question};
 use polar_sign::scaffold::Scaffold;
 use std::path::PathBuf;
@@ -70,7 +71,7 @@ struct Cli {
 }
 
 fn env_var(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
+    polar_env::ProcessEnv.var(name).filter(|v| !v.is_empty())
 }
 
 #[tokio::main]

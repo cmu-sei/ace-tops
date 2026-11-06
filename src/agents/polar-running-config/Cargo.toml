@@ -26,16 +26,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The asking, as a library: the tool that asks is `polar-sign`'s binary `polar-running-config`, so that `polar-sign check`
+# can ask as well without the two packages depending on each other.
 [dependencies]
-polar-scudo.workspace = true
-polar-version.workspace = true
-anyhow.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
 cert-issuer-common = { path = "../cert-issuer/common" }
-clap.workspace = true
-# Reads the asker's certificate and key as the signing tool does.
-polar-sign = { path = "../polar-sign" }
 polar-scheduler-common.workspace = true
 polar-signing.workspace = true
 ractor.workspace = true
@@ -48,7 +44,3 @@ uuid.workspace = true
 polar-signing = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 tempfile.workspace = true
-
-[[bin]]
-name = "polar-running-config"
-path = "src/main.rs"

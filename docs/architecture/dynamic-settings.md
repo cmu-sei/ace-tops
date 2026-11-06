@@ -237,8 +237,10 @@ where to look. A refusal at the broker is said at once.
 nushell script, so the whole flow existed only as a script, which an agent or a dashboard cannot call. `polar_running_config` now has three layers:
 `question` makes the signed question; `Asking` says what to do on each thing the broker says, for a caller with a Cassini client of its own;
 `ask` connects, asks and waits, and says why with `AskError`. The tool writes the file itself with `polar_sign::template`, and
-`polar-sign template --settings --running <file>` stays for an answer saved earlier. `polar-sign` still has no async runtime or Cassini client. The
-tool that asks does hold the asker's key, which it signs the question with, so that separation protects the signing tool's shape and not the key.
+`polar-sign template --settings --running <file>` stays for an answer saved earlier. Since 2026-11-06 the tool is a binary of the `polar-sign`
+package, and `polar_running_config` a library only, so that `polar-sign check --ask` asks the running agents with the same code (the maintainer's
+choice; `http-observers.md`, "Evidence"): `polar-sign` now links a Cassini client. The person's certificate and key are read by
+`polar_signing::identity`, which both use.
 
 **The broker is 8080 in the cluster, mTLS and not HTTP, and 18081 on your own machine** (`just port-forwards-up broker`, since keycloak
 owns local 8080). The tool looks there by default, as `polar-sign` looks for the observer's forward; `--broker` and `POLAR_BROKER_ADDR` say

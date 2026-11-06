@@ -449,7 +449,7 @@ _admin_dir    := env_var('HOME') + "/.config/polar-admin"
 _runtime      := env_var_or_default('POLAR_CONTAINER_RUNTIME', `if command -v podman >/dev/null 2>&1; then echo podman; elif command -v docker >/dev/null 2>&1; then echo docker; else echo podman; fi`)
 # The admin tool: polar-admin-grant on PATH (see `nu infra/tools.nu install`), else built from this checkout.
 _admin_grant  := `if command -v polar-admin-grant >/dev/null 2>&1; then echo polar-admin-grant; else echo "cargo run -q --manifest-path $(pwd)/src/agents/Cargo.toml -p polar-admin-grant --"; fi`
-_running_config := `if command -v polar-running-config >/dev/null 2>&1; then echo polar-running-config; else echo "cargo run -q --manifest-path $(pwd)/src/agents/Cargo.toml -p polar-running-config --"; fi`
+_running_config := `if command -v polar-running-config >/dev/null 2>&1; then echo polar-running-config; else echo "cargo run -q --manifest-path $(pwd)/src/agents/Cargo.toml -p polar-sign --bin polar-running-config --"; fi`
 _observer_url := env_var_or_default('POLAR_OBSERVER_URL', 'http://localhost:8081')
 
 # Step 1: fetch the CA, then redeem the one-shot bootstrap credential.

@@ -431,8 +431,10 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
 - **An endpoint a document dropped** stays in the graph, with an older `polar_observed_at`. Not handled further yet. So does a property a new version of the mapping no longer sets (bite 2).
 - **The evidence repository refuses deleted branches and rewritten history, and takes any other commit.** The evidence registry's decision (`agentic-control-plane.md`, on its
   branch, 2026-11-05) is a repository that requires signed commits and refuses deletions and rewrites; the second is built as on every repository, and a commit that removes or changes a
-  record is the part not built: "add only", each commit adding files that verify in the evidence domain. What is open is how signed commits are required of many signers, since
-  `signed_by` names one. A coverage engine counts on a failed record staying (bites 4, 5).
+  record is the part not built. Decided by the maintainer, 2026-11-06: **add only**, each commit adding files, each a record that verifies in the evidence domain, and not a list of
+  signers; a wrong record is superseded by a newer one, never changed or removed, so a failed record stays, which a coverage engine counts on (bites 4, 5). Not built yet.
+- **`polar-sign` does too many things.** It signs documents, tests projections, checks an instance, and now asks running agents over Cassini (its binary
+  `polar-running-config`). The maintainer, 2026-11-06: it is headed for a refactor anyway; for now it works. Not designed.
 - **Dhall evaluation is exponential in nesting** (bite 2, above). A signed projection is within it today. Finding whether the parser or the type checker is the cause, and fixing it in the
   Dhall fork, comes before any section body nested much deeper than a projection's.
 - **A mapping's first version.** A processor with no signed mapping holds and says so. It is not seeded: the mapping is in `polar-projection/examples/openapi.dhall`, to sign. A built-in default or a seed are the alternatives.
