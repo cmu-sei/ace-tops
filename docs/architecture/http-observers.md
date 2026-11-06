@@ -562,6 +562,38 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
   keys its document, and the document with a method and path keys an endpoint. Marked for review: the labels `OpenApiApplication` and `OpenApiEndpoint`, prefixed as `JiraIssue` is, so a
   generic `Application` is not taken by the first thing to want it.
 
+## GitLab (planned 2026-11-06)
+
+What is there (read 2026-11-06): five crates (`gitlab/observe`, `consume`, `query`, `schema`, `common`) on the older pattern, a hand-written supervisor and Cassini
+client, no `PolarAgent`, no health actor; outside the catalog, enabled by no target, so no deployment holds their data. The observer sends about 2,700 lines of typed
+GraphQL (cynic) as POSTs with `GITLAB_TOKEN` from the environment, and never pages: every query starts with `after: None` and `pageInfo` is fetched and never read
+(`gitlab/observe/src/users.rs:59`, `projects.rs:67`, `groups.rs:66`). The consumer writes 13 labels and their edges through `GraphOp`, keyed by a UUIDv5 of the base URL
+(`lib/src/graph/nodes/gitlab.rs:96-196`), and publishes provenance events besides.
+
+The maintainer's choices: GitLab comes onto this architecture as GraphQL, by extending the library ("GraphQL, extend the library"), not as REST v4 or a Rust walker;
+a list nested in each item (a project's pipelines, jobs, packages) is read by a follow-up query per item ("A follow-up query per item"); and a node says which GitLab it
+came from by its source's origin ("The source's origin").
+
+Decided by the standing rules, marked for review:
+- An observer only reads: a GraphQL source whose query is anything but one `query` operation is refused when signed, by parsing it (`cynic-parser`, already in the
+  lock through cynic), not by matching text.
+- A GraphQL answer with `errors` and no `data` fails the read, as an error status does; its messages are not repeated.
+- The processor only writes the graph: the old consumer's provenance events do not come along (`remaining-work.md` already has the consumer proposing repositories
+  instead, later).
+- The labels keep their names, with new keys: `origin` and GitLab's own id. Nothing deployed holds the old keys.
+
+The bites:
+- **G1, GraphQL sources.** A source may be a GraphQL request (`query`, `variables`), POSTed as JSON to its signed URL; a `graphql` paging style reads
+  `pageInfo.{endCursor, hasNextPage}` at a pointer and sets `after` in the variables. An observation carries its source's origin (scheme, host, port), which a mapping
+  reads as `origin`; a sample is read at a fixed origin, so what it becomes does not depend on where it was served.
+- **G2, a follow-up query per item.** A GraphQL source may name a second query run for each item of each page, its variables from that item, paged by its own cursor,
+  each page of it an observation; signed bounds on items and pages. The follow-up asks for its parent's id, so the mapping can draw the edge.
+- **G3, the GitLab pair on the library.** `gitlab-observer` (`CREDENTIALED_SOURCES`, a `Bound` operation) and `gitlab-processor` (the labels above), a mapping with
+  `when`, hand-written GraphQL samples for each kind of data, and the kit's tests, paged and followed.
+- **G4, the catalog and live.** Catalog entries for both; the token a sealed `credentials` section, as Jira's; a bring-up on u7c, where `credentialed-reads-reviewed`
+  first holds of a real source. Which GitLab it reads is asked first, since that sends a credential to an outside host.
+- **G5, the old pair goes.** The five crates, the hand-written chart, `gitlab-secret` and the GitLab variables, once G4 has shown the new pair working.
+
 ## Open
 
 - **What it did touch.** What a workload could reach is answerable: the catalog, and each signed version of its sections, in git history. What it did reach is one log line per
