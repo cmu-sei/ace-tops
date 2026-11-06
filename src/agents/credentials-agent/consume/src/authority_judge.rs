@@ -400,6 +400,7 @@ mod tests {
     fn held(body: serde_json::Value) -> RuntimeValue {
         RuntimeValue {
             version: 1,
+            id: "held-1".to_string(),
             body,
             signer: "alice (serial 01)".to_string(),
         }

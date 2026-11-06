@@ -439,6 +439,7 @@ impl ConfigurationState {
                                 section.to_string(),
                                 RuntimeValue {
                                     version,
+                                    id: id.clone(),
                                     body,
                                     signer: signer.clone(),
                                 },

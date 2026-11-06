@@ -50,7 +50,7 @@ use cassini_client::{OfflineBehavior, PublishRequest};
 use polar::cassini::{CassiniClient, TcpClient};
 use polar_env::{Config, Mutability};
 use polar_scheduler_common::running::{
-    ANSWERS_TOPIC, MAX_QUESTION_VALIDITY_SECS, QUESTION_TYPE, QUESTIONS_TOPIC,
+    ANSWERS_TOPIC, MAX_QUESTION_VALIDITY_SECS, QUESTION_TYPE, QUESTIONS_TOPIC, RunningBuild,
     RunningConfiguration, RunningSection, RunningSetting, encode_answer,
 };
 use polar_signing::authority::AuthorityRefusal;
@@ -195,6 +195,13 @@ pub fn settings(config: &Config) -> Vec<RunningSetting> {
         .collect()
 }
 
+/// The digest of a section's body as its signed document holds it: SHA-256 of its canonical form, in hex.
+fn body_sha256(body: &Value) -> String {
+    use sha2::Digest;
+    let canonical = polar_signing::canonical::encode(body).unwrap_or_default();
+    format!("{:x}", sha2::Sha256::digest(canonical))
+}
+
 /// The answer to the question `id`.
 pub fn answer(
     id: String,
@@ -208,15 +215,24 @@ pub fn answer(
         .map(|(name, value)| RunningSection {
             name: name.clone(),
             version: value.version,
+            id: value.id.clone(),
+            body_sha256: body_sha256(&value.body),
         })
         .collect();
     sections.sort_by(|a, b| a.name.cmp(&b.name));
+    let built = polar_version::record(agent);
     RunningConfiguration {
         id,
         agent: agent.to_string(),
         version,
         settings: settings(config),
         sections,
+        build: RunningBuild {
+            name: built.name,
+            version: built.version,
+            release: built.release,
+            target: built.target,
+        },
         at_unix_secs: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -380,6 +396,7 @@ mod tests {
                 "zeta".to_string(),
                 RuntimeValue {
                     version: 4,
+                    id: "z-4".to_string(),
                     body: serde_json::json!({"held": "not-for-you"}),
                     signer: "alice".to_string(),
                 },
@@ -388,6 +405,7 @@ mod tests {
                 "alpha".to_string(),
                 RuntimeValue {
                     version: 2,
+                    id: "a-2".to_string(),
                     body: serde_json::json!({}),
                     signer: "alice".to_string(),
                 },
@@ -400,15 +418,26 @@ mod tests {
             vec![
                 RunningSection {
                     name: "alpha".to_string(),
-                    version: 2
+                    version: 2,
+                    id: "a-2".to_string(),
+                    body_sha256: body_sha256(&serde_json::json!({})),
                 },
                 RunningSection {
                     name: "zeta".to_string(),
-                    version: 4
+                    version: 4,
+                    id: "z-4".to_string(),
+                    body_sha256: body_sha256(&serde_json::json!({"held": "not-for-you"})),
                 },
             ]
         );
         assert!(!format!("{a:?}").contains("not-for-you"));
+        // The digest is of the canonical body: what `polar-sign check` computes of the signed section.
+        assert_eq!(
+            a.sections[0].body_sha256,
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        );
+        assert_eq!(a.build.name, "a");
+        assert_eq!(a.build.version, polar_version::PLATFORM);
     }
 
     proptest! {

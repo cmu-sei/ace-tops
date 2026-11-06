@@ -78,13 +78,29 @@ pub struct RunningSetting {
     pub withheld: bool,
 }
 
-/// A runtime section the agent holds, by its version. Never its body, which may hold a secret.
+/// A runtime section the agent holds: the signed document's id and version, and the digest of its body (SHA-256 of its
+/// canonical form, as `polar_signing::canonical` writes it), which says which body it is and nothing of what it holds.
+/// Never the body, which may hold a secret.
 #[derive(
     Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize, SerdeSerialize, SerdeDeserialize,
 )]
 pub struct RunningSection {
     pub name: String,
     pub version: u64,
+    pub id: String,
+    pub body_sha256: String,
+}
+
+/// The build an agent runs, as its `polar_version::record` says it.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize, SerdeSerialize, SerdeDeserialize,
+)]
+pub struct RunningBuild {
+    pub name: String,
+    /// The platform version.
+    pub version: String,
+    pub release: bool,
+    pub target: String,
 }
 
 /// What an agent says of its configuration in force.
@@ -99,6 +115,9 @@ pub struct RunningConfiguration {
     pub version: u64,
     pub settings: Vec<RunningSetting>,
     pub sections: Vec<RunningSection>,
+    /// Since 2026-11-06, with each section's id and digest: an answer is read only by a tool of the same build, so the
+    /// tool that asks is upgraded with the agents (a breaking change, recorded for the migration in `remaining-work.md`).
+    pub build: RunningBuild,
     pub at_unix_secs: u64,
 }
 
@@ -147,22 +166,49 @@ mod tests {
             "[a-z-]{1,20}",
             any::<u64>(),
             proptest::collection::vec(setting(), 0..8),
-            proptest::collection::vec(("[a-z]{1,8}", any::<u64>()), 0..4),
+            proptest::collection::vec(
+                (
+                    "[a-z]{1,8}",
+                    any::<u64>(),
+                    "[a-z0-9-]{0,12}",
+                    "[0-9a-f]{64}",
+                ),
+                0..4,
+            ),
+            (
+                "[a-z-]{1,20}",
+                "[0-9.+a-z]{1,12}",
+                any::<bool>(),
+                "[a-z0-9_-]{1,24}",
+            ),
             any::<u64>(),
         )
-            .prop_map(|(id, agent, version, settings, sections, at_unix_secs)| {
-                RunningConfiguration {
-                    id,
-                    agent,
-                    version,
-                    settings,
-                    sections: sections
-                        .into_iter()
-                        .map(|(name, version)| RunningSection { name, version })
-                        .collect(),
-                    at_unix_secs,
-                }
-            })
+            .prop_map(
+                |(id, agent, version, settings, sections, build, at_unix_secs)| {
+                    RunningConfiguration {
+                        id,
+                        agent,
+                        version,
+                        settings,
+                        sections: sections
+                            .into_iter()
+                            .map(|(name, version, id, body_sha256)| RunningSection {
+                                name,
+                                version,
+                                id,
+                                body_sha256,
+                            })
+                            .collect(),
+                        build: RunningBuild {
+                            name: build.0,
+                            version: build.1,
+                            release: build.2,
+                            target: build.3,
+                        },
+                        at_unix_secs,
+                    }
+                },
+            )
     }
 
     proptest! {

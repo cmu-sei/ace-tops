@@ -666,7 +666,15 @@ mod tests {
             sections: vec![RunningSection {
                 name: "repositories".to_string(),
                 version: 3,
+                id: "r-3".to_string(),
+                body_sha256: String::new(),
             }],
+            build: polar_scheduler_common::running::RunningBuild {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                release: true,
+                target: "t".to_string(),
+            },
             at_unix_secs: 1000,
         }
     }

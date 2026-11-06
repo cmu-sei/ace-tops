@@ -456,6 +456,12 @@ mod tests {
             version: 3,
             settings: vec![],
             sections: vec![],
+            build: polar_scheduler_common::running::RunningBuild {
+                name: "a".to_string(),
+                version: "1.0.0".to_string(),
+                release: true,
+                target: "t".to_string(),
+            },
             at_unix_secs: 1,
         }
     }

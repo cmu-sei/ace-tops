@@ -94,6 +94,8 @@ pub struct RuntimeChanged {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeValue {
     pub version: u64,
+    /// The signed document's id.
+    pub id: String,
     pub body: serde_json::Value,
     /// Who signed it, as `name (serial xx)`: for the record, not what makes it believed.
     pub signer: String,

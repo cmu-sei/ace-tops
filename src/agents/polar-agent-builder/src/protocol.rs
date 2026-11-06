@@ -1619,6 +1619,7 @@ pub(crate) mod tests {
             }]});
             *self.configuration.section.lock().unwrap() = Some(RuntimeValue {
                 version,
+                id: format!("credentials-{version}"),
                 body,
                 signer: "someone".to_string(),
             });
