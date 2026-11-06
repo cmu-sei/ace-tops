@@ -73,6 +73,10 @@ enum Type {
     Text,
     List(Box<Type>),
     Record(std::collections::BTreeMap<String, Type>),
+    /// A null, or a field one record of a list leaves out: of no type yet, until a sibling says.
+    Absent,
+    /// A value some entries have and some do not: `Some` where it is, `None` where it is not, null once read back.
+    Optional(Box<Type>),
 }
 
 impl Type {
@@ -85,6 +89,8 @@ impl Type {
             Type::Text => "Text",
             Type::List(_) => "a list",
             Type::Record(_) => "a record",
+            Type::Absent => "a null",
+            Type::Optional(_) => "an optional value",
         }
     }
 
@@ -97,6 +103,8 @@ impl Type {
             Type::Integer => "Integer".to_string(),
             Type::Text => "Text".to_string(),
             Type::List(element) => format!("List {}", element.dhall_atom()?),
+            Type::Absent => "Optional {}".to_string(),
+            Type::Optional(inner) => format!("Optional {}", inner.dhall_atom()?),
             Type::Record(fields) if fields.is_empty() => "{}".to_string(),
             Type::Record(fields) => {
                 let rendered = fields
@@ -112,7 +120,7 @@ impl Type {
     fn dhall_atom(&self) -> Result<String, DhallError> {
         let written = self.dhall()?;
         Ok(match self {
-            Type::List(_) => format!("({written})"),
+            Type::List(_) | Type::Optional(_) | Type::Absent => format!("({written})"),
             _ => written,
         })
     }
@@ -121,7 +129,7 @@ impl Type {
 /// The type of `value`, at `path`: every list's elements unified into one type.
 fn type_of(value: &Value, path: &str) -> Result<Type, DhallError> {
     Ok(match value {
-        Value::Null => return Err(DhallError::Unsupported("null")),
+        Value::Null => Type::Absent,
         Value::Bool(_) => Type::Bool,
         Value::Number(n) => match (n.as_u64(), n.as_i64()) {
             (Some(_), _) => Type::Natural,
@@ -159,33 +167,33 @@ fn unify(a: &Type, b: &Type, path: &str) -> Result<Type, DhallError> {
     };
     Ok(match (a, b) {
         (Type::Unknown, other) | (other, Type::Unknown) => other.clone(),
-        (Type::List(x), Type::List(y)) => Type::List(Box::new(unify(x, y, &format!("{path}[]"))?)),
-        (Type::Record(x), Type::Record(y)) => {
-            let fields_x: Vec<&String> = x.keys().collect();
-            let fields_y: Vec<&String> = y.keys().collect();
-            if fields_x != fields_y {
-                return Err(mismatch(format!(
-                    "records with different fields ({} and {})",
-                    fields_x
-                        .iter()
-                        .map(|f| f.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    fields_y
-                        .iter()
-                        .map(|f| f.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )));
-            }
-            Type::Record(
-                x.iter()
-                    .map(|(name, t)| {
-                        Ok((name.clone(), unify(t, &y[name], &format!("{path}.{name}"))?))
-                    })
-                    .collect::<Result<_, DhallError>>()?,
-            )
+        (Type::Absent, Type::Absent) => Type::Absent,
+        (Type::Absent, Type::Optional(t)) | (Type::Optional(t), Type::Absent) => {
+            Type::Optional(t.clone())
         }
+        (Type::Absent, other) | (other, Type::Absent) => Type::Optional(Box::new(other.clone())),
+        (Type::Optional(x), Type::Optional(y)) => Type::Optional(Box::new(unify(x, y, path)?)),
+        (Type::Optional(x), other) | (other, Type::Optional(x)) => {
+            Type::Optional(Box::new(unify(x, other, path)?))
+        }
+        (Type::List(x), Type::List(y)) => Type::List(Box::new(unify(x, y, &format!("{path}[]"))?)),
+        // A field one record leaves out is optional in both: one list can hold entries that differ in what they leave out.
+        (Type::Record(x), Type::Record(y)) => Type::Record(
+            x.keys()
+                .chain(y.keys())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .map(|name| {
+                    let at = format!("{path}.{name}");
+                    let t = match (x.get(name), y.get(name)) {
+                        (Some(a), Some(b)) => unify(a, b, &at)?,
+                        (Some(one), None) | (None, Some(one)) => unify(one, &Type::Absent, &at)?,
+                        (None, None) => unreachable!("a name from one of them"),
+                    };
+                    Ok((name.clone(), t))
+                })
+                .collect::<Result<_, DhallError>>()?,
+        ),
         (x, y) if x == y => x.clone(),
         (x, y) => return Err(mismatch(format!("{} against {}", x.name(), y.name()))),
     })
@@ -194,7 +202,10 @@ fn unify(a: &Type, b: &Type, path: &str) -> Result<Type, DhallError> {
 /// `value`, of type `ty` (from [`type_of`]), as a Dhall expression: an empty list annotated with its element's type.
 fn render(value: &Value, ty: &Type) -> Result<String, DhallError> {
     match (value, ty) {
+        (Value::Null, Type::Optional(inner)) => Ok(format!("None {}", inner.dhall_atom()?)),
+        (Value::Null, Type::Absent) => Ok("None {}".to_string()),
         (Value::Null, _) => Err(DhallError::Unsupported("null")),
+        (value, Type::Optional(inner)) => Ok(format!("Some ({})", render(value, inner)?)),
         (Value::Bool(true), _) => Ok("True".to_string()),
         (Value::Bool(false), _) => Ok("False".to_string()),
         (Value::Number(n), _) => match (n.as_u64(), n.as_i64()) {
@@ -217,14 +228,15 @@ fn render(value: &Value, ty: &Type) -> Result<String, DhallError> {
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(format!("[ {} ]", rendered.join(", ")))
         }
+        // Every field the type has, so each record of a list has the same: one this value leaves out is `None`.
         (Value::Object(fields), Type::Record(types)) => {
-            if fields.is_empty() {
+            if types.is_empty() {
                 return Ok("{=}".to_string());
             }
-            let rendered = fields
+            let rendered = types
                 .iter()
-                .map(|(name, v)| {
-                    let t = types.get(name).unwrap_or(&Type::Unknown);
+                .map(|(name, t)| {
+                    let v = fields.get(name).unwrap_or(&Value::Null);
                     Ok(format!("{} = {}", field_name(name)?, render(v, t)?))
                 })
                 .collect::<Result<Vec<_>, DhallError>>()?;
@@ -281,6 +293,10 @@ fn field_name(name: &str) -> Result<String, DhallError> {
 /// an empty list is annotated with the element type its siblings give it (`([] : List Text)`, beside `[ "a" ]`), and
 /// with `{}` when nothing says; a list whose elements cannot be of one type is refused, by its path.
 pub fn dhall(value: &Value) -> Result<String, DhallError> {
+    // A null alone has nothing beside it to say what it is in place of.
+    if value.is_null() {
+        return Err(DhallError::Unsupported("null"));
+    }
     let ty = type_of(value, "$")?;
     render(value, &ty)
 }
@@ -662,12 +678,13 @@ mod tests {
 
     #[test]
     fn a_list_whose_elements_cannot_be_of_one_type_is_refused_by_its_path() {
+        // Records that differ only in which fields they have were refused here until 2026-11-06; they are one list now,
+        // each field one leaves out written `None` (entries_that_differ_in_an_optional_field_are_one_list...).
+        assert_eq!(
+            evaluate(&dhall(&json!({ "w": [{ "a": 1 }, { "b": 1 }] })).unwrap()).unwrap(),
+            json!({ "w": [{ "a": 1, "b": null }, { "a": null, "b": 1 }] })
+        );
         for (value, path, why) in [
-            (
-                json!({ "w": [{ "a": 1 }, { "b": 1 }] }),
-                "$.w[]",
-                "different fields",
-            ),
             (json!({ "w": ["x", 1] }), "$.w[]", "Text against Natural"),
             (
                 json!({ "w": [{ "l": ["x"] }, { "l": [true] }] }),
@@ -774,6 +791,39 @@ mod tests {
         roundtrip(json!({ "credentials": [] }));
         roundtrip(json!({ "body": { "repositories": [], "n": 1 } }));
         assert!(dhall(&json!({ "x": 1.5 })).is_err());
+    }
+
+    /// One list can hold entries that differ in their optional fields (`remaining-work.md`, "A signed list cannot hold
+    /// entries with different fields"): a field one entry leaves out, or gives as null, is written `None` and the rest
+    /// `Some`, and what reads the file back has it as null. A null with nothing beside it to say its type is still refused.
+    #[test]
+    fn entries_that_differ_in_an_optional_field_are_one_list_and_read_back_with_it_null() {
+        let mixed = json!({ "sources": [
+            { "name": "a", "url": "https://a.example/x", "credential": "jira" },
+            { "name": "b", "url": "https://b.example/y" },
+            { "name": "c", "url": "https://c.example/z", "credential": null },
+        ]});
+        let source = dhall(&mixed).expect("it renders");
+        let back =
+            evaluate(&source).unwrap_or_else(|e| panic!("`{source}` does not evaluate: {e}"));
+        assert_eq!(
+            back,
+            json!({ "sources": [
+                { "name": "a", "url": "https://a.example/x", "credential": "jira" },
+                { "name": "b", "url": "https://b.example/y", "credential": null },
+                { "name": "c", "url": "https://c.example/z", "credential": null },
+            ]})
+        );
+        // A field present in every entry stays as it is; a nested record can be the optional one.
+        let nested = json!([{ "paging": { "style": "link" } }, { "paging": null }, {}]);
+        let back = evaluate(&dhall(&nested).unwrap()).unwrap();
+        assert_eq!(
+            back,
+            json!([{ "paging": { "style": "link" } }, { "paging": null }, { "paging": null }])
+        );
+        // Still refused: a bare null, and a field whose present values are of two types.
+        assert_eq!(dhall(&json!(null)), Err(DhallError::Unsupported("null")));
+        assert!(dhall(&json!([{ "a": 1 }, { "a": "one" }])).is_err());
     }
 
     #[test]

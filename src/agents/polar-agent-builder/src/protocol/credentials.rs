@@ -444,6 +444,21 @@ mod tests {
         assert_eq!(parse(&json!({"credentials": []}), 1), Ok(Vec::new()));
     }
 
+    /// A token and a user-password in one signed version, which `polar-sign` could not write until 2026-11-06: the token's
+    /// username, which it leaves out, comes back from the signed file as null, and is no username.
+    #[test]
+    fn a_token_and_a_user_password_in_one_signed_version_read_back_as_they_were_written() {
+        let body = json!({"credentials": [token_entry("a-site"), {
+            "name": "cloud", "host_pattern": "*.atlassian.net", "kind": "user-password",
+            "username": "me@example.org", "secret": ciphertext(b"api-token", b"x")}]});
+        let signed = polar_sign::dhall(&body).expect("one list");
+        let read = polar_sign::evaluate(&signed).unwrap();
+        assert_eq!(read["credentials"][0]["username"], Value::Null);
+        let entries = parse(&read, 2).unwrap();
+        assert_eq!(entries[0].username, None);
+        assert_eq!(entries[1].username.as_deref(), Some("me@example.org"));
+    }
+
     #[test]
     fn the_declared_limit_is_what_the_section_takes() {
         let two = json!({"credentials": [token_entry("a"), token_entry("b")]});

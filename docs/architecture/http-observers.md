@@ -487,6 +487,16 @@ a sensitive field reaching the graph (5 sees the flow, not which field is sensit
 record is only in logs; the fix is a durable `Recorder`), evidence and applied records being signed claims rather than proof, facts against real behaviour (2 and 3 tie code to facts; "should" stays
 "should"), and dropped endpoints with the processor's stale problem (small, needs a decision).
 
+**Bite 7, planned 2026-11-06, the maintainer's choices.** Each page of a paged source is an observation of its own, of the same source, each within the frame's
+bound, so nothing holds a whole source and the observer still does not read a document beyond the paging it follows. Jira's projects, groups and users go through the kit
+as a test kind only, a Jira-shaped mapping with hand-written samples against a stand-in Jira, paged and with a `Bound` credential; the `jira-observer` stays as it is.
+"No credentialed fetch reaches the graph unreviewed" is that every source read with a credential feeds a processor whose mapping in force passed a projection test of that
+body, its samples reaching every read: someone has reviewed, in the expected files, what that data becomes.
+
+The steps: the signed-list fix (`polar-sign` writes an optional field one entry leaves out as `None`, and what reads a section takes it as null), so one `sources` version
+can hold a source with a credential and one without; a source's `credential`, read through a second operation, `Bound` with the credential the request names; a source's
+`paging`, a `Link` header, a page parameter or a cursor path; the Jira-shaped kind through the kit; the invariant in `polar-sign check`; a fresh bring-up.
+
 ## What the OpenAPI pair fixes
 
 Seen reading the code, 2026-11-05. No target deploys them, so there is no data to migrate.
