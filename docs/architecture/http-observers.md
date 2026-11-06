@@ -504,6 +504,18 @@ kind with no credentialed operation declares `SOURCES`, which refuses `credentia
 names one to https, since the handler refuses a credential over plain http (`judge.rs`). Whether the named credential is one the agent holds is the handler's to say
 when it reads (`Failure::NoCredential`), since a credential may arrive after the sources that name it.
 
+Paging, done (`polar-http-observer/src/paging.rs`, `observing.rs`, `observer.rs`). A source's `paging` is one of three styles, in either section: `{style: link}`, the
+`Link` header's `rel="next"` (GitLab, GitHub); `{style: cursor, next: <JSON pointer>}`, the next page's address in the page (Jira's `nextPage`); `{style: offset, param,
+items: <JSON pointer>}`, a query parameter set to how many items were read so far, and a page with none is the last (Jira's `startAt`). `max_pages`, 1 to 1000, default
+100, bounds one read. The read operation finds the next page's address from what came back, and the observer's core follows it at the same generation, so a new version
+of the source, or a shutdown, stops a read between pages; the property test holds the core to that over any sequence. Marked for review:
+- A next page is on the source's own scheme, host and port, whatever the page says: a host does not send the observer, or a source's credential, anywhere else.
+  One that names another, or the page itself, fails the read.
+- A next page that cannot be found (a cursor that is not an address, a page that is not the JSON the style reads) fails the read, so a paging that cannot work is said
+  rather than taken for the last page. The pages before it stay published.
+- A read that reaches `max_pages` with more named is published and counts as a problem for the source, as a failed read does: data left unread is worth saying, and
+  raising `max_pages` is the way out.
+
 ## What the OpenAPI pair fixes
 
 Seen reading the code, 2026-11-05. No target deploys them, so there is no data to migrate.

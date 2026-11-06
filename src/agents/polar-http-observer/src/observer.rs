@@ -25,6 +25,7 @@
 //! failure is said and tried again at its next time, and touches no other.
 
 use crate::observing::{Event, Observing, Step};
+use crate::paging::{self, Page, Style};
 use crate::sources::{self, SECTION_NAME, Source};
 use crate::{MAX_DOCUMENT_BYTES, Observation};
 use cassini_client::{OfflineBehavior, PublishRequest};
@@ -59,36 +60,38 @@ pub trait Kind: Send + Sync + 'static {
     const CREDENTIALED: Option<OperationDecl> = None;
 }
 
-/// A GET of a source's address, with no credential.
+/// A GET of a page of a source, with no credential.
 struct Fetch<K> {
     url: String,
+    paging: Option<Style>,
     kind: PhantomData<fn() -> K>,
 }
 
 impl<K: Kind> Operation for Fetch<K> {
     type Protocol = Http;
-    type Output = Vec<u8>;
+    type Output = Page;
     const DECL: OperationDecl = K::OPERATION;
 
     fn request(&self) -> Request {
         Request::get_at(self.url.clone())
     }
 
-    fn read(&self, reply: &Reply) -> Result<Vec<u8>, ReadFailure> {
-        read_document(reply.status.as_u16(), &reply.body)
+    fn read(&self, reply: &Reply) -> Result<Page, ReadFailure> {
+        read_page(&self.url, self.paging.as_ref(), reply)
     }
 }
 
-/// A GET of a source's address, with the credential the source names.
+/// A GET of a page of a source, with the credential the source names.
 struct FetchWith<K> {
     url: String,
     credential: String,
+    paging: Option<Style>,
     kind: PhantomData<fn() -> K>,
 }
 
 impl<K: Kind> Operation for FetchWith<K> {
     type Protocol = Http;
-    type Output = Vec<u8>;
+    type Output = Page;
     // Never asked for a kind without one ([`read`] refuses first); and were it, the arbitrary operation carries none.
     const DECL: OperationDecl = match K::CREDENTIALED {
         Some(declared) => declared,
@@ -103,24 +106,26 @@ impl<K: Kind> Operation for FetchWith<K> {
         Some(self.credential.clone())
     }
 
-    fn read(&self, reply: &Reply) -> Result<Vec<u8>, ReadFailure> {
-        read_document(reply.status.as_u16(), &reply.body)
+    fn read(&self, reply: &Reply) -> Result<Page, ReadFailure> {
+        read_page(&self.url, self.paging.as_ref(), reply)
     }
 }
 
-/// A source's document, read through the protocol handler as one of this kind's operations, with the credential the
-/// source names or none: what the observer publishes, and what a kind's tests read through the same handler
-/// (`polar-http-testkit`).
+/// A page of a source, read through the protocol handler as one of this kind's operations, with the credential the
+/// source names or none, and where its next page is when it is paged: what the observer publishes, and what a kind's
+/// tests read through the same handler (`polar-http-testkit`).
 pub async fn read<K: Kind>(
     protocols: &ProtocolHandle,
     url: String,
     credential: Option<String>,
-) -> Result<Vec<u8>, Failure> {
+    paging: Option<Style>,
+) -> Result<Page, Failure> {
     match (credential, K::CREDENTIALED) {
         (None, _) => {
             protocols
                 .ask(Fetch::<K> {
                     url,
+                    paging,
                     kind: PhantomData,
                 })
                 .await
@@ -130,6 +135,7 @@ pub async fn read<K: Kind>(
                 .ask(FetchWith::<K> {
                     url,
                     credential,
+                    paging,
                     kind: PhantomData,
                 })
                 .await
@@ -139,6 +145,26 @@ pub async fn read<K: Kind>(
             K::NAME
         ))),
     }
+}
+
+/// A page, and where the next is when the source is paged: a next page that cannot be found, or is on another host, is a
+/// failure of the read, so a paging that cannot work is said rather than taken for the last page.
+fn read_page(url: &str, paging: Option<&Style>, reply: &Reply) -> Result<Page, ReadFailure> {
+    let body = read_document(reply.status.as_u16(), &reply.body)?;
+    let next = match paging {
+        None => None,
+        Some(style) => {
+            let link: Vec<String> = reply
+                .headers
+                .get_all("link")
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .map(str::to_string)
+                .collect();
+            paging::next(style, url, &link, &body).map_err(ReadFailure::Malformed)?
+        }
+    };
+    Ok(Page { body, next })
 }
 
 /// Whether what came back is a document this observer can publish. What it says is the processor's to judge.
@@ -167,11 +193,12 @@ pub enum ObserverMessage {
         name: String,
         generation: u64,
     },
-    /// A read came back.
+    /// A page of a read came back.
     Read {
         name: String,
         generation: u64,
-        outcome: Result<Vec<u8>, Failure>,
+        page: u32,
+        outcome: Result<Page, Failure>,
     },
     PrepareShutdown,
 }
@@ -283,11 +310,13 @@ impl<K: Kind> Actor for Observer<K> {
             ObserverMessage::Read {
                 name,
                 generation,
+                page,
                 outcome,
             } => {
                 let steps = state.observing.on(Event::Read {
                     name,
                     generation,
+                    page,
                     outcome,
                 });
                 carry_out::<K>(&myself, state, steps);
@@ -335,15 +364,18 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
                 generation,
                 url,
                 credential,
+                paging,
+                page,
             } => {
                 let protocols = state.protocols.clone();
                 let to = myself.clone();
                 // Off the actor, so a slow host holds up no other source.
                 tokio::spawn(async move {
-                    let outcome = read::<K>(&protocols, url, credential).await;
+                    let outcome = read::<K>(&protocols, url, credential, paging).await;
                     let _ = to.cast(ObserverMessage::Read {
                         name,
                         generation,
+                        page,
                         outcome,
                     });
                 });
@@ -409,6 +441,7 @@ pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
 mod tests {
     use super::*;
     use crate::observing::next_read;
+    use crate::paging::{Page, Style};
     use polar_agent_builder::protocol::testing::{http_handle, http_handle_for};
     use polar_agent_builder::protocol::{Credential, Location, ProtocolKind};
     use polar_crypto::registry::{SecretBinding, SecretKind};
@@ -440,6 +473,7 @@ mod tests {
     fn fetch(url: String) -> Fetch<TestKind> {
         Fetch {
             url,
+            paging: None,
             kind: PhantomData,
         }
     }
@@ -458,7 +492,7 @@ mod tests {
             .await
             .ask(fetch(format!("{}/openapi.json", site.uri())))
             .await;
-        assert_eq!(got.unwrap(), b"{\"not\": \"read here\"".to_vec());
+        assert_eq!(got.unwrap().body, b"{\"not\": \"read here\"".to_vec());
     }
 
     #[tokio::test]
@@ -551,10 +585,10 @@ mod tests {
     {
         let (server, url, protocols) = credentialed_site().await;
         let with =
-            read::<CredentialedKind>(&protocols, url.clone(), Some("jira".to_string())).await;
-        assert_eq!(with.unwrap(), b"[]".to_vec());
-        let without = read::<CredentialedKind>(&protocols, url, None).await;
-        assert_eq!(without.unwrap(), b"[]".to_vec());
+            read::<CredentialedKind>(&protocols, url.clone(), Some("jira".to_string()), None).await;
+        assert_eq!(with.unwrap().body, b"[]".to_vec());
+        let without = read::<CredentialedKind>(&protocols, url, None, None).await;
+        assert_eq!(without.unwrap().body, b"[]".to_vec());
         assert_eq!(
             authorizations(&server).await,
             vec![Some(format!("Bearer {TOKEN}")), None]
@@ -564,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn a_credential_the_agent_does_not_hold_is_a_failure_and_nothing_is_sent() {
         let (server, url, protocols) = credentialed_site().await;
-        let got = read::<CredentialedKind>(&protocols, url, Some("gitlab".to_string())).await;
+        let got = read::<CredentialedKind>(&protocols, url, Some("gitlab".to_string()), None).await;
         assert!(
             matches!(got, Err(Failure::NoCredential { ref name }) if name == "gitlab"),
             "{got:?}"
@@ -576,9 +610,75 @@ mod tests {
     async fn a_kind_that_reads_with_no_credential_refuses_a_source_that_names_one_and_sends_nothing()
      {
         let (server, url, protocols) = credentialed_site().await;
-        let got = read::<TestKind>(&protocols, url, Some("jira".to_string())).await;
+        let got = read::<TestKind>(&protocols, url, Some("jira".to_string()), None).await;
         assert!(matches!(got, Err(Failure::Configuration(_))), "{got:?}");
         assert!(authorizations(&server).await.is_empty());
+    }
+
+    /// Pages read through the handler as the observer reads them: each says where the next is, the last names none, and
+    /// one that sends the observer to another host is a failure of the read, not a page published.
+    #[tokio::test]
+    async fn a_paged_source_s_pages_say_where_the_next_is_and_only_on_its_own_host() {
+        let site = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects"))
+            .and(wiremock::matchers::query_param_is_missing("page"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("[1]")
+                    .insert_header("Link", "</projects?page=2>; rel=\"next\""),
+            )
+            .mount(&site)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/projects"))
+            .and(wiremock::matchers::query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[2]"))
+            .mount(&site)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/elsewhere"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("[3]")
+                    .insert_header("Link", "<https://other.example/x>; rel=\"next\""),
+            )
+            .mount(&site)
+            .await;
+        let protocols = handler().await;
+        let link = Some(Style::Link);
+        let first = read::<TestKind>(
+            &protocols,
+            format!("{}/projects", site.uri()),
+            None,
+            link.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.body, b"[1]".to_vec());
+        let next = first.next.expect("the first page names the next");
+        assert_eq!(next, format!("{}/projects?page=2", site.uri()));
+        let second = read::<TestKind>(&protocols, next, None, link.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            second,
+            Page {
+                body: b"[2]".to_vec(),
+                next: None
+            }
+        );
+        // Unpaged, a Link header is not followed: the source is one page.
+        let unpaged = read::<TestKind>(&protocols, format!("{}/projects", site.uri()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(unpaged.next, None);
+        let elsewhere =
+            read::<TestKind>(&protocols, format!("{}/elsewhere", site.uri()), None, link).await;
+        assert!(
+            matches!(&elsewhere, Err(Failure::Read(why)) if why.contains("another host")),
+            "{elsewhere:?}"
+        );
     }
 
     #[test]

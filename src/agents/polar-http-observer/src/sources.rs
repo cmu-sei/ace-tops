@@ -24,6 +24,7 @@
 //! The `sources` runtime section: what an observer reads, and how often. A pure reading of a body; nothing here touches a
 //! network or the clock.
 
+use crate::paging::{self, Paging};
 use polar_agent_builder::RuntimeSection;
 use polar_agent_builder::runtime::SectionAuthority;
 use serde_json::Value;
@@ -47,7 +48,7 @@ pub static SOURCES: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: DOC,
-    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name", "required": true, "doc": "what is read, with a GET and no credential"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
+    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name", "required": true, "doc": "what is read, with a GET and no credential"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "paging": {"type": "object, or left out for a source of one page", "required": false, "doc": "how its pages follow one another, each published as it is read: {style: link} (the Link header's rel=next), {style: cursor, next: <JSON pointer to the next page's address>}, or {style: offset, param: <query parameter set to the items read so far>, items: <JSON pointer to the page's list>}; max_pages, 1 to 1000 (default 100), bounds one read. A next page is on the source's own host"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
     validate,
 };
 
@@ -57,7 +58,7 @@ pub static CREDENTIALED_SOURCES: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: DOC,
-    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name; https when it names a credential", "required": true, "doc": "what is read, with a GET"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "credential": {"type": "name of a credential", "required": false, "doc": "an entry of the observer's credentials section, whose signed binding must name the host; left out, the source is read with none"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
+    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name; https when it names a credential", "required": true, "doc": "what is read, with a GET"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "credential": {"type": "name of a credential", "required": false, "doc": "an entry of the observer's credentials section, whose signed binding must name the host; left out, the source is read with none"}, "paging": {"type": "object, or left out for a source of one page", "required": false, "doc": "how its pages follow one another, each published as it is read: {style: link} (the Link header's rel=next), {style: cursor, next: <JSON pointer to the next page's address>}, or {style: offset, param: <query parameter set to the items read so far>, items: <JSON pointer to the page's list>}; max_pages, 1 to 1000 (default 100), bounds one read. A next page is on the source's own host"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
     validate: validate_credentialed,
 };
 
@@ -69,6 +70,8 @@ pub struct Source {
     pub interval_secs: u64,
     /// The credential it is read with, by name; none for a source read as anyone may.
     pub credential: Option<String>,
+    /// How its pages follow one another; none for a source of one page.
+    pub paging: Option<Paging>,
 }
 
 /// Whether `name` can name a credential: as the `credentials` section names its entries.
@@ -166,7 +169,9 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
         problems.extend(
             entry
                 .keys()
-                .filter(|k| !["name", "url", "interval_secs", "credential"].contains(&k.as_str()))
+                .filter(|k| {
+                    !["name", "url", "interval_secs", "credential", "paging"].contains(&k.as_str())
+                })
                 .map(|k| format!("{at}: `{k}` is not a field")),
         );
         let name = entry.get("name").and_then(Value::as_str);
@@ -216,12 +221,23 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
                 None
             }
         };
+        let paging = match entry.get("paging") {
+            None | Some(Value::Null) => None,
+            Some(value) => match paging::parse(value) {
+                Ok(paging) => Some(paging),
+                Err(these) => {
+                    problems.extend(these.into_iter().map(|p| format!("{at}: {p}")));
+                    None
+                }
+            },
+        };
         if let (Some(name), Some(url), Some(interval_secs)) = (name, url, interval) {
             sources.push(Source {
                 name: name.to_string(),
                 url: url.to_string(),
                 interval_secs,
                 credential,
+                paging,
             });
         }
     }
@@ -252,9 +268,50 @@ mod tests {
                 url: "https://shop.example/openapi.json".to_string(),
                 interval_secs: 900,
                 credential: None,
+                paging: None,
             }]
         );
         assert!(parse(&json!({ "sources": [] })).unwrap().is_empty());
+    }
+
+    /// A source may say how it is paged, in either section; one that says nothing, or null, is one page.
+    #[test]
+    fn a_source_may_say_how_it_is_paged_and_one_that_cannot_work_is_refused() {
+        use crate::paging::{DEFAULT_MAX_PAGES, Paging, Style};
+        let mut paged = entry(
+            "users",
+            "https://jira.example.org/rest/api/2/user/search",
+            900,
+        );
+        paged["paging"] = json!({ "style": "offset", "param": "startAt", "items": "" });
+        let mut left_null = entry("one", "https://jira.example.org/rest/api/2/serverInfo", 900);
+        left_null["paging"] = Value::Null;
+        let body = json!({ "sources": [paged, left_null] });
+        let read = parse(&body).unwrap();
+        assert_eq!(
+            read[0].paging,
+            Some(Paging {
+                style: Style::Offset {
+                    param: "startAt".into(),
+                    items: "".into()
+                },
+                max_pages: DEFAULT_MAX_PAGES,
+            })
+        );
+        assert_eq!(read[1].paging, None);
+        for section in [&SOURCES, &CREDENTIALED_SOURCES] {
+            assert!((section.validate)(&body).is_ok());
+            assert!(section.body.contains("\"paging\""));
+        }
+        let mut bad = entry("x", "https://h.example/x", 60);
+        bad["paging"] = json!({ "style": "cursor" });
+        let problems = parse(&json!({ "sources": [bad] })).unwrap_err();
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("`sources[0]`: `paging`")),
+            "{problems:?}"
+        );
     }
 
     /// Which section a kind declares decides whether a source may name a credential, and it is refused when signed, not

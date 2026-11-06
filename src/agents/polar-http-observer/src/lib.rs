@@ -33,6 +33,7 @@
 
 pub mod observer;
 pub mod observing;
+pub mod paging;
 pub mod problems;
 pub mod sources;
 

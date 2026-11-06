@@ -321,6 +321,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                     url: format!("{}{at}", self.server.uri()),
                     interval_secs: 60,
                     credential: None,
+                    paging: None,
                 });
                 observing::Event::Sources(self.sources.clone())
             }
@@ -332,6 +333,8 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                 generation,
                 url,
                 credential,
+                paging,
+                page,
             },
         ] = &fetches[..]
         else {
@@ -341,11 +344,13 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             &self.protocols,
             url.clone(),
             credential.clone(),
+            paging.clone(),
         )
         .await;
         let steps = self.observing.on(observing::Event::Read {
             name: name.clone(),
             generation: *generation,
+            page: *page,
             outcome,
         });
         let mut published = None;

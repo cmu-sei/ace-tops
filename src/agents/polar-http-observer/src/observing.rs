@@ -25,6 +25,7 @@
 //! reads, publishes, waits and tells health; this says when, so a property can hold it to a simple model over any
 //! sequence of lists, reads and a shutdown (docs/architecture/http-observers.md, "Evidence").
 
+use crate::paging::{Page, Style};
 use crate::problems::{HealthChange, Reported, SourceProblems};
 use crate::sources::Source;
 use polar_agent_builder::protocol::Failure;
@@ -45,11 +46,12 @@ pub enum Event {
         name: String,
         generation: u64,
     },
-    /// A read came back.
+    /// A page of a read came back: `page` is which, from 0, as its [`Step::Fetch`] said.
     Read {
         name: String,
         generation: u64,
-        outcome: Result<Vec<u8>, Failure>,
+        page: u32,
+        outcome: Result<Page, Failure>,
     },
     PrepareShutdown,
 }
@@ -64,8 +66,12 @@ pub enum Step {
         url: String,
         /// The credential it is read with, if it names one.
         credential: Option<String>,
+        /// Where its next page is, if it is paged.
+        paging: Option<Style>,
+        /// Which page of the read this is, from 0.
+        page: u32,
     },
-    /// Publish what a source said.
+    /// Publish what a source said: one page of it.
     Publish {
         source: String,
         body: Vec<u8>,
@@ -82,10 +88,10 @@ pub enum Step {
 }
 
 /// What a read says of a source's health: a problem, or that it is well, or nothing when the host only asked for time.
-pub(crate) fn note_read(
+pub(crate) fn note_read<T>(
     problems: &mut SourceProblems,
     source: &str,
-    outcome: &Result<Vec<u8>, Failure>,
+    outcome: &Result<T, Failure>,
 ) {
     match outcome {
         Ok(_) => problems.succeeded(source),
@@ -95,7 +101,7 @@ pub(crate) fn note_read(
 }
 
 /// When a source is read next, given how the last read went: its interval, or longer if the host asked for time.
-pub fn next_read(interval: Duration, outcome: &Result<Vec<u8>, Failure>) -> Duration {
+pub fn next_read<T>(interval: Duration, outcome: &Result<T, Failure>) -> Duration {
     match outcome {
         Err(Failure::Backoff { wait, .. }) | Err(Failure::NotYet { wait }) => interval.max(*wait),
         _ => interval,
@@ -179,6 +185,7 @@ impl Observing {
             Event::Read {
                 name,
                 generation,
+                page,
                 outcome,
             } => {
                 let Some(source) = self.schedule.current(&name, generation) else {
@@ -189,22 +196,53 @@ impl Observing {
                     return steps;
                 }
                 let after = next_read(Duration::from_secs(source.interval_secs), &outcome);
-                note_read(&mut self.problems, &name, &outcome);
-                self.health(&mut steps);
-                match outcome {
-                    Ok(body) => steps.push(Step::Publish {
-                        source: name.clone(),
-                        body,
-                    }),
+                let max_pages = source.paging.as_ref().map_or(1, |p| p.max_pages);
+                let following = |url: String| Step::Fetch {
+                    name: name.clone(),
+                    generation,
+                    url,
+                    credential: source.credential.clone(),
+                    paging: source.paging.as_ref().map(|p| p.style.clone()),
+                    page: page + 1,
+                };
+                let next = match outcome {
                     Err(failure) => {
-                        warn!("could not read `{name}`, and will try again in {after:?}: {failure}")
+                        note_read(&mut self.problems, &name, &Err::<(), _>(failure.clone()));
+                        warn!(
+                            "could not read `{name}`, and will try again in {after:?}: {failure}"
+                        );
+                        None
                     }
-                }
-                steps.push(Step::Again {
+                    Ok(Page { body, next }) => {
+                        let next = match next {
+                            Some(url) if page + 1 < max_pages => Some(following(url)),
+                            Some(_) => {
+                                self.problems.failed(
+                                    &name,
+                                    format!(
+                                        "{max_pages} page(s) were read and the host names more: its paging's `max_pages` bounds one read"
+                                    ),
+                                );
+                                None
+                            }
+                            None => {
+                                self.problems.succeeded(&name);
+                                None
+                            }
+                        };
+                        steps.push(Step::Publish {
+                            source: name.clone(),
+                            body,
+                        });
+                        next
+                    }
+                };
+                self.health(&mut steps);
+                steps.push(next.unwrap_or(Step::Again {
                     name,
                     generation,
                     after,
-                });
+                }));
             }
             Event::PrepareShutdown => {
                 info!("PrepareShutdown received; a read in flight is not published");
@@ -224,6 +262,8 @@ impl Observing {
                 generation,
                 url: source.url.clone(),
                 credential: source.credential.clone(),
+                paging: source.paging.as_ref().map(|p| p.style.clone()),
+                page: 0,
             });
         }
     }
@@ -238,6 +278,7 @@ impl Observing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paging::{Paging, Style};
     use proptest::prelude::*;
     use proptest::sample::Index;
     use std::collections::BTreeSet;
@@ -248,27 +289,35 @@ mod tests {
             url: url.to_string(),
             interval_secs: secs,
             credential: None,
+            paging: None,
         }
     }
 
-    /// A generated source: its address, interval and credential, each from a few, so lists repeat and differ by one.
-    fn generated(name: &str, (u, secs, credential): &(u8, u64, Option<u8>)) -> Source {
+    /// A generated source: its address, interval, credential and paging, each from a few, so lists repeat and differ by
+    /// one.
+    fn generated(name: &str, (u, secs, credential, pages): &Generated) -> Source {
         Source {
             credential: credential.map(|c| format!("credential-{c}")),
+            paging: pages.map(|max_pages| Paging {
+                style: Style::Link,
+                max_pages: u32::from(max_pages),
+            }),
             ..source(name, &format!("http://h/{u}"), *secs)
         }
     }
+
+    type Generated = (u8, u64, Option<u8>, Option<u8>);
 
     #[test]
     fn a_failure_or_success_waits_its_interval_and_a_shorter_wait_from_a_host_does_not_shorten_it()
     {
         let interval = Duration::from_secs(600);
-        assert_eq!(next_read(interval, &Ok(vec![])), interval);
+        assert_eq!(next_read(interval, &Ok::<_, Failure>(vec![0u8])), interval);
         assert_eq!(
-            next_read(interval, &Err(Failure::Transient("x".into()))),
+            next_read(interval, &Err::<(), _>(Failure::Transient("x".into()))),
             interval
         );
-        let short = Err(Failure::NotYet {
+        let short: Result<(), Failure> = Err(Failure::NotYet {
             wait: Duration::from_secs(1),
         });
         assert_eq!(next_read(interval, &short), interval);
@@ -283,9 +332,9 @@ mod tests {
         note_read(
             &mut problems,
             "a",
-            &Err(Failure::Backoff { status: 429, wait }),
+            &Err::<(), _>(Failure::Backoff { status: 429, wait }),
         );
-        note_read(&mut problems, "a", &Err(Failure::NotYet { wait }));
+        note_read(&mut problems, "a", &Err::<(), _>(Failure::NotYet { wait }));
         assert_eq!(
             problems.standing(),
             None,
@@ -293,7 +342,7 @@ mod tests {
         );
         note_read(&mut problems, "a", &failed);
         assert!(problems.standing().unwrap().contains("it answered 404"));
-        note_read(&mut problems, "a", &Ok(vec![]));
+        note_read(&mut problems, "a", &Ok::<_, Failure>(vec![0u8]));
         assert_eq!(problems.standing(), None);
     }
 
@@ -338,7 +387,11 @@ mod tests {
         let steps = observing.on(Event::Read {
             name: "a".to_string(),
             generation,
-            outcome: Ok(b"{}".to_vec()),
+            page: 0,
+            outcome: Ok(Page {
+                body: b"{}".to_vec(),
+                next: None,
+            }),
         });
         assert_eq!(
             steps,
@@ -389,24 +442,29 @@ mod tests {
     /// What can happen to an observer, with a generation picked from those it has handed out, so stale ones come back.
     #[derive(Debug, Clone)]
     enum Happens {
-        Sources(BTreeMap<String, (u8, u64, Option<u8>)>),
+        Sources(BTreeMap<String, Generated>),
         Due(String, Index),
-        Read(String, Index, Outcome),
+        /// A page of a read, which may name the next.
+        Read(String, Index, u32, Outcome),
         PrepareShutdown,
     }
 
     #[derive(Debug, Clone)]
     enum Outcome {
-        Document(u8),
+        /// A page, and the next page's address if it names one.
+        Document(u8, Option<u8>),
         Failed,
         Backoff(u64),
         NotYet(u64),
     }
 
     impl Outcome {
-        fn result(&self) -> Result<Vec<u8>, Failure> {
+        fn result(&self) -> Result<Page, Failure> {
             match self {
-                Outcome::Document(b) => Ok(vec![*b]),
+                Outcome::Document(b, next) => Ok(Page {
+                    body: vec![*b],
+                    next: next.map(|n| format!("http://h/next/{n}")),
+                }),
                 Outcome::Failed => Err(Failure::Read("it answered 404".to_string())),
                 Outcome::Backoff(secs) => Err(Failure::Backoff {
                     status: 429,
@@ -422,15 +480,19 @@ mod tests {
     fn happens() -> impl Strategy<Value = Happens> {
         let name = || "[a-d]".prop_map(String::from);
         prop_oneof![
-            2 => prop::collection::btree_map("[a-c]", (0u8..2, 60u64..62, prop::option::of(0u8..2)), 0..4)
-                .prop_map(Happens::Sources),
+            2 => prop::collection::btree_map(
+                "[a-c]",
+                (0u8..2, 60u64..62, prop::option::of(0u8..2), prop::option::of(1u8..3)),
+                0..4,
+            )
+            .prop_map(Happens::Sources),
             3 => (name(), any::<Index>()).prop_map(|(n, g)| Happens::Due(n, g)),
-            6 => (name(), any::<Index>(), prop_oneof![
-                any::<u8>().prop_map(Outcome::Document),
+            6 => (name(), any::<Index>(), 0u32..3, prop_oneof![
+                (any::<u8>(), prop::option::of(0u8..3)).prop_map(|(b, n)| Outcome::Document(b, n)),
                 Just(Outcome::Failed),
                 (0u64..120).prop_map(Outcome::Backoff),
                 (0u64..120).prop_map(Outcome::NotYet),
-            ]).prop_map(|(n, g, o)| Happens::Read(n, g, o)),
+            ]).prop_map(|(n, g, page, o)| Happens::Read(n, g, page, o)),
             1 => Just(Happens::PrepareShutdown),
         ]
     }
@@ -470,12 +532,14 @@ mod tests {
                         let mut fetched = BTreeSet::new();
                         for step in &steps {
                             match step {
-                                Step::Fetch { name, generation, url, credential } => {
+                                Step::Fetch { name, generation, url, credential, paging, page } => {
                                     prop_assert!(!shut);
                                     prop_assert!(!issued.contains(generation), "a new version, a new generation");
                                     let of = list.iter().find(|s| &s.name == name).unwrap();
                                     prop_assert_eq!(url, &of.url);
                                     prop_assert_eq!(credential, &of.credential, "read with the credential it names");
+                                    prop_assert_eq!(paging, &of.paging.as_ref().map(|p| p.style.clone()));
+                                    prop_assert_eq!(*page, 0, "a read starts at its first page");
                                     issued.push(*generation);
                                     live.insert(name.clone(), *generation);
                                     fetched.insert(name.clone());
@@ -506,17 +570,20 @@ mod tests {
                                 generation,
                                 url: listed[name].url.clone(),
                                 credential: listed[name].credential.clone(),
+                                paging: listed[name].paging.as_ref().map(|p| p.style.clone()),
+                                page: 0,
                             }],
                             _ => vec![],
                         };
                         prop_assert_eq!(&steps, &expected);
                         steps
                     }
-                    Happens::Read(name, g, outcome) => {
+                    Happens::Read(name, g, page, outcome) => {
                         let generation = pick(g);
                         let steps = observing.on(Event::Read {
                             name: name.clone(),
                             generation,
+                            page: *page,
                             outcome: outcome.result(),
                         });
                         let current = !shut && live.get(name) == Some(&generation);
@@ -528,15 +595,32 @@ mod tests {
                                 Outcome::Backoff(secs) | Outcome::NotYet(secs) => interval.max(Duration::from_secs(*secs)),
                                 _ => interval,
                             };
+                            let max_pages = listed[name].paging.as_ref().map_or(1, |p| p.max_pages);
                             let mut expected = Vec::new();
-                            if let Outcome::Document(b) = outcome {
+                            if let Outcome::Document(b, _) = outcome {
                                 expected.push(Step::Publish { source: name.clone(), body: vec![*b] });
                             }
-                            expected.push(Step::Again { name: name.clone(), generation, after });
+                            // A page that names the next is followed at the same generation while the bound allows; the
+                            // last page, a failure, or a next page beyond the bound waits for the next read.
+                            let following = match outcome {
+                                Outcome::Document(_, Some(n)) if page + 1 < max_pages => Some(Step::Fetch {
+                                    name: name.clone(),
+                                    generation,
+                                    url: format!("http://h/next/{n}"),
+                                    credential: listed[name].credential.clone(),
+                                    paging: listed[name].paging.as_ref().map(|p| p.style.clone()),
+                                    page: page + 1,
+                                }),
+                                _ => None,
+                            };
+                            let truncated = matches!(outcome, Outcome::Document(_, Some(_))) && following.is_none();
+                            expected.push(following.unwrap_or(Step::Again { name: name.clone(), generation, after }));
                             let others: Vec<&Step> = steps.iter().filter(|s| !matches!(s, Step::Health(_))).collect();
                             prop_assert_eq!(others, expected.iter().collect::<Vec<_>>());
                             match outcome {
-                                Outcome::Document(_) => {
+                                // More remain than the bound reads: a problem for the source, as a failed read is.
+                                Outcome::Document(..) if truncated => *failures.entry(name.clone()).or_default() += 1,
+                                Outcome::Document(..) => {
                                     failures.remove(name);
                                 }
                                 Outcome::Failed => *failures.entry(name.clone()).or_default() += 1,
