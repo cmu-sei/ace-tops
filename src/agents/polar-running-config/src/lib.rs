@@ -335,6 +335,214 @@ impl Asking {
     }
 }
 
+/// An answer a survey heard: from which agent, and which of its pods by the broker's stamp, when it runs several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heard {
+    pub agent: String,
+    /// The pod's `Instance.uid`, as the broker stamped it, and its name if the broker had it.
+    pub instance: Option<String>,
+    pub pod: Option<String>,
+    pub answer: RunningConfiguration,
+}
+
+/// What to do next, asking several agents at once.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SurveyStep {
+    Nothing,
+    /// Listen for answers, first.
+    Subscribe,
+    /// Put every question.
+    AskAll,
+    Heard(Box<Heard>),
+    Failed(String),
+}
+
+/// Many questions on one connection: every agent of a deployment asked, and every answer each of its pods gives heard,
+/// until the wait ends, since each pod holds its own configuration (`polar-sign check --ask`).
+pub struct Surveying {
+    /// Each question's agent, by its id.
+    pub asked: HashMap<String, String>,
+}
+
+impl Surveying {
+    pub fn on(&self, event: ClientEvent) -> SurveyStep {
+        match event {
+            ClientEvent::Registered { .. } => SurveyStep::Subscribe,
+            ClientEvent::ClientSubscribed { topic } if topic == ANSWERS_TOPIC => SurveyStep::AskAll,
+            ClientEvent::SubscribeRefused { topic, reason } if topic == ANSWERS_TOPIC => {
+                match refused("listen", &topic, &reason) {
+                    Step::Failed(why) => SurveyStep::Failed(why),
+                    _ => SurveyStep::Nothing,
+                }
+            }
+            ClientEvent::PublishRefused { topic, reason } if topic == QUESTIONS_TOPIC => {
+                match refused("ask", &topic, &reason) {
+                    Step::Failed(why) => SurveyStep::Failed(why),
+                    _ => SurveyStep::Nothing,
+                }
+            }
+            ClientEvent::RegistrationRefused { reason, .. } => {
+                SurveyStep::Failed(format!("the broker refused the connection: {reason}"))
+            }
+            ClientEvent::MessagePublished {
+                topic,
+                payload,
+                published_by,
+                published_instance,
+                ..
+            } if topic == ANSWERS_TOPIC => match decode_answer(&payload) {
+                Ok(answer) => match self.asked.get(&answer.id) {
+                    Some(agent)
+                        if is_the_answer(&answer, &answer.id, agent, published_by.as_deref()) =>
+                    {
+                        SurveyStep::Heard(Box::new(Heard {
+                            agent: agent.clone(),
+                            instance: published_instance.as_ref().map(|i| i.uid.clone()),
+                            pod: published_instance.and_then(|i| i.pod),
+                            answer,
+                        }))
+                    }
+                    _ => SurveyStep::Nothing,
+                },
+                _ => SurveyStep::Nothing,
+            },
+            _ => SurveyStep::Nothing,
+        }
+    }
+}
+
+struct Surveyor;
+
+struct SurveyorArgs {
+    surveying: Surveying,
+    documents: Vec<Vec<u8>>,
+    config: TCPClientConfig,
+    heard: tokio::sync::mpsc::UnboundedSender<Result<Heard, String>>,
+}
+
+struct SurveyorState {
+    surveying: Surveying,
+    documents: Vec<Vec<u8>>,
+    client: ActorRef<TcpClientMessage>,
+    heard: tokio::sync::mpsc::UnboundedSender<Result<Heard, String>>,
+}
+
+#[ractor::async_trait]
+impl Actor for Surveyor {
+    type Msg = ClientEvent;
+    type State = SurveyorState;
+    type Arguments = SurveyorArgs;
+
+    async fn pre_start(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        args: SurveyorArgs,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        let (forwarder, _) = Actor::spawn_linked(
+            None,
+            ClientEventForwarder::new(),
+            ClientEventForwarderArgs {
+                target: myself.clone(),
+                mapper: Box::new(Some),
+            },
+            myself.clone().into(),
+        )
+        .await?;
+        let events: Arc<ractor::OutputPort<ClientEvent>> = Arc::new(ractor::OutputPort::default());
+        events.subscribe(forwarder, Some);
+        let (client, _) = Actor::spawn_linked(
+            None,
+            TcpClientActor,
+            TcpClientArgs {
+                config: args.config,
+                registration_id: None,
+                delivery: DeliveryMode::Broadcast(events),
+                answers: None,
+            },
+            myself.clone().into(),
+        )
+        .await?;
+        Ok(SurveyorState {
+            surveying: args.surveying,
+            documents: args.documents,
+            client,
+            heard: args.heard,
+        })
+    }
+
+    async fn handle(
+        &self,
+        myself: ActorRef<Self::Msg>,
+        event: ClientEvent,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        match state.surveying.on(event) {
+            SurveyStep::Nothing => {}
+            SurveyStep::Subscribe => state.client.send_message(TcpClientMessage::Subscribe {
+                topic: ANSWERS_TOPIC.to_string(),
+                trace_ctx: None,
+            })?,
+            SurveyStep::AskAll => {
+                for document in &state.documents {
+                    state.client.send_message(TcpClientMessage::publish(
+                        QUESTIONS_TOPIC.to_string(),
+                        document.clone(),
+                        None,
+                    ))?;
+                }
+            }
+            SurveyStep::Heard(heard) => {
+                let _ = state.heard.send(Ok(*heard));
+            }
+            SurveyStep::Failed(why) => {
+                let _ = state.heard.send(Err(why));
+                myself.stop(None);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Connects with `config`, puts every question, and hears answers for all of `wait`: every pod of every agent asked
+/// answers once. What it heard, or why it could not ask.
+pub async fn survey(
+    questions: Vec<Question>,
+    config: TCPClientConfig,
+    wait: Duration,
+) -> Result<Vec<Heard>, AskError> {
+    let (heard, mut hearing) = tokio::sync::mpsc::unbounded_channel();
+    let surveying = Surveying {
+        asked: questions
+            .iter()
+            .map(|q| (q.id.clone(), q.agent.clone()))
+            .collect(),
+    };
+    let (surveyor, _handle) = Actor::spawn(
+        None,
+        Surveyor,
+        SurveyorArgs {
+            surveying,
+            documents: questions.into_iter().map(|q| q.document).collect(),
+            config,
+            heard,
+        },
+    )
+    .await
+    .map_err(|e| AskError::Start(e.to_string()))?;
+    let mut answers = Vec::new();
+    let until = tokio::time::Instant::now() + wait;
+    let outcome = loop {
+        match tokio::time::timeout_at(until, hearing.recv()).await {
+            Ok(Some(Ok(one))) => answers.push(one),
+            Ok(Some(Err(why))) => break Err(AskError::Refused(why)),
+            Ok(None) => break Err(AskError::ConnectionEnded),
+            Err(_) => break Ok(()),
+        }
+    };
+    surveyor.stop(None);
+    outcome.map(|()| answers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +672,71 @@ mod tests {
             },
             at_unix_secs: 1,
         }
+    }
+
+    #[test]
+    fn a_survey_listens_first_asks_everyone_and_hears_each_pod_of_each_agent_asked() {
+        let s = Surveying {
+            asked: HashMap::from([
+                ("q1".to_string(), AGENT.to_string()),
+                ("q2".to_string(), "kube-observer".to_string()),
+            ]),
+        };
+        assert_eq!(
+            s.on(ClientEvent::Registered {
+                registration_id: "r".to_string()
+            }),
+            SurveyStep::Subscribe
+        );
+        assert_eq!(
+            s.on(ClientEvent::ClientSubscribed {
+                topic: ANSWERS_TOPIC.to_string()
+            }),
+            SurveyStep::AskAll
+        );
+        let stamp = |w: &str| format!("{w}.polar.serviceaccount.cluster.local");
+        let mut from_a_pod = delivered(
+            ANSWERS_TOPIC,
+            encode_answer(&answer("q2", "kube-observer")).unwrap(),
+            Some(&stamp("kube-observer")),
+        );
+        if let ClientEvent::MessagePublished {
+            published_instance, ..
+        } = &mut from_a_pod
+        {
+            *published_instance = Some(cassini_types::Instance {
+                uid: "u1".to_string(),
+                pod: Some("pod-1".to_string()),
+            });
+        }
+        match s.on(from_a_pod) {
+            SurveyStep::Heard(heard) => {
+                assert_eq!(heard.agent, "kube-observer");
+                assert_eq!(heard.instance.as_deref(), Some("u1"));
+                assert_eq!(heard.pod.as_deref(), Some("pod-1"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // An answer to a question not asked, one about another agent, or one another workload sent is not heard.
+        for (id, agent, by) in [
+            ("q9", AGENT, stamp(AGENT)),
+            ("q1", "kube-observer", stamp("kube-observer")),
+            ("q1", AGENT, stamp("kube-observer")),
+        ] {
+            let event = delivered(
+                ANSWERS_TOPIC,
+                encode_answer(&answer(id, agent)).unwrap(),
+                Some(&by),
+            );
+            assert_eq!(s.on(event), SurveyStep::Nothing, "{id} {agent} {by}");
+        }
+        assert!(matches!(
+            s.on(ClientEvent::SubscribeRefused {
+                topic: ANSWERS_TOPIC.to_string(),
+                reason: "no".to_string()
+            }),
+            SurveyStep::Failed(why) if why.contains("config-readers")
+        ));
     }
 
     fn delivered(topic: &str, payload: Vec<u8>, stamp: Option<&str>) -> ClientEvent {
