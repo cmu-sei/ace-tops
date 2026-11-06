@@ -398,8 +398,21 @@ Marked for review:
 - **A projection is tested only by the scaffold's text digest.** A scaffold written again by the same binary has the same text; one from another build is no longer covered, though it
   may judge the same.
 - **Ractor comes into the model through `polar-policy`**, whose evaluator and actor are one crate. Nothing in the model runs it.
-- **What it does not read yet:** what runs (each agent's sections in force, asked through `polar-running-config`, next), the images' scaffolds by their digests (the render caches them
-  so; the check is given a folder), and the pods (`Instance.uid`).
+- **What it does not read yet:** the images' scaffolds by their digests (the render caches them so; the check is given a folder). What runs is the next step, below.
+
+**What is in force, built 2026-11-06.** `polar-sign check --ask` also asks every agent that reads a signed document what it holds, over Cassini, as the person running it,
+and hears every pod's answer for the wait (`polar_running_config::survey`, a pure core `Surveying` beside the one-question `Asking`). Two more invariants, judged only when asked:
+`sections-in-force` (every agent asked answers, and each pod holds each section signed for it by document id, version and body digest, nothing unsigned, and its settings at the
+version signed) and `running-as-scaffolded` (each pod runs the build its scaffold, which the check judged by, came from). The record keeps what each pod said it holds, by agent and
+pod as the broker stamped them, and never a setting's value. The maintainer's choices, 2026-11-06:
+
+- the answer grows each section's document id and body digest (SHA-256 of the canonical body) and the agent's build, as a breaking change of the rkyv answer, recorded for the
+  customer's migration (`remaining-work.md`), rather than a second answer type;
+- `polar-sign` asks itself, rather than reading answers saved by another tool. So that the two packages do not depend on each other, `polar_running_config` is the asking library and
+  the `polar-running-config` tool is a binary of the `polar-sign` package; the identity both read is `polar_signing::identity`. Recorded as open: `polar-sign` does too many things.
+
+Not tested against a broker in the workspace: the decisions are (`Surveying`, and each invariant over answers), and the path was checked live before for one question
+(`dynamic-settings.md`, "Checked live on u7s"). A live check needs every agent rebuilt with the new answer.
 
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one

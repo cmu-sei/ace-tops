@@ -185,6 +185,8 @@ fn base() -> FactBase {
             "projection-test/openapi-processor/projection/a.json",
         )],
         inputs: BTreeMap::new(),
+        settings: vec![],
+        running: None,
     }
 }
 
@@ -640,4 +642,161 @@ proptest! {
         let (got, witness) = status(&facts, "one-owner-per-label");
         prop_assert_eq!(got == Status::Holds, expected, "{:?}", witness);
     }
+}
+
+fn heard(pod: &str, version: u64, body_sha256: &str, build: &str) -> polar_running_config::Heard {
+    use polar_scheduler_common::running::{RunningBuild, RunningConfiguration, RunningSection};
+    polar_running_config::Heard {
+        agent: PROCESSOR.into(),
+        instance: Some(format!("uid-{pod}")),
+        pod: Some(pod.into()),
+        answer: RunningConfiguration {
+            id: "q".into(),
+            agent: PROCESSOR.into(),
+            version: 0,
+            settings: vec![],
+            sections: vec![RunningSection {
+                name: "projection".into(),
+                version,
+                id: format!("{PROCESSOR}-projection"),
+                body_sha256: body_sha256.into(),
+            }],
+            build: RunningBuild {
+                name: PROCESSOR.into(),
+                version: build.into(),
+                release: true,
+                target: "t".into(),
+            },
+            at_unix_secs: 1,
+        },
+    }
+}
+
+/// The base, with the processor asked and its one pod holding what is signed.
+fn asked() -> FactBase {
+    let mut facts = base();
+    let signed = facts
+        .section(PROCESSOR, "projection")
+        .unwrap()
+        .body_sha256
+        .clone();
+    facts.running = Some(Running {
+        asked: vec![PROCESSOR.into()],
+        heard: vec![heard("p-1", 3, &signed, "9.9.9")],
+    });
+    facts
+}
+
+#[test]
+fn asked_or_not_the_running_invariants_are_judged_only_when_the_agents_were_asked() {
+    let ids = |f: &FactBase| check(f).verdicts.iter().map(|v| v.id).collect::<Vec<_>>();
+    assert!(!ids(&base()).contains(&"sections-in-force"));
+    let checked = check(&asked());
+    for id in ["sections-in-force", "running-as-scaffolded"] {
+        let v = verdict_of(&checked, id);
+        assert_eq!(v.status, Status::Holds, "{id}: {:#?}", v.witness);
+    }
+    assert!(a_line(
+        &verdict_of(&checked, "sections-in-force").witness,
+        "openapi-processor (p-1): projection version 3"
+    ));
+    let record = record(&asked(), &checked, 1);
+    let answers = record["running"]["answers"].as_array().unwrap();
+    assert_eq!(answers[0]["pod"], "p-1");
+    assert!(
+        answers[0].get("settings").is_none(),
+        "never a setting's value"
+    );
+}
+
+#[test]
+fn a_pod_that_holds_other_than_what_is_signed_violates_sections_in_force() {
+    let violated = |facts: &FactBase| status(facts, "sections-in-force");
+
+    let mut silent = asked();
+    silent.running.as_mut().unwrap().heard.clear();
+    assert_eq!(
+        violated(&silent),
+        (
+            Status::Violated,
+            vec!["openapi-processor did not answer".to_string()]
+        )
+    );
+
+    let mut behind = asked();
+    behind
+        .running
+        .as_mut()
+        .unwrap()
+        .heard
+        .push(heard("p-2", 2, "old", "9.9.9"));
+    let (got, witness) = violated(&behind);
+    assert_eq!(got, Status::Violated);
+    assert_eq!(
+        witness,
+        [
+            "openapi-processor (p-2) holds projection version 2 (document openapi-processor-projection), and version 3 (document openapi-processor-projection) is signed"
+        ]
+    );
+
+    let mut other_body = asked();
+    other_body.running.as_mut().unwrap().heard[0]
+        .answer
+        .sections[0]
+        .body_sha256 = "another".into();
+    assert!(a_line(&violated(&other_body).1, "with another body"));
+
+    let mut stranger = asked();
+    let mut extra = stranger.running.as_ref().unwrap().heard[0].answer.sections[0].clone();
+    extra.name = "sources".into();
+    stranger.running.as_mut().unwrap().heard[0]
+        .answer
+        .sections
+        .push(extra);
+    assert!(a_line(
+        &violated(&stranger).1,
+        "holds sources version 3, which polar-schedules does not sign"
+    ));
+
+    let mut unheld = asked();
+    unheld.running.as_mut().unwrap().heard[0]
+        .answer
+        .sections
+        .clear();
+    assert!(a_line(
+        &violated(&unheld).1,
+        "holds no projection, and version 3 is signed"
+    ));
+
+    let mut settings = asked();
+    settings.settings.push(Settings {
+        agent: PROCESSOR.into(),
+        id: "s".into(),
+        version: 2,
+        file: "permanent/openapi-processor/configuration.dhall".into(),
+    });
+    assert_eq!(
+        violated(&settings).1,
+        ["openapi-processor (p-1) applied settings version 0, and version 2 is signed"]
+    );
+    settings.running.as_mut().unwrap().heard[0].answer.version = 2;
+    assert_eq!(violated(&settings).0, Status::Holds);
+}
+
+#[test]
+fn a_pod_of_another_build_than_its_scaffold_violates_running_as_scaffolded() {
+    let mut facts = asked();
+    facts.running.as_mut().unwrap().heard[0]
+        .answer
+        .build
+        .version = "9.9.10+dev".into();
+    assert_eq!(
+        status(&facts, "running-as-scaffolded"),
+        (
+            Status::Violated,
+            vec![
+                "openapi-processor (p-1) runs 9.9.10+dev, and its scaffold is of 9.9.9".to_string()
+            ]
+        )
+    );
 }

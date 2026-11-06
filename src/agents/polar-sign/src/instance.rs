@@ -97,6 +97,36 @@ pub struct FactBase {
     pub evidence: Vec<Evidence>,
     /// What was read, by name: each repository's commit, the deployment record's version.
     pub inputs: BTreeMap<String, String>,
+    /// Each agent's signed settings document, as verified: what its answer's version should be.
+    pub settings: Vec<Settings>,
+    /// What the running agents said they hold, when they were asked (`check --ask`).
+    pub running: Option<Running>,
+}
+
+/// An agent's signed settings document (`type: configuration`) of `polar-schedules`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub agent: String,
+    pub id: String,
+    pub version: u64,
+    pub file: String,
+}
+
+/// The running agents, asked: whom, and every answer each of their pods gave.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Running {
+    pub asked: Vec<String>,
+    pub heard: Vec<polar_running_config::Heard>,
+}
+
+/// The agents a check asks what they hold: every agent that reads a signed document, which is what answers.
+pub fn agents_to_ask(model: &Model) -> Vec<String> {
+    model
+        .workloads
+        .iter()
+        .filter(|w| w.kind.as_deref() == Some("agent") && w.config.as_deref() == Some("document"))
+        .map(|w| w.workload.clone())
+        .collect()
 }
 
 /// How an invariant stands, in order of how much it says is wrong.
@@ -263,6 +293,11 @@ pub fn check(facts: &FactBase) -> Checked {
         certified_by_the_credentials_agent(facts),
         seen_by_health(facts),
     ];
+    let mut verdicts = verdicts;
+    if let Some(running) = &facts.running {
+        verdicts.push(sections_in_force(facts, running));
+        verdicts.push(running_as_scaffolded(facts, running));
+    }
     Checked {
         verdicts,
         reach: could_touch(facts, &allowed),
@@ -689,6 +724,129 @@ fn seen_by_health(facts: &FactBase) -> Verdict {
     verdict(ID, STATEMENT, findings, "no agent reads a signed document")
 }
 
+/// Which pod, as a line says it.
+fn pod_of(heard: &polar_running_config::Heard) -> String {
+    match (&heard.pod, &heard.instance) {
+        (Some(pod), _) => format!("{} ({pod})", heard.agent),
+        (None, Some(uid)) => format!("{} (instance {uid})", heard.agent),
+        (None, None) => heard.agent.clone(),
+    }
+}
+
+fn sections_in_force(facts: &FactBase, running: &Running) -> Verdict {
+    const ID: &str = "sections-in-force";
+    const STATEMENT: &str = "every agent asked answers, and each of its pods holds the sections and settings signed for it, \
+                             by document id, version and body digest";
+    let mut findings = Vec::new();
+    for agent in &running.asked {
+        let answers: Vec<&polar_running_config::Heard> =
+            running.heard.iter().filter(|h| &h.agent == agent).collect();
+        if answers.is_empty() {
+            findings.push((Status::Violated, format!("{agent} did not answer")));
+            continue;
+        }
+        let signed: BTreeMap<&str, &Section> = facts
+            .in_force()
+            .into_iter()
+            .filter(|s| &s.agent == agent)
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        let settings = facts
+            .settings
+            .iter()
+            .filter(|s| &s.agent == agent)
+            .max_by_key(|s| s.version);
+        for heard in answers {
+            let who = pod_of(heard);
+            let held: BTreeMap<&str, &polar_scheduler_common::running::RunningSection> = heard
+                .answer
+                .sections
+                .iter()
+                .map(|s| (s.name.as_str(), s))
+                .collect();
+            for (name, section) in &signed {
+                match held.get(name) {
+                    Some(h) if h.id == section.id && h.version == section.version && h.body_sha256 == section.body_sha256 => {
+                        findings.push((Status::Holds, format!("{who}: {name} version {}", h.version)))
+                    }
+                    Some(h) => findings.push((
+                        Status::Violated,
+                        format!(
+                            "{who} holds {name} version {} (document {}), and version {} (document {}) is signed{}",
+                            h.version,
+                            h.id,
+                            section.version,
+                            section.id,
+                            if h.version == section.version && h.id == section.id { ", with another body" } else { "" }
+                        ),
+                    )),
+                    None => findings.push((
+                        Status::Violated,
+                        format!("{who} holds no {name}, and version {} is signed", section.version),
+                    )),
+                }
+            }
+            for (name, h) in &held {
+                if !signed.contains_key(name) {
+                    findings.push((
+                        Status::Violated,
+                        format!(
+                            "{who} holds {name} version {}, which polar-schedules does not sign",
+                            h.version
+                        ),
+                    ));
+                }
+            }
+            let expected = settings.map_or(0, |s| s.version);
+            if heard.answer.version == expected {
+                findings.push((Status::Holds, format!("{who}: settings version {expected}")));
+            } else {
+                findings.push((
+                    Status::Violated,
+                    format!(
+                        "{who} applied settings version {}, and version {expected} is signed",
+                        heard.answer.version
+                    ),
+                ));
+            }
+        }
+    }
+    verdict(ID, STATEMENT, findings, "no agent was asked")
+}
+
+fn running_as_scaffolded(facts: &FactBase, running: &Running) -> Verdict {
+    const ID: &str = "running-as-scaffolded";
+    const STATEMENT: &str =
+        "each agent runs the build its scaffold, which the check judged by, came from";
+    let mut findings = Vec::new();
+    for heard in &running.heard {
+        let Some(scaffold) = facts.scaffolds.get(&heard.agent) else {
+            continue;
+        };
+        let who = pod_of(heard);
+        match scaffold.document["agent"]["version"]["version"].as_str() {
+            Some(version) if version == heard.answer.build.version => {
+                findings.push((Status::Holds, format!("{who}: {version}")))
+            }
+            Some(version) => findings.push((
+                Status::Violated,
+                format!(
+                    "{who} runs {}, and its scaffold is of {version}",
+                    heard.answer.build.version
+                ),
+            )),
+            None => findings.push((
+                Status::Violated,
+                format!(
+                    "{who} runs {}, and its scaffold says no version",
+                    heard.answer.build.version
+                ),
+            )),
+        }
+    }
+    verdict(ID, STATEMENT, findings, "no agent with a scaffold answered")
+}
+
 /// The hosts a body names: every text under a `url`, by its host.
 fn hosts(body: &Value, into: &mut BTreeSet<String>) {
     match body {
@@ -814,6 +972,14 @@ pub fn record(facts: &FactBase, checked: &Checked, now: i64) -> Value {
             "id": v.id, "statement": v.statement, "verdict": v.status.as_str(), "witness": v.witness,
         })).collect::<Vec<_>>(),
         "reach": checked.reach,
+        "running": facts.running.as_ref().map(|r| json!({
+            "asked": r.asked,
+            // What each pod holds, never its settings' values.
+            "answers": r.heard.iter().map(|h| json!({
+                "agent": h.agent, "instance": h.instance, "pod": h.pod,
+                "build": h.answer.build, "settings_version": h.answer.version, "sections": h.answer.sections,
+            })).collect::<Vec<_>>(),
+        })),
         "result": { "passed": problems.is_empty(), "problems": problems },
         "checked_at_unix_secs": now,
     })

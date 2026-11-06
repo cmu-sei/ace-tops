@@ -30,7 +30,7 @@
 //! - `polar-evidence`: every record, verified in the evidence domain; one that does not verify is left out, and said;
 //! - the scaffolds, as `nu infra/resolve.nu scaffolds <dir>` writes them.
 
-use super::{Deployed, Evidence, FactBase, Instance, ScaffoldFact, Section};
+use super::{Deployed, Evidence, FactBase, Instance, ScaffoldFact, Section, Settings};
 use crate::scaffold::Scaffold;
 use credentials_agent_model::Model;
 use serde_json::Value;
@@ -285,8 +285,9 @@ fn schedules(
     trust: &[String],
     now: i64,
     left_out: &mut Vec<String>,
-) -> Result<Vec<Section>, String> {
+) -> Result<(Vec<Section>, Vec<Settings>), String> {
     let mut sections = Vec::new();
+    let mut settings = Vec::new();
     for path in files(dir, ".dhall")? {
         let file = relative(&path, dir);
         let text = std::fs::read_to_string(&path)
@@ -321,10 +322,19 @@ fn schedules(
                     file,
                 });
             }
+            Ok((_, payload)) if payload["type"] == "configuration" => settings.push(Settings {
+                agent: payload["target"]["agent"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                id: payload["id"].as_str().unwrap_or("").to_string(),
+                version: payload["version"].as_u64().unwrap_or(0),
+                file,
+            }),
             Ok(_) => {}
         }
     }
-    Ok(sections)
+    Ok((sections, settings))
 }
 
 /// Every record in the evidence repository, and what was left out.
@@ -380,7 +390,7 @@ pub fn read(sources: &Sources<'_>, trusts: &Trusts<'_>, now: i64) -> Result<Read
         mut inputs,
     } = deployment(sources.deployment, trusts.deployment, now)?;
     let mut left_out = Vec::new();
-    let sections = schedules(sources.schedules, trusts.polar, now, &mut left_out)?;
+    let (sections, settings) = schedules(sources.schedules, trusts.polar, now, &mut left_out)?;
     let evidence = evidence(sources.evidence, trusts.polar, now, &mut left_out)?;
     for (name, dir) in [
         ("schedules", sources.schedules),
@@ -406,6 +416,8 @@ pub fn read(sources: &Sources<'_>, trusts: &Trusts<'_>, now: i64) -> Result<Read
             sections,
             evidence,
             inputs,
+            settings,
+            running: None,
         },
         left_out,
     })

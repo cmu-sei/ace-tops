@@ -224,13 +224,27 @@ enum Command {
         /// The deployment CA's certificate, which the pipeline's signatures chain to (~/.config/polar-deploy/<target>/ca.pem).
         #[arg(long)]
         deploy_ca: PathBuf,
-        /// Whose certificate and key sign the verdicts.
+        /// Whose certificate and key sign the verdicts, and ask the agents with --ask.
         #[arg(long)]
         user: String,
         #[arg(long)]
         dir: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Ask every agent that reads a signed document what it holds in force, over Cassini, and judge that too: each
+        /// of its pods answers. Needs the asker in the group config-readers, as `polar-running-config` does.
+        #[arg(long)]
+        ask: bool,
+        /// With --ask, where the broker is, as host:port; POLAR_BROKER_ADDR, or the forward `just port-forwards-up broker`
+        /// starts.
+        #[arg(long, requires = "ask")]
+        broker: Option<String>,
+        /// With --ask, the name on the broker's certificate; POLAR_BROKER_NAME, or the usual one.
+        #[arg(long, requires = "ask")]
+        server_name: Option<String>,
+        /// With --ask, how long to hear answers, in seconds: every pod of every agent answers within it.
+        #[arg(long, requires = "ask", default_value_t = 15)]
+        wait: u64,
         /// Commit the record to the evidence repository and push it.
         #[arg(long)]
         push: bool,
@@ -672,6 +686,10 @@ fn main() -> Result<()> {
             user,
             dir,
             out,
+            ask,
+            broker,
+            server_name,
+            wait,
             push: push_it,
             repo,
             workdir,
@@ -699,7 +717,37 @@ fn main() -> Result<()> {
             for line in &read.left_out {
                 eprintln!("left out: {line}");
             }
-            let facts = read.facts;
+            let mut facts = read.facts;
+            let identity = load_identity(&dir, &user).map_err(anyhow::Error::msg)?;
+            if ask {
+                let asked = polar_sign::instance::agents_to_ask(&facts.model);
+                let questions = asked
+                    .iter()
+                    .map(|agent| polar_running_config::question(agent, &identity, now as u64, wait))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let broker = broker
+                    .or_else(|| env_var("POLAR_BROKER_ADDR"))
+                    .unwrap_or_else(|| "127.0.0.1:18081".to_string());
+                let server_name = server_name
+                    .or_else(|| env_var("POLAR_BROKER_NAME"))
+                    .unwrap_or_else(|| "cassini-ip-svc.polar.svc.cluster.local".to_string());
+                let config =
+                    polar_running_config::client_config(&dir, &user, &broker, &server_name)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                eprintln!("asking {} agents, for {wait} s", asked.len());
+                let heard = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .context("cannot start the runtime that asks")?
+                    .block_on(polar_running_config::survey(
+                        questions,
+                        config,
+                        std::time::Duration::from_secs(wait),
+                    ))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                facts.running = Some(polar_sign::instance::Running { asked, heard });
+            }
             let checked = polar_sign::instance::check(&facts);
             for v in &checked.verdicts {
                 eprintln!("{} {}: {}", v.status.as_str(), v.id, v.statement);
@@ -709,7 +757,6 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            let identity = load_identity(&dir, &user).map_err(anyhow::Error::msg)?;
             let mut record = polar_sign::instance::record(&facts, &checked, now);
             record["left_out"] = serde_json::json!(read.left_out);
             let signed = evidence::sign_record(record, &identity).map_err(anyhow::Error::msg)?;

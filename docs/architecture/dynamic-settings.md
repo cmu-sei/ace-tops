@@ -206,7 +206,8 @@ value is never a live line. An override the scaffold does not offer is refused r
 
 **The answer** (`polar_scheduler_common::running::RunningConfiguration`, built in `polar-agent-builder/src/running.rs`): every declared
 variable, Static ones included, with its value, source and whether it is Dynamic; the last version applied; each runtime section's
-version, never its body. A declared secret's value does not leave the agent, nor does any value that repeats one. Other values go as
+version, never its body; since 2026-11-06 each section's document id and body digest, and the agent's build, for `polar-sign check --ask`
+(a breaking change of the wire: the tool reads agents of its own build). A declared secret's value does not leave the agent, nor does any value that repeats one. Other values go as
 they are, Jira's address for one, so the answer goes back to whoever may ask and not to the graph.
 
 **A question is a signed document, under its own signing domain** (`Domain::RUNNING_CONFIGURATION_QUESTION`). The broker stamps an
