@@ -42,9 +42,19 @@ polar_http_processor::schema! {
         GitlabUser [origin, id] "each user",
         GitlabGroup [origin, id] "each group",
         GitlabRunner [origin, id] "each runner",
+        GitlabPipeline [origin, id] "each pipeline of a project",
+        GitlabJob [origin, id] "each job of a pipeline",
+        GitlabContainerRepository [origin, id] "each container repository of a project",
+        GitlabPackage [origin, id] "each package of a project",
     }
     edges {
         GitlabGroup SUBGROUP_OF GitlabGroup "a group within its parent group",
+        GitlabGroup HAS_MEMBER GitlabUser "a group's member",
+        GitlabProject HAS_PIPELINE GitlabPipeline "a project's pipeline",
+        GitlabPipeline HAS_JOB GitlabJob "a pipeline's job",
+        GitlabJob EXECUTED_BY GitlabRunner "the runner that ran a job",
+        GitlabProject HAS_CONTAINER_REPOSITORY GitlabContainerRepository "a project's container repository",
+        GitlabProject HAS_PACKAGE GitlabPackage "a project's package",
     }
 }
 

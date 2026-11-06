@@ -1,0 +1,4 @@
+{"data": {"group": {"id": "gid://gitlab/Group/10", "groupMembers": {"nodes": [
+  {"id": "gid://gitlab/GroupMember/50", "user": {"id": "gid://gitlab/User/1"}, "accessLevel": {"stringValue": "OWNER"}},
+  {"id": "gid://gitlab/GroupMember/51", "user": {"id": "gid://gitlab/User/2"}, "accessLevel": {"stringValue": "DEVELOPER"}}
+], "pageInfo": {"endCursor": "eyJpZCI6IjUxIn0", "hasNextPage": false}}}}}

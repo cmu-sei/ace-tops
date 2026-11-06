@@ -1,0 +1,3 @@
+{"data": {"project": {"id": "gid://gitlab/Project/1", "containerRepositories": {"nodes": [
+  {"id": "gid://gitlab/ContainerRepository/7", "name": "", "path": "polar/polar", "location": "registry.gitlab.example/polar/polar", "createdAt": "2026-11-01T10:03:00Z", "tagsCount": 2}
+], "pageInfo": {"endCursor": "eyJpZCI6IjcifQ", "hasNextPage": false}}}}}

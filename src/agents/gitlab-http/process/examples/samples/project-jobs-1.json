@@ -1,0 +1,5 @@
+{"data": {"project": {"id": "gid://gitlab/Project/1", "jobs": {"nodes": [
+  {"id": "gid://gitlab/Ci::Build/1000", "name": "build", "status": "SUCCESS", "stage": {"name": "build"}, "createdAt": "2026-11-01T10:00:05Z", "finishedAt": "2026-11-01T10:02:00Z", "duration": 115, "pipeline": {"id": "gid://gitlab/Ci::Pipeline/100"}, "runner": {"id": "gid://gitlab/Ci::Runner/1"}},
+  {"id": "gid://gitlab/Ci::Build/1001", "name": "test", "status": "SUCCESS", "stage": {"name": "test"}, "createdAt": "2026-11-01T10:02:05Z", "finishedAt": "2026-11-01T10:04:30Z", "duration": 145, "pipeline": {"id": "gid://gitlab/Ci::Pipeline/100"}, "runner": {"id": "gid://gitlab/Ci::Runner/1"}},
+  {"id": "gid://gitlab/Ci::Build/1002", "name": "lint", "status": "CANCELED", "stage": {"name": "test"}, "createdAt": "2026-11-02T09:00:05Z", "finishedAt": null, "duration": null, "pipeline": {"id": "gid://gitlab/Ci::Pipeline/101"}, "runner": null}
+], "pageInfo": {"endCursor": "eyJpZCI6IjEwMDIifQ", "hasNextPage": false}}}}}

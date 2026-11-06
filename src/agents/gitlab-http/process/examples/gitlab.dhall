@@ -36,6 +36,10 @@ let has = \(path : Text) -> [ { any_of = [ { path = path, prefixes = [] : List T
 
 let keyed = [ { name = "origin", from = "origin" }, { name = "id", from = "item.id" } ]
 
+let nothing = [] : List { name : Text, from : Text }
+
+let at = \(path : Text) -> [ { name = "origin", from = "origin" }, { name = "id", from = path } ]
+
 in  { guard = [ { any_of = [ { path = "body.data", prefixes = [] : List Text } ] } ]
     , rules =
       [ { name = "project"
@@ -123,6 +127,133 @@ in  { guard = [ { any_of = [ { path = "body.data", prefixes = [] : List Text } ]
           , { name = "created_at", from = "item.createdAt" }
           ]
         , edge = ""
+        }
+      , { name = "pipelines_project"
+        , parent = ""
+        , each = once
+        , when = has "body.data.project.pipelines"
+        , label = "GitlabProject"
+        , keys = at "body.data.project.id"
+        , set = nothing
+        , edge = ""
+        }
+      , { name = "pipeline"
+        , parent = "pipelines_project"
+        , each = over "body.data.project.pipelines.nodes"
+        , when = every
+        , label = "GitlabPipeline"
+        , keys = keyed
+        , set =
+          [ { name = "iid", from = "item.iid" }
+          , { name = "status", from = "item.status" }
+          , { name = "ref", from = "item.ref" }
+          , { name = "sha", from = "item.sha" }
+          , { name = "source", from = "item.source" }
+          , { name = "created_at", from = "item.createdAt" }
+          , { name = "finished_at", from = "item.finishedAt" }
+          , { name = "duration", from = "item.duration" }
+          ]
+        , edge = "HAS_PIPELINE"
+        }
+      , { name = "job_pipeline"
+        , parent = ""
+        , each = over "body.data.project.jobs.nodes"
+        , when = has "item.pipeline"
+        , label = "GitlabPipeline"
+        , keys = at "item.pipeline.id"
+        , set = nothing
+        , edge = ""
+        }
+      , { name = "job"
+        , parent = "job_pipeline"
+        , each = once
+        , when = every
+        , label = "GitlabJob"
+        , keys = keyed
+        , set =
+          [ { name = "name", from = "item.name" }
+          , { name = "status", from = "item.status" }
+          , { name = "stage", from = "item.stage.name" }
+          , { name = "created_at", from = "item.createdAt" }
+          , { name = "finished_at", from = "item.finishedAt" }
+          , { name = "duration", from = "item.duration" }
+          ]
+        , edge = "HAS_JOB"
+        }
+      , { name = "job_runner"
+        , parent = "job"
+        , each = once
+        , when = has "item.runner"
+        , label = "GitlabRunner"
+        , keys = at "item.runner.id"
+        , set = nothing
+        , edge = "EXECUTED_BY"
+        }
+      , { name = "repositories_project"
+        , parent = ""
+        , each = once
+        , when = has "body.data.project.containerRepositories"
+        , label = "GitlabProject"
+        , keys = at "body.data.project.id"
+        , set = nothing
+        , edge = ""
+        }
+      , { name = "container_repository"
+        , parent = "repositories_project"
+        , each = over "body.data.project.containerRepositories.nodes"
+        , when = every
+        , label = "GitlabContainerRepository"
+        , keys = keyed
+        , set =
+          [ { name = "name", from = "item.name" }
+          , { name = "path", from = "item.path" }
+          , { name = "location", from = "item.location" }
+          , { name = "created_at", from = "item.createdAt" }
+          , { name = "tags_count", from = "item.tagsCount" }
+          ]
+        , edge = "HAS_CONTAINER_REPOSITORY"
+        }
+      , { name = "packages_project"
+        , parent = ""
+        , each = once
+        , when = has "body.data.project.packages"
+        , label = "GitlabProject"
+        , keys = at "body.data.project.id"
+        , set = nothing
+        , edge = ""
+        }
+      , { name = "package"
+        , parent = "packages_project"
+        , each = over "body.data.project.packages.nodes"
+        , when = every
+        , label = "GitlabPackage"
+        , keys = keyed
+        , set =
+          [ { name = "name", from = "item.name" }
+          , { name = "version", from = "item.version" }
+          , { name = "package_type", from = "item.packageType" }
+          , { name = "status", from = "item.status" }
+          , { name = "created_at", from = "item.createdAt" }
+          ]
+        , edge = "HAS_PACKAGE"
+        }
+      , { name = "members_group"
+        , parent = ""
+        , each = once
+        , when = has "body.data.group.groupMembers"
+        , label = "GitlabGroup"
+        , keys = at "body.data.group.id"
+        , set = nothing
+        , edge = ""
+        }
+      , { name = "member"
+        , parent = "members_group"
+        , each = over "body.data.group.groupMembers.nodes"
+        , when = has "item.user"
+        , label = "GitlabUser"
+        , keys = at "item.user.id"
+        , set = nothing
+        , edge = "HAS_MEMBER"
         }
       ]
     }

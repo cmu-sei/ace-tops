@@ -1,0 +1,46 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabContainerRepository",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/ContainerRepository/7"
+      },
+      "set": {
+        "name": "",
+        "path": "polar/polar",
+        "location": "registry.gitlab.example/polar/polar",
+        "created_at": "2026-11-01T10:03:00Z",
+        "tags_count": 2
+      }
+    },
+    {
+      "label": "GitlabProject",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Project/1"
+      },
+      "set": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabProject",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Project/1"
+        }
+      },
+      "type": "HAS_CONTAINER_REPOSITORY",
+      "to": {
+        "label": "GitlabContainerRepository",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/ContainerRepository/7"
+        }
+      }
+    }
+  ]
+}

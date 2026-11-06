@@ -1,0 +1,177 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabJob",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Build/1000"
+      },
+      "set": {
+        "name": "build",
+        "status": "SUCCESS",
+        "stage": "build",
+        "created_at": "2026-11-01T10:00:05Z",
+        "finished_at": "2026-11-01T10:02:00Z",
+        "duration": 115
+      }
+    },
+    {
+      "label": "GitlabJob",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Build/1001"
+      },
+      "set": {
+        "name": "test",
+        "status": "SUCCESS",
+        "stage": "test",
+        "created_at": "2026-11-01T10:02:05Z",
+        "finished_at": "2026-11-01T10:04:30Z",
+        "duration": 145
+      }
+    },
+    {
+      "label": "GitlabJob",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Build/1002"
+      },
+      "set": {
+        "name": "lint",
+        "status": "CANCELED",
+        "stage": "test",
+        "created_at": "2026-11-02T09:00:05Z",
+        "finished_at": null,
+        "duration": null
+      }
+    },
+    {
+      "label": "GitlabPipeline",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Pipeline/100"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabPipeline",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Pipeline/100"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabPipeline",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Pipeline/101"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabRunner",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Runner/1"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabRunner",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Runner/1"
+      },
+      "set": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabJob",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Build/1000"
+        }
+      },
+      "type": "EXECUTED_BY",
+      "to": {
+        "label": "GitlabRunner",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Runner/1"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabJob",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Build/1001"
+        }
+      },
+      "type": "EXECUTED_BY",
+      "to": {
+        "label": "GitlabRunner",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Runner/1"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabPipeline",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Pipeline/100"
+        }
+      },
+      "type": "HAS_JOB",
+      "to": {
+        "label": "GitlabJob",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Build/1000"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabPipeline",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Pipeline/100"
+        }
+      },
+      "type": "HAS_JOB",
+      "to": {
+        "label": "GitlabJob",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Build/1001"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabPipeline",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Pipeline/101"
+        }
+      },
+      "type": "HAS_JOB",
+      "to": {
+        "label": "GitlabJob",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Build/1002"
+        }
+      }
+    }
+  ]
+}

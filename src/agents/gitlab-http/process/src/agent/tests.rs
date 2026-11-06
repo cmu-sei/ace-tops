@@ -27,7 +27,7 @@
 
 use super::*;
 use gitlab_http_observer::agent::GitlabObserver;
-use polar_http_observer::graphql::GraphQl;
+use polar_http_observer::graphql::{Each, GraphQl, Variable};
 use polar_http_observer::paging::{Paging, Style};
 use polar_http_testkit::graphql_schema::GraphQlSchema;
 use polar_http_testkit::{Observed, Pair, block_on, signed_in_force};
@@ -72,6 +72,14 @@ const ANSWERS: &[(&str, &str)] = &[
     ("users-1", "users"),
     ("groups-1", "groups"),
     ("runners-1", "runners"),
+    ("project-pipelines-1", "project-pipelines"),
+    ("project-jobs-1", "project-jobs"),
+    (
+        "project-container-repositories-1",
+        "project-container-repositories",
+    ),
+    ("project-packages-1", "project-packages"),
+    ("group-members-1", "group-members"),
 ];
 
 fn sample(name: &str) -> serde_json::Value {
@@ -179,4 +187,107 @@ fn projects_are_read_page_by_page_by_their_cursor_with_their_token() {
             "every page with the token"
         );
     });
+}
+
+/// A projects source that follows each project's pipelines, as a deployment reads it: each page of projects, then each of
+/// its projects' pipelines, then the next page, every request with the token; each pipeline hangs from its project.
+#[test]
+fn each_project_s_pipelines_are_followed_and_hang_from_their_project() {
+    block_on(async {
+        let kit = kit();
+        let mapping = signed_in_force::<GitlabProcessor>(&kit).await;
+        let mut pair =
+            Pair::<GitlabObserver>::credentialed(PROCESSOR_NAME, mapping, "gitlab", TOKEN).await;
+        let none = |project: u32| {
+            let answer = json!({ "data": { "project": {
+                "id": format!("gid://gitlab/Project/{project}"),
+                "pipelines": { "nodes": [], "pageInfo": { "endCursor": null, "hasNextPage": false } }
+            } } });
+            gitlab()
+                .check_answer(&query("project-pipelines"), &answer)
+                .unwrap();
+            serde_json::to_vec(&answer).unwrap()
+        };
+        let file = |name: &str| {
+            std::fs::read(here().join("examples/samples").join(format!("{name}.json"))).unwrap()
+        };
+        let graphql_paging = |connection: &str| Paging {
+            style: Style::GraphQl {
+                connection: connection.to_string(),
+            },
+            max_pages: 10,
+        };
+        let observed = pair
+            .read_graphql(
+                "project-pipelines",
+                GraphQl {
+                    query: query("projects"),
+                    each: Some(Each {
+                        items: "/data/projects/nodes".to_string(),
+                        query: query("project-pipelines"),
+                        variables: vec![Variable {
+                            name: "fullPath".to_string(),
+                            from: "/fullPath".to_string(),
+                        }],
+                        paging: Some(graphql_paging("/data/project/pipelines")),
+                        max_items: 100,
+                    }),
+                },
+                Some(graphql_paging("/data/projects")),
+                &[
+                    (json!({ "after": null }), file("projects-1")),
+                    (
+                        json!({ "fullPath": "polar/polar", "after": null }),
+                        file("project-pipelines-1"),
+                    ),
+                    (json!({ "fullPath": "polar/docs", "after": null }), none(2)),
+                    (json!({ "after": "eyJpZCI6IjIifQ" }), file("projects-2")),
+                    (
+                        json!({ "fullPath": "ace/estimator", "after": null }),
+                        none(3),
+                    ),
+                ],
+            )
+            .await;
+        assert_eq!(
+            observed.len(),
+            5,
+            "two pages of projects and one of pipelines for each project"
+        );
+        assert_eq!(nodes(&observed, "GitlabPipeline").len(), 2);
+        let edges: Vec<(String, String)> = observed
+            .iter()
+            .flat_map(|o| &o.writes)
+            .filter_map(|w| match w {
+                Write::Edge { from, to, kind, .. } if kind == "HAS_PIPELINE" => {
+                    Some((key_id(from), key_id(to)))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            edges,
+            [
+                (
+                    "gid://gitlab/Project/1".to_string(),
+                    "gid://gitlab/Ci::Pipeline/100".to_string()
+                ),
+                (
+                    "gid://gitlab/Project/1".to_string(),
+                    "gid://gitlab/Ci::Pipeline/101".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            pair.authorizations().await,
+            vec![Some(format!("Bearer {TOKEN}")); 5]
+        );
+    });
+}
+
+fn key_id(id: &polar_projection::NodeId) -> String {
+    match &id.keys[1].1 {
+        polar_projection::Scalar::Text(t) => t.clone(),
+        other => panic!("{other:?}"),
+    }
 }

@@ -1,0 +1,3 @@
+{"data": {"project": {"id": "gid://gitlab/Project/2", "packages": {"nodes": [
+  {"id": "gid://gitlab/Packages::Package/30", "name": "polar-docs", "version": "1.0.0", "packageType": "GENERIC", "status": "DEFAULT", "createdAt": "2026-10-20T16:00:00Z"}
+], "pageInfo": {"endCursor": "eyJpZCI6IjMwIn0", "hasNextPage": false}}}}}

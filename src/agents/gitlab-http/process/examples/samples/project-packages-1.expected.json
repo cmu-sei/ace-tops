@@ -1,0 +1,46 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabPackage",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Packages::Package/30"
+      },
+      "set": {
+        "name": "polar-docs",
+        "version": "1.0.0",
+        "package_type": "GENERIC",
+        "status": "DEFAULT",
+        "created_at": "2026-10-20T16:00:00Z"
+      }
+    },
+    {
+      "label": "GitlabProject",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Project/2"
+      },
+      "set": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabProject",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Project/2"
+        }
+      },
+      "type": "HAS_PACKAGE",
+      "to": {
+        "label": "GitlabPackage",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Packages::Package/30"
+        }
+      }
+    }
+  ]
+}
