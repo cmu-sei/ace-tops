@@ -181,6 +181,10 @@ beside the body) and the agent holding it until each is applied, unless `after`;
   `sections-in-range` (each section that names a range holds the agent's build: each pod's when asked, else its scaffold's) and `migrations-applied` (every migration a
   section in force names is in the repository as signed, by its digest, and a signed record says it was applied).
 
+Checked by deliberate breakage (`mut12.py`, 15 of 15): the order and the range, the verifier's check for both kinds of document, the hold and its release, a migration
+`after` holding nothing, a record of another digest releasing nothing, the pending section put in force, the scheduler's routing, and both invariants. The workspace: 3,940
+passed and one broker test failed once under its load, passing alone and with its suite (`remaining-work.md`).
+
 Marked for review: the hold for a range or a migration is on Configuration, the reason a domain's own configuration hold uses, so releasing it can clear the domain's own,
 which the domain makes again at its next attempt; a reason of its own would need a change to the health wire. Not checked live yet.
 
