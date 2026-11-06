@@ -297,6 +297,29 @@ Where the record goes was the maintainer's choice (2026-11-06): the plan said `p
   mapping with the same key and keeps nothing of it.
 - **No Neo4j in the tool.** The kit holds the model graph to Neo4j for the engine; the tool checks what a mapping makes of its samples, which is what a deployment changes.
 
+**Bite 5, planned 2026-11-06, cleared by the maintainer.** Facts from the signed repositories only, first: what is declared. Asking the running agents what they hold in force
+(`polar-running-config`, with the platform version added to its answer) is its own step right after. "No credentialed fetch reaches the graph unreviewed" waits for bite 7, with Jira,
+the first kind that fetches with a credential and so can break it; built now it would hold trivially.
+
+1. **The model without a runtime.** What the authority model takes from the agent builder is pure: the topic types (`topics.rs`), the gate's `rule` and Cedar's `entity`. They move to
+   a crate of their own, `polar-topics`, which the builder re-exports, so no path changes; the model takes it in place of the builder, and the credentials agent's common crate keeps
+   its graph keys behind a default feature, so the model has neither Neo4j nor actors. The model's tests stay as they are and pass.
+2. **A fact base for one instance.** `polar-sign check` reads checkouts of `deployment` (the rendered manifests with the authority model the render gives the credentials agent,
+   `provenance.json`, the signed deployment record), `polar-schedules` (policy, groups, the state agent's `schema` and `agents`, each projection) and `polar-evidence`, at given commits,
+   and the scaffolds; every signature is verified as it is read. The instance is the target and its CA's fingerprint; the version, each image's digest, each scaffold's digest, and each
+   signed section's id, version and digest.
+3. **Verdicts.** Each invariant holds, is violated, or is no longer covered (there was evidence, for another version), with a witness. Report only: the tool fails only when it cannot
+   run. The verdicts are an evidence record of their own, signed and pushed as a projection test's is.
+4. **The projection test's record grows** the digest of the mapping's body, since the schedules hold the body and not the author's file, and the paths the mapping reads that no sample
+   reaches (the mapping's names, never what a document says).
+5. **Tests.** Each invariant has a test that a bad fact base breaks it; properties that a verdict does not depend on the order of the facts and that a witness given for one that holds
+   does hold.
+
+The first invariants: every pair connected and allowed, under the policy and groups in the schedules; one owner per label, by the state agent's `schema` and the scaffolds; each projection
+in the schedules inside its binary's schema, by the deployed image's scaffold; every path a mapping in force reads reached by a sample of a passing test of that body (no longer covered
+when the body has none); every non-bootstrap workload certified by the credentials agent; every catalog workload that reads a document in the state agent's `agents`; and, as a report
+rather than a verdict, what each workload could touch.
+
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one
 (5; the fix is a server-side check at push), and a forgotten migration (5, 6). Narrowed: a service changing its shape (the guard; a field outside it can still clear), one signer and no review (4, 5),

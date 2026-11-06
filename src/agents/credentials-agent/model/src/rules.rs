@@ -32,7 +32,7 @@
 
 use crate::requests::{Action, is_request};
 use ascent::{Dual, ascent};
-use polar_agent_builder::topics::CauseEntry;
+use polar_topics::CauseEntry;
 
 /// A point a message passes: an agent publishing on a topic, or an agent hearing one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

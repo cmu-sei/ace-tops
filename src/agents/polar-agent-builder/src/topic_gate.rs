@@ -33,50 +33,9 @@ use crate::authority::{LookupError, PolicyLookup};
 use crate::policy_authority::entity;
 use crate::topics::{Access, TopicSet};
 use cassini_client::facade::{TopicGate, TopicUse};
-use polar_policy::Decision;
 use std::sync::Arc;
 
-/// What the agent's policy said about one use of a topic, as the gate reads it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PolicySaid {
-    /// No policy actor is running yet.
-    NotRunning,
-    /// It answered.
-    Decided(Decision),
-    /// It is running and has no rules.
-    NoPolicyLoaded,
-    /// It could not be consulted.
-    Unavailable(String),
-}
-
-/// The rule, on its own: whether an agent may use `topic` this way, given what policy said and whether the topic
-/// is in the agent's set.
-pub fn rule(said: &PolicySaid, in_set: bool, topic: &str, access: Access) -> Result<(), String> {
-    let floor = || {
-        if in_set {
-            Ok(())
-        } else {
-            Err(format!(
-                "this agent does not {} on `{topic}`: it is not among its declared or implied topics, and no policy \
-                 permits it",
-                access.as_str()
-            ))
-        }
-    };
-    match said {
-        PolicySaid::Decided(Decision::Allow) => Ok(()),
-        PolicySaid::Decided(Decision::Deny) => Err(format!(
-            "policy forbids this agent to {} on `{topic}`",
-            access.as_str()
-        )),
-        PolicySaid::Decided(Decision::NotDetermined)
-        | PolicySaid::NoPolicyLoaded
-        | PolicySaid::NotRunning => floor(),
-        PolicySaid::Unavailable(why) => Err(format!(
-            "policy could not be consulted about `{topic}` ({why}), so nothing is sent"
-        )),
-    }
-}
+pub use polar_topics::gate::{PolicySaid, rule};
 
 /// Asks the agent's policy, as `identity`, about using `topic` this way: `Action::"publish"` or
 /// `Action::"subscribe"` on `Topic::"<topic>"`.
@@ -155,6 +114,7 @@ pub fn gate(
 mod tests {
     use super::*;
     use crate::topics::{Facts, TopicDecl};
+    use polar_policy::Decision;
     use proptest::prelude::*;
     use ractor::Actor;
 

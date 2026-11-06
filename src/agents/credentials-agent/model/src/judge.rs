@@ -30,10 +30,10 @@ use crate::rules::{Node, Program};
 use credentials_agent_common::authority_update::{
     AUTHORITY_SNAPSHOT_REQUESTS_TOPIC, AUTHORITY_UPDATES_TOPIC,
 };
-use polar_agent_builder::policy_authority::entity;
-use polar_agent_builder::topic_gate::{PolicySaid, rule};
-use polar_agent_builder::topics::{Access, CauseEntry, Origin};
 use polar_policy::{Evaluator, Facts, Requester, TopicFacts};
+use polar_topics::gate::entity;
+use polar_topics::gate::{PolicySaid, rule};
+use polar_topics::{Access, CauseEntry, Origin};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

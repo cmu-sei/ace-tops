@@ -42,6 +42,7 @@ pub mod escrow_secret {
     pub use polar_escrow::*;
 }
 pub mod events;
+#[cfg(feature = "graph")]
 pub mod graph;
 pub mod identity;
 pub mod issuance;

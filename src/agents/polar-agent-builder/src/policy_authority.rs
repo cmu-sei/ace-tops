@@ -39,17 +39,7 @@ use polar_policy::{Decision, PolicyError, PolicyMessage};
 use polar_signing::authority::AuthorityRefusal;
 use ractor::ActorRef;
 
-/// A Cedar entity reference, with the id escaped so that nothing in it can end the reference early or name
-/// another entity. `None` for an id with a control character in it, which is not a name.
-pub fn entity(kind: &str, id: &str) -> Option<String> {
-    if id.chars().any(char::is_control) {
-        return None;
-    }
-    Some(format!(
-        "{kind}::\"{}\"",
-        id.replace('\\', "\\\\").replace('"', "\\\"")
-    ))
-}
+pub use polar_topics::gate::entity;
 
 /// What is asked: this signer, this action, on each of these things.
 #[derive(Debug, Clone)]

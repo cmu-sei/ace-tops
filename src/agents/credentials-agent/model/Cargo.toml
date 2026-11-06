@@ -29,8 +29,10 @@ description = "The authority model: the deployment as facts, the rules over them
 [dependencies]
 ascent.workspace = true
 cert-issuer-common = { path = "../../cert-issuer/common" }
-credentials_agent_common.workspace = true
-polar-agent-builder.workspace = true
+# Its topic names and routes, without its graph keys: the model has no Neo4j and no actors.
+credentials_agent_common = { path = "../common", default-features = false }
+# The topic types a scaffold prints and the gate's rule, from the crate with no runtime that the builder re-exports.
+polar-topics.workspace = true
 polar-git-server-common.workspace = true
 polar-policy.workspace = true
 polar-scheduler-common.workspace = true
@@ -38,4 +40,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# The tests read the topic types by the builder's names, as the agents do.
+polar-agent-builder.workspace = true
 proptest.workspace = true

@@ -1605,6 +1605,7 @@ dependencies = [
  "polar-git-server-common",
  "polar-policy",
  "polar-scheduler-common",
+ "polar-topics",
  "proptest",
  "serde",
  "serde_json",
@@ -5881,6 +5882,7 @@ dependencies = [
  "polar-scheduler-common",
  "polar-sign",
  "polar-signing",
+ "polar-topics",
  "polar-version",
  "proptest",
  "ractor",
@@ -6400,6 +6402,14 @@ dependencies = [
  "testcontainers",
  "testcontainers-modules",
  "tokio",
+]
+
+[[package]]
+name = "polar-topics"
+version = "1.0.0"
+dependencies = [
+ "polar-policy",
+ "serde",
 ]
 
 [[package]]

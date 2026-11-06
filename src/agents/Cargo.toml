@@ -80,6 +80,7 @@ members = [
     "polar-http-processor",
     "polar-http-testkit",
     "polar-agent-builder",
+    "polar-topics",
     "polar-permissions",
     "polar-policy",
     "polar-router",
@@ -227,6 +228,7 @@ polar-kernel-keyring = { path = "polar-kernel-keyring" }
 polar-permissions = { path = "polar-permissions" }
 polar-policy = { path = "polar-policy" }
 polar-agent-builder = { path = "polar-agent-builder" }
+polar-topics = { path = "polar-topics" }
 polar-router = { path = "polar-router" }
 polar-test-graph = { path = "polar-test-graph" }
 attestation-common = { path = "attestation/common" }

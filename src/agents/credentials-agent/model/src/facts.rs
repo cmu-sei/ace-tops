@@ -26,7 +26,7 @@
 
 use cert_issuer_common::capability::Capability;
 use cert_issuer_common::hierarchy::Hierarchy;
-use polar_agent_builder::topics::TopicEntry;
+use polar_topics::TopicEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -172,15 +172,11 @@ impl CertificateNames {
 impl Workload {
     /// What this workload's certificates carry.
     pub fn certificate_names(&self) -> CertificateNames {
-        let own = |access: polar_agent_builder::Access| -> Vec<String> {
+        let own = |access: polar_topics::Access| -> Vec<String> {
             self.topics
                 .iter()
                 .filter(|t| {
-                    t.access == access
-                        && !matches!(
-                            t.origin,
-                            polar_agent_builder::topics::Origin::Implied { .. }
-                        )
+                    t.access == access && !matches!(t.origin, polar_topics::Origin::Implied { .. })
                 })
                 .map(|t| t.name.clone())
                 .collect::<BTreeSet<_>>()
@@ -188,8 +184,8 @@ impl Workload {
                 .collect()
         };
         CertificateNames {
-            publish: own(polar_agent_builder::Access::Publish),
-            subscribe: own(polar_agent_builder::Access::Subscribe),
+            publish: own(polar_topics::Access::Publish),
+            subscribe: own(polar_topics::Access::Subscribe),
             groups: self
                 .groups
                 .iter()

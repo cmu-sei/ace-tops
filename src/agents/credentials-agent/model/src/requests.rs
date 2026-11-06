@@ -27,9 +27,9 @@
 //! for the judge, so the two cannot disagree.
 
 use crate::facts::Model;
-use polar_agent_builder::topic_gate::PolicySaid;
-use polar_agent_builder::topics::{Access, Origin};
 use polar_policy::TopicFacts;
+use polar_topics::gate::PolicySaid;
+use polar_topics::{Access, Origin};
 
 /// What the authority judges a requester for: the three Cedar actions on a topic or a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
