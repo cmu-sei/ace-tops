@@ -411,7 +411,8 @@ pod as the broker stamped them, and never a setting's value. The maintainer's ch
 - `polar-sign` asks itself, rather than reading answers saved by another tool. So that the two packages do not depend on each other, `polar_running_config` is the asking library and
   the `polar-running-config` tool is a binary of the `polar-sign` package; the identity both read is `polar_signing::identity`. Recorded as open: `polar-sign` does too many things.
 
-Not tested against a broker in the workspace: the decisions are (`Surveying`, and each invariant over answers), and the path was checked live before for one question
+Checked by deliberate breakage (`mut11.py`, 11 of 11; two tests written when their breakage first survived: a pod behind on a body signed again unchanged, and a
+document's id kept when it is applied). Not tested against a broker in the workspace: the decisions are (`Surveying`, and each invariant over answers), and the path was checked live before for one question
 (`dynamic-settings.md`, "Checked live on u7s"). A live check needs every agent rebuilt with the new answer.
 
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),

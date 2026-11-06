@@ -739,6 +739,16 @@ fn a_pod_that_holds_other_than_what_is_signed_violates_sections_in_force() {
         ]
     );
 
+    // The same body signed again at a higher version, which the pod has not applied.
+    let mut resigned = asked();
+    resigned.running.as_mut().unwrap().heard[0].answer.sections[0].version = 2;
+    let (got, witness) = violated(&resigned);
+    assert_eq!(got, Status::Violated);
+    assert!(
+        a_line(&witness, "holds projection version 2"),
+        "{witness:#?}"
+    );
+
     let mut other_body = asked();
     other_body.running.as_mut().unwrap().heard[0]
         .answer

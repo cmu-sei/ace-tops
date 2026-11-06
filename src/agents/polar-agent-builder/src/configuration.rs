@@ -2352,6 +2352,8 @@ mod tests {
         let held = config.runtime("repositories").await.unwrap().unwrap();
         assert_eq!(held.version, 1);
         assert_eq!(held.body, repos(&["https://a.example/r.git"]));
+        // The document's id is kept with it, which the agent answers when asked what it holds.
+        assert_eq!(held.id, "repositories-1");
         // Who signed it is kept with it, by name and certificate serial, for the record an update carries.
         assert!(
             held.signer.contains("alice") && held.signer.contains("serial"),
