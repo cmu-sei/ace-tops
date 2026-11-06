@@ -1,0 +1,3 @@
+{"data": {"projects": {"nodes": [
+  {"id": "gid://gitlab/Project/3", "fullPath": "ace/estimator", "name": "estimator", "description": "Agile Capacity Estimator", "visibility": "public", "archived": true, "createdAt": "2026-09-15T10:00:00Z", "lastActivityAt": "2026-09-30T11:00:00Z", "webUrl": "https://gitlab.example/ace/estimator"}
+], "pageInfo": {"endCursor": "eyJpZCI6IjMifQ", "hasNextPage": false}}}}

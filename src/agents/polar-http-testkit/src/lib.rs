@@ -51,6 +51,7 @@ use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{ConfigurationHandle, PolarAgent, UpdateVerifier};
 use polar_crypto::registry::{SecretBinding, SecretKind};
 use polar_http_observer::Observation;
+use polar_http_observer::graphql::GraphQl;
 use polar_http_observer::observing::{self, Observing};
 use polar_http_observer::paging::{Paging, Style};
 use polar_http_observer::sources::Source;
@@ -412,7 +413,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             }
         };
         let observed = self
-            .follow(source, event, &[format!("{}{at}", self.base)])
+            .follow(source, event, Some(&[format!("{}{at}", self.base)]), 1)
             .await;
         let [observed] = <[Observed; 1]>::try_from(observed)
             .unwrap_or_else(|o| panic!("`{source}` is one page, and {} were read", o.len()));
@@ -500,7 +501,48 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             graphql: None,
         });
         let event = observing::Event::Sources(self.sources.clone());
-        self.follow(source, event, &urls).await
+        let pages = urls.len();
+        self.follow(source, event, Some(&urls), pages).await
+    }
+
+    /// The service answers a GraphQL source: each answer for the request POSTed with exactly these variables (the cursor
+    /// `after` among them, null on a first page, and an item's own for a follow-up), and the source is read to its end,
+    /// each answer read once, published, and given to the processor. The answers' `pageInfo` says how they follow one
+    /// another, as GitLab's does.
+    pub async fn read_graphql(
+        &mut self,
+        source: &str,
+        graphql: GraphQl,
+        paging: Option<Paging>,
+        answers: &[(serde_json::Value, Vec<u8>)],
+    ) -> Vec<Observed> {
+        assert!(
+            self.sources.iter().all(|s| s.name != source),
+            "`{source}` is already listed"
+        );
+        let at = format!("/{source}");
+        self.server.reset().await;
+        for (variables, answer) in answers {
+            wiremock::Mock::given(wiremock::matchers::method("POST"))
+                .and(wiremock::matchers::path(at.as_str()))
+                .and(Variables(variables.clone()))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(answer.clone()))
+                .expect(1)
+                .mount(&self.server)
+                .await;
+        }
+        self.sources.push(Source {
+            name: source.to_string(),
+            url: format!("{}{at}", self.base),
+            interval_secs: 60,
+            credential: self.credential.clone(),
+            paging,
+            graphql: Some(graphql),
+        });
+        let event = observing::Event::Sources(self.sources.clone());
+        let observed = self.follow(source, event, None, answers.len()).await;
+        self.server.verify().await;
+        observed
     }
 
     /// Each request the stand-in has had since it last served, with the `Authorization` it carried.
@@ -524,7 +566,8 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
         &mut self,
         source: &str,
         event: observing::Event,
-        urls: &[String],
+        urls: Option<&[String]>,
+        pages: usize,
     ) -> Vec<Observed> {
         let mut steps = self.observing.on(event);
         let mut observed = Vec::new();
@@ -549,11 +592,13 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                 name, source,
                 "the observer reads `{source}` and only it: {steps:?}"
             );
-            assert_eq!(
-                Some(&asked.url),
-                urls.get(*page as usize),
-                "page {page} of `{source}` is read where it is"
-            );
+            if let (Some(urls), None) = (urls, item) {
+                assert_eq!(
+                    Some(&asked.url),
+                    urls.get(*page as usize),
+                    "page {page} of `{source}` is read where it is"
+                );
+            }
             let outcome =
                 polar_http_observer::observer::read::<O>(&self.protocols, (**asked).clone()).await;
             let read = observing::Event::Read {
@@ -585,7 +630,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
         }
         assert_eq!(
             observed.len(),
-            urls.len(),
+            pages,
             "`{source}`: every page is read and published, and nothing else: {steps:?}"
         );
         observed
@@ -621,6 +666,16 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             writes,
             skipped,
         }
+    }
+}
+
+/// A GraphQL request whose variables are exactly these.
+struct Variables(serde_json::Value);
+
+impl wiremock::Match for Variables {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        serde_json::from_slice::<serde_json::Value>(&request.body)
+            .is_ok_and(|body| body["variables"] == self.0)
     }
 }
 

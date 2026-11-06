@@ -58,6 +58,9 @@ members = [
     "openapi/common",
     "openapi/process",
     "openapi/observe",
+    "gitlab-http/common",
+    "gitlab-http/observe",
+    "gitlab-http/process",
     "polar-crypto",
     "polar-escrow",
     "polar-env",
@@ -236,6 +239,7 @@ polar-test-graph = { path = "polar-test-graph" }
 attestation-common = { path = "attestation/common" }
 soft-state-common = { path = "soft-state/common" }
 openapi-common = { path = "openapi/common" }
+gitlab-http-common = { path = "gitlab-http/common" }
 time = { version = "0.3.47", features = ["serde"]}
 wiremock = "0.6"
 ring = "0.17"

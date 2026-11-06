@@ -3101,6 +3101,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitlab-http-common"
+version = "1.0.0"
+
+[[package]]
+name = "gitlab-http-observer"
+version = "1.0.0"
+dependencies = [
+ "gitlab-http-common",
+ "polar-agent-builder",
+ "polar-http-observer",
+ "polar-scudo",
+]
+
+[[package]]
+name = "gitlab-http-processor"
+version = "1.0.0"
+dependencies = [
+ "gitlab-http-common",
+ "gitlab-http-observer",
+ "polar",
+ "polar-agent-builder",
+ "polar-http-observer",
+ "polar-http-processor",
+ "polar-http-testkit",
+ "polar-projection",
+ "polar-scudo",
+ "polar-sign",
+ "serde_json",
+]
+
+[[package]]
 name = "gitlab-observer"
 version = "1.0.0"
 dependencies = [

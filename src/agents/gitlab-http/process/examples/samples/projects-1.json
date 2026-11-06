@@ -1,0 +1,4 @@
+{"data": {"projects": {"nodes": [
+  {"id": "gid://gitlab/Project/1", "fullPath": "polar/polar", "name": "polar", "description": "The Polar platform", "visibility": "private", "archived": false, "createdAt": "2026-10-01T12:00:00Z", "lastActivityAt": "2026-11-05T09:30:00Z", "webUrl": "https://gitlab.example/polar/polar"},
+  {"id": "gid://gitlab/Project/2", "fullPath": "polar/docs", "name": "docs", "description": null, "visibility": "internal", "archived": false, "createdAt": "2026-10-02T08:00:00Z", "lastActivityAt": "2026-10-20T16:00:00Z", "webUrl": "https://gitlab.example/polar/docs"}
+], "pageInfo": {"endCursor": "eyJpZCI6IjIifQ", "hasNextPage": true}}}}

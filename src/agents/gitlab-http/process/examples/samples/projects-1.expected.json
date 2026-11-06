@@ -1,0 +1,40 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabProject",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Project/1"
+      },
+      "set": {
+        "full_path": "polar/polar",
+        "name": "polar",
+        "description": "The Polar platform",
+        "visibility": "private",
+        "archived": false,
+        "created_at": "2026-10-01T12:00:00Z",
+        "last_activity_at": "2026-11-05T09:30:00Z",
+        "web_url": "https://gitlab.example/polar/polar"
+      }
+    },
+    {
+      "label": "GitlabProject",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Project/2"
+      },
+      "set": {
+        "full_path": "polar/docs",
+        "name": "docs",
+        "description": null,
+        "visibility": "internal",
+        "archived": false,
+        "created_at": "2026-10-02T08:00:00Z",
+        "last_activity_at": "2026-10-20T16:00:00Z",
+        "web_url": "https://gitlab.example/polar/docs"
+      }
+    }
+  ],
+  "edges": []
+}
