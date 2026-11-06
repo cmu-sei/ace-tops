@@ -413,7 +413,21 @@ pod as the broker stamped them, and never a setting's value. The maintainer's ch
 
 Checked by deliberate breakage (`mut11.py`, 11 of 11; two tests written when their breakage first survived: a pod behind on a body signed again unchanged, and a
 document's id kept when it is applied). Not tested against a broker in the workspace: the decisions are (`Surveying`, and each invariant over answers), and the path was checked live before for one question
-(`dynamic-settings.md`, "Checked live on u7s"). A live check needs every agent rebuilt with the new answer.
+(`dynamic-settings.md`, "Checked live on u7s").
+
+**Checked live on u7c, 2026-11-06 UTC**, reset and brought up fresh from `f56788da` (`up.nu sandbox-local --dev --topology separated`), with the three
+repositories cloned from Polar's git server and the scaffolds from `resolve.nu scaffolds`:
+
+- As brought up: 9 of 9 hold. 18 agents asked, 18 answers; each holds the seeded sections by id, version and digest, at the build its scaffold is of.
+- The OpenAPI mapping signed as version 1 and pushed: the processor applied it within seconds, and `projections-tested` was violated, never tested. `polar-sign projection
+  test --push` to `polar-evidence`: 9 of 9 again, the test found by the body's digest and the scaffold's.
+- The gap of "a refused file replaces the good one" (`dynamic-settings.md`), made on purpose: a changed mapping signed again as version 1 under a new document id. The processor
+  refused it as not higher than what it held, and `sections-in-force` was violated ("holds projection version 1 (document openapi-projection-1), and version 1 (document
+  openapi-projection-1b) is signed"); `projections-tested` was no longer covered, the body in the repository being one no test was of. The tested body signed as version 2: 9 of 9.
+
+Seen there: an answer names its agent and no pod, since the broker stamps the instance its certificate names and issuance writes one only for a workload of many instances; every
+agent of the target is of one. And `up.nu` runs the `polar-sign` found first on `PATH`, which in the dev shell was the `polar-tools` package of an older build: it did not know
+`Action::"read-configuration"` and refused the seeded policy, so the seed step stopped until the tree's own build was put first (open, below).
 
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one
@@ -447,6 +461,8 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
   branch, 2026-11-05) is a repository that requires signed commits and refuses deletions and rewrites; the second is built as on every repository, and a commit that removes or changes a
   record is the part not built. Decided by the maintainer, 2026-11-06: **add only**, each commit adding files, each a record that verifies in the evidence domain, and not a list of
   signers; a wrong record is superseded by a newer one, never changed or removed, so a failed record stays, which a coverage engine counts on (bites 4, 5). Not built yet.
+- **`up.nu` uses whatever `polar-sign` is first on `PATH`.** The dev shell's `polar-tools` package can be older than the tree it deploys; on u7c it refused the seeded policy
+  (bite 5, "Checked live on u7c"). Building the tree's tools, or checking the tool's version against the tree's, would end it. Not done.
 - **`polar-sign` does too many things.** It signs documents, tests projections, checks an instance, and now asks running agents over Cassini (its binary
   `polar-running-config`). The maintainer, 2026-11-06: it is headed for a refactor anyway; for now it works. Not designed.
 - **Dhall evaluation is exponential in nesting** (bite 2, above). A signed projection is within it today. Finding whether the parser or the type checker is the cause, and fixing it in the
