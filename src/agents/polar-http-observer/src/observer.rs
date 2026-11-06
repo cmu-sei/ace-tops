@@ -26,7 +26,7 @@
 
 use crate::graphql;
 use crate::observing::{Event, Observing, Step};
-use crate::paging::{self, Page, Style};
+use crate::paging::{self, Page};
 use crate::sources::{self, SECTION_NAME, Source};
 use crate::{MAX_DOCUMENT_BYTES, Observation};
 use cassini_client::{OfflineBehavior, PublishRequest};
@@ -61,42 +61,15 @@ pub trait Kind: Send + Sync + 'static {
     const CREDENTIALED: Option<OperationDecl> = None;
 }
 
-/// What a page is asked with: where, with which credential, how the source is paged, and, for a GraphQL source, its
-/// query and the cursor this page comes after.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PageRequest {
-    pub url: String,
-    pub credential: Option<String>,
-    pub paging: Option<Style>,
-    pub query: Option<String>,
-    pub after: Option<String>,
-}
+pub use crate::paging::{PageRequest, Pick};
 
 impl PageRequest {
-    /// A page read by GET.
-    pub fn new(url: String, credential: Option<String>, paging: Option<Style>) -> Self {
-        Self {
-            url,
-            credential,
-            paging,
-            query: None,
-            after: None,
-        }
-    }
-
-    /// The page is `query`, POSTed, after the cursor `after`, none on the first page.
-    pub fn graphql(mut self, query: impl Into<String>, after: Option<String>) -> Self {
-        self.query = Some(query.into());
-        self.after = after;
-        self
-    }
-
     fn request(&self) -> Request {
         match &self.query {
             None => Request::get_at(self.url.clone()),
             Some(query) => Request::post_at(
                 self.url.clone(),
-                graphql::request_body(query, self.after.as_deref()),
+                graphql::request_body(query, self.after.as_deref(), &self.variables),
             )
             .header("content-type", "application/json"),
         }
@@ -211,7 +184,50 @@ fn read_page(asked: &PageRequest, reply: &Reply) -> Result<Page, ReadFailure> {
                 .map_err(ReadFailure::Malformed)?
         }
     };
-    Ok(Page { body, next })
+    let (items, unfollowable) = match &asked.pick {
+        None => (Vec::new(), 0),
+        Some(pick) => picked(pick, &body).map_err(ReadFailure::Malformed)?,
+    };
+    Ok(Page {
+        body,
+        next,
+        items,
+        unfollowable,
+    })
+}
+
+/// Each item of a page as its follow-up's variables, and how many lack one. A page that holds no list where the items
+/// should be is not the page the source was written for.
+fn picked(
+    pick: &Pick,
+    body: &[u8],
+) -> Result<(Vec<serde_json::Map<String, serde_json::Value>>, usize), String> {
+    let page: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| "the page is not JSON".to_string())?;
+    let Some(items) = page
+        .pointer(&pick.items)
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Err(format!("the page has no list of items at `{}`", pick.items));
+    };
+    let mut followable = Vec::new();
+    let mut unfollowable = 0;
+    for item in items {
+        let variables: Option<serde_json::Map<String, serde_json::Value>> = pick
+            .variables
+            .iter()
+            .map(|v| {
+                item.pointer(&v.from)
+                    .filter(|value| !value.is_null())
+                    .map(|value| (v.name.clone(), value.clone()))
+            })
+            .collect();
+        match variables {
+            Some(variables) => followable.push(variables),
+            None => unfollowable += 1,
+        }
+    }
+    Ok((followable, unfollowable))
 }
 
 /// Whether what came back is a document this observer can publish. What it says is the processor's to judge.
@@ -245,6 +261,7 @@ pub enum ObserverMessage {
         name: String,
         generation: u64,
         page: u32,
+        item: Option<u32>,
         outcome: Result<Page, Failure>,
     },
     PrepareShutdown,
@@ -358,11 +375,13 @@ impl<K: Kind> Actor for Observer<K> {
                 name,
                 generation,
                 page,
+                item,
                 outcome,
             } => {
                 let steps = state.observing.on(Event::Read {
                     name,
                     generation,
+                    item,
                     page,
                     outcome,
                 });
@@ -409,29 +428,20 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
             Step::Fetch {
                 name,
                 generation,
-                url,
-                credential,
-                paging,
                 page,
-                query,
-                after,
+                item,
+                asked,
             } => {
                 let protocols = state.protocols.clone();
                 let to = myself.clone();
-                let asked = PageRequest {
-                    url,
-                    credential,
-                    paging,
-                    query,
-                    after,
-                };
                 // Off the actor, so a slow host holds up no other source.
                 tokio::spawn(async move {
-                    let outcome = read::<K>(&protocols, asked).await;
+                    let outcome = read::<K>(&protocols, *asked).await;
                     let _ = to.cast(ObserverMessage::Read {
                         name,
                         generation,
                         page,
+                        item,
                         outcome,
                     });
                 });
@@ -737,7 +747,9 @@ mod tests {
             second,
             Page {
                 body: b"[2]".to_vec(),
-                next: None
+                next: None,
+                items: vec![],
+                unfollowable: 0
             }
         );
         // Unpaged, a Link header is not followed: the source is one page.
@@ -823,6 +835,46 @@ mod tests {
             matches!(&broken, Err(Failure::Read(why)) if !why.contains("secret detail")),
             "{broken:?}"
         );
+    }
+
+    /// A page whose items are followed gives each item's variables, at their pointers; an item lacking one is counted and
+    /// not followed, and a page with no list where its items should be is not the page the source was written for.
+    #[test]
+    fn a_page_s_items_are_picked_by_their_variables_and_one_lacking_one_is_counted() {
+        let pick = Pick {
+            items: "/data/projects/nodes".to_string(),
+            variables: vec![
+                crate::graphql::Variable {
+                    name: "fullPath".into(),
+                    from: "/fullPath".into(),
+                },
+                crate::graphql::Variable {
+                    name: "n".into(),
+                    from: "/stats/n".into(),
+                },
+            ],
+        };
+        let page = serde_json::json!({ "data": { "projects": { "nodes": [
+            { "fullPath": "g/a", "stats": { "n": 1 } },
+            { "fullPath": "g/b" },
+            { "fullPath": null, "stats": { "n": 3 } },
+            { "fullPath": "g/c", "stats": { "n": 4 } }
+        ] } } });
+        let (items, unfollowable) = picked(&pick, page.to_string().as_bytes()).unwrap();
+        assert_eq!(
+            items,
+            [
+                serde_json::json!({ "fullPath": "g/a", "n": 1 }),
+                serde_json::json!({ "fullPath": "g/c", "n": 4 })
+            ]
+            .map(|v| v.as_object().unwrap().clone())
+        );
+        assert_eq!(
+            unfollowable, 2,
+            "a variable absent, or null, cannot be asked with"
+        );
+        assert!(picked(&pick, br#"{"data": {"projects": {}}}"#).is_err());
+        assert!(picked(&pick, b"not json").is_err());
     }
 
     #[test]

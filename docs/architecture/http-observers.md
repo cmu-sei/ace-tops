@@ -604,6 +604,18 @@ read at `https://samples.example`. Marked for review: a GraphQL source signs onl
 variables in a signed list would make every source's Dhall type carry them, and G2's follow-up fills its variables from the item it follows. The kit's stand-in does
 not serve GraphQL pages yet; G3 does, for GitLab's tests.
 
+G2, done (`graphql.rs` `Each`, `observing.rs` `Reading`). A GraphQL source's `graphql` may carry `each: {items, query, variables: [{name, from}], paging, max_items}`:
+for each item of each page, at `items`, the follow-up `query` is POSTed to the source's own address with the item's variables (each a JSON pointer into the item)
+and, paged by GraphQL's paging, the cursor; `max_items` (1 to 10,000, default 1,000) bounds the items one read follows. The follow-up is judged as the source's query
+is, and must declare each of its variables, and `$after` when it is paged. The read operation picks each page's items (`Page.items`) as it finds the next page, so the
+core stays pure; the core holds where each read is (the source's page in hand, or the item and follow-up page in hand) and drops a read that comes back anywhere
+else. A read goes page by page: a page is published, its items followed one at a time to their last page, then the source's next page, and its source is held to
+the first problem it met when it ends. Marked for review: a follow-up that fails is a problem and the read goes on to the next item, so one project that always
+answers 403 does not stop every project after it on every read; a source page that fails ends the read; a host asking for time, on any page, ends the read and says
+nothing of health; an item lacking a variable is a problem, not skipped in silence; a follow-up page is an observation of the same source, so the mapping tells
+pages apart by what they hold (`when`), and a follow-up asks for its parent's id so the mapping can draw the edge. The model test holds the core to all of it over
+any sequence of events at 512 cases, with pages that hold several items so a follow-up failing with more left behind it is common; breaking that rule fails it.
+
 ## Open
 
 - **What it did touch.** What a workload could reach is answerable: the catalog, and each signed version of its sections, in git history. What it did reach is one log line per

@@ -66,11 +66,59 @@ pub struct Paging {
     pub max_pages: u32,
 }
 
+/// What a page is asked with: where, with which credential, how the source is paged, and, for a GraphQL source, its
+/// query and the cursor this page comes after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageRequest {
+    pub url: String,
+    pub credential: Option<String>,
+    pub paging: Option<Style>,
+    pub query: Option<String>,
+    pub after: Option<String>,
+    /// A follow-up's variables, from its item, besides the cursor.
+    pub variables: serde_json::Map<String, serde_json::Value>,
+    /// For a page whose items are followed: where they are, and the variables taken from each.
+    pub pick: Option<Pick>,
+}
+
+/// Where a page's items are, and each variable a follow-up takes from one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    pub items: String,
+    pub variables: Vec<crate::graphql::Variable>,
+}
+
+impl PageRequest {
+    /// A page read by GET.
+    pub fn new(url: String, credential: Option<String>, paging: Option<Style>) -> Self {
+        Self {
+            url,
+            credential,
+            paging,
+            query: None,
+            after: None,
+            variables: serde_json::Map::new(),
+            pick: None,
+        }
+    }
+
+    /// The page is `query`, POSTed, after the cursor `after`, none on the first page.
+    pub fn graphql(mut self, query: impl Into<String>, after: Option<String>) -> Self {
+        self.query = Some(query.into());
+        self.after = after;
+        self
+    }
+}
+
 /// A page as it was read: what is published, and the next page's address when there is one to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub body: Vec<u8>,
     pub next: Option<Next>,
+    /// Each item the page holds whose follow-up can be asked: its variables, for a source that follows its items.
+    pub items: Vec<serde_json::Map<String, Value>>,
+    /// The items it holds that lack a variable, and so cannot be followed.
+    pub unfollowable: usize,
 }
 
 /// A source's `paging`, or every problem with it, each naming its field.
@@ -171,7 +219,7 @@ pub fn parse(value: &Value) -> Result<Paging, Vec<String>> {
     }
 }
 
-fn is_pointer(t: &str) -> bool {
+pub(crate) fn is_pointer(t: &str) -> bool {
     t.len() <= MAX_POINTER && (t.is_empty() || t.starts_with('/'))
 }
 

@@ -49,7 +49,6 @@ use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{ConfigurationHandle, PolarAgent, UpdateVerifier};
 use polar_crypto::registry::{SecretBinding, SecretKind};
 use polar_http_observer::Observation;
-use polar_http_observer::observer::PageRequest;
 use polar_http_observer::observing::{self, Observing};
 use polar_http_observer::paging::{Paging, Style};
 use polar_http_observer::sources::Source;
@@ -536,12 +535,9 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                 observing::Step::Fetch {
                     name,
                     generation,
-                    url,
-                    credential,
-                    paging,
                     page,
-                    query,
-                    after,
+                    item,
+                    asked,
                 },
             ] = fetches[..]
             else {
@@ -552,25 +548,17 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                 "the observer reads `{source}` and only it: {steps:?}"
             );
             assert_eq!(
-                Some(url),
+                Some(&asked.url),
                 urls.get(*page as usize),
                 "page {page} of `{source}` is read where it is"
             );
-            let outcome = polar_http_observer::observer::read::<O>(
-                &self.protocols,
-                PageRequest {
-                    url: url.clone(),
-                    credential: credential.clone(),
-                    paging: paging.clone(),
-                    query: query.clone(),
-                    after: after.clone(),
-                },
-            )
-            .await;
+            let outcome =
+                polar_http_observer::observer::read::<O>(&self.protocols, (**asked).clone()).await;
             let read = observing::Event::Read {
                 name: name.clone(),
                 generation: *generation,
                 page: *page,
+                item: *item,
                 outcome,
             };
             steps = self.observing.on(read);
