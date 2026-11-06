@@ -182,10 +182,7 @@ impl GitWatcherActor {
             let watcher = RecommendedWatcher::new(
                 move |res: notify::Result<notify::Event>| {
                     if let Ok(event) = res
-                        && event
-                            .paths
-                            .iter()
-                            .any(|p| p.extension().and_then(|s| s.to_str()) == Some("dhall"))
+                        && asks_for_a_rescan(&event)
                     {
                         let _ = notify_myself.cast(GitWatcherMsg::Rescan);
                     }
@@ -233,6 +230,16 @@ impl GitWatcherActor {
         debug!("Published schedule change");
         Ok(())
     }
+}
+
+/// Whether an event on disk asks for a rescan: one that changes a Dhall file. Reading a file is not a change, and the
+/// scan reads every schedule, so a read asking for a rescan would keep the watcher scanning without end.
+fn asks_for_a_rescan(event: &notify::Event) -> bool {
+    !event.kind.is_access()
+        && event
+            .paths
+            .iter()
+            .any(|p| p.extension().and_then(|s| s.to_str()) == Some("dhall"))
 }
 
 /// The checkout as one scan read it: each schedule file's text, by path, and what changed since the scan before.
@@ -343,6 +350,39 @@ impl Actor for GitWatcherActor {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// Only a change to a Dhall file asks for a rescan. Reading one does not: the scan reads every schedule, and each
+    /// read asking for the next scan kept the watcher scanning without end (17,476 scans in 2.5 seconds of a test).
+    #[test]
+    fn only_a_change_to_a_dhall_file_asks_for_a_rescan_and_reading_one_does_not() {
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, EventKind, ModifyKind, RemoveKind,
+        };
+        let on = |kind, path: &str| notify::Event::new(kind).add_path(path.into());
+        let schedule = "/checkout/permanent/a.dhall";
+        let read = EventKind::Access(AccessKind::Open(AccessMode::Any));
+        let written = EventKind::Modify(ModifyKind::Data(DataChange::Any));
+        for change in [
+            EventKind::Create(CreateKind::File),
+            written,
+            EventKind::Remove(RemoveKind::File),
+        ] {
+            assert!(asks_for_a_rescan(&on(change, schedule)), "{change:?}");
+        }
+        for not_a_change in [read, EventKind::Access(AccessKind::Close(AccessMode::Read))] {
+            assert!(
+                !asks_for_a_rescan(&on(not_a_change, schedule)),
+                "{not_a_change:?}"
+            );
+        }
+        for (kind, other) in [
+            (read, "/checkout/permanent"),
+            (EventKind::Create(CreateKind::Folder), "/checkout/adhoc"),
+            (written, "/checkout/permanent/notes.txt"),
+        ] {
+            assert!(!asks_for_a_rescan(&on(kind, other)), "{kind:?} {other}");
+        }
+    }
     use std::net::TcpListener;
     use tempfile::TempDir;
 
