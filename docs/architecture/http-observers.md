@@ -198,6 +198,42 @@ An instance is the target and its CA fingerprint, and the pod (`Instance.uid`, s
 section's id, version and digest. The sources are the catalog and scaffolds, the signed deployment record, the `polar-schedules` history, and `polar-running-config` for what is in force (which needs the
 platform version added to its answer).
 
+### How the evidence ties to the architecture (2026-11-06)
+
+What a kind does is mostly signed configuration, not code: its `sources` say what the observer reads, its `projection` what the processor
+writes. So most of what can go wrong with a pair is a fact of one deployment (which mapping is in force, what policy allows, who owns a
+label, whether what was signed was tested), and the layers above answer different questions. Properties (bite 2) are true of the engine
+for any mapping; examples (bites 3 and 4) of one mapping and its samples; facts and invariants (bite 5) of one version of one instance,
+and they are what catches a deployment that is wrong while every test passes.
+
+Each link of a pair is held by one invariant:
+
+```
+service ──HTTP──▶ observer ──topic──▶ processor ──mapping──▶ graph
+          (sources)        (policy)            (projection)  (labels)
+```
+
+- **Observer to processor: every pair connected and allowed.** The first OpenAPI pair published `polar.web.consumer` and subscribed
+  `polar.openapi.processor`, so nothing arrived ("What the OpenAPI pair fixes"); a Cedar `forbid` can cut the same link with the names
+  right. The check runs the authority model's own flow rules, the ones the credentials agent judges a policy by, over the deployment's
+  policy and groups, so the check and the enforcement cannot disagree. That is why the model is split from the agent builder first: the
+  tool that checks links the same rules.
+- **Processor to graph: one owner per label.** Why the labels are `OpenApiApplication` and not a generic `Application`: two writers of one
+  label overwrite each other. The state agent's signed `schema` and the scaffolds must agree on one owner.
+- **The mapping: inside its binary's schema, and tested at the version in force.** Bite 1 judges a mapping when it is signed; bite 5
+  judges what `polar-schedules` holds, against the deployed image's scaffold. Bite 4 leaves a signed record of each test, with the
+  body's digest and the reads no sample reached; bite 5 finds the record for the body in force, and a mapping signed without one is no
+  longer covered: there was evidence, for another version.
+- **The workloads: certified, and seen by health.** Each pair adds two identities, which the credentials agent must certify and the
+  state agent's `agents` list must name; checked live on u7s, the state agent's seeded list predated the pair, so its health was not seen
+  through it ("Checked live on u7s").
+- **Outside: what each workload could touch.** An observer reaches hosts its sections name ("the signer chooses hosts"): reported per
+  workload with its allowed topics and the labels it owns and reads.
+
+Every new kind (GitLab next, Jira after) adds such a pair. The kit gives the kind its tests; the check gives each deployment of it the
+assurance, without a cluster, that the pair is wired, allowed, owned, certified, seen and tested at the version that runs. The one
+deferred, a credentialed fetch reaching the graph unreviewed, is the same idea for the first kind that fetches with a credential.
+
 The bites, in order:
 
 1. **The scaffold becomes the contract.** Built: above.
