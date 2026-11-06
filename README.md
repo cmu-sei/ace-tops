@@ -350,6 +350,7 @@ Things that look wrong and are not:
   can, try with the VPN off. `nu infra/jira-check.nu <target>` says which it is for Jira.
 - **The `neo4j` image is tagged `5.26.2`** and holds Neo4j 2025.08.0, built from source. The tag is a label to change later.
 
+The workarounds, and what is left to do for 3.0.2, are in [docs/operations/3.0.1-known-issues.md](docs/operations/3.0.1-known-issues.md).
 What else is open is in `remaining-work.md`.
 
 ### 7. Day to day
