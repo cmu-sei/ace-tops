@@ -504,6 +504,55 @@ impl Projection {
         body: &Value,
         stamp: &Stamp<'_>,
     ) -> Result<Projected, Refused> {
+        let mut out = Walked {
+            projected: Projected::default(),
+            reach: None,
+        };
+        self.walk(source, body, stamp, &mut out)?;
+        Ok(out.projected)
+    }
+
+    /// Every read the mapping makes, each named by the mapping alone: `guard <path>` for each way a check can pass,
+    /// `<rule> each <path>` for each step, and `<rule>.<name> from <path>` for each key and property. Nothing of a
+    /// document is in a name.
+    pub fn reads(&self) -> BTreeSet<String> {
+        let guard = self
+            .guard
+            .iter()
+            .flat_map(|c| c.any_of.iter().map(|a| guard_read(&a.path)));
+        let rules = self.rules.iter().flat_map(|r| {
+            r.each
+                .iter()
+                .map(|s| step_read(r, s))
+                .chain(r.keys.iter().chain(&r.set).map(|f| field_read(r, f)))
+        });
+        guard.chain(rules).collect()
+    }
+
+    /// The reads of [`Projection::reads`] that found something in this document: a guard's path that holds, a step over
+    /// at least one entry, a key or property with a value. Past a guard that refuses, nothing of a rule.
+    pub fn reached(&self, source: &str, body: &Value) -> BTreeSet<String> {
+        let mut out = Walked {
+            projected: Projected::default(),
+            reach: Some(BTreeSet::new()),
+        };
+        let stamp = Stamp {
+            workload: "",
+            version: 0,
+            observed_at_unix_secs: 0,
+        };
+        // A refusal for size still reached what it read on the way.
+        let _ = self.walk(source, body, &stamp, &mut out);
+        out.reach.unwrap_or_default()
+    }
+
+    fn walk(
+        &self,
+        source: &str,
+        body: &Value,
+        stamp: &Stamp<'_>,
+        out: &mut Walked,
+    ) -> Result<(), Refused> {
         let source = Value::String(source.to_string());
         let stamps = vec![
             (
@@ -523,19 +572,25 @@ impl Projection {
                 Scalar::Integer(stamp.observed_at_unix_secs),
             ),
         ];
-        let mut out = Projected::default();
         let mut scope = Scope::default();
         scope.bind("source", Bound::Ref(&source));
         scope.bind("body", Bound::Ref(body));
+        if let Some(reached) = &mut out.reach {
+            for alternative in self.guard.iter().flat_map(|c| &c.any_of) {
+                if alternative.holds(&scope) {
+                    reached.insert(guard_read(&alternative.path));
+                }
+            }
+        }
         // Before anything is written or cleared.
         if let Some(check) = self.guard.iter().find(|check| !check.holds(&scope)) {
             let paths: Vec<&str> = check.any_of.iter().map(|a| a.path.as_str()).collect();
             return Err(Refused::Guard(paths.join(" or ")));
         }
         for rule in self.rules.iter().filter(|r| r.parent.is_empty()) {
-            self.rule(rule, None, &mut scope, &stamps, &mut out)?;
+            self.rule(rule, None, &mut scope, &stamps, out)?;
         }
-        Ok(out)
+        Ok(())
     }
 
     fn rule<'v>(
@@ -544,7 +599,7 @@ impl Projection {
         parent: Option<&NodeId>,
         scope: &mut Scope<'v>,
         stamps: &[(String, Scalar)],
-        out: &mut Projected,
+        out: &mut Walked,
     ) -> Result<(), Refused> {
         self.steps(rule, &rule.each, parent, scope, stamps, out)
     }
@@ -556,7 +611,7 @@ impl Projection {
         parent: Option<&NodeId>,
         scope: &mut Scope<'v>,
         stamps: &[(String, Scalar)],
-        out: &mut Projected,
+        out: &mut Walked,
     ) -> Result<(), Refused> {
         let Some((step, rest)) = steps.split_first() else {
             return self.node(rule, parent, scope, stamps, out);
@@ -573,6 +628,9 @@ impl Projection {
                 .collect(),
             _ => Vec::new(),
         };
+        if let (Some(reached), false) = (out.reach.as_mut(), entries.is_empty()) {
+            reached.insert(step_read(rule, step));
+        }
         for (key, value) in entries {
             if !step.only.is_empty()
                 && !key
@@ -597,14 +655,19 @@ impl Projection {
         parent: Option<&NodeId>,
         scope: &mut Scope<'v>,
         stamps: &[(String, Scalar)],
-        out: &mut Projected,
+        out: &mut Walked,
     ) -> Result<(), Refused> {
         let mut keys = Vec::with_capacity(rule.keys.len());
         for field in &rule.keys {
             match scope.scalar(&field.from) {
-                Some(value) => keys.push((field.name.clone(), value)),
+                Some(value) => {
+                    if let Some(reached) = out.reach.as_mut() {
+                        reached.insert(field_read(rule, field));
+                    }
+                    keys.push((field.name.clone(), value))
+                }
                 None => {
-                    out.skipped += 1;
+                    out.projected.skipped += 1;
                     return Ok(());
                 }
             }
@@ -618,12 +681,15 @@ impl Projection {
             .iter()
             .map(|f| {
                 let value = scope.scalar(&f.from).unwrap_or(Scalar::Null);
+                if let (Some(reached), false) = (out.reach.as_mut(), value == Scalar::Null) {
+                    reached.insert(field_read(rule, f));
+                }
                 (f.name.clone(), value)
             })
             .collect();
         props.extend_from_slice(stamps);
         push(
-            out,
+            &mut out.projected,
             Write::Node {
                 id: id.clone(),
                 props,
@@ -631,7 +697,7 @@ impl Projection {
         )?;
         if let (Some(from), false) = (parent, rule.edge.is_empty()) {
             push(
-                out,
+                &mut out.projected,
                 Write::Edge {
                     from: from.clone(),
                     to: id.clone(),
@@ -645,6 +711,27 @@ impl Projection {
         }
         Ok(())
     }
+}
+
+/// The reads a walk found something at, when it is asked to note them ([`Projection::reached`]).
+type Reach = Option<BTreeSet<String>>;
+
+/// What a walk makes: the writes, and the reads it found something at when asked.
+struct Walked {
+    projected: Projected,
+    reach: Reach,
+}
+
+fn guard_read(path: &str) -> String {
+    format!("guard {path}")
+}
+
+fn step_read(rule: &Rule, step: &Step) -> String {
+    format!("{} each {}", rule.name, step.over)
+}
+
+fn field_read(rule: &Rule, field: &Field) -> String {
+    format!("{}.{} from {}", rule.name, field.name, field.from)
 }
 
 fn push(out: &mut Projected, write: Write) -> Result<(), Refused> {
@@ -671,22 +758,23 @@ impl Check {
     fn holds(&self, scope: &Scope<'_>) -> bool {
         self.any_of
             .iter()
-            .any(|alternative| match scope.read(&alternative.path) {
-                None | Some(Bound::Ref(Value::Null)) | Some(Bound::Owned(Value::Null)) => false,
-                Some(_) if alternative.prefixes.is_empty() => true,
-                Some(found) => {
-                    let text = match &found {
-                        Bound::Ref(value) => value.as_str(),
-                        Bound::Owned(value) => value.as_str(),
-                    };
-                    text.is_some_and(|text| {
-                        alternative
-                            .prefixes
-                            .iter()
-                            .any(|p| text.starts_with(p.as_str()))
-                    })
-                }
-            })
+            .any(|alternative| alternative.holds(scope))
+    }
+}
+
+impl Alternative {
+    fn holds(&self, scope: &Scope<'_>) -> bool {
+        match scope.read(&self.path) {
+            None | Some(Bound::Ref(Value::Null)) | Some(Bound::Owned(Value::Null)) => false,
+            Some(_) if self.prefixes.is_empty() => true,
+            Some(found) => {
+                let text = match &found {
+                    Bound::Ref(value) => value.as_str(),
+                    Bound::Owned(value) => value.as_str(),
+                };
+                text.is_some_and(|text| self.prefixes.iter().any(|p| text.starts_with(p.as_str())))
+            }
+        }
     }
 }
 

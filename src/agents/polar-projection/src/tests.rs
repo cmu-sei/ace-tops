@@ -290,6 +290,68 @@ fn a_guard_is_required_and_must_be_able_to_mean_something() {
     );
 }
 
+/// A read is named by the mapping alone: a guard's path, a rule's step, a rule's key or property and where it comes from.
+#[test]
+fn what_a_mapping_reads_is_named_by_the_mapping_alone() {
+    let reads = openapi().reads();
+    for name in [
+        "guard body.openapi",
+        "guard body.swagger",
+        "application.source from source",
+        "application.title from body.info.title",
+        "application.license from body.info.license.name",
+        "endpoint each body.paths",
+        "endpoint.method from method",
+        "endpoint.deprecated from operation.deprecated",
+    ] {
+        assert!(reads.contains(name), "{name} in {reads:#?}");
+    }
+    let body = openapi_body();
+    let count = |v: &Value| v.as_array().map_or(0, Vec::len);
+    let guard: usize = body["guard"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| count(&c["any_of"]))
+        .sum();
+    let rules: usize = body["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| count(&r["each"]) + count(&r["keys"]) + count(&r["set"]))
+        .sum();
+    assert_eq!(reads.len(), guard + rules);
+}
+
+/// What a document reaches is what found a value: a document without a license does not reach it, one that is not the
+/// document reaches nothing past the guard.
+#[test]
+fn a_document_reaches_the_reads_that_found_something() {
+    let projection = openapi();
+    let document = doc(json!({ "/a": { "get": { "summary": "s" } } }));
+    let reached = projection.reached("s", &document);
+    for name in [
+        "guard body.openapi",
+        "application.title from body.info.title",
+        "endpoint each body.paths",
+        "endpoint.summary from operation.summary",
+    ] {
+        assert!(reached.contains(name), "{name} in {reached:#?}");
+    }
+    for name in [
+        "guard body.swagger",
+        "application.license from body.info.license.name",
+        "endpoint.operation_id from operation.operationId",
+    ] {
+        assert!(!reached.contains(name), "{name} in {reached:#?}");
+    }
+    let refused = projection.reached("s", &json!({ "error": "no" }));
+    assert!(
+        refused.iter().all(|r| r.starts_with("guard ")),
+        "{refused:#?}"
+    );
+}
+
 #[test]
 fn every_write_carries_where_it_came_from() {
     let document = doc(json!({ "/a": { "get": {} } }));
@@ -742,6 +804,40 @@ proptest! {
         if serde_json::from_slice::<Value>(&junk).is_err() {
             let got = openapi().outcome("s", &junk, &stamp());
             prop_assert!(matches!(&got, Outcome::Refused(why) if why.starts_with("it is not JSON")), "{got:?}");
+        }
+    }
+
+    /// Whatever the mapping and the document, what is reached is something the mapping reads, the same each time, and past
+    /// a guard that refuses nothing of a rule is.
+    #[test]
+    fn what_a_document_reaches_is_some_of_what_the_mapping_reads(
+        generated in testing::mapping(),
+        source in testing::source(),
+        document in testing::document(),
+    ) {
+        let projection = generated
+            .with_bounds(|bounds| Projection::judged(&generated.body, bounds))
+            .unwrap();
+        let reads = projection.reads();
+        let reached = projection.reached(&source, &document);
+        prop_assert!(reached.is_subset(&reads), "{reached:?} not in {reads:?}");
+        prop_assert_eq!(&reached, &projection.reached(&source, &document));
+        if let Err(Refused::Guard(_)) = projection.project(&source, &document, &stamp()) {
+            prop_assert!(reached.iter().all(|r| r.starts_with("guard ")), "{reached:?}");
+        }
+        // A node written is a rule whose every key was reached.
+        if let Ok(projected) = projection.project(&source, &document, &stamp()) {
+            for write in &projected.writes {
+                if let Write::Node { id, .. } = write {
+                    let rule = projection.rules().iter().find(|r| r.label == id.label).unwrap();
+                    if projection.rules().iter().filter(|r| r.label == id.label).count() == 1 {
+                        for key in &rule.keys {
+                            let name = format!("{}.{} from {}", rule.name, key.name, key.from);
+                            prop_assert!(reached.contains(&name), "{name} in {reached:?}");
+                        }
+                    }
+                }
+            }
         }
     }
 

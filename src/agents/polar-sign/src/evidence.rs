@@ -26,9 +26,10 @@
 //! mapping is inside the schema the agent's scaffold gives; signed as a runtime section and read back as the agent
 //! reads its file, it is the same projection; and each sample beside it becomes what is written beside that.
 //!
-//! The record says what it is true of, by digest: the mapping's file, the scaffold (and the agent version it carries),
-//! each sample and what is written beside it, and this tool's version; and the result, in lines that name a sample and
-//! never say what it holds. It is signed in its own domain (`Domain::EVIDENCE_RECORD`), so it is never taken as a
+//! The record says what it is true of, by digest: the mapping's file and its body (what the schedules hold), the
+//! scaffold (and the agent version it carries), each sample and what is written beside it, and this tool's version; the
+//! reads of the mapping no sample reached, by the mapping's own names (`Projection::reads`); and the result, in lines that
+//! name a sample and never say what it holds. It is signed in its own domain (`Domain::EVIDENCE_RECORD`), so it is never taken as a
 //! configuration document, and goes in the evidence repository on Polar's git server, one file per record, named by
 //! its digest, so a record is only ever added.
 
@@ -118,6 +119,8 @@ pub fn projection_test(
         Err(_) => Vec::new(),
     };
 
+    let mut body_sha256 = Value::Null;
+    let mut coverage = Value::Null;
     match projection_for(&scaffold, test.section, test.mapping) {
         Err(problems) => {
             for p in problems {
@@ -131,6 +134,10 @@ pub fn projection_test(
             let projection = scaffold
                 .projection(&body)
                 .expect("judged by projection_for");
+            // What the schedules hold is the body, not the author's file, so a check finds a test by this.
+            body_sha256 = json!(sha256(
+                &polar_signing::canonical::encode(&body).unwrap_or_default()
+            ));
             // Signed as it would be, and read back as the agent reads the committed file.
             let payload = runtime_payload(
                 &scaffold.agent,
@@ -163,12 +170,19 @@ pub fn projection_test(
             match &read {
                 Err(e) => problem(e.clone(), e.clone()),
                 Ok(found) => {
+                    let mut reached = std::collections::BTreeSet::new();
                     for sample in found {
                         let got = plainly(&sample.outcome(&projection, &STAMP));
                         if let Err(differs) = sample.check(&got) {
                             problem(differs.briefly(sample), differs.fully(sample));
                         }
+                        if let Ok(document) = serde_json::from_slice::<Value>(&sample.document) {
+                            reached.extend(projection.reached(&sample.name, &document));
+                        }
                     }
+                    let reads = projection.reads();
+                    let unreached: Vec<&String> = reads.difference(&reached).collect();
+                    coverage = json!({ "reads": reads.len(), "unreached": unreached });
                 }
             }
         }
@@ -177,7 +191,12 @@ pub fn projection_test(
     let record = json!({
         "type": PROJECTION_TEST,
         "subject": { "agent": scaffold.agent, "section": test.section },
-        "mapping": { "file": test.mapping_name, "sha256": sha256(test.mapping.as_bytes()) },
+        "mapping": {
+            "file": test.mapping_name,
+            "sha256": sha256(test.mapping.as_bytes()),
+            "body_sha256": body_sha256,
+        },
+        "coverage": coverage,
         "scaffold": { "sha256": sha256(test.scaffold.as_bytes()), "agent_version": agent_version },
         "samples": listed,
         "tool": polar_version::record("polar-sign"),
@@ -352,6 +371,12 @@ mod tests {
         assert_eq!(record["tool"]["version"], polar_version::PLATFORM);
         assert_eq!(record["tested_at_unix_secs"], now());
         assert_eq!(record["result"], json!({ "passed": true, "problems": [] }));
+        assert_eq!(record["coverage"], json!({ "reads": 20, "unreached": [] }));
+        let body = crate::projection_body(EXAMPLE).unwrap();
+        assert_eq!(
+            record["mapping"]["body_sha256"],
+            sha256(&polar_signing::canonical::encode(&body).unwrap())
+        );
         let listed = record["samples"].as_array().unwrap();
         let found = samples::read(&examples()).unwrap();
         assert_eq!(listed.len(), found.len());
@@ -431,6 +456,34 @@ mod tests {
         assert!(!problems.is_empty());
         // What was given is still named.
         assert_eq!(tested.record["samples"].as_array().unwrap().len(), 5);
+        assert_eq!(tested.record["mapping"]["body_sha256"], Value::Null);
+        assert_eq!(tested.record["coverage"], Value::Null);
+    }
+
+    #[test]
+    fn the_reads_no_sample_reaches_are_named_by_the_mapping() {
+        let who = someone();
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["no-paths.json", "no-paths.expected.json"] {
+            std::fs::copy(examples().join(name), dir.path().join(name)).unwrap();
+        }
+        let tested = run(&scaffold(has_endpoint()), dir.path(), &who);
+        assert!(tested.passed(), "it is evidence, not a failure");
+        let unreached: Vec<&str> = tested.record["coverage"]["unreached"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        for name in [
+            "endpoint each body.paths",
+            "endpoint.method from method",
+            "application.swagger from body.swagger",
+        ] {
+            assert!(unreached.contains(&name), "{name} in {unreached:?}");
+        }
+        assert!(!unreached.contains(&"application.title from body.info.title"));
+        assert_eq!(tested.record["coverage"]["reads"], 20);
     }
 
     #[test]
