@@ -117,6 +117,7 @@ mod tests {
                     workload: "w",
                     version: 1,
                     observed_at_unix_secs: 1,
+                    origin: "https://h.example",
                 },
             )
             .unwrap();
@@ -146,7 +147,7 @@ mod tests {
             let projection = generated
                 .with_bounds(|bounds| Projection::judged(&generated.body, bounds))
                 .unwrap();
-            let stamp = Stamp { workload: "w", version: 1, observed_at_unix_secs: 1 };
+            let stamp = Stamp { workload: "w", version: 1, observed_at_unix_secs: 1, origin: "https://h.example" };
             let Ok(projected) = projection.project(&source, &document, &stamp) else {
                 return Ok(());
             };
@@ -175,6 +176,7 @@ mod tests {
                     workload: "w",
                     version: 1,
                     observed_at_unix_secs: 1,
+                    origin: "https://h.example",
                 },
             )
             .unwrap();

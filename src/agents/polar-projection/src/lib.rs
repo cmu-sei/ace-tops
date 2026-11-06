@@ -60,8 +60,8 @@ pub const MAX_CHECKS: usize = 16;
 pub const MAX_ALTERNATIVES: usize = 8;
 /// What a property the engine stamps starts with. No rule may write one.
 pub const STAMP_PREFIX: &str = "polar_";
-/// What a path may start from, whatever a rule binds.
-const ROOTS: [&str; 2] = ["source", "body"];
+/// What a path may start from, whatever a rule binds: the source's name, the origin it was read from, the document.
+const ROOTS: [&str; 3] = ["source", "origin", "body"];
 
 /// A property: its name in the graph, and the path its value comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +185,8 @@ pub struct Stamp<'a> {
     pub workload: &'a str,
     pub version: u64,
     pub observed_at_unix_secs: i64,
+    /// The origin of the source it was read from (scheme, host and port), which a mapping may read as `origin`.
+    pub origin: &'a str,
 }
 
 /// A document's writes, and how many of its entries could not be identified and were skipped.
@@ -548,7 +550,7 @@ impl Projection {
 
     /// The reads of [`Projection::reads`] that found something in this document: a guard's path that holds, a step over
     /// at least one entry, a key or property with a value. Past a guard that refuses, nothing of a rule.
-    pub fn reached(&self, source: &str, body: &Value) -> BTreeSet<String> {
+    pub fn reached(&self, source: &str, origin: &str, body: &Value) -> BTreeSet<String> {
         let mut out = Walked {
             projected: Projected::default(),
             reach: Some(BTreeSet::new()),
@@ -557,6 +559,7 @@ impl Projection {
             workload: "",
             version: 0,
             observed_at_unix_secs: 0,
+            origin,
         };
         // A refusal for size still reached what it read on the way.
         let _ = self.walk(source, body, &stamp, &mut out);
@@ -571,6 +574,7 @@ impl Projection {
         out: &mut Walked,
     ) -> Result<(), Refused> {
         let source = Value::String(source.to_string());
+        let origin = Value::String(stamp.origin.to_string());
         let stamps = vec![
             (
                 "polar_source".to_string(),
@@ -588,9 +592,14 @@ impl Projection {
                 "polar_observed_at".to_string(),
                 Scalar::Integer(stamp.observed_at_unix_secs),
             ),
+            (
+                "polar_origin".to_string(),
+                Scalar::Text(stamp.origin.to_string()),
+            ),
         ];
         let mut scope = Scope::default();
         scope.bind("source", Bound::Ref(&source));
+        scope.bind("origin", Bound::Ref(&origin));
         scope.bind("body", Bound::Ref(body));
         if let Some(reached) = &mut out.reach {
             for alternative in self.guard.iter().flat_map(|c| &c.any_of) {

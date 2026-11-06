@@ -79,6 +79,7 @@ const STAMP: Stamp<'static> = Stamp {
     workload: "polar-sign",
     version: 1,
     observed_at_unix_secs: 0,
+    origin: polar_projection::samples::SAMPLE_ORIGIN,
 };
 
 /// Runs the checks. `identity` signs the mapping for the round trip, which is not kept, and `trust_pem` is what the
@@ -177,7 +178,11 @@ pub fn projection_test(
                             problem(differs.briefly(sample), differs.fully(sample));
                         }
                         if let Ok(document) = serde_json::from_slice::<Value>(&sample.document) {
-                            reached.extend(projection.reached(&sample.name, &document));
+                            reached.extend(projection.reached(
+                                &sample.name,
+                                polar_projection::samples::SAMPLE_ORIGIN,
+                                &document,
+                            ));
                         }
                     }
                     let reads = projection.reads();

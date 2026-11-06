@@ -50,6 +50,8 @@ pub const MAX_DOCUMENT_BYTES: usize = cassini_types::MAX_PAYLOAD_BYTES - 4096;
 pub struct Observation {
     /// The source's name, as the signed section gives it.
     pub source: String,
+    /// Its address's origin (scheme, host and port), which the processor's mapping may read as `origin`.
+    pub origin: String,
     pub observed_at_unix_secs: i64,
     /// The document as it came.
     pub body: Vec<u8>,
@@ -78,9 +80,9 @@ mod tests {
     proptest! {
         #[test]
         fn an_observation_comes_back_as_it_went(
-            source in "[ -~]{0,16}", at in any::<i64>(), body in prop::collection::vec(any::<u8>(), 0..256)
+            source in "[ -~]{0,16}", origin in "[ -~]{0,24}", at in any::<i64>(), body in prop::collection::vec(any::<u8>(), 0..256)
         ) {
-            let sent = Observation { source, observed_at_unix_secs: at, body };
+            let sent = Observation { source, origin, observed_at_unix_secs: at, body };
             prop_assert_eq!(Observation::decode(&sent.encode().unwrap()).unwrap(), sent);
         }
 

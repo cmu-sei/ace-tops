@@ -71,9 +71,10 @@ pub enum Step {
         /// Which page of the read this is, from 0.
         page: u32,
     },
-    /// Publish what a source said: one page of it.
+    /// Publish what a source said: one page of it, and the origin it was read from.
     Publish {
         source: String,
+        origin: String,
         body: Vec<u8>,
     },
     /// Say [`Event::Due`] for it after this long.
@@ -196,6 +197,7 @@ impl Observing {
                     return steps;
                 }
                 let after = next_read(Duration::from_secs(source.interval_secs), &outcome);
+                let origin = crate::sources::origin(&source.url);
                 let max_pages = source.paging.as_ref().map_or(1, |p| p.max_pages);
                 let following = |url: String| Step::Fetch {
                     name: name.clone(),
@@ -232,6 +234,7 @@ impl Observing {
                         };
                         steps.push(Step::Publish {
                             source: name.clone(),
+                            origin,
                             body,
                         });
                         next
@@ -380,7 +383,11 @@ mod tests {
     #[test]
     fn a_read_is_published_and_the_source_read_again_at_its_interval() {
         let mut observing = Observing::default();
-        let steps = observing.on(Event::Sources(vec![source("a", "http://h/a", 60)]));
+        let steps = observing.on(Event::Sources(vec![source(
+            "a",
+            "https://h.example:8443/a?x=1",
+            60,
+        )]));
         let [Step::Fetch { generation, .. }] = steps[..] else {
             panic!("{steps:?}")
         };
@@ -398,6 +405,7 @@ mod tests {
             [
                 Step::Publish {
                     source: "a".to_string(),
+                    origin: "https://h.example:8443".to_string(),
                     body: b"{}".to_vec()
                 },
                 Step::Again {
@@ -598,7 +606,7 @@ mod tests {
                             let max_pages = listed[name].paging.as_ref().map_or(1, |p| p.max_pages);
                             let mut expected = Vec::new();
                             if let Outcome::Document(b, _) = outcome {
-                                expected.push(Step::Publish { source: name.clone(), body: vec![*b] });
+                                expected.push(Step::Publish { source: name.clone(), origin: "http://h".to_string(), body: vec![*b] });
                             }
                             // A page that names the next is followed at the same generation while the bound allows; the
                             // last page, a failure, or a next page beyond the bound waits for the next read.

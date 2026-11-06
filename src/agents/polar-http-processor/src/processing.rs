@@ -47,6 +47,7 @@ pub fn process(
         workload,
         version,
         observed_at_unix_secs: observation.observed_at_unix_secs,
+        origin: &observation.origin,
     };
     projection.outcome(&observation.source, &observation.body, &stamp)
 }
@@ -196,6 +197,7 @@ mod tests {
     fn observation(document: &[u8]) -> Observation {
         Observation {
             source: "s".to_string(),
+            origin: "https://h.example".to_string(),
             observed_at_unix_secs: 1,
             body: document.to_vec(),
         }
@@ -395,6 +397,8 @@ mod tests {
                     Scalar::Integer(self.version as i64),
                 ),
                 ("polar_observed_at", Scalar::Integer(self.at)),
+                // The origin the observer read it from.
+                ("polar_origin", Scalar::Text("https://h.example".to_string())),
             ]
             .into_iter()
             .map(|(n, v)| (n.to_string(), v))
@@ -538,6 +542,7 @@ mod tests {
                         };
                         steps.extend(processing.on(Event::Observed(Observation {
                             source: source.to_string(),
+                            origin: "https://h.example".to_string(),
                             observed_at_unix_secs: clock,
                             body,
                         })));

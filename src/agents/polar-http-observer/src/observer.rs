@@ -380,7 +380,11 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
                     });
                 });
             }
-            Step::Publish { source, body } => publish::<K>(&state.tcp_client, &source, body),
+            Step::Publish {
+                source,
+                origin,
+                body,
+            } => publish::<K>(&state.tcp_client, &source, origin, body),
             Step::Again {
                 name,
                 generation,
@@ -396,9 +400,10 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
     }
 }
 
-fn publish<K: Kind>(client: &TcpClient, source: &str, body: Vec<u8>) {
+fn publish<K: Kind>(client: &TcpClient, source: &str, origin: String, body: Vec<u8>) {
     let observation = Observation {
         source: source.to_string(),
+        origin,
         observed_at_unix_secs: now_unix_secs(),
         body,
     };

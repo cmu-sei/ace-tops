@@ -213,6 +213,7 @@ mod tests {
                 workload: "jira-processor",
                 version: 1,
                 observed_at_unix_secs: 1,
+                origin: "https://jira.example",
             };
             let projected = projection.project("site", &body, &stamp).unwrap();
             assert_eq!(projected.skipped, 0);

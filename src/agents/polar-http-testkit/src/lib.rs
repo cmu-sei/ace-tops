@@ -562,8 +562,12 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             steps = self.observing.on(read);
             for step in &steps {
                 match step {
-                    observing::Step::Publish { source, body } => {
-                        observed.push(self.deliver(source, body.clone()));
+                    observing::Step::Publish {
+                        source,
+                        origin,
+                        body,
+                    } => {
+                        observed.push(self.deliver(source, origin, body.clone()));
                     }
                     observing::Step::Again {
                         name, generation, ..
@@ -584,10 +588,11 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
     }
 
     /// What the observer published, carried as the broker carries it and given to the processor.
-    fn deliver(&mut self, source: &str, body: Vec<u8>) -> Observed {
+    fn deliver(&mut self, source: &str, origin: &str, body: Vec<u8>) -> Observed {
         self.clock += 1;
         let sent = Observation {
             source: source.to_string(),
+            origin: origin.to_string(),
             observed_at_unix_secs: self.clock,
             body,
         };
@@ -670,7 +675,17 @@ where
             "`{}`: the pair wrote other than the mapping makes of what it read",
             sample.name
         );
-        let got = plainly(&outcome);
+        // What is written beside a sample is what it becomes at the samples' origin, wherever the stand-in served it.
+        let at_samples = Observation {
+            origin: samples::SAMPLE_ORIGIN.to_string(),
+            ..observed.observation.clone()
+        };
+        let got = plainly(&processing::process(
+            &projection,
+            version,
+            workload,
+            &at_samples,
+        ));
         if blessing() {
             sample.bless(&got).expect("written");
             continue;

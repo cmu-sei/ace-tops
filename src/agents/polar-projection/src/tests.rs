@@ -48,6 +48,7 @@ fn stamp() -> Stamp<'static> {
         workload: "openapi-processor",
         version: 7,
         observed_at_unix_secs: 1_000,
+        origin: "https://shop.example",
     }
 }
 
@@ -329,7 +330,7 @@ fn what_a_mapping_reads_is_named_by_the_mapping_alone() {
 fn a_document_reaches_the_reads_that_found_something() {
     let projection = openapi();
     let document = doc(json!({ "/a": { "get": { "summary": "s" } } }));
-    let reached = projection.reached("s", &document);
+    let reached = projection.reached("s", "https://h.example", &document);
     for name in [
         "guard body.openapi",
         "application.title from body.info.title",
@@ -345,7 +346,7 @@ fn a_document_reaches_the_reads_that_found_something() {
     ] {
         assert!(!reached.contains(name), "{name} in {reached:#?}");
     }
-    let refused = projection.reached("s", &json!({ "error": "no" }));
+    let refused = projection.reached("s", "https://h.example", &json!({ "error": "no" }));
     assert!(
         refused.iter().all(|r| r.starts_with("guard ")),
         "{refused:#?}"
@@ -694,6 +695,7 @@ fn is_stamped(stamps: &[&(String, Scalar)], source: &str) -> bool {
     got.sort_by_key(|(n, _)| *n);
     got == [
         ("polar_observed_at", &Scalar::Integer(1_000)),
+        ("polar_origin", &text("https://shop.example")),
         ("polar_projection_version", &Scalar::Integer(7)),
         ("polar_source", &text(source)),
         ("polar_workload", &text("openapi-processor")),
@@ -819,9 +821,9 @@ proptest! {
             .with_bounds(|bounds| Projection::judged(&generated.body, bounds))
             .unwrap();
         let reads = projection.reads();
-        let reached = projection.reached(&source, &document);
+        let reached = projection.reached(&source, "https://h.example", &document);
         prop_assert!(reached.is_subset(&reads), "{reached:?} not in {reads:?}");
-        prop_assert_eq!(&reached, &projection.reached(&source, &document));
+        prop_assert_eq!(&reached, &projection.reached(&source, "https://h.example", &document));
         if let Err(Refused::Guard(_)) = projection.project(&source, &document, &stamp()) {
             prop_assert!(reached.iter().all(|r| r.starts_with("guard ")), "{reached:?}");
         }
@@ -1048,6 +1050,7 @@ fn a_rule_s_checks_are_reads_and_reached_where_they_hold() {
     }
     let reached = projection.reached(
         "groups",
+        "https://h.example",
         &json!({ "values": [{ "groupId": "g1", "name": "dev" }] }),
     );
     assert!(reached.contains("group when item.groupId"), "{reached:#?}");
@@ -1132,4 +1135,64 @@ proptest! {
             prop_assert_eq!(got, Ok(Projected::default()));
         }
     }
+}
+
+/// Where a document came from is part of what it says: a mapping may read its source's origin as `origin`, to tell one
+/// service's ids from another's, and every write says the origin it came from.
+#[test]
+fn a_mapping_reads_where_its_document_came_from_and_every_write_says_so() {
+    let body = json!({
+        "guard": [{ "any_of": [{ "path": "body.values", "prefixes": [] }] }],
+        "rules": [{
+            "name": "project", "parent": "",
+            "each": [{ "key": "i", "value": "item", "over": "body.values", "only": [] }],
+            "label": "Project",
+            "keys": [{ "name": "origin", "from": "origin" }, { "name": "id", "from": "item.id" }],
+            "set": [], "edge": ""
+        }]
+    });
+    let projection = Projection::well_formed(&body).unwrap();
+    let document = json!({ "values": [{ "id": "gid://gitlab/Project/1" }] });
+    let at = |origin| Stamp { origin, ..stamp() };
+    let one = projection
+        .project("projects", &document, &at("https://gitlab.one.example"))
+        .unwrap();
+    let two = projection
+        .project(
+            "projects",
+            &document,
+            &at("https://gitlab.two.example:8443"),
+        )
+        .unwrap();
+    let ids = |p: &Projected| -> Vec<NodeId> {
+        p.writes
+            .iter()
+            .filter_map(|w| match w {
+                Write::Node { id, .. } => Some(id.clone()),
+                Write::Edge { .. } => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        ids(&one)[0].keys[0],
+        ("origin".to_string(), text("https://gitlab.one.example"))
+    );
+    assert_ne!(
+        ids(&one),
+        ids(&two),
+        "the same id at two services is two nodes"
+    );
+    let Write::Node { props, .. } = &one.writes[0] else {
+        panic!("{one:?}")
+    };
+    assert_eq!(
+        prop(props, "polar_origin"),
+        Some(&text("https://gitlab.one.example"))
+    );
+    assert!(projection.reads().contains("project.origin from origin"));
+    assert!(
+        projection
+            .reached("projects", "https://gitlab.one.example", &document)
+            .contains("project.origin from origin")
+    );
 }

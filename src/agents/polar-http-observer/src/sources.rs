@@ -120,6 +120,14 @@ fn validate_credentialed(body: &Value) -> Result<(), Vec<String>> {
     }
 }
 
+/// The origin of a source's address: its scheme, host and port, as a page's processor reads it to tell one service's ids
+/// from another's. An address the section took always has one.
+pub fn origin(url: &str) -> String {
+    url::Url::parse(url)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_default()
+}
+
 /// Whether an address can be read: http or https, which the parser holds to a host, and nothing that could be a secret in
 /// what is logged and kept.
 fn url_problem(url: &str) -> Option<String> {

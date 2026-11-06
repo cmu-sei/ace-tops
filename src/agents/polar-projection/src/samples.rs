@@ -102,10 +102,17 @@ pub fn read(dir: &Path) -> Result<Vec<Sample>, String> {
         .collect()
 }
 
+/// Where every sample is read from, so what one becomes does not depend on where a test served it.
+pub const SAMPLE_ORIGIN: &str = "https://samples.example";
+
 impl Sample {
-    /// What the sample becomes under `projection`, read as the source of its name.
+    /// What the sample becomes under `projection`, read as the source of its name, at [`SAMPLE_ORIGIN`].
     pub fn outcome(&self, projection: &Projection, stamp: &Stamp<'_>) -> Outcome {
-        projection.outcome(&self.name, &self.document, stamp)
+        let at = Stamp {
+            origin: SAMPLE_ORIGIN,
+            ..*stamp
+        };
+        projection.outcome(&self.name, &self.document, &at)
     }
 
     /// Whether `got`, what it became plainly, is what is written beside it.
@@ -255,6 +262,7 @@ mod tests {
         workload: "w",
         version: 1,
         observed_at_unix_secs: 1,
+        origin: "https://elsewhere.example",
     };
 
     /// The example's samples, read through the example mapping, are what is written beside them; the kit holds the
