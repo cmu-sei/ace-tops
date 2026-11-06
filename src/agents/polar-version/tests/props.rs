@@ -24,7 +24,7 @@
 // The rules of a platform version, for every input: what is written is read back, the compile-time check and the
 // parser agree on every text, and a release and a development version are each other's with the numbers kept.
 
-use polar_version::{PlatformVersion, VersionRecord, answer, well_formed};
+use polar_version::{PlatformVersion, VersionRange, VersionRecord, answer, well_formed};
 use proptest::prelude::*;
 
 fn version() -> impl Strategy<Value = PlatformVersion> {
@@ -102,4 +102,54 @@ proptest! {
             prop_assert_eq!(r.name, "tool");
         }
     }
+}
+
+proptest! {
+    /// A release comes before its own development line, which comes before the next release: the order a signed range
+    /// is read by. Otherwise the numbers decide, most significant first.
+    #[test]
+    fn versions_are_ordered_by_their_numbers_and_a_release_before_its_development_line(a in version(), b in version()) {
+        let numbers = |v: &PlatformVersion| (v.major, v.minor, v.patch);
+        if numbers(&a) != numbers(&b) {
+            prop_assert_eq!(a.cmp(&b), numbers(&a).cmp(&numbers(&b)));
+        } else {
+            prop_assert_eq!(a.cmp(&b), a.development.cmp(&b.development));
+        }
+        prop_assert!(a.as_release() <= a.as_development());
+    }
+
+    /// A range holds a version exactly when it is at or after `from` and before `below`, each when given; a range with
+    /// neither holds every version.
+    #[test]
+    fn a_range_holds_exactly_the_versions_from_its_start_and_below_its_end(
+        v in version(),
+        from in proptest::option::of(version()),
+        below in proptest::option::of(version()),
+    ) {
+        let range = VersionRange { from, below };
+        let expected = from.is_none_or(|f| v >= f) && below.is_none_or(|b| v < b);
+        prop_assert_eq!(range.includes(v), expected);
+        prop_assert!(VersionRange::default().includes(v));
+    }
+}
+
+#[test]
+fn a_range_is_read_from_its_two_fields_and_refused_when_they_are_not_versions() {
+    let range =
+        VersionRange::parse(&serde_json::json!({ "from": "3.1.0", "below": "4.0.0" })).unwrap();
+    assert!(range.includes(PlatformVersion::parse("3.1.0").unwrap()));
+    assert!(range.includes(PlatformVersion::parse("3.1.0+dev").unwrap()));
+    assert!(!range.includes(PlatformVersion::parse("3.0.0+dev").unwrap()));
+    assert!(!range.includes(PlatformVersion::parse("4.0.0").unwrap()));
+    assert_eq!(range.to_string(), "from 3.1.0, below 4.0.0");
+    assert_eq!(
+        VersionRange::parse(&serde_json::json!({})).unwrap(),
+        VersionRange::default()
+    );
+    assert_eq!(VersionRange::default().to_string(), "any version");
+    assert!(VersionRange::parse(&serde_json::json!({ "from": "v3" })).is_err());
+    assert!(VersionRange::parse(&serde_json::json!({ "since": "3.0.0" })).is_err());
+    assert!(
+        VersionRange::parse(&serde_json::json!({ "from": "4.0.0", "below": "3.0.0" })).is_err()
+    );
 }

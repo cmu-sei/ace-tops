@@ -859,6 +859,7 @@ impl Actor for InfrastructureSupervisor {
             myself_cell.clone(),
         )
         .await?;
+        configuration.report_to(HealthHandle::new(healthcheck.clone()));
         let commands = crate::command_actor::CommandHandle::spawn_with_policy(
             None,
             args.service_name.clone(),

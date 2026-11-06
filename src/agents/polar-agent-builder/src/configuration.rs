@@ -238,6 +238,8 @@ pub enum ConfigurationMessage {
         published_by: Option<String>,
         reply: RpcReplyPort<Result<RunningConfiguration, Rejection>>,
     },
+    /// Where to say a standing problem of a signed document: a document signed for other versions of the agent.
+    ReportTo(crate::health::HealthHandle),
 }
 
 pub struct ConfigurationActor;
@@ -283,6 +285,10 @@ pub struct ConfigurationState {
     judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
     settings_judge: Option<SettingsJudge>,
     followers: Vec<Follower>,
+    /// Where a standing problem of a signed document is said, once the agent has given it.
+    health: Option<crate::health::HealthHandle>,
+    /// Whether this actor holds the agent, for a document signed for other versions; released when one is applied.
+    held_for_range: bool,
 }
 
 /// The id and version a document says it has, read without trusting any of it: only to label an outcome.
@@ -475,6 +481,18 @@ impl ConfigurationState {
         rejection: Rejection,
     ) -> ApplyOutcome {
         warn!(%rejection, "signed configuration refused");
+        // Signed for other versions of this agent: what it holds stays in force, and it holds until one is signed for it
+        // (docs/architecture/http-observers.md, "Versions and migrations").
+        if let (Rejection::OutOfRange { .. }, Some(health)) = (&rejection, &self.health) {
+            health.hold(
+                polar_health::HoldReason::Configuration,
+                format!(
+                    "a signed document ({}) is {rejection}: sign it for this version",
+                    id.as_deref().unwrap_or("with no id")
+                ),
+            );
+            self.held_for_range = true;
+        }
         let outcome = ApplyOutcome::Refused(Refusal::Unverified(rejection));
         self.record(id, version, 0, None, &outcome);
         outcome
@@ -517,6 +535,13 @@ impl ConfigurationState {
         signer: Option<String>,
         outcome: &ApplyOutcome,
     ) {
+        if self.held_for_range
+            && matches!(outcome, ApplyOutcome::Applied { .. })
+            && let Some(health) = &self.health
+        {
+            health.release(polar_health::HoldReason::Configuration);
+            self.held_for_range = false;
+        }
         if self.history.len() == HISTORY {
             self.history.pop_front();
         }
@@ -650,6 +675,8 @@ impl Actor for ConfigurationActor {
             judge: args.judge,
             settings_judge: args.settings_judge,
             followers: Vec::new(),
+            health: None,
+            held_for_range: false,
         })
     }
 
@@ -699,6 +726,7 @@ impl Actor for ConfigurationActor {
             } => {
                 let _ = reply.send(state.question(&document, published_by.as_deref()).await);
             }
+            ConfigurationMessage::ReportTo(health) => state.health = Some(health),
         }
         Ok(())
     }
@@ -791,6 +819,12 @@ impl ConfigurationHandle {
             outcomes,
             runtime_changes,
         })
+    }
+
+    /// Where the actor says a standing problem of a signed document (one signed for other versions of the agent): the
+    /// agent's health, given once it is up.
+    pub fn report_to(&self, health: crate::health::HealthHandle) {
+        let _ = self.actor.cast(ConfigurationMessage::ReportTo(health));
     }
 
     /// The latest accepted body of a runtime section and its version; none until one has arrived.
@@ -2330,6 +2364,109 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(again, ApplyOutcome::Applied { .. }), "{again:?}");
+    }
+
+    /// A document signed for other versions of the agent is refused, what it held stays, and the agent holds on
+    /// Configuration saying why; a document for its version applied releases it.
+    #[tokio::test]
+    async fn a_document_for_other_versions_holds_the_agent_until_one_for_it_is_applied() {
+        use polar_health::HealthCheckMessage;
+        struct Health(Arc<Mutex<Vec<String>>>);
+        #[ractor::async_trait]
+        impl Actor for Health {
+            type Msg = HealthCheckMessage;
+            type State = ();
+            type Arguments = ();
+            async fn pre_start(
+                &self,
+                _: ActorRef<Self::Msg>,
+                _: (),
+            ) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+            async fn handle(
+                &self,
+                _: ActorRef<Self::Msg>,
+                message: Self::Msg,
+                _: &mut (),
+            ) -> Result<(), ActorProcessingErr> {
+                let said = match message {
+                    HealthCheckMessage::Hold { reason, message } => {
+                        format!("hold {reason:?}: {message}")
+                    }
+                    HealthCheckMessage::Release(reason) => format!("release {reason:?}"),
+                    _ => return Ok(()),
+                };
+                self.0.lock().unwrap().push(said);
+                Ok(())
+            }
+        }
+        let signed = Signed::new();
+        let running = polar_version::PlatformVersion::parse("3.1.0").unwrap();
+        let (config, _) = runtime_handle(signed.verifier().with_version(running)).await;
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let (health, _) = Actor::spawn(None, Health(told.clone()), ()).await.unwrap();
+        config.report_to(crate::health::HealthHandle::new(health));
+
+        let s = signer(
+            &signed.ca,
+            Spec {
+                capabilities: vec!["c:update-runtime"],
+                ..Spec::default()
+            },
+        );
+        let for_versions = |version: u64, versions: Value| {
+            polar_signing::sign(
+                json!({"type": "runtime", "id": format!("r-{version}"), "target": {"agent": AGENT, "versions": versions},
+                       "section": "repositories", "version": version, "body": repos(&["https://a.example/r.git"])}),
+                std::slice::from_ref(&s.cert_pem),
+                &s.key_pem,
+            )
+            .unwrap()
+            .to_value()
+        };
+        assert!(matches!(
+            config
+                .submit(signed.runtime("repositories", 1, repos(&["https://a.example/r.git"])))
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert!(matches!(
+            config
+                .submit(for_versions(2, json!({ "from": "4.0.0" })))
+                .await
+                .unwrap(),
+            ApplyOutcome::Refused(Refusal::Unverified(Rejection::OutOfRange { .. }))
+        ));
+        assert_eq!(
+            config
+                .runtime("repositories")
+                .await
+                .unwrap()
+                .unwrap()
+                .version,
+            1,
+            "what it held stays"
+        );
+        assert!(matches!(
+            config
+                .submit(for_versions(
+                    2,
+                    json!({ "from": "3.1.0", "below": "4.0.0" })
+                ))
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let told = told.lock().unwrap().clone();
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(
+            told[0].starts_with("hold Configuration: a signed document (r-2) is signed for from 4.0.0 of this agent, and this is 3.1.0"),
+            "{told:?}"
+        );
+        assert_eq!(told[1], "release Configuration");
     }
 
     #[tokio::test]

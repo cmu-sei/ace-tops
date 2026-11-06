@@ -59,6 +59,8 @@ pub struct Section {
     pub body_sha256: String,
     pub signer: String,
     pub file: String,
+    /// Which versions of the agent it is for (`target.versions`); every version when it names none.
+    pub versions: polar_version::VersionRange,
 }
 
 /// A signed evidence record of `polar-evidence`, as verified.
@@ -292,6 +294,7 @@ pub fn check(facts: &FactBase) -> Checked {
         projections_tested(facts),
         certified_by_the_credentials_agent(facts),
         seen_by_health(facts),
+        sections_in_range(facts),
     ];
     let mut verdicts = verdicts;
     if let Some(running) = &facts.running {
@@ -722,6 +725,55 @@ fn seen_by_health(facts: &FactBase) -> Verdict {
         ));
     }
     verdict(ID, STATEMENT, findings, "no agent reads a signed document")
+}
+
+fn sections_in_range(facts: &FactBase) -> Verdict {
+    const ID: &str = "sections-in-range";
+    const STATEMENT: &str = "each section in force that names a range of versions holds the agent's build: the one each pod \
+                             runs when asked, or the one its scaffold is of";
+    let mut findings = Vec::new();
+    for section in facts.in_force() {
+        if section.versions == polar_version::VersionRange::default() {
+            continue;
+        }
+        let at = format!(
+            "{} {} version {} ({})",
+            section.agent, section.name, section.version, section.versions
+        );
+        let builds: Vec<(String, String)> = match &facts.running {
+            Some(running) => running
+                .heard
+                .iter()
+                .filter(|h| h.agent == section.agent)
+                .map(|h| (pod_of(h), h.answer.build.version.clone()))
+                .collect(),
+            None => facts
+                .scaffolds
+                .get(&section.agent)
+                .and_then(|s| s.document["agent"]["version"]["version"].as_str())
+                .map(|v| vec![(format!("{}'s scaffold", section.agent), v.to_string())])
+                .unwrap_or_default(),
+        };
+        if builds.is_empty() {
+            findings.push((Status::Violated, format!("{at}: no build of it is known")));
+        }
+        for (who, build) in builds {
+            match polar_version::PlatformVersion::parse(&build) {
+                Ok(v) if section.versions.includes(v) => {
+                    findings.push((Status::Holds, format!("{at}: {who} is {build}")))
+                }
+                Ok(_) => findings.push((
+                    Status::Violated,
+                    format!("{at}: {who} is {build}, outside it"),
+                )),
+                Err(e) => findings.push((
+                    Status::Violated,
+                    format!("{at}: {who} says {build}, not a version: {e}"),
+                )),
+            }
+        }
+    }
+    verdict(ID, STATEMENT, findings, "no section in force names a range")
 }
 
 /// Which pod, as a line says it.

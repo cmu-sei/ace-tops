@@ -66,7 +66,10 @@ const _: () = assert!(
 
 /// A platform version: `X.Y.Z` for a release, `X.Y.Z+dev` between releases. Nothing else is one: no `v`, no
 /// pre-release, no other build metadata, no leading zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordered by its numbers, most significant first, and a release before its own development line (3.0.0 < 3.0.0+dev <
+/// 3.0.1): the fields' order, which is what a signed range is read by ([`VersionRange`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlatformVersion {
     pub major: u64,
     pub minor: u64,
@@ -135,6 +138,88 @@ impl PlatformVersion {
         Self {
             development: true,
             ..self
+        }
+    }
+}
+
+/// Which versions a signed document is for (docs/architecture/http-observers.md, "Versions and migrations"): at or after
+/// `from` and before `below`, each when given; neither is every version. Open-ended by default, since every binary shares
+/// one platform version and an exact pin would mean signing everything again at every release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VersionRange {
+    pub from: Option<PlatformVersion>,
+    pub below: Option<PlatformVersion>,
+}
+
+impl VersionRange {
+    pub fn includes(&self, version: PlatformVersion) -> bool {
+        self.from.is_none_or(|from| version >= from)
+            && self.below.is_none_or(|below| version < below)
+    }
+
+    /// A range as a signed document's `target.versions` writes it: `{ from, below }`, each a platform version and each
+    /// optional. Anything else in it, a text that is not a version, or a range that holds nothing is refused.
+    pub fn parse(value: &serde_json::Value) -> Result<Self, VersionError> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| VersionError("a range is `{ from, below }`".to_string()))?;
+        if let Some(other) = object.keys().find(|k| *k != "from" && *k != "below") {
+            return Err(VersionError(format!(
+                "a range has no `{other}`: it is `{{ from, below }}`"
+            )));
+        }
+        let read = |name: &str| -> Result<Option<PlatformVersion>, VersionError> {
+            match object.get(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(text)) => PlatformVersion::parse(text).map(Some),
+                Some(_) => Err(VersionError(format!(
+                    "a range's `{name}` is a version, as text"
+                ))),
+            }
+        };
+        let range = Self {
+            from: read("from")?,
+            below: read("below")?,
+        };
+        if let (Some(from), Some(below)) = (range.from, range.below)
+            && from >= below
+        {
+            return Err(VersionError(format!(
+                "from {from} below {below} holds no version"
+            )));
+        }
+        Ok(range)
+    }
+
+    /// As a signed document's `target.versions` holds it; `None` for every version, which is written as nothing.
+    pub fn to_value(&self) -> Option<serde_json::Value> {
+        if self.from.is_none() && self.below.is_none() {
+            return None;
+        }
+        let mut object = serde_json::Map::new();
+        if let Some(from) = self.from {
+            object.insert(
+                "from".to_string(),
+                serde_json::Value::String(from.to_string()),
+            );
+        }
+        if let Some(below) = self.below {
+            object.insert(
+                "below".to_string(),
+                serde_json::Value::String(below.to_string()),
+            );
+        }
+        Some(serde_json::Value::Object(object))
+    }
+}
+
+impl fmt::Display for VersionRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.from, self.below) {
+            (None, None) => f.write_str("any version"),
+            (Some(from), None) => write!(f, "from {from}"),
+            (None, Some(below)) => write!(f, "below {below}"),
+            (Some(from), Some(below)) => write!(f, "from {from}, below {below}"),
         }
     }
 }

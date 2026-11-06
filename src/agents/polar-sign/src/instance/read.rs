@@ -319,6 +319,8 @@ fn schedules(
                     ),
                     body,
                     signer: signer.username.unwrap_or_else(|| signer.serial.clone()),
+                    versions: polar_version::VersionRange::parse(&payload["target"]["versions"])
+                        .unwrap_or_default(),
                     file,
                 });
             }

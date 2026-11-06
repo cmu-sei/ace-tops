@@ -70,6 +70,12 @@ enum Command {
         /// The item's id; a new one if not given.
         #[arg(long)]
         id: Option<String>,
+        /// The first version of the agent the document is for (a platform version, such as 3.1.0); any if not given.
+        #[arg(long)]
+        from: Option<String>,
+        /// The version of the agent it is no longer for; none if not given. An agent outside the range refuses it.
+        #[arg(long)]
+        below: Option<String>,
         /// Whose certificate and key to sign with: <dir>/<user>.crt and .key. Required: it is never assumed.
         #[arg(long)]
         user: String,
@@ -108,6 +114,12 @@ enum Command {
         scaffold: Option<PathBuf>,
         #[arg(long)]
         id: Option<String>,
+        /// The first version of the agent the section is for; any if not given.
+        #[arg(long)]
+        from: Option<String>,
+        /// The version of the agent it is no longer for; none if not given.
+        #[arg(long)]
+        below: Option<String>,
         #[arg(long)]
         user: String,
         #[arg(long)]
@@ -596,6 +608,8 @@ fn main() -> Result<()> {
             version,
             changes,
             id,
+            from,
+            below,
             user,
             dir,
             out,
@@ -606,7 +620,12 @@ fn main() -> Result<()> {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(anyhow::Error::msg)?;
             let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let payload = configuration_payload(&agent, version, &id, &changes);
+            let range = polar_sign::range_of(from.as_deref(), below.as_deref())
+                .map_err(anyhow::Error::msg)?;
+            let payload = polar_sign::for_versions(
+                configuration_payload(&agent, version, &id, &changes),
+                &range,
+            );
             let identity = load_identity(&default_dir(dir)?, &user).map_err(anyhow::Error::msg)?;
             let file = sign_to_dhall(payload, &identity).map_err(anyhow::Error::msg)?;
             match out {
@@ -631,10 +650,14 @@ fn main() -> Result<()> {
             projection,
             scaffold,
             id,
+            from,
+            below,
             user,
             dir,
             out,
         } => {
+            let range = polar_sign::range_of(from.as_deref(), below.as_deref())
+                .map_err(anyhow::Error::msg)?;
             let text = match (body, body_file) {
                 (None, None) if projection.is_some() => String::new(),
                 (Some(text), None) => text,
@@ -662,7 +685,10 @@ fn main() -> Result<()> {
             // Nothing is signed that every agent would refuse.
             polar_sign::runtime_problems(&section, &body).map_err(anyhow::Error::msg)?;
             let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let payload = runtime_payload(&agent, &section, version, &id, body);
+            let payload = polar_sign::for_versions(
+                runtime_payload(&agent, &section, version, &id, body),
+                &range,
+            );
             let identity = load_identity(&default_dir(dir)?, &user).map_err(anyhow::Error::msg)?;
             let file = sign_to_dhall(payload, &identity).map_err(anyhow::Error::msg)?;
             match out {

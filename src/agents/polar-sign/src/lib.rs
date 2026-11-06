@@ -322,6 +322,29 @@ pub fn runtime_payload(agent: &str, section: &str, version: u64, id: &str, body:
 /// named fields.
 /// The runtime section that carries Cedar policy (the credentials agent's), whose `source` is checked before it is
 /// signed, whether or not the agent's scaffold is at hand.
+/// `payload` for the versions of the agent `range` holds (`target.versions`); every version leaves it as it is.
+pub fn for_versions(mut payload: Value, range: &polar_version::VersionRange) -> Value {
+    if let Some(versions) = range.to_value() {
+        payload["target"]["versions"] = versions;
+    }
+    payload
+}
+
+/// A range from the command line's `--from` and `--below`, each a platform version.
+pub fn range_of(
+    from: Option<&str>,
+    below: Option<&str>,
+) -> Result<polar_version::VersionRange, String> {
+    let mut fields = serde_json::Map::new();
+    if let Some(from) = from {
+        fields.insert("from".to_string(), Value::String(from.to_string()));
+    }
+    if let Some(below) = below {
+        fields.insert("below".to_string(), Value::String(below.to_string()));
+    }
+    polar_version::VersionRange::parse(&Value::Object(fields)).map_err(|e| e.to_string())
+}
+
 pub const POLICY_SECTION: &str = "policy";
 
 /// What is wrong with the body of a runtime document for `section`, that would make every agent refuse it: for the
@@ -741,6 +764,20 @@ mod tests {
     }
 
     use polar_signing::testing::{Spec, now, root, signer};
+
+    #[test]
+    fn a_range_given_is_written_into_the_target_and_none_writes_nothing() {
+        let payload = runtime_payload("a", "s", 1, "i", json!({}));
+        let open = for_versions(payload.clone(), &range_of(None, None).unwrap());
+        assert_eq!(open, payload);
+        let ranged = for_versions(payload, &range_of(Some("3.1.0"), Some("4.0.0")).unwrap());
+        assert_eq!(
+            ranged["target"],
+            json!({ "agent": "a", "versions": { "from": "3.1.0", "below": "4.0.0" } })
+        );
+        assert!(range_of(Some("4.0.0"), Some("3.0.0")).is_err());
+        assert!(range_of(Some("v3"), None).is_err());
+    }
 
     const EXAMPLE: &str = include_str!("../../polar-projection/examples/openapi.dhall");
 

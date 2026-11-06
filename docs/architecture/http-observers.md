@@ -153,6 +153,20 @@ runs it, so no signer gains power over the graph, and `repair.rs`'s rule stands:
 
 **The agent keeps its old mapping until the applied record arrives** (the maintainer), and health says what it waits on. So a forgotten migration blocks the new mapping visibly, where the alternative mixes old and new data silently. A migration that must run after the new mapping is live needs a flag saying so.
 
+**Bite 6, planned 2026-11-06, the maintainer's choices:**
+
+- **The range is two fields**, `target.versions: { from, below }`, each a platform version and each optional, absent meaning any, compared by `polar_version`'s own
+  order (a release before its development line: 3.0.0 < 3.0.0+dev < 3.0.1). `polar-sign --from <v> --below <v>`.
+- **Out of range, the agent refuses the document and holds** on Configuration, saying for which versions it was signed and which it is, until a document in range
+  arrives; what it held stays in force.
+- **The applied record is a signed `.dhall` the scheduler delivers**: `polar-sign migration applied` writes `migrations/<agent>/<id>.applied.dhall`, a document of its
+  own type (`migration-applied`: the migration's id and digest, who, when, what was reported), routed as the scheduler routes the rest; the agent releases the section
+  that named it.
+- **Who may sign it: whoever may sign the section it releases**, by the section's own capability and Cedar first, so no new capability.
+
+The steps: the range (`polar-version`, the agent's check where it opens a document, `polar-sign`); a section naming its migrations (`migrations: [{ id, sha256, after }]`,
+beside the body) and the agent holding it until each is applied, unless `after`; the applied record and its tool; both as facts and invariants of `polar-sign check`.
+
 Compiled repairs stay for what a write bug left behind, on every cluster. Whether a migration deletes or supersedes is its author's call; superseding is the documented default, since the graph has to answer what was known at the time.
 
 ## Mapping the security controls

@@ -88,6 +88,7 @@ fn section(agent: &str, name: &str, version: u64, body: Value) -> Section {
         body,
         signer: "alice".into(),
         file: format!("permanent/{agent}/{name}.dhall"),
+        versions: polar_version::VersionRange::default(),
     }
 }
 
@@ -237,6 +238,7 @@ fn the_ids_are_stable_and_each_said_once() {
             "projections-tested",
             "certified-by-the-credentials-agent",
             "seen-by-health",
+            "sections-in-range",
         ]
     );
 }
@@ -809,4 +811,47 @@ fn a_pod_of_another_build_than_its_scaffold_violates_running_as_scaffolded() {
             ]
         )
     );
+}
+
+#[test]
+fn a_section_signed_for_versions_its_agent_is_not_violates_sections_in_range() {
+    assert_eq!(
+        status(&base(), "sections-in-range").1,
+        ["no section in force names a range"]
+    );
+    let ranged = |from: &str, facts: &mut FactBase| {
+        let section = facts
+            .sections
+            .iter_mut()
+            .find(|s| s.name == "projection")
+            .unwrap();
+        section.versions = polar_version::VersionRange {
+            from: Some(polar_version::PlatformVersion::parse(from).unwrap()),
+            below: None,
+        };
+    };
+    // Offline, by the build the scaffold is of (9.9.9).
+    let mut holds = base();
+    ranged("9.9.9", &mut holds);
+    assert_eq!(status(&holds, "sections-in-range").0, Status::Holds);
+    let mut outside = base();
+    ranged("10.0.0", &mut outside);
+    assert_eq!(
+        status(&outside, "sections-in-range"),
+        (
+            Status::Violated,
+            vec!["openapi-processor projection version 3 (from 10.0.0): openapi-processor's scaffold is 9.9.9, outside it".to_string()]
+        )
+    );
+    // Asked, by the build each pod runs.
+    let mut running = asked();
+    ranged("9.9.9", &mut running);
+    running.running.as_mut().unwrap().heard[0]
+        .answer
+        .build
+        .version = "9.9.8".into();
+    assert!(a_line(
+        &status(&running, "sections-in-range").1,
+        "openapi-processor (p-1) is 9.9.8, outside it"
+    ));
 }

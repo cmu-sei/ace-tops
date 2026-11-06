@@ -76,6 +76,12 @@ pub enum Rejection {
     },
     Unauthorized(AuthorityRefusal),
     Revoked(String),
+    /// Signed for versions of the agent other than this one's (`target.versions`): which it was signed for, and which
+    /// this is.
+    OutOfRange {
+        range: String,
+        running: String,
+    },
 }
 
 impl std::fmt::Display for Rejection {
@@ -99,6 +105,9 @@ impl std::fmt::Display for Rejection {
             }
             Rejection::Unauthorized(e) => write!(f, "signer not authorised: {e}"),
             Rejection::Revoked(who) => write!(f, "the signer's certificate is revoked: {who}"),
+            Rejection::OutOfRange { range, running } => {
+                write!(f, "signed for {range} of this agent, and this is {running}")
+            }
         }
     }
 }
@@ -164,6 +173,9 @@ struct Payload {
 #[serde(deny_unknown_fields)]
 struct Target {
     agent: String,
+    /// Which versions of the agent it is for, `{ from, below }`; absent for every version.
+    #[serde(default)]
+    versions: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -198,6 +210,8 @@ pub(crate) struct Common {
     revocation: Arc<dyn Revocation>,
     pub(crate) agent: String,
     clock: Clock,
+    /// The version this agent is, which a document's range is held to.
+    version: polar_version::PlatformVersion,
 }
 
 impl Common {
@@ -251,6 +265,23 @@ impl Common {
         Ok(())
     }
 
+    /// Whether a document's range, `target.versions`, holds this agent's version. None is every version.
+    pub(crate) fn check_range(&self, versions: Option<&Value>) -> Result<(), Rejection> {
+        let Some(versions) = versions else {
+            return Ok(());
+        };
+        let range = polar_version::VersionRange::parse(versions)
+            .map_err(|e| Rejection::Payload(format!("target.versions: {e}")))?;
+        if range.includes(self.version) {
+            Ok(())
+        } else {
+            Err(Rejection::OutOfRange {
+                range: range.to_string(),
+                running: self.version.to_string(),
+            })
+        }
+    }
+
     pub(crate) fn check_target(&self, got: String) -> Result<(), Rejection> {
         if got != self.agent {
             return Err(Rejection::WrongTarget {
@@ -291,6 +322,9 @@ impl UpdateVerifier {
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0)
                 }),
+                // Checked at compile time to be one (`polar_version::well_formed`).
+                version: polar_version::PlatformVersion::parse(polar_version::PLATFORM)
+                    .expect("the platform's version is one"),
             },
             authority: Arc::new(RequireCapability::update_configuration()),
             runtime_authority: Arc::new(RequireCapability::update_runtime()),
@@ -315,6 +349,12 @@ impl UpdateVerifier {
     /// For tests, which check at a time of their own choosing.
     pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
         self.common.clock = Arc::new(clock);
+        self
+    }
+
+    /// Verifies as an agent of `version` would, for a test of a document's range; an agent is the platform's version.
+    pub fn with_version(mut self, version: polar_version::PlatformVersion) -> Self {
+        self.common.version = version;
         self
     }
 
@@ -368,6 +408,7 @@ impl UpdateVerifier {
                 let payload: RuntimePayload = serde_json::from_value(document.payload.clone())
                     .map_err(|e| Rejection::Payload(e.to_string()))?;
                 self.common.check_target(payload.target.agent.clone())?;
+                self.common.check_range(payload.target.versions.as_ref())?;
                 OpenedBody::Runtime(payload)
             }
             // A missing `type` and any other kind get the configuration path's own refusal, which says
@@ -378,6 +419,7 @@ impl UpdateVerifier {
                 let payload: Payload = serde_json::from_value(document.payload.clone())
                     .map_err(|e| Rejection::Payload(e.to_string()))?;
                 self.common.check_target(payload.target.agent.clone())?;
+                self.common.check_range(payload.target.versions.as_ref())?;
                 OpenedBody::Configuration(payload)
             }
         };
@@ -691,6 +733,74 @@ mod tests {
             Ok(VerifiedDocument::Configuration(verified)) => assert_eq!(verified.version, 7),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A document says which versions of the agent it is for; outside them it is refused, saying for which it was signed
+    /// and which this is. Without a range it is for every version; a range that is not one is not an update.
+    #[test]
+    fn a_document_signed_for_other_versions_of_the_agent_is_refused_and_says_which() {
+        let rig = rig();
+        let running = polar_version::PlatformVersion::parse("3.1.0+dev").unwrap();
+        let verifier = UpdateVerifier::new(
+            Trust::from_pem(std::slice::from_ref(&rig.ca.pem)).unwrap(),
+            AGENT,
+        )
+        .with_clock(now)
+        .with_version(running);
+        let with = |versions: Value| {
+            let mut payload = runtime_payload();
+            payload["target"]["versions"] = versions;
+            document(&rig, runtime_signer(), payload)
+        };
+        for versions in [
+            json!({ "from": "3.1.0" }),
+            json!({ "below": "3.2.0" }),
+            json!({}),
+        ] {
+            assert!(
+                verifier.verify_document(&with(versions.clone())).is_ok(),
+                "{versions}"
+            );
+        }
+        assert!(
+            verifier
+                .verify_document(&document(&rig, runtime_signer(), runtime_payload()))
+                .is_ok()
+        );
+        match verifier.verify_document(&with(json!({ "from": "3.2.0", "below": "4.0.0" }))) {
+            Err(Rejection::OutOfRange { range, running }) => {
+                assert_eq!(range, "from 3.2.0, below 4.0.0");
+                assert_eq!(running, "3.1.0+dev");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            verifier.verify_document(&with(json!({ "below": "3.1.0" }))),
+            Err(Rejection::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            verifier.verify_document(&with(json!({ "from": "three" }))),
+            Err(Rejection::Payload(_))
+        ));
+        // A settings document is held to its range the same way.
+        let mut settings = json!({"type": "configuration", "id": "x", "target": {"agent": AGENT, "versions": {"below": "3.0.0"}}, "version": 7, "changes": []});
+        let signer = || Spec {
+            capabilities: vec!["c:update-configuration"],
+            ..Spec::default()
+        };
+        assert!(matches!(
+            verifier.verify_document(&document(&rig, signer(), settings.clone())),
+            Err(Rejection::OutOfRange { .. })
+        ));
+        settings["target"]
+            .as_object_mut()
+            .unwrap()
+            .remove("versions");
+        assert!(
+            verifier
+                .verify_document(&document(&rig, signer(), settings))
+                .is_ok()
+        );
     }
 
     #[test]
