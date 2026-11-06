@@ -309,6 +309,7 @@ pub fn check(facts: &FactBase) -> Checked {
         one_owner_per_label(facts),
         projections_inside_schema(facts),
         projections_tested(facts),
+        credentialed_reads_reviewed(facts),
         certified_by_the_credentials_agent(facts),
         seen_by_health(facts),
         sections_in_range(facts),
@@ -578,77 +579,188 @@ fn projections_tested(facts: &FactBase) -> Verdict {
     const ID: &str = "projections-tested";
     const STATEMENT: &str = "each projection in force passed a projection test of that body by its agent's scaffold, and \
                              its samples reach every read it makes";
+    let findings = projections(facts)
+        .into_iter()
+        .map(|section| {
+            let (status, said) = tested(facts, section);
+            (
+                status,
+                format!(
+                    "{} {} version {}: {said}",
+                    section.agent, section.name, section.version
+                ),
+            )
+        })
+        .collect();
+    verdict(ID, STATEMENT, findings, "no projection is signed")
+}
+
+/// Whether a projection in force passed a test of that body by its agent's scaffold with every read reached, and what
+/// says so: the latest passing test at this version, or why there is none.
+fn tested(facts: &FactBase, section: &Section) -> (Status, String) {
+    let scaffold = facts
+        .scaffolds
+        .get(&section.agent)
+        .map(|s| s.sha256.as_str());
+    let tests: Vec<&Evidence> = facts
+        .evidence
+        .iter()
+        .filter(|e| {
+            e.record["type"] == crate::evidence::PROJECTION_TEST
+                && e.record["subject"]["agent"] == section.agent.as_str()
+                && e.record["subject"]["section"] == section.name.as_str()
+        })
+        .collect();
+    let this_version = |e: &Evidence| {
+        e.record["mapping"]["body_sha256"] == section.body_sha256.as_str()
+            && e.record["scaffold"]["sha256"].as_str() == scaffold
+    };
+    let passed: Vec<&&Evidence> = tests
+        .iter()
+        .filter(|e| this_version(e))
+        .filter(|e| e.record["result"]["passed"] == true)
+        .collect();
+    let latest = passed.iter().max_by(|a, b| {
+        let at = |e: &Evidence| e.record["tested_at_unix_secs"].as_i64().unwrap_or(0);
+        (at(a), &a.file).cmp(&(at(b), &b.file))
+    });
+    if let Some(test) = latest {
+        let unreached: Vec<&str> = test.record["coverage"]["unreached"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if unreached.is_empty() {
+            (
+                Status::Holds,
+                format!("tested by {} ({})", test.signer, test.file),
+            )
+        } else {
+            (
+                Status::Violated,
+                format!(
+                    "tested ({}), and no sample reaches {}",
+                    test.file,
+                    unreached.join(", ")
+                ),
+            )
+        }
+    } else if tests.iter().any(|e| this_version(e)) {
+        (
+            Status::Violated,
+            "its test at this version failed".to_string(),
+        )
+    } else if !tests.is_empty() {
+        (
+            Status::NoLongerCovered,
+            "tested at another version of the body or the scaffold, not at this one".to_string(),
+        )
+    } else {
+        (Status::Violated, "never tested".to_string())
+    }
+}
+
+/// What an HTTP observer's signed section of sources is called (`polar-http-observer`'s `SECTION_NAME`).
+const SOURCES: &str = "sources";
+
+fn credentialed_reads_reviewed(facts: &FactBase) -> Verdict {
+    const ID: &str = "credentialed-reads-reviewed";
+    const STATEMENT: &str = "what a source read with a credential says reaches the graph only through a projection someone \
+                             reviewed: each workload that hears its observer has a projection in force that passed a test \
+                             of that body, its samples reaching every read";
+    let mut hearers: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for w in &facts.model.workloads {
+        for t in w.topics.iter().filter(|t| t.access == Access::Subscribe) {
+            hearers
+                .entry(t.name.as_str())
+                .or_default()
+                .insert(w.workload.as_str());
+        }
+    }
     let mut findings = Vec::new();
-    for section in projections(facts) {
-        let at = format!(
-            "{} {} version {}",
-            section.agent, section.name, section.version
-        );
-        let scaffold = facts
-            .scaffolds
-            .get(&section.agent)
-            .map(|s| s.sha256.as_str());
-        let tests: Vec<&Evidence> = facts
-            .evidence
-            .iter()
-            .filter(|e| {
-                e.record["type"] == crate::evidence::PROJECTION_TEST
-                    && e.record["subject"]["agent"] == section.agent.as_str()
-                    && e.record["subject"]["section"] == section.name.as_str()
-            })
-            .collect();
-        let this_version = |e: &Evidence| {
-            e.record["mapping"]["body_sha256"] == section.body_sha256.as_str()
-                && e.record["scaffold"]["sha256"].as_str() == scaffold
-        };
-        let passed: Vec<&&Evidence> = tests
-            .iter()
-            .filter(|e| this_version(e))
-            .filter(|e| e.record["result"]["passed"] == true)
-            .collect();
-        let latest = passed.iter().max_by(|a, b| {
-            let at = |e: &Evidence| e.record["tested_at_unix_secs"].as_i64().unwrap_or(0);
-            (at(a), &a.file).cmp(&(at(b), &b.file))
-        });
-        if let Some(test) = latest {
-            let unreached: Vec<&str> = test.record["coverage"]["unreached"]
+    for section in facts.in_force().into_iter().filter(|s| s.name == SOURCES) {
+        // What it reads goes out on the topics it declares and publishes; what the builder implies is infrastructure's.
+        let carries: Option<Vec<&str>> = facts.scaffolds.get(&section.agent).map(|s| {
+            s.document["topics"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            if unreached.is_empty() {
-                findings.push((
-                    Status::Holds,
-                    format!("{at}: tested by {} ({})", test.signer, test.file),
-                ));
-            } else {
+                .filter(|t| t["from"] == "declared" && t["access"] == "publish")
+                .filter_map(|t| t["name"].as_str())
+                .collect()
+        });
+        let heard_by: BTreeSet<&str> = carries
+            .iter()
+            .flatten()
+            .flat_map(|topic| hearers.get(topic).into_iter().flatten().copied())
+            .collect();
+        let credentialed = section.body[SOURCES]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| Some((s["name"].as_str()?, s["credential"].as_str()?)));
+        for (name, credential) in credentialed {
+            let at = format!(
+                "{} source `{name}` (credential `{credential}`)",
+                section.agent
+            );
+            if carries.is_none() {
                 findings.push((
                     Status::Violated,
                     format!(
-                        "{at}: tested ({}), and no sample reaches {}",
-                        test.file,
-                        unreached.join(", ")
+                        "{at}: {}'s scaffold cannot be read, so which topic carries what it reads is not known",
+                        section.agent
                     ),
                 ));
+            } else if heard_by.is_empty() {
+                findings.push((
+                    Status::Holds,
+                    format!("{at}: no workload hears what it reads"),
+                ));
             }
-        } else if tests.iter().any(|e| this_version(e)) {
-            findings.push((
-                Status::Violated,
-                format!("{at}: its test at this version failed"),
-            ));
-        } else if !tests.is_empty() {
-            findings.push((
-                Status::NoLongerCovered,
-                format!(
-                    "{at}: tested at another version of the body or the scaffold, not at this one"
-                ),
-            ));
-        } else {
-            findings.push((Status::Violated, format!("{at}: never tested")));
+            for hearer in &heard_by {
+                let takes: Vec<String> = facts
+                    .scaffold(hearer)
+                    .into_iter()
+                    .flat_map(|s| s.runtime.into_iter().map(|r| r.name))
+                    .filter(|name| facts.is_projection(hearer, name))
+                    .collect();
+                if takes.is_empty() {
+                    findings.push((
+                        Status::Violated,
+                        format!(
+                            "{at} -> {hearer} takes no projection: what it writes of it no reviewed mapping says"
+                        ),
+                    ));
+                    continue;
+                }
+                let in_force: Vec<&Section> = takes
+                    .iter()
+                    .filter_map(|name| facts.section(hearer, name))
+                    .collect();
+                if in_force.is_empty() {
+                    findings.push((
+                        Status::Holds,
+                        format!(
+                            "{at} -> {hearer} has no projection in force, so it writes nothing"
+                        ),
+                    ));
+                }
+                for projection in in_force {
+                    let (status, said) = tested(facts, projection);
+                    findings.push((
+                        status,
+                        format!(
+                            "{at} -> {hearer} {} version {}: {said}",
+                            projection.name, projection.version
+                        ),
+                    ));
+                }
+            }
         }
     }
-    verdict(ID, STATEMENT, findings, "no projection is signed")
+    verdict(ID, STATEMENT, findings, "no source names a credential")
 }
 
 fn certified_by_the_credentials_agent(facts: &FactBase) -> Verdict {

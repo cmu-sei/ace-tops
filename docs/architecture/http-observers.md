@@ -419,8 +419,8 @@ facts and judges them (`polar-sign/src/instance.rs`, reading in `instance/read.r
   policy and groups in force, by the model's own flow rules, and the side that is refused is named), `authority-reaches-every-agent` (the model's own goals: the authority's updates,
   requests and correction), `one-owner-per-label` (by the deployed workloads' scaffolds and the state agent's `schema`), `projections-inside-schema` (each section a scaffold says holds a
   projection, `polar_projection::SECTION_TYPE`, judged by that scaffold; a signed section of an agent with no scaffold is violated), `projections-tested` (a passing projection test of that
-  body by that scaffold's digest, reaching every read; another version's is no longer covered), `certified-by-the-credentials-agent`, and `seen-by-health` (every agent that reads a
-  document in the state agent's `agents`, and nothing else). What each workload could touch is reported: the topics the pair lets it publish and hear, the labels it owns and reads, the
+  body by that scaffold's digest, reaching every read; another version's is no longer covered), `credentialed-reads-reviewed` (bite 7: below), `certified-by-the-credentials-agent`, and
+  `seen-by-health` (every agent that reads a document in the state agent's `agents`, and nothing else). What each workload could touch is reported: the topics the pair lets it publish and hear, the labels it owns and reads, the
   hosts its sections name.
 - **The record** is signed in the evidence domain and pushed beside the projection tests, at `instance-check/<target>/<sha256>.json`. Report only: the tool fails when it cannot judge,
   never for a verdict.
@@ -533,6 +533,14 @@ say by `when` which entries are theirs. It has the kit's tests, as every kind do
 (the stand-in behind TLS on `localhost`, a token bound to it by the real binding rule) and `Pair::read_paged` (a source's pages served in its style). Projects are
 read by cursor over two pages and members by offset to an empty page, every page with the token, each published and written as it is read; a member Jira does not
 identify is skipped, and that is the only skip. Dropping the source's paging, or the credential the fetch presents, fails both.
+
+The invariant, done (`polar-sign/src/instance.rs`, `credentialed_reads_reviewed`; the maintainer's choice, "a tested mapping"). `credentialed-reads-reviewed`: for each
+source in force that names a credential, the topics its observer declares and publishes, by its scaffold (`from: declared`; what the builder implies is infrastructure's,
+which never carries what a source said), are followed to every workload the model says hears them, and each must have a projection in force that `projections-tested`
+would hold for, by the same judgment (`tested`). A hearer whose scaffold takes no projection is violated, since what it writes of the data no reviewed mapping says;
+one with no projection in force holds, since it writes nothing; an observer whose scaffold cannot be read is violated, since which topic carries its reads is not
+known. A source read with no credential is not this invariant's. Marked for review: where it overlaps `projections-tested`, it says the same thing of the same
+projection, from the source's side, so a reader of one credential's claim finds it under that credential's name.
 
 ## What the OpenAPI pair fixes
 

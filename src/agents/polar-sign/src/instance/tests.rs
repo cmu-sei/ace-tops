@@ -239,6 +239,7 @@ fn the_ids_are_stable_and_each_said_once() {
             "one-owner-per-label",
             "projections-inside-schema",
             "projections-tested",
+            "credentialed-reads-reviewed",
             "certified-by-the-credentials-agent",
             "seen-by-health",
             "sections-in-range",
@@ -924,4 +925,111 @@ fn a_migration_intended_and_never_applied_or_not_the_file_signed_violates_migrat
         &status(&missing, "migrations-applied").1,
         "its file is not at migrations/openapi-processor/m1.cypher"
     ));
+}
+
+/// The OpenAPI observer's sources, one read with a credential and one with none, and its scaffold: what it reads goes out on
+/// the topic it declares, and what the builder implies is infrastructure's.
+fn with_credentialed_source(mut facts: FactBase) -> FactBase {
+    let document = json!({
+        "agent": {"name": "openapi-observer"},
+        "runtime": [{"name": "sources", "doc": "d", "body": {}}],
+        "topics": [
+            {"name": "polar.openapi.observations", "access": "publish", "from": "declared", "purpose": "p"},
+            {"name": "polar-health-replies", "access": "publish", "from": "implied", "rule": "agent", "why": "w"}
+        ]
+    });
+    facts.scaffolds.insert(
+        "openapi-observer".to_string(),
+        ScaffoldFact {
+            sha256: sha256(document.to_string().as_bytes()),
+            document,
+        },
+    );
+    facts.sections.push(section(
+        "openapi-observer",
+        "sources",
+        1,
+        json!({ "sources": [
+            { "name": "internal", "url": "https://api.corp.example/openapi.json", "interval_secs": 900, "credential": "corp" },
+            { "name": "public", "url": "https://shop.example/openapi.json", "interval_secs": 900, "credential": null }
+        ]}),
+    ));
+    facts
+}
+
+/// What a source read with a credential becomes in the graph is a mapping someone reviewed: each processor that hears its
+/// observer has a projection in force that passed a test with full coverage. A source read with none is not this
+/// invariant's.
+#[test]
+fn a_source_read_with_a_credential_holds_only_where_each_processor_hearing_it_has_a_tested_mapping()
+{
+    let (got, witness) = status(&base(), "credentialed-reads-reviewed");
+    assert_eq!(
+        (got, witness),
+        (
+            Status::Holds,
+            vec!["no source names a credential".to_string()]
+        )
+    );
+
+    let (got, witness) = status(
+        &with_credentialed_source(base()),
+        "credentialed-reads-reviewed",
+    );
+    assert_eq!(got, Status::Holds, "{witness:#?}");
+    assert_eq!(
+        witness.len(),
+        1,
+        "the source read with none is not judged: {witness:#?}"
+    );
+    assert!(a_line(
+        &witness,
+        "openapi-observer source `internal` (credential `corp`) -> openapi-processor projection version 3: tested by alice"
+    ));
+
+    let mut never = with_credentialed_source(base());
+    never.evidence.clear();
+    let (got, witness) = status(&never, "credentialed-reads-reviewed");
+    assert_eq!(got, Status::Violated);
+    assert!(a_line(
+        &witness,
+        "source `internal` (credential `corp`) -> openapi-processor projection version 3: never tested"
+    ));
+
+    let mut uncovered = with_credentialed_source(base());
+    uncovered.evidence[0].record["coverage"]["unreached"] = json!(["endpoint each body.paths"]);
+    assert_eq!(
+        status(&uncovered, "credentialed-reads-reviewed").0,
+        Status::Violated
+    );
+
+    // No projection in force: the processor holds and writes nothing, so nothing the source says reaches the graph.
+    let mut unsigned = with_credentialed_source(base());
+    unsigned.sections.retain(|s| s.name != "projection");
+    let (got, witness) = status(&unsigned, "credentialed-reads-reviewed");
+    assert_eq!(got, Status::Holds, "{witness:#?}");
+    assert!(a_line(
+        &witness,
+        "openapi-processor has no projection in force, so it writes nothing"
+    ));
+
+    // Without the observer's scaffold, which topic carries what it reads is not known.
+    let mut unknown = with_credentialed_source(base());
+    unknown.scaffolds.remove("openapi-observer");
+    let (got, witness) = status(&unknown, "credentialed-reads-reviewed");
+    assert_eq!(got, Status::Violated);
+    assert!(a_line(
+        &witness,
+        "openapi-observer's scaffold cannot be read"
+    ));
+
+    // A workload that hears it and takes no projection writes by its own code: no mapping says what, so nothing reviewed it.
+    let mut no_mapping = with_credentialed_source(base());
+    no_mapping.scaffolds.insert(
+        PROCESSOR.to_string(),
+        other_scaffold(PROCESSOR, &["OpenApiApplication"]),
+    );
+    let (got, witness) = status(&no_mapping, "credentialed-reads-reviewed");
+    assert_eq!(got, Status::Violated);
+    assert!(a_line(&witness, "openapi-processor takes no projection"));
 }
