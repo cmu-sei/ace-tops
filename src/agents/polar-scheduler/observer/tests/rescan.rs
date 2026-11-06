@@ -222,3 +222,131 @@ async fn what_a_pull_changes_is_published_once_by_the_rescan_that_follows_it() {
         "{sent:?}"
     );
 }
+
+/// A watcher over `checkout`, publishing to a broker that keeps what it is sent.
+async fn watching(checkout: &Path) -> (ActorRef<GitWatcherMsg>, Published) {
+    let published = Arc::new(Mutex::new(Vec::new()));
+    let (cassini, _) = Actor::spawn(None, Cassini(published.clone()), ())
+        .await
+        .unwrap();
+    let (watcher, _) = Actor::spawn(
+        None,
+        GitWatcherActor,
+        (checkout.to_string_lossy().into_owned(), cassini),
+    )
+    .await
+    .unwrap();
+    (watcher, published)
+}
+
+fn files(published: &Published) -> Vec<(&'static str, String)> {
+    let mut files: Vec<_> = changes(published).iter().map(file_of).collect();
+    files.sort();
+    files
+}
+
+/// A schedule is a Dhall file under `permanent`, `adhoc`, `ephemeral` or `migrations` in the checkout. A Dhall file
+/// anywhere else, or another file in one of them, is not, though it would evaluate; nor is one in a hidden folder such
+/// as `.git`; and a folder of that name above the checkout does not count.
+#[tokio::test]
+async fn only_a_dhall_file_under_a_schedule_folder_of_the_checkout_is_read() {
+    let above = tempfile::tempdir().unwrap();
+    let checkout = above.path().join("permanent").join("checkout");
+    let text = settings("item", "agent-a", 1);
+    for schedule in [
+        "permanent/a.dhall",
+        "adhoc/b.dhall",
+        "ephemeral/c.dhall",
+        "migrations/agent-a/d.dhall",
+    ] {
+        write(&checkout, schedule, &text);
+    }
+    for not_one in [
+        "e.dhall",
+        "other/f.dhall",
+        "permanent/g.txt",
+        "permanently/h.dhall",
+        ".git/permanent/i.dhall",
+        "permanent/.hidden/j.dhall",
+    ] {
+        write(&checkout, not_one, &text);
+    }
+    let (watcher, published) = watching(&checkout).await;
+    watcher.cast(GitWatcherMsg::PerformInitialScan).unwrap();
+    settle().await;
+    assert_eq!(
+        files(&published),
+        [
+            ("create", "a.dhall".to_string()),
+            ("create", "b.dhall".to_string()),
+            ("create", "c.dhall".to_string()),
+            ("create", "d.dhall".to_string()),
+        ]
+    );
+}
+
+/// Before the first scan there is nothing to compare with: a rescan asked for then reads nothing, and the first scan
+/// still publishes each file once.
+#[tokio::test]
+async fn a_rescan_asked_for_before_the_first_scan_does_nothing() {
+    let dir = tempfile::Builder::new()
+        .prefix("checkout")
+        .tempdir()
+        .unwrap();
+    write(
+        dir.path(),
+        "permanent/a.dhall",
+        &settings("item-a", "agent-a", 1),
+    );
+    let (watcher, published) = watching(dir.path()).await;
+    watcher.cast(GitWatcherMsg::Rescan).unwrap();
+    settle().await;
+    assert_eq!(files(&published), []);
+    watcher.cast(GitWatcherMsg::PerformInitialScan).unwrap();
+    settle().await;
+    assert_eq!(files(&published), [("create", "a.dhall".to_string())]);
+}
+
+/// A checkout no pull changes (a local directory) is watched on disk: a schedule written there is published with no
+/// message asking for a rescan.
+#[tokio::test]
+async fn a_schedule_written_on_disk_is_published_without_a_pull() {
+    let dir = tempfile::Builder::new()
+        .prefix("checkout")
+        .tempdir()
+        .unwrap();
+    std::fs::create_dir_all(dir.path().join("permanent")).unwrap();
+    let (watcher, published) = watching(dir.path()).await;
+    watcher.cast(GitWatcherMsg::PerformInitialScan).unwrap();
+    settle().await;
+    assert_eq!(files(&published), []);
+    write(
+        dir.path(),
+        "permanent/a.dhall",
+        &settings("item-a", "agent-a", 1),
+    );
+    for _ in 0..20 {
+        if !files(&published).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(files(&published), [("create", "a.dhall".to_string())]);
+}
+
+/// Hidden folders inside the checkout are skipped, and the checkout itself is read whatever it is named: one whose
+/// folder starts with a dot was skipped whole, so nothing in it was ever published.
+#[tokio::test]
+async fn a_checkout_whose_folder_starts_with_a_dot_is_read() {
+    let above = tempfile::tempdir().unwrap();
+    let checkout = above.path().join(".schedules");
+    write(
+        &checkout,
+        "permanent/a.dhall",
+        &settings("item-a", "agent-a", 1),
+    );
+    let (watcher, published) = watching(&checkout).await;
+    watcher.cast(GitWatcherMsg::PerformInitialScan).unwrap();
+    settle().await;
+    assert_eq!(files(&published), [("create", "a.dhall".to_string())]);
+}

@@ -112,11 +112,14 @@ impl GitWatcherActor {
         let walker = walkdir::WalkDir::new(repo_path)
             .follow_links(true)
             .into_iter()
+            // Hidden folders inside the checkout (`.git`) are skipped; the checkout itself is read whatever it is named.
             .filter_entry(|e| {
-                !e.file_name()
-                    .to_str()
-                    .map(|s| s.starts_with('.'))
-                    .unwrap_or(false)
+                e.depth() == 0
+                    || !e
+                        .file_name()
+                        .to_str()
+                        .map(|s| s.starts_with('.'))
+                        .unwrap_or(false)
             });
         for entry in walker.flatten() {
             let path = entry.path();
