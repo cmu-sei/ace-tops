@@ -570,6 +570,9 @@ GraphQL (cynic) as POSTs with `GITLAB_TOKEN` from the environment, and never pag
 (`gitlab/observe/src/users.rs:59`, `projects.rs:67`, `groups.rs:66`). The consumer writes 13 labels and their edges through `GraphOp`, keyed by a UUIDv5 of the base URL
 (`lib/src/graph/nodes/gitlab.rs:96-196`), and publishes provenance events besides.
 
+What it is tested against (the maintainer, 2026-11-06): GitLab's schema in G3, and GitLab CE live in G4 ("CE seems fine to me"), seeded with a known dataset by a
+seed tool ("A known dataset, built by a seed tool"); queries validated by `apollo-compiler` ("apollo-compiler").
+
 The maintainer's choices: GitLab comes onto this architecture as GraphQL, by extending the library ("GraphQL, extend the library"), not as REST v4 or a Rust walker;
 a list nested in each item (a project's pipelines, jobs, packages) is read by a follow-up query per item ("A follow-up query per item"); and a node says which GitLab it
 came from by its source's origin ("The source's origin").
@@ -588,10 +591,16 @@ The bites:
   reads as `origin`; a sample is read at a fixed origin, so what it becomes does not depend on where it was served.
 - **G2, a follow-up query per item.** A GraphQL source may name a second query run for each item of each page, its variables from that item, paged by its own cursor,
   each page of it an observation; signed bounds on items and pages. The follow-up asks for its parent's id, so the mapping can draw the edge.
-- **G3, the GitLab pair on the library.** `gitlab-observer` (`CREDENTIALED_SOURCES`, a `Bound` operation) and `gitlab-processor` (the labels above), a mapping with
-  `when`, hand-written GraphQL samples for each kind of data, and the kit's tests, paged and followed.
-- **G4, the catalog and live.** Catalog entries for both; the token a sealed `credentials` section, as Jira's; a bring-up on u7c, where `credentialed-reads-reviewed`
-  first holds of a real source. Which GitLab it reads is asked first, since that sends a credential to an outside host.
+- **G3, the GitLab pair on the library, held to GitLab's schema.** `gitlab-observer` (`CREDENTIALED_SOURCES`, a `Bound` operation) and `gitlab-processor` (the
+  labels above), a mapping with `when`, hand-written GraphQL samples for each kind of data, and the kit's tests, paged and followed, the kit's stand-in serving GraphQL
+  pages. Every query a source signs is validated against GitLab's schema (`gitlab/schema/src/gitlab.graphql`) by `apollo-compiler`, and every sample is checked to
+  have its query's shape, so a hand-written sample and its mapping cannot agree on a field GitLab does not have.
+- **G4, a real GitLab, and the catalog.** GitLab CE and a runner in u7c, local, so no credential leaves the machine; a seed tool, a static Rust CLI, that builds a
+  known dataset through GitLab's API and checks what it built: about a dozen users, three groups, about thirty projects read ten to a page, pipelines and jobs run by
+  the runner, a registry image with tags, a generic package with files, and a mirror of Polar's own repository. The schema is refreshed from that CE with its version
+  recorded; the pair joins the catalog with its token a sealed `credentials` section, as Jira's, and reads it live; the graph is held to what the seed built; real
+  answers become masked samples; `credentialed-reads-reviewed` first holds of a real source. `polar-sign` gains validating a GraphQL source against a schema file
+  when it signs one.
 - **G5, the old pair goes.** The five crates, the hand-written chart, `gitlab-secret` and the GitLab variables, once G4 has shown the new pair working.
 
 G1, done (`polar-http-observer/src/graphql.rs`, `paging.rs`, `observer.rs`; `polar-projection`'s `Stamp`). A source may carry `graphql: {query}`, POSTed as
