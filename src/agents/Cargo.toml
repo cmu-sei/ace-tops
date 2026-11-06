@@ -78,6 +78,7 @@ members = [
     "polar-projection",
     "polar-http-observer",
     "polar-http-processor",
+    "polar-http-testkit",
     "polar-agent-builder",
     "polar-permissions",
     "polar-policy",
@@ -215,6 +216,7 @@ polar-cypher = { path = "polar-cypher" }
 polar-projection = { path = "polar-projection" }
 polar-http-observer = { path = "polar-http-observer" }
 polar-http-processor = { path = "polar-http-processor" }
+polar-http-testkit = { path = "polar-http-testkit" }
 polar-scheduler-common = { path = "polar-scheduler/common" }
 polar-env = { path = "polar-env" }
 polar-custody = { path = "polar-custody" }

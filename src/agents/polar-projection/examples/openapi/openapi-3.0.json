@@ -1,0 +1,17 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Orders", "version": "2.1", "description": "Orders, as the shop keeps them." },
+  "servers": [ { "url": "https://orders.example" } ],
+  "paths": {
+    "/orders": {
+      "summary": "a path's own summary, which is not an operation",
+      "get": { "summary": "List orders", "description": "Every order, newest first." },
+      "post": { "summary": "Place an order" }
+    },
+    "/orders/{id}": {
+      "get": { "operationId": "getOrder", "deprecated": false },
+      "x-internal": { "note": "an extension, which is not an operation" }
+    }
+  },
+  "components": { "schemas": { "Order": { "type": "object" } } }
+}

@@ -205,7 +205,7 @@ The bites, in order:
    each time, only the labels and edges it names, every write stamped, nothing written on a failed guard, no null key, no document text in Cypher, a round trip through signing. The state machines
    against a simple model: the last good document under the last accepted mapping. Built: below.
 3. **A test kit for every kind.** `polar_http_tests!(Kind)` and a pair harness: the real handler, a stand-in service, the real signing path and real Neo4j, with samples and expected writes beside
-   each mapping.
+   each mapping. Built: below.
 4. **`polar-sign projection test`.** The same checks for a deployment's own mapping, writing a signed evidence record (the digests of mapping, scaffold and samples, the tool's version and the
    result) into `polar-schedules`, where the scheduler does not read.
 5. **A fact base and invariants.** The authority model's facts and rules split into a crate with no runtime, and `polar-sign check` giving each instance holds, no longer covered or violated, with
@@ -245,6 +245,30 @@ Each was checked to catch deliberate breakage of what it states, run against the
 - **No signed-list limit for a projection.** Every rule and step has the same fields, so the signing tool types each list; the limit stays for lists whose entries differ (bite 7).
 - **A property a new mapping does not set stays**, as an entry a document dropped does: the model leaves it out. Open, with the dropped entries.
 - Marked for review: `polar-projection` gains an optional `proptest` dependency, behind `testing`, so other crates' properties use the same generator; nothing that ships enables it.
+
+**Bite 3, built 2026-11-05.** `polar-http-testkit`, a dev-dependency only. A kind's processor crate calls `polar_http_tests!` with its observer, its processor, its mapping and the directory
+of samples beside the mapping (`openapi/process/src/agent.rs`), and has three tests:
+
+- the mapping is judged by the processor's own scaffold and signed by `polar-sign`, written as the Dhall file that is committed, evaluated as the scheduler's observer does, submitted to a
+  configuration actor holding the processor's own sections, and read back in force; the projection the processor takes from it is the one the author wrote;
+- each sample is served by a stand-in service (wiremock) and read through the real protocol handler as the observer's one operation (`polar_http_observer::observer::read`, which the actor
+  uses too), with the observer's and the processor's own cores deciding and the observation encoded and decoded as the broker carries it. What the pair writes is what the mapping makes of that
+  observation, and that is what is written beside the sample, `<name>.expected.json`: the nodes and edges plainly, without the stamps, and how many entries were skipped, or why it was refused.
+  `POLAR_BLESS=1` writes them, to be read before they are committed;
+- the samples are written to real Neo4j (`polar-test-graph`) by `handle_op`, the graph controller's own write: each to a source of its own, then all to one source in turn and in reverse, as a
+  service changing its document. After each step the graph is, line for line, what the model graph says (`polar_projection::testing::MemoryGraph`, now also the processor's property's), so the
+  model bite 2 holds the processor to is a model of Neo4j and not only of itself.
+
+OpenAPI's samples are written by hand, not taken from a service: Swagger 2.0, OpenAPI 3.0 and 3.1, an empty `paths`, and an error answered with a 200 (`polar-projection/examples/openapi/`).
+Each expected file was read against its document. Checked to catch deliberate breakage (`mut8.py`, 6 of 6): the model graph not clearing on a null or not holding a node's keys, the engine
+ignoring `only` or writing empty text for what is absent, the observer refusing a larger document, and the graph controller replacing a node's properties instead of adding to them, which only
+Neo4j shows. What it does not reach: the actors themselves and the broker (the cores are what they run), the controller actor's retries and its constraints, and documents from real services,
+which need their licences checked and the maintainer's leave to fetch. Seen in them: the mapping does not observe a 3.1 document's `webhooks`, as written.
+
+Marked for review: the kit is on the builder and reaches `reqwest` (through `polar-sign` and `polar-test-graph`), which the guard that a domain crate has no way out of its own refused
+(`polar-agent-builder/tests/domain_has_no_way_out.rs`). The guard now leaves alone a library that builds no binary and that no crate takes as a normal dependency, since nothing of it can reach
+a workload; the day a crate takes it as one, it is walked from that crate as any helper is, and a test says so. In the workspace today that is the kit alone. It is not on the list of what is
+not the domain, which holds the maintainer's decisions.
 
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one

@@ -1,0 +1,46 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+# for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+
+# A test kit for every kind of HTTP observer and processor (docs/architecture/http-observers.md, "Evidence", bite 3): a
+# kind's crate takes it as a dev-dependency and calls `polar_http_tests!`. Nothing that ships depends on it.
+[package]
+name = "polar-http-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+neo4rs.workspace = true
+polar = { workspace = true, features = ["testing"] }
+polar-agent-builder = { workspace = true, features = ["testing"] }
+polar-env.workspace = true
+polar-http-observer.workspace = true
+polar-http-processor.workspace = true
+polar-projection = { workspace = true, features = ["graph", "testing"] }
+# The signing path a deployment's mapping takes: judged by the processor's scaffold, signed, committed as Dhall.
+polar-sign = { path = "../polar-sign" }
+polar-signing = { workspace = true, features = ["testing"] }
+polar-test-graph.workspace = true
+ractor.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+wiremock.workspace = true

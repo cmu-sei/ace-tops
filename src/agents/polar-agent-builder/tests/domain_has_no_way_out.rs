@@ -128,6 +128,27 @@ fn normal_dependencies(package: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
+/// Whether nothing of `package` can reach a workload: it builds no binary, and no crate in the workspace takes it as a normal
+/// dependency, so only tests use it (`polar-http-testkit`). The day a crate takes it as a normal dependency, it is walked from
+/// that crate as any helper is. A package that says nothing of its targets may ship.
+fn only_tests_use(package: &Value, packages: &[Value]) -> bool {
+    let name = package["name"].as_str().unwrap_or_default();
+    let Some(targets) = package["targets"].as_array() else {
+        return false;
+    };
+    let builds_a_binary = targets.iter().any(|target| {
+        target["kind"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+    });
+    let taken = packages.iter().any(|other| {
+        normal_dependencies(other)
+            .iter()
+            .any(|dep| dep_name(dep) == name)
+    });
+    !builds_a_binary && !taken
+}
+
 fn named<'a>(packages: &'a [Value], name: &str) -> Option<&'a Value> {
     packages.iter().find(|package| package["name"] == name)
 }
@@ -147,7 +168,9 @@ fn problems(packages: &[Value], rules: &Rules) -> Vec<String> {
     });
     for package in on_the_builder {
         let agent = package["name"].as_str().unwrap_or_default();
-        if rules.not_the_domain.iter().any(|(name, _)| *name == agent) {
+        if rules.not_the_domain.iter().any(|(name, _)| *name == agent)
+            || only_tests_use(package, packages)
+        {
             continue;
         }
         // Each crate it leans on as well: a helper crate is no way round this.
@@ -324,6 +347,56 @@ fn what_a_test_uses_what_is_not_on_the_builder_and_what_is_not_the_domain_are_le
         &TEST_RULES,
     );
     assert_eq!(all, "");
+}
+
+fn with_targets(mut package: Value, kinds: &[&str]) -> Value {
+    package["targets"] = json!(
+        kinds
+            .iter()
+            .map(|kind| json!({ "kind": [kind] }))
+            .collect::<Vec<_>>()
+    );
+    package
+}
+
+#[test]
+fn a_library_only_tests_use_is_left_alone_until_a_workload_takes_it() {
+    let kit = || {
+        with_targets(
+            package("kit", vec![dep("polar-agent-builder"), dep("reqwest")]),
+            &["lib"],
+        )
+    };
+    assert_eq!(
+        found(vec![kit(), with_the_allowance_used()], &TEST_RULES),
+        ""
+    );
+    let taken = found(
+        vec![
+            kit(),
+            package("agent", vec![dep("polar-agent-builder"), dep("kit")]),
+            with_the_allowance_used(),
+        ],
+        &TEST_RULES,
+    );
+    assert!(
+        taken.contains("kit depends on reqwest, which agent"),
+        "{taken}"
+    );
+    let ships = found(
+        vec![
+            with_targets(
+                package("kit", vec![dep("polar-agent-builder"), dep("reqwest")]),
+                &["lib", "bin"],
+            ),
+            with_the_allowance_used(),
+        ],
+        &TEST_RULES,
+    );
+    assert!(
+        ships.contains("kit depends on reqwest, which kit"),
+        "{ships}"
+    );
 }
 
 #[test]

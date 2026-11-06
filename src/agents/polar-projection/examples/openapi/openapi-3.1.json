@@ -1,0 +1,11 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Hooks", "version": "0.3.0", "license": { "name": "MIT", "identifier": "MIT" } },
+  "paths": {
+    "/subscriptions": {
+      "put": { "operationId": "subscribe", "summary": "Subscribe", "description": "Say where events go." },
+      "trace": { "operationId": "traceSubscriptions" }
+    }
+  },
+  "webhooks": { "event": { "post": { "operationId": "onEvent" } } }
+}

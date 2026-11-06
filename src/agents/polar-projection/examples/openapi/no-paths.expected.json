@@ -1,0 +1,20 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "OpenApiApplication",
+      "keys": {
+        "source": "no-paths"
+      },
+      "set": {
+        "title": "Not yet",
+        "api_version": null,
+        "description": null,
+        "license": null,
+        "openapi": "3.0.0",
+        "swagger": null
+      }
+    }
+  ],
+  "edges": []
+}

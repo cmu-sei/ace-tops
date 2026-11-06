@@ -102,6 +102,13 @@ mod tests {
 
     polar_agent_builder::polar_agent_tests!(OpenApiProcessor);
 
+    polar_http_testkit::polar_http_tests! {
+        observer: openapi_observer::agent::OpenApiObserver,
+        processor: OpenApiProcessor,
+        mapping: "../../polar-projection/examples/openapi.dhall",
+        samples: "../../polar-projection/examples/openapi",
+    }
+
     const EXAMPLE: &str = include_str!("../../../polar-projection/examples/openapi.dhall");
 
     /// The mapping shipped beside the engine, as `polar-sign` reads it.

@@ -75,6 +75,17 @@ impl<K: Kind> Operation for Fetch<K> {
     }
 }
 
+/// A source's document, read through the protocol handler as this kind's one operation: what the observer publishes, and
+/// what a kind's tests read through the same handler (`polar-http-testkit`).
+pub async fn read<K: Kind>(protocols: &ProtocolHandle, url: String) -> Result<Vec<u8>, Failure> {
+    protocols
+        .ask(Fetch::<K> {
+            url,
+            kind: PhantomData,
+        })
+        .await
+}
+
 /// Whether what came back is a document this observer can publish. What it says is the processor's to judge.
 fn read_document(status: u16, body: &[u8]) -> Result<Vec<u8>, ReadFailure> {
     if !(200..300).contains(&status) {
@@ -269,15 +280,11 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
                 generation,
                 url,
             } => {
-                let fetch = Fetch::<K> {
-                    url,
-                    kind: PhantomData,
-                };
                 let protocols = state.protocols.clone();
                 let to = myself.clone();
                 // Off the actor, so a slow host holds up no other source.
                 tokio::spawn(async move {
-                    let outcome = protocols.ask(fetch).await;
+                    let outcome = read::<K>(&protocols, url).await;
                     let _ = to.cast(ObserverMessage::Read {
                         name,
                         generation,
@@ -346,9 +353,9 @@ pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
 mod tests {
     use super::*;
     use crate::observing::next_read;
-    use ractor::concurrency::Duration;
     use polar_agent_builder::protocol::testing::http_handle;
     use polar_agent_builder::protocol::{Location, ProtocolKind};
+    use ractor::concurrency::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

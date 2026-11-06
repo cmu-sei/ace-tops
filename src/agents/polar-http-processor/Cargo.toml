@@ -37,4 +37,6 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# The model graph a kind's tests hold real Neo4j to.
+polar-projection = { workspace = true, features = ["graph", "testing"] }
 proptest.workspace = true

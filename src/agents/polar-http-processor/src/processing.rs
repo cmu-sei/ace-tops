@@ -178,6 +178,7 @@ impl Processing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polar_projection::testing::{EdgeKey, MemoryGraph, Props};
     use polar_projection::{Bounds, Edge, Scalar, Shape};
     use proptest::prelude::*;
     use serde_json::json;
@@ -373,58 +374,8 @@ mod tests {
         }
     }
 
-    type Props = BTreeMap<String, Scalar>;
-    /// An edge by its two ends and its type, written out.
-    type EdgeKey = (String, String, String);
-
-    /// A node by its label and keys, written out.
-    fn node_key(id: &polar_projection::NodeId) -> String {
-        format!("{}{:?}", id.label, id.keys)
-    }
-
-    /// What MERGE and SET do: a node or edge is found by what identifies it or made, a property set to null is removed,
-    /// and an edge makes the nodes at its ends if they are not there.
-    #[derive(Debug, Clone, Default, PartialEq)]
-    struct Graph {
-        nodes: BTreeMap<String, Props>,
-        edges: BTreeMap<EdgeKey, Props>,
-    }
-
-    impl Graph {
-        fn set(props: &mut Props, set: &[(String, Scalar)]) {
-            for (name, value) in set {
-                match value {
-                    Scalar::Null => {
-                        props.remove(name);
-                    }
-                    value => {
-                        props.insert(name.clone(), value.clone());
-                    }
-                }
-            }
-        }
-
-        fn apply(&mut self, writes: &[Write]) {
-            for write in writes {
-                match write {
-                    Write::Node { id, props } => {
-                        Self::set(self.nodes.entry(node_key(id)).or_default(), props)
-                    }
-                    Write::Edge {
-                        from,
-                        to,
-                        kind,
-                        props,
-                    } => {
-                        self.nodes.entry(node_key(from)).or_default();
-                        self.nodes.entry(node_key(to)).or_default();
-                        let edge = (node_key(from), kind.clone(), node_key(to));
-                        Self::set(self.edges.entry(edge).or_default(), props);
-                    }
-                }
-            }
-        }
-    }
+    /// The graph: what Neo4j does with the writes, as a kind's tests hold real Neo4j to (`polar-http-testkit`).
+    type Graph = MemoryGraph;
 
     fn doc_key(source: &str) -> String {
         format!(
@@ -641,7 +592,8 @@ mod tests {
                     let (nodes, edges) = written.expected(source);
                     for (key, props) in &nodes {
                         let got = graph.nodes.get(key);
-                        let got: Option<Props> = got.map(|p| {
+                        let got: Option<Props> = got.map(|node| {
+                            let p = &node.props;
                             // Only what the mapping in force when it came sets, and the stamps.
                             p.iter()
                                 .filter(|(n, _)| n.starts_with("polar_") || ["title", ["size", "color"][written.mapping]].contains(&n.as_str()))
@@ -654,7 +606,8 @@ mod tests {
                         let got = graph.edges.get(edge);
                         prop_assert_eq!(got, Some(&written.stamps(source)), "{:?}", edge);
                     }
-                    for (key, props) in &graph.nodes {
+                    for (key, node) in &graph.nodes {
+                        let props = &node.props;
                         if props.get("polar_source") != Some(&Scalar::Text(source.to_string())) {
                             continue;
                         }

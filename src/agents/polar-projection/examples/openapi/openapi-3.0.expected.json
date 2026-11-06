@@ -1,0 +1,114 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "OpenApiApplication",
+      "keys": {
+        "source": "openapi-3.0"
+      },
+      "set": {
+        "title": "Orders",
+        "api_version": "2.1",
+        "description": "Orders, as the shop keeps them.",
+        "license": null,
+        "openapi": "3.0.3",
+        "swagger": null
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "openapi-3.0",
+        "method": "get",
+        "path": "/orders"
+      },
+      "set": {
+        "operation_id": null,
+        "summary": "List orders",
+        "description": "Every order, newest first.",
+        "deprecated": null
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "openapi-3.0",
+        "method": "get",
+        "path": "/orders/{id}"
+      },
+      "set": {
+        "operation_id": "getOrder",
+        "summary": null,
+        "description": null,
+        "deprecated": false
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "openapi-3.0",
+        "method": "post",
+        "path": "/orders"
+      },
+      "set": {
+        "operation_id": null,
+        "summary": "Place an order",
+        "description": null,
+        "deprecated": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "openapi-3.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "openapi-3.0",
+          "method": "get",
+          "path": "/orders"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "openapi-3.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "openapi-3.0",
+          "method": "get",
+          "path": "/orders/{id}"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "openapi-3.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "openapi-3.0",
+          "method": "post",
+          "path": "/orders"
+        }
+      }
+    }
+  ]
+}

@@ -40,6 +40,9 @@ serde_dhall.workspace = true
 # The tool that signs a mapping judges it by this agent's scaffold; the tests hold it to the agent's own judgment.
 polar-sign = { path = "../../polar-sign" }
 proptest.workspace = true
+# The tests every kind has: the pair through the real handler, signing path and Neo4j, against the samples.
+polar-http-testkit.workspace = true
+openapi-observer = { path = "../observe" }
 
 [[bin]]
 name = "openapi-processor"

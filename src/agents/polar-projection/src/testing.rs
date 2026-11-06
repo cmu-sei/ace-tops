@@ -344,3 +344,114 @@ pub fn document() -> impl Strategy<Value = Value> {
         1 => tree,
     ]
 }
+
+/// A node's properties, by name.
+pub type Props = std::collections::BTreeMap<String, crate::Scalar>;
+/// An edge by the node at each end and its type, written out.
+pub type EdgeKey = (String, String, String);
+
+/// A node in a [`MemoryGraph`]: its label and its properties, which include what identifies it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Node {
+    pub label: String,
+    pub props: Props,
+}
+
+/// What the graph controller's writes do to Neo4j, in memory: a node or edge is found by what identifies it or made
+/// (MERGE), its properties are added to (`SET += `), a null removes one, and an edge makes the nodes at its ends if they
+/// are not there. A kind's tests hold real Neo4j to it (`polar-http-testkit`), so a model built on it is a model of the
+/// graph.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemoryGraph {
+    pub nodes: std::collections::BTreeMap<String, Node>,
+    pub edges: std::collections::BTreeMap<EdgeKey, Props>,
+}
+
+impl MemoryGraph {
+    /// A node by its label and keys, written out: what [`MemoryGraph::nodes`] is keyed by.
+    pub fn key(id: &crate::NodeId) -> String {
+        format!("{}{:?}", id.label, id.keys)
+    }
+
+    fn set(props: &mut Props, set: &[(String, crate::Scalar)]) {
+        for (name, value) in set {
+            match value {
+                crate::Scalar::Null => {
+                    props.remove(name);
+                }
+                value => {
+                    props.insert(name.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    fn merge(&mut self, id: &crate::NodeId) -> &mut Node {
+        self.nodes.entry(Self::key(id)).or_insert_with(|| Node {
+            label: id.label.clone(),
+            props: id.keys.iter().cloned().collect(),
+        })
+    }
+
+    /// One document's writes, in order.
+    pub fn apply(&mut self, writes: &[crate::Write]) {
+        for write in writes {
+            match write {
+                crate::Write::Node { id, props } => Self::set(&mut self.merge(id).props, props),
+                crate::Write::Edge {
+                    from,
+                    to,
+                    kind,
+                    props,
+                } => {
+                    self.merge(from);
+                    self.merge(to);
+                    let edge = (Self::key(from), kind.clone(), Self::key(to));
+                    Self::set(self.edges.entry(edge).or_default(), props);
+                }
+            }
+        }
+    }
+
+    /// Every node and edge as one line, sorted, in the form `polar_test_graph::dump` gives for Neo4j: so the two can be
+    /// compared as they are.
+    pub fn dump(&self) -> Vec<String> {
+        let node = |key: &String| {
+            let node = &self.nodes[key];
+            (format!("[{:?}]", node.label), canonical(&node.props))
+        };
+        let mut lines: Vec<String> = self
+            .nodes
+            .values()
+            .map(|n| format!("[{:?}] {}", n.label, canonical(&n.props)))
+            .collect();
+        for ((from, kind, to), props) in &self.edges {
+            let (from_label, from_props) = node(from);
+            let (to_label, to_props) = node(to);
+            lines.push(format!(
+                "{from_label} {from_props} {kind:?} {} {to_label} {to_props}",
+                canonical(props)
+            ));
+        }
+        lines.sort();
+        lines
+    }
+}
+
+fn canonical(props: &Props) -> String {
+    let mut pairs: Vec<String> = props
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                crate::Scalar::Text(s) => format!("{s:?}"),
+                crate::Scalar::Bool(b) => b.to_string(),
+                crate::Scalar::Integer(i) => i.to_string(),
+                crate::Scalar::Real(r) => format!("{r:?}"),
+                crate::Scalar::Null => "null".to_string(),
+            };
+            format!("{name}: {value}")
+        })
+        .collect();
+    pairs.sort();
+    format!("{{{}}}", pairs.join(", "))
+}

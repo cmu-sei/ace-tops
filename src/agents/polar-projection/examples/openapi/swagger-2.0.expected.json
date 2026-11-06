@@ -1,0 +1,145 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "OpenApiApplication",
+      "keys": {
+        "source": "swagger-2.0"
+      },
+      "set": {
+        "title": "Pet Store",
+        "api_version": "1.0.0",
+        "description": null,
+        "license": "Apache 2.0",
+        "openapi": null,
+        "swagger": "2.0"
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "swagger-2.0",
+        "method": "delete",
+        "path": "/pets/{petId}"
+      },
+      "set": {
+        "operation_id": "deletePet",
+        "summary": null,
+        "description": null,
+        "deprecated": true
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "swagger-2.0",
+        "method": "get",
+        "path": "/pets"
+      },
+      "set": {
+        "operation_id": "listPets",
+        "summary": "List all pets",
+        "description": null,
+        "deprecated": null
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "swagger-2.0",
+        "method": "get",
+        "path": "/pets/{petId}"
+      },
+      "set": {
+        "operation_id": "showPetById",
+        "summary": null,
+        "description": null,
+        "deprecated": null
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "swagger-2.0",
+        "method": "post",
+        "path": "/pets"
+      },
+      "set": {
+        "operation_id": "createPet",
+        "summary": "Create a pet",
+        "description": null,
+        "deprecated": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "swagger-2.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "swagger-2.0",
+          "method": "delete",
+          "path": "/pets/{petId}"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "swagger-2.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "swagger-2.0",
+          "method": "get",
+          "path": "/pets"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "swagger-2.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "swagger-2.0",
+          "method": "get",
+          "path": "/pets/{petId}"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "swagger-2.0"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "swagger-2.0",
+          "method": "post",
+          "path": "/pets"
+        }
+      }
+    }
+  ]
+}

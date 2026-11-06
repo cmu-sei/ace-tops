@@ -5167,9 +5167,11 @@ name = "openapi-processor"
 version = "1.0.0"
 dependencies = [
  "openapi-common",
+ "openapi-observer",
  "polar",
  "polar-agent-builder",
  "polar-http-processor",
+ "polar-http-testkit",
  "polar-projection",
  "polar-scudo",
  "polar-sign",
@@ -6124,6 +6126,26 @@ dependencies = [
  "ractor",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "polar-http-testkit"
+version = "1.0.0"
+dependencies = [
+ "neo4rs",
+ "polar",
+ "polar-agent-builder",
+ "polar-env",
+ "polar-http-observer",
+ "polar-http-processor",
+ "polar-projection",
+ "polar-sign",
+ "polar-signing",
+ "polar-test-graph",
+ "ractor",
+ "serde_json",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

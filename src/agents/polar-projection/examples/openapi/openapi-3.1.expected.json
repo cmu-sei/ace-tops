@@ -1,0 +1,83 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "OpenApiApplication",
+      "keys": {
+        "source": "openapi-3.1"
+      },
+      "set": {
+        "title": "Hooks",
+        "api_version": "0.3.0",
+        "description": null,
+        "license": "MIT",
+        "openapi": "3.1.0",
+        "swagger": null
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "openapi-3.1",
+        "method": "put",
+        "path": "/subscriptions"
+      },
+      "set": {
+        "operation_id": "subscribe",
+        "summary": "Subscribe",
+        "description": "Say where events go.",
+        "deprecated": null
+      }
+    },
+    {
+      "label": "OpenApiEndpoint",
+      "keys": {
+        "source": "openapi-3.1",
+        "method": "trace",
+        "path": "/subscriptions"
+      },
+      "set": {
+        "operation_id": "traceSubscriptions",
+        "summary": null,
+        "description": null,
+        "deprecated": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "openapi-3.1"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "openapi-3.1",
+          "method": "put",
+          "path": "/subscriptions"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "OpenApiApplication",
+        "keys": {
+          "source": "openapi-3.1"
+        }
+      },
+      "type": "HAS_ENDPOINT",
+      "to": {
+        "label": "OpenApiEndpoint",
+        "keys": {
+          "source": "openapi-3.1",
+          "method": "trace",
+          "path": "/subscriptions"
+        }
+      }
+    }
+  ]
+}
