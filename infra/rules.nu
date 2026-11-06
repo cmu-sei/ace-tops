@@ -391,7 +391,8 @@ def own_topics [r: record]: nothing -> record {
 # The authority model's base facts (docs/architecture/authority-model.md, "The proposal" and "Build order", slice 3): every
 # workload, whoever issues it, by its one identity `<workload>.<namespace>.serviceaccount.<domain>` (never its token's
 # subject), with its issuer, whether it is a bootstrap service, its certificate's groups, and the whole set of topics its
-# scaffold prints: declared, family and implied, each with what it says about causes. The credentials agent derives the
+# scaffold prints: declared, family and implied, each with what it says about causes; and its kind and how it is
+# configured, as the catalog says. The credentials agent derives the
 # paths from these. A workload's service account is its name ("The workload name is an agent's one name",
 # policy-enforcement.md), so one that is not would put a second name in the model, and is an error. `records` are as for
 # floor_entries.
@@ -409,6 +410,10 @@ export def model_facts [records: list, domain: string]: nothing -> record {
             bootstrap: $r.bootstrap
             # How many pods of it run at once: issuance writes each one's instance into its certificates when many.
             instances: ($r.instances? | default "one")
+            # What the catalog says it is (agent, run, ca, service) and whether it reads a signed document or only its
+            # environment: facts a check of the deployment judges by (`polar-sign check`, docs/architecture/http-observers.md).
+            kind: ($r.kind? | default "agent")
+            config: ($r.config? | default "env")
             groups: ($r.groups? | default [] | uniq | sort)
             topics: ($r.topics? | default [] | sort-by name access)
         }

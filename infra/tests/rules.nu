@@ -504,6 +504,12 @@ def main [] {
             # How many pods of it run at once: one unless its entry says many (authority-model.md, "Multi-instance
             # workloads"), which issuance reads to write the instance into its certificates.
             assert equal [$kube.instances $observer.instances] ["one" "one"]
+            # What the catalog says it is and how it is configured, for a check of the deployment's facts: the state agent's
+            # list of agents is the document agents of kind agent (graph.nu `health_agents`).
+            assert equal [$kube.kind $kube.config] ["agent" "env"]
+            let ca = (model_facts ($r | update 1 { merge { kind: "ca", config: "document" } }) "cluster.local")
+            let observer_now = ($ca.workloads | where workload == "credentials-agent-observer" | first)
+            assert equal [$observer_now.kind $observer_now.config] ["ca" "document"]
             let many = (model_facts ($r | update 0 { merge { instances: "many" } }) "cluster.local")
             assert equal ($many.workloads | where workload == "kube-observer" | first | get instances) "many"
             # One identity per workload: the token's subject is nowhere in it (authority-model.md, "Decisions").

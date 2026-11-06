@@ -28,8 +28,12 @@ true of by digest (a mapping, a scaffold, samples, the tool's version) and says 
 evidence domain (`polar-evidence-record-v1`), so it is never taken for a configuration document, and nothing here is
 read as an order. `polar-sign verify --evidence <file>` checks one.
 
-`projection-test/<agent>/<section>/<sha256>.json` holds what `polar-sign projection test` found of a deployment's
-mapping, named by the digest of the signed record, so a new record never replaces another.
+Every record has the same envelope: `type`, `subject`, the digests and versions it is true of, `tool`, `result
+{ passed, problems }` and a time, with what its type says beside them. Each is named by the digest of the signed record,
+so a new record never replaces another:
+
+- `projection-test/<agent>/<section>/<sha256>.json`: what `polar-sign projection test` found of a deployment's mapping;
+- `instance-check/<target>/<sha256>.json`: what `polar-sign check` found of one instance, each invariant by its id.
 
 This directory is the first commit of the repository, made once by the Polar git server when it finds the repository
 empty. Like every repository on the server, it refuses a deleted branch and a rewritten history; a commit that removes

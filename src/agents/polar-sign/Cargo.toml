@@ -37,6 +37,13 @@ polar-escrow.workspace = true
 polar-signing.workspace = true
 # Checks a projection's file against its type before it is signed. Not its `graph` feature: no graph or runtime here.
 polar-projection.workspace = true
+# The authority model and the topic types, to judge a deployment's facts as the credentials agent and the agents do.
+credentials-agent-model.workspace = true
+polar-topics.workspace = true
+# A deployment's rendered manifests, where the authority model is; a CA's certificate, to name it by its digest.
+serde_yaml.workspace = true
+serde.workspace = true
+base64.workspace = true
 # What a running agent answers, which `template --settings --running` writes a file from.
 polar-scheduler-common.workspace = true
 serde_dhall.workspace = true

@@ -308,6 +308,8 @@ def issuance_record [w: record, target: string, kinds: record] {
         issuer: $s.issuer
         bootstrap: $s.bootstrap
         instances: (effective_instances $s)
+        kind: ($w.kind? | default "agent")
+        config: ($w.config? | default "env")
         topics: $scaffold.topics?
         groups: $scaffold.groups?
     }

@@ -414,6 +414,18 @@ mod tests {
     use polar_projection::Shape;
     use serde_json::json;
 
+    /// A tool that judges a deployment finds a projection section by the type its scaffold gives `rules`.
+    #[test]
+    fn the_section_says_it_holds_a_projection_as_the_tools_look_for_it() {
+        let body: serde_json::Value = serde_json::from_str(SECTION_BODY).unwrap();
+        assert!(
+            body["rules"]["type"]
+                .as_str()
+                .unwrap()
+                .starts_with(polar_projection::SECTION_TYPE)
+        );
+    }
+
     const BOUNDS: Bounds<'static> = Bounds {
         shapes: &[Shape {
             label: "TestDoc",

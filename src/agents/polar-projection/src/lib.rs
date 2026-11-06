@@ -43,6 +43,9 @@ pub mod testing;
 
 /// The Dhall type of a projection, for an author's file.
 pub const SCHEMA: &str = include_str!("../projection.dhall");
+/// How an agent's scaffold says a runtime section holds a projection: the type its body's `rules` field is described by
+/// begins with this (`polar_http_processor::SECTION_BODY`). A tool that judges a deployment finds its projections by it.
+pub const SECTION_TYPE: &str = "a projection: polar-projection/projection.dhall";
 
 /// The most rules a projection may have.
 pub const MAX_RULES: usize = 32;

@@ -356,6 +356,51 @@ in the schedules inside its binary's schema, by the deployed image's scaffold; e
 when the body has none); every non-bootstrap workload certified by the credentials agent; every catalog workload that reads a document in the state agent's `agents`; and, as a report
 rather than a verdict, what each workload could touch.
 
+**Bite 5, built 2026-11-06.** `polar-sign check --deployment <checkout> --schedules <checkout> --evidence <checkout> --deploy-ca <ca.pem> --user <you>` reads one instance's
+facts and judges them (`polar-sign/src/instance.rs`, reading in `instance/read.rs`):
+
+- **Reading, every signature verified.** The deployment's checkout must have no change since its last commit, which is what is read and what is signed, and that commit must be the
+  pipeline's under the deployment CA; its `deployment-record.json` must verify in the deployment
+  record's domain, and the authority model is the one the render gave the credentials agent, in its ConfigMap. Every signed runtime document of `polar-schedules` is verified as an agent
+  verifies it, and every record of `polar-evidence` in the evidence domain; one that does not verify is not in force anywhere, so it is left out and said, and the deployment not
+  verifying stops the check. The scaffolds are read as `nu infra/resolve.nu scaffolds` writes them.
+- **The invariants, each by a stable id**, which a claim binds by (the statement lives once, in the check): `pairs-connected` (every publisher of a topic reaches every hearer under the
+  policy and groups in force, by the model's own flow rules, and the side that is refused is named), `authority-reaches-every-agent` (the model's own goals: the authority's updates,
+  requests and correction), `one-owner-per-label` (by the deployed workloads' scaffolds and the state agent's `schema`), `projections-inside-schema` (each section a scaffold says holds a
+  projection, `polar_projection::SECTION_TYPE`, judged by that scaffold; a signed section of an agent with no scaffold is violated), `projections-tested` (a passing projection test of that
+  body by that scaffold's digest, reaching every read; another version's is no longer covered), `certified-by-the-credentials-agent`, and `seen-by-health` (every agent that reads a
+  document in the state agent's `agents`, and nothing else). What each workload could touch is reported: the topics the pair lets it publish and hear, the labels it owns and reads, the
+  hosts its sections name.
+- **The record** is signed in the evidence domain and pushed beside the projection tests, at `instance-check/<target>/<sha256>.json`. Report only: the tool fails when it cannot judge,
+  never for a verdict.
+
+**The record envelope is common to every type of evidence record** (agreed with the agentic control plane's session, 2026-11-06, marked for review): `type`, `subject`, the digests
+and versions it is true of, `tool` (the tool's version record), `result { passed, problems }` and a time `<verb>_at_unix_secs`, with what the type says beside them. A claim binds a
+record by its type and subject, never a digest, so it survives a new version.
+
+Each invariant was checked to catch deliberate breakage of what it states, and the reading to refuse what does not verify (`mut10.py`, 22 of 22). Four first survived: two
+breakages that did not break (a `?` left in), and two tests missing, written then: a schema naming another owner, and a section whose `rules` are not a projection. Writing the test of a
+changed deployment record found that the check verified the commit and read the working tree, so a checkout changed by hand would have been judged as signed; a checkout with changes is
+now refused.
+
+What changed for it: the authority model's facts carry each workload's `kind` and `config` as the catalog says them (`infra/rules.nu` `model_facts`), since who belongs in the state
+agent's `agents` is the document agents of kind agent, and nothing else the deployment says tells a CA or a broker from an agent; a model rendered before reads, and the check asks for
+it to be rendered again. The policy and groups sections are read into a pair by the credentials agent's own reading, moved to `credentials_agent_common`
+(`AuthorityBody::of_section`) and `Pair::from_sections`; a person's username stays as written, so what the pair is judged for is the workloads. The model's fixture was regenerated
+(`fixtures/regenerate.nu`): it predated six workloads (the OpenAPI pair, the state agent's two, attestation, the registry resolver) and every agent's present topics, and every test
+over it passes. Checked over the sandbox's own deployment mirror (`~/.config/polar-deploy/sandbox-local/mirror.git`, rendered from 66affca5) with empty schedules: the pipeline's
+signature, the record and the model are read, five invariants hold, and the two that should not do not: no schema signed, and a model rendered before it said kinds.
+
+Marked for review:
+
+- **The rule for who health asks lives in the check as well as the render** (`graph.nu` `health_agents`), over facts the catalog states. The alternative is a fact the render
+  computes, which would make the check compare the render with itself.
+- **A projection is tested only by the scaffold's text digest.** A scaffold written again by the same binary has the same text; one from another build is no longer covered, though it
+  may judge the same.
+- **Ractor comes into the model through `polar-policy`**, whose evaluator and actor are one crate. Nothing in the model runs it.
+- **What it does not read yet:** what runs (each agent's sections in force, asked through `polar-running-config`, next), the images' scaffolds by their digests (the render caches them
+  so; the check is given a folder), and the pods (`Instance.uid`).
+
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one
 (5; the fix is a server-side check at push), and a forgotten migration (5, 6). Narrowed: a service changing its shape (the guard; a field outside it can still clear), one signer and no review (4, 5),
@@ -384,8 +429,10 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
 - **One workload per kind, or per site?** A kind with credentials may want one workload per site, so two Jira sites are not one identity. OpenAPI has none, so this waits for the second kind.
 - **A signed list cannot hold entries with different fields** (`remaining-work.md`). OpenAPI's `sources` are all required, so it does not stop the first kind. Credentials and paging will need the fix.
 - **An endpoint a document dropped** stays in the graph, with an older `polar_observed_at`. Not handled further yet. So does a property a new version of the mapping no longer sets (bite 2).
-- **The evidence repository takes any commit that keeps history.** A commit that removes or changes a record, or is unsigned, is taken (bite 4). The fix is a rule for the repository:
-  every commit only adds files, each a record that verifies in the evidence domain, signed by a commit signer chaining to the CA. Not designed.
+- **The evidence repository refuses deleted branches and rewritten history, and takes any other commit.** The evidence registry's decision (`agentic-control-plane.md`, on its
+  branch, 2026-11-05) is a repository that requires signed commits and refuses deletions and rewrites; the second is built as on every repository, and a commit that removes or changes a
+  record is the part not built: "add only", each commit adding files that verify in the evidence domain. What is open is how signed commits are required of many signers, since
+  `signed_by` names one. A coverage engine counts on a failed record staying (bites 4, 5).
 - **Dhall evaluation is exponential in nesting** (bite 2, above). A signed projection is within it today. Finding whether the parser or the type checker is the cause, and fixing it in the
   Dhall fork, comes before any section body nested much deeper than a projection's.
 - **A mapping's first version.** A processor with no signed mapping holds and says so. It is not seeded: the mapping is in `polar-projection/examples/openapi.dhall`, to sign. A built-in default or a seed are the alternatives.

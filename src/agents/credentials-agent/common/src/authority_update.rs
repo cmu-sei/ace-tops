@@ -106,6 +106,41 @@ pub enum AuthorityKind {
 }
 
 impl AuthorityBody {
+    /// What a `policy` or `groups` runtime section's body says, as an update carries it: the policy's Cedar `source`, or
+    /// the groups' `memberships` with how groups and roles are arranged. The credentials agent publishes this, and the
+    /// authority model judges a deployment's sections by it.
+    pub fn of_section(section: &str, body: &serde_json::Value) -> Result<AuthorityBody, String> {
+        match section {
+            "policy" => body
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .map(|source| AuthorityBody::Policy {
+                    source: source.to_string(),
+                })
+                .ok_or_else(|| "the policy section has no text `source`".to_string()),
+            "groups" => {
+                let memberships: BTreeMap<String, Vec<String>> = body
+                    .get("memberships")
+                    .cloned()
+                    .ok_or_else(|| "the groups section has no `memberships`".to_string())
+                    .and_then(|m| serde_json::from_value(m).map_err(|e| e.to_string()))?;
+                let hierarchy: cert_issuer_common::hierarchy::Hierarchy =
+                    serde_json::from_value(serde_json::json!({
+                        "groups": body.get("groups").cloned().unwrap_or(serde_json::json!({})),
+                        "roles": body.get("roles").cloned().unwrap_or(serde_json::json!({})),
+                    }))
+                    .map_err(|e| e.to_string())?;
+                Ok(AuthorityBody::Groups {
+                    memberships,
+                    hierarchy,
+                })
+            }
+            other => Err(format!("`{other}` is not a section that is published")),
+        }
+    }
+}
+
+impl AuthorityBody {
     pub fn kind(&self) -> AuthorityKind {
         match self {
             AuthorityBody::Policy { .. } => AuthorityKind::Policy,

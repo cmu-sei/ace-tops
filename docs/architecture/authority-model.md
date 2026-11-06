@@ -563,6 +563,11 @@ later:
 - reasons to split it later: the analysis growing heavy enough to slow the credentials agent, or needing its own
   release cadence.
 
+Since 2026-11-06 the crate has no runtime of its own, so a tool can judge a deployment by the same rules
+(`polar-sign check`, docs/architecture/http-observers.md, "Evidence", bite 5): the topic types and the gate's rule come
+from `polar-topics`, which the builder re-exports, and the credentials agent's common crate without its graph keys. The
+model's facts also say each workload's `kind` and `config`, as the catalog does.
+
 ## What stays as it is
 
 - Decisions stay at the leaves and the broker, against whatever the authority accepted. Asking a central decider

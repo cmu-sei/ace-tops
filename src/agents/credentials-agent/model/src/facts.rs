@@ -56,6 +56,14 @@ pub struct Workload {
     /// model written before it existed, which reads as one.
     #[serde(default)]
     pub instances: Instances,
+    /// What the catalog says it is: `agent`, `run`, `ca` or `service`. Absent in a model rendered before it was written,
+    /// which says nothing of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// How it is configured: `document` for an agent that reads a signed document (and prints a scaffold), `env` for one
+    /// that reads only its environment. Absent as `kind` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
     #[serde(default)]
     pub groups: Vec<String>,
     #[serde(default)]
@@ -227,4 +235,89 @@ pub struct Pair {
     pub policy: Option<String>,
     pub memberships: BTreeMap<String, Vec<String>>,
     pub hierarchy: Hierarchy,
+}
+
+impl Pair {
+    /// The pair a deployment's `policy` and `groups` sections make, read as the credentials agent reads them
+    /// (`AuthorityBody::of_section`); either may be absent, none yet signed. A person's username stays as it is written:
+    /// the account ID it stands for is the ledger's, which a judgement of the sections alone has not, so what it says
+    /// is about workloads.
+    pub fn from_sections(
+        policy: Option<&serde_json::Value>,
+        groups: Option<&serde_json::Value>,
+    ) -> Result<Pair, String> {
+        use credentials_agent_common::authority_update::AuthorityBody;
+        let mut pair = Pair::default();
+        if let Some(body) = policy {
+            match AuthorityBody::of_section("policy", body)? {
+                AuthorityBody::Policy { source } => pair.policy = Some(source),
+                _ => unreachable!("a policy section reads as a policy"),
+            }
+        }
+        if let Some(body) = groups {
+            match AuthorityBody::of_section("groups", body)? {
+                AuthorityBody::Groups {
+                    memberships,
+                    hierarchy,
+                } => {
+                    pair.memberships = memberships;
+                    pair.hierarchy = hierarchy;
+                }
+                _ => unreachable!("a groups section reads as groups"),
+            }
+        }
+        Ok(pair)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_pair_is_what_the_policy_and_groups_sections_say_and_neither_is_the_floor() {
+        assert_eq!(Pair::from_sections(None, None).unwrap(), Pair::default());
+        let pair = Pair::from_sections(
+            Some(&json!({ "source": "permit(principal, action, resource);" })),
+            Some(&json!({ "memberships": { "a.polar.serviceaccount.cluster.local": ["g"] } })),
+        )
+        .unwrap();
+        assert_eq!(
+            pair.policy.as_deref(),
+            Some("permit(principal, action, resource);")
+        );
+        assert_eq!(
+            pair.memberships["a.polar.serviceaccount.cluster.local"],
+            vec!["g".to_string()]
+        );
+        assert!(Pair::from_sections(Some(&json!({})), None).is_err());
+        assert!(Pair::from_sections(None, Some(&json!({ "groups": {} }))).is_err());
+    }
+
+    #[test]
+    fn a_model_says_each_workload_s_kind_and_configuration_or_was_rendered_before_it_did() {
+        let workload = |extra: serde_json::Value| {
+            let mut w = json!({
+                "workload": "a", "identity": "a.polar.serviceaccount.cluster.local",
+                "issuer": CREDENTIALS_AGENT, "bootstrap": false
+            });
+            w.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            Model::parse(&json!({ "format": FORMAT, "workloads": [w] }).to_string()).unwrap()
+        };
+        let now = workload(json!({ "kind": "agent", "config": "document" }));
+        assert_eq!(now.workloads[0].kind.as_deref(), Some("agent"));
+        assert_eq!(now.workloads[0].config.as_deref(), Some("document"));
+        let before = workload(json!({}));
+        assert_eq!(
+            (
+                before.workloads[0].kind.clone(),
+                before.workloads[0].config.clone()
+            ),
+            (None, None)
+        );
+        assert!(!serde_json::to_string(&before).unwrap().contains("kind"));
+    }
 }

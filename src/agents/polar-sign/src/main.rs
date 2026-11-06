@@ -25,7 +25,7 @@
 //! checks it, seals its secrets, signs it and, with `--push`, puts it in the schedules repository;
 //! `polar-sign configuration` and `runtime` sign a change given on the command line; `polar-sign verify`
 //! checks a signed document; `polar-sign projection test` holds a deployment's mapping to its samples and signs a
-//! record of what it found. Design: `docs/architecture/signed-configuration.md`, and for the test
+//! record of what it found; `polar-sign check` judges what one instance declares and signs its verdicts. Design: `docs/architecture/signed-configuration.md`, and for the test
 //! `docs/architecture/http-observers.md`, "Evidence".
 
 use anyhow::{Context, Result, bail};
@@ -199,6 +199,50 @@ enum Command {
         /// The file is an evidence record (`polar-sign projection test`), not a configuration document.
         #[arg(long)]
         evidence: bool,
+    },
+    /// Judge what one instance of Polar declares, from checkouts of its signed repositories, and sign the verdicts.
+    ///
+    /// Reads the deployment (its last commit, signed by the pipeline, its record and the authority model the render gave
+    /// the credentials agent), polar-schedules (every signed section) and polar-evidence, verifying each as an agent
+    /// would, and the agents' scaffolds. Each invariant, by its id, holds, is violated, or is no longer covered (there was
+    /// evidence, for another version), with the lines that show it; and what each workload could touch is reported.
+    /// Report only: the tool fails when it cannot judge, never for a verdict. The record is signed in the evidence domain
+    /// (to standard output unless --out or --push).
+    Check {
+        /// A checkout of the deployment repository.
+        #[arg(long)]
+        deployment: PathBuf,
+        /// A checkout of polar-schedules.
+        #[arg(long)]
+        schedules: PathBuf,
+        /// A checkout of polar-evidence.
+        #[arg(long)]
+        evidence: PathBuf,
+        /// The agents' scaffolds; <dir>/scaffolds by default.
+        #[arg(long)]
+        scaffolds: Option<PathBuf>,
+        /// The deployment CA's certificate, which the pipeline's signatures chain to (~/.config/polar-deploy/<target>/ca.pem).
+        #[arg(long)]
+        deploy_ca: PathBuf,
+        /// Whose certificate and key sign the verdicts.
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Commit the record to the evidence repository and push it.
+        #[arg(long)]
+        push: bool,
+        /// The evidence repository (anything `git clone` takes); POLAR_EVIDENCE_URL by default.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Where the tool keeps its clone; ~/.cache/polar-sign/evidence by default.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// KEY=VALUE for every git command of the push (`git -c`).
+        #[arg(long = "git-config", value_name = "KEY=VALUE")]
+        git_config: Vec<String>,
     },
     /// What a projection, a mapping an HTTP processor writes the graph by, does.
     Projection {
@@ -617,6 +661,101 @@ fn main() -> Result<()> {
                     );
                 }
                 None => print!("{file}"),
+            }
+        }
+        Command::Check {
+            deployment,
+            schedules,
+            evidence: evidence_dir,
+            scaffolds,
+            deploy_ca,
+            user,
+            dir,
+            out,
+            push: push_it,
+            repo,
+            workdir,
+            git_config,
+        } => {
+            let dir = default_dir(dir)?;
+            let trust = read_trust(&dir.join("ca.pem"))?;
+            let deploy_trust = read_trust(&deploy_ca)?;
+            let scaffolds = scaffolds.unwrap_or_else(|| dir.join("scaffolds"));
+            let now = now()?;
+            let read = polar_sign::instance::read::read(
+                &polar_sign::instance::read::Sources {
+                    deployment: &deployment,
+                    schedules: &schedules,
+                    evidence: &evidence_dir,
+                    scaffolds: &scaffolds,
+                },
+                &polar_sign::instance::read::Trusts {
+                    polar: &trust,
+                    deployment: &deploy_trust,
+                },
+                now,
+            )
+            .map_err(anyhow::Error::msg)?;
+            for line in &read.left_out {
+                eprintln!("left out: {line}");
+            }
+            let facts = read.facts;
+            let checked = polar_sign::instance::check(&facts);
+            for v in &checked.verdicts {
+                eprintln!("{} {}: {}", v.status.as_str(), v.id, v.statement);
+                if v.status != polar_sign::instance::Status::Holds {
+                    for line in &v.witness {
+                        eprintln!("  {line}");
+                    }
+                }
+            }
+            let identity = load_identity(&dir, &user).map_err(anyhow::Error::msg)?;
+            let mut record = polar_sign::instance::record(&facts, &checked, now);
+            record["left_out"] = serde_json::json!(read.left_out);
+            let signed = evidence::sign_record(record, &identity).map_err(anyhow::Error::msg)?;
+            let holding = checked
+                .verdicts
+                .iter()
+                .filter(|v| v.status == polar_sign::instance::Status::Holds)
+                .count();
+            let what = format!(
+                "{} of {} invariants hold on {}",
+                holding,
+                checked.verdicts.len(),
+                facts.instance.target
+            );
+            if push_it {
+                let (signer, _) =
+                    evidence::verify_record(&signed, &trust, now).map_err(anyhow::Error::msg)?;
+                let remote = repo.or_else(|| env_var("POLAR_EVIDENCE_URL")).context(
+                    "--push needs the evidence repository: --repo, or POLAR_EVIDENCE_URL",
+                )?;
+                let workdir = workdir_for(workdir, "evidence")?;
+                let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                let relative = polar_sign::instance::place(&facts.instance.target, &signed);
+                let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                let message =
+                    polar_sign::instance::message(&facts.instance.target, &checked, &username);
+                let plan = push::Plan {
+                    remote: &remote,
+                    workdir: &workdir,
+                    relative: &relative,
+                    content: &signed,
+                    message: &message,
+                    author_name: &username,
+                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                    git_config: &config,
+                };
+                match push::push(&plan).map_err(anyhow::Error::msg)? {
+                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                    push::Pushed::Unchanged => {
+                        eprintln!(
+                            "{relative} already holds exactly this record; nothing was pushed"
+                        )
+                    }
+                }
+            } else {
+                write_or_print(&signed, out.as_deref(), &what)?;
             }
         }
         Command::Projection {

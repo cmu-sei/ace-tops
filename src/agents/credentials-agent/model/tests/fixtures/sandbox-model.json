@@ -2,11 +2,240 @@
   "format": 1,
   "workloads": [
     {
+      "workload": "attestation-agent",
+      "identity": "attestation-agent.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.attestation-agent.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.attestation-agent.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.attestation-agent.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "attestation-deployment-record",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "the deployment's signed record, which it verifies itself"
+        },
+        {
+          "name": "attestation-instance-replies.cert-issuer",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "the verdict, on cert-issuer's own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "attestation-instance-requests"
+            }
+          ]
+        },
+        {
+          "name": "attestation-instance-replies.credentials-agent",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "the verdict, on the credentials agent's own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "attestation-instance-requests"
+            }
+          ]
+        },
+        {
+          "name": "attestation-instance-requests",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "a question about an instance, from who vouches for certificates"
+        },
+        {
+          "name": "attestation-reports",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "what it finds of its own accord: a pod that is not what its owner made, a container that died by a signal",
+          "causes": [
+            {
+              "kind": "outside",
+              "name": "the pods it watches"
+            },
+            {
+              "kind": "timer",
+              "name": "each minute, what still stands"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.attestation-agent.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.attestation-agent.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.attestation-agent.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "selftest.attestation-agent",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.attestation-agent",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.attestation-agent",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        }
+      ]
+    },
+    {
       "workload": "cassini",
       "identity": "cassini.polar.serviceaccount.cluster.local",
       "issuer": "cert-issuer",
       "bootstrap": true,
       "instances": "one",
+      "kind": "service",
+      "config": "document",
       "groups": [],
       "topics": []
     },
@@ -16,6 +245,8 @@
       "issuer": "cert-issuer",
       "bootstrap": true,
       "instances": "one",
+      "kind": "ca",
+      "config": "document",
       "groups": [
         "cassini-client"
       ],
@@ -33,6 +264,31 @@
           "from": "implied",
           "rule": "agent",
           "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.cert-issuer.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "attestation-instance-replies.cert-issuer",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "the attestation agent's verdict on a pod, from it alone"
+        },
+        {
+          "name": "attestation-instance-requests",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "a question about the pod behind a token it admits",
+          "causes": [
+            {
+              "kind": "http",
+              "name": "/issue"
+            }
+          ]
         },
         {
           "name": "cert-issuer-held-replies",
@@ -152,6 +408,46 @@
               "kind": "registered"
             }
           ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.cert-issuer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "soft-state-replies.cert-issuer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -161,6 +457,8 @@
       "issuer": "cert-issuer",
       "bootstrap": true,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -179,6 +477,53 @@
           "from": "implied",
           "rule": "agent",
           "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.credentials-agent.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "attestation-instance-replies.credentials-agent",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "the attestation agent's verdict on a pod, from it alone"
+        },
+        {
+          "name": "attestation-instance-requests",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "a question about the pod a certificate is asked for",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "credentials-issuance-requests"
+            },
+            {
+              "kind": "topic",
+              "name": "credentials-workload-issuance-requests"
+            },
+            {
+              "kind": "topic",
+              "name": "credentials-custodian-issuance-requests"
+            },
+            {
+              "kind": "topic",
+              "name": "credentials-agent-escrow-issuance-requests"
+            },
+            {
+              "kind": "topic",
+              "name": "cert-issuer-held-requests"
+            }
+          ]
+        },
+        {
+          "name": "attestation-reports",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "what the attestation agent finds of its own accord, recorded and logged, from it alone"
         },
         {
           "name": "cert-issuer-held-replies",
@@ -606,6 +951,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.credentials-agent.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.credentials-agent",
           "access": "publish",
           "from": "implied",
@@ -630,6 +1008,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.credentials-agent",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -639,6 +1024,8 @@
       "issuer": "cert-issuer",
       "bootstrap": true,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -653,6 +1040,13 @@
         },
         {
           "name": "agent.credentials-agent-observer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.credentials-agent-observer.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -884,6 +1278,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.credentials-agent-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.credentials-agent-observer",
           "access": "publish",
           "from": "implied",
@@ -908,6 +1335,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.credentials-agent-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -917,6 +1351,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -931,6 +1367,13 @@
         },
         {
           "name": "agent.git-repo-controller.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.git-repo-controller.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -1033,11 +1476,44 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.git-repo-controller.health"
+            }
+          ]
+        },
+        {
           "name": "polar-proposal-observe-repo",
           "access": "subscribe",
           "from": "declared",
           "purpose": "a proposal that a repository be observed, with its evidence",
           "waits": "no catalog agent proposes repositories yet: the gitlab and jira consumers are to (docs/architecture/git-controller.md); discover_repo, a test harness, does"
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         },
         {
           "name": "polar.git.proposals.decisions",
@@ -1076,6 +1552,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.git-repo-controller",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -1085,6 +1568,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "encryption",
@@ -1100,6 +1585,13 @@
         },
         {
           "name": "agent.git-repo-observer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.git-repo-observer.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -1245,6 +1737,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.git-repo-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "polar.git.observation.status",
           "access": "publish",
           "from": "declared",
@@ -1301,6 +1826,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.git-repo-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -1310,6 +1842,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -1324,6 +1858,13 @@
         },
         {
           "name": "agent.git-repo-processor.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.git-repo-processor.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -1403,6 +1944,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.git-repo-processor.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "polar.git.observation.status",
           "access": "subscribe",
           "from": "declared",
@@ -1445,6 +2019,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.git-repo-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -1454,6 +2035,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "many",
+      "kind": "run",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -1468,6 +2051,13 @@
         },
         {
           "name": "agent.harness-producer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.harness-producer.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -1603,6 +2193,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.harness-producer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.harness-producer",
           "access": "publish",
           "from": "implied",
@@ -1627,6 +2250,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.harness-producer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -1636,6 +2266,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "run",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -1650,6 +2282,13 @@
         },
         {
           "name": "agent.harness-sink.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.harness-sink.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -1777,6 +2416,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.harness-sink.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.harness-sink",
           "access": "publish",
           "from": "implied",
@@ -1801,6 +2473,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.harness-sink",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -1810,9 +2489,13 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
-        "self-test"
+        "encryption",
+        "self-test",
+        "soft-state"
       ],
       "topics": [
         {
@@ -1828,6 +2511,73 @@
           "from": "implied",
           "rule": "agent",
           "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.jira-observer.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "credentials-agent-escrow-key-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-agent-escrow-key-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "credentials-escrow-key-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-escrow-key-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "credentials-retrieve-secret-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-retrieve-secret-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "credentials-store-secret-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-store-secret-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
         },
         {
           "name": "jira:consumer:groups",
@@ -1951,6 +2701,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.jira-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.jira-observer",
           "access": "publish",
           "from": "implied",
@@ -1975,6 +2758,21 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.jira-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "soft-state-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "soft_state",
+          "why": "the agent reads its own soft state (its state actor)",
+          "unprompted": "its state actor asks the state agent when the agent reads its own soft state"
         }
       ]
     },
@@ -1984,6 +2782,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -1998,6 +2798,13 @@
         },
         {
           "name": "agent.jira-processor.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.jira-processor.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -2101,6 +2908,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.jira-processor.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.jira-processor",
           "access": "publish",
           "from": "implied",
@@ -2125,6 +2965,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.jira-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -2134,6 +2981,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "encryption",
@@ -2149,6 +2998,13 @@
         },
         {
           "name": "agent.kube-consumer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.kube-consumer.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -2294,6 +3150,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.kube-consumer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "polar.kubernetes.cluster.resolution",
           "access": "subscribe",
           "from": "declared",
@@ -2336,6 +3225,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.kube-consumer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -2345,6 +3241,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -2359,6 +3257,13 @@
         },
         {
           "name": "agent.kube-observer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.kube-observer.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -2450,6 +3355,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.kube-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.kube-observer",
           "access": "publish",
           "from": "implied",
@@ -2474,6 +3412,648 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.kube-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        }
+      ]
+    },
+    {
+      "workload": "oci-registry-resolver",
+      "identity": "oci-registry-resolver.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "encryption",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.oci-registry-resolver.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.oci-registry-resolver.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.oci-registry-resolver.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "credentials-agent-escrow-key-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-agent-escrow-key-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "credentials-escrow-key-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-escrow-key-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "credentials-retrieve-secret-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-retrieve-secret-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "credentials-store-secret-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)"
+        },
+        {
+          "name": "credentials-store-secret-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "encryption",
+          "why": "the agent needs encryption (its crypto actor)",
+          "unprompted": "its crypto actor asks the credentials agent when the agent encrypts or decrypts"
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.oci-registry-resolver.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.oci-registry-resolver.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.oci-registry-resolver.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar.kubernetes.cluster.resolution",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "what it resolved for a Kubernetes container, for kube-consumer",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar.provenance.discovery"
+            }
+          ]
+        },
+        {
+          "name": "polar.provenance.discovery",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "an image reference to resolve against its registry"
+        },
+        {
+          "name": "polar.provenance.events",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "every artifact it resolved (manifest, digest, registry), for the provenance stream",
+          "waits": "read by build-processor, a chart outside the catalog",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar.provenance.discovery"
+            }
+          ]
+        },
+        {
+          "name": "selftest.oci-registry-resolver",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.oci-registry-resolver",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.oci-registry-resolver",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        }
+      ]
+    },
+    {
+      "workload": "openapi-observer",
+      "identity": "openapi-observer.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.openapi-observer.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.openapi-observer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.openapi-observer.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.openapi-observer.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.openapi-observer.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.openapi-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar.openapi.observations",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "each document as it came, for the processor",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "read"
+            }
+          ]
+        },
+        {
+          "name": "selftest.openapi-observer",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.openapi-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.openapi-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        }
+      ]
+    },
+    {
+      "workload": "openapi-processor",
+      "identity": "openapi-processor.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.openapi-processor.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.openapi-processor.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.openapi-processor.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.openapi-processor.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.openapi-processor.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.openapi-processor.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar.openapi.observations",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "the documents the observer read, written to the graph"
+        },
+        {
+          "name": "selftest.openapi-processor",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.openapi-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.openapi-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -2483,6 +4063,8 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
@@ -2497,6 +4079,13 @@
         },
         {
           "name": "agent.polar-git-server.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.polar-git-server.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -2588,6 +4177,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.polar-git-server.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "selftest.polar-git-server",
           "access": "publish",
           "from": "implied",
@@ -2612,6 +4234,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.polar-git-server",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -2621,11 +4250,27 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
       ],
       "topics": [
+        {
+          "name": "agent.attestation-agent.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "attestation-agent",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
         {
           "name": "agent.credentials-agent-observer.configuration",
           "access": "publish",
@@ -2795,6 +4440,34 @@
           ]
         },
         {
+          "name": "agent.openapi-observer.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "openapi-observer",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
+          "name": "agent.openapi-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "openapi-processor",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
           "name": "agent.polar-git-server.configuration",
           "access": "publish",
           "from": "family",
@@ -2851,6 +4524,13 @@
           "why": "every agent that is a Cassini client"
         },
         {
+          "name": "agent.polar-scheduler.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "agent.secret-harness-intruder.configuration",
           "access": "publish",
           "from": "family",
@@ -2870,6 +4550,34 @@
           "from": "family",
           "pattern": "agent.{workload}.configuration",
           "workload": "secret-harness-owner",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-observer.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "soft-state-observer",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "soft-state-processor",
           "purpose": "a signed document for the workload, forwarded untouched for it to verify",
           "causes": [
             {
@@ -2958,6 +4666,39 @@
           ]
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.polar-scheduler.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "scheduler.in",
           "access": "subscribe",
           "from": "declared",
@@ -2988,6 +4729,13 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.polar-scheduler",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     },
@@ -2997,11 +4745,27 @@
       "issuer": "credentials-agent",
       "bootstrap": false,
       "instances": "one",
+      "kind": "agent",
+      "config": "document",
       "groups": [
         "cassini-client",
         "self-test"
       ],
       "topics": [
+        {
+          "name": "agent.attestation-agent.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "attestation-agent",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
         {
           "name": "agent.credentials-agent-observer.configuration",
           "access": "publish",
@@ -3171,6 +4935,34 @@
           ]
         },
         {
+          "name": "agent.openapi-observer.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "openapi-observer",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
+          "name": "agent.openapi-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "openapi-processor",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
           "name": "agent.polar-git-server.configuration",
           "access": "publish",
           "from": "family",
@@ -3207,6 +4999,13 @@
         },
         {
           "name": "agent.polar-scheduler-observer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.polar-scheduler-observer.health",
           "access": "subscribe",
           "from": "implied",
           "rule": "agent",
@@ -3251,6 +5050,46 @@
             {
               "kind": "topic",
               "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-observer.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "soft-state-observer",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "soft-state-processor",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
+          "name": "attestation-deployment-record",
+          "access": "publish",
+          "from": "declared",
+          "purpose": "the deployment's signed record, as the deployment repository holds it",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "reading the deployment repository"
             }
           ]
         },
@@ -3340,6 +5179,39 @@
           "purpose": "a push to the schedules repository, which starts a sync"
         },
         {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.polar-scheduler-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
           "name": "scheduler.in",
           "access": "publish",
           "from": "declared",
@@ -3380,6 +5252,991 @@
               "name": "self-test"
             }
           ]
+        },
+        {
+          "name": "soft-state-replies.polar-scheduler-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        }
+      ]
+    },
+    {
+      "workload": "soft-state-observer",
+      "identity": "soft-state-observer.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.soft-state-observer.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.soft-state-observer.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.soft-state-observer.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.soft-state-observer.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.soft-state-observer.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.soft-state-observer.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "selftest.soft-state-observer",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.soft-state-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.attestation-agent",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "attestation-agent",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.credentials-agent",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "credentials-agent",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.credentials-agent-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "credentials-agent-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.git-repo-controller",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "git-repo-controller",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.git-repo-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "git-repo-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.git-repo-processor",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "git-repo-processor",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.harness-producer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "harness-producer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.harness-sink",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "harness-sink",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.jira-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "jira-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.jira-processor",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "jira-processor",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.kube-consumer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "kube-consumer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.kube-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "kube-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.oci-registry-resolver",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "oci-registry-resolver",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.openapi-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "openapi-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.openapi-processor",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "openapi-processor",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.polar-git-server",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "polar-git-server",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.polar-scheduler",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "polar-scheduler",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.polar-scheduler-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "polar-scheduler-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.secret-harness-intruder",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "secret-harness-intruder",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.secret-harness-owner",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "secret-harness-owner",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.soft-state-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "soft-state-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.soft-state-observer",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "soft-state-replies.soft-state-processor",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "soft-state-processor",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-requests",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "an agent's request for state it may read"
+        }
+      ]
+    },
+    {
+      "workload": "soft-state-processor",
+      "identity": "soft-state-processor.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.attestation-agent.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "attestation-agent",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.credentials-agent-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "credentials-agent-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.credentials-agent.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "credentials-agent",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.git-repo-controller.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "git-repo-controller",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.git-repo-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "git-repo-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.git-repo-processor.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "git-repo-processor",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.harness-producer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "harness-producer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.harness-sink.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "harness-sink",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.jira-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "jira-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.jira-processor.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "jira-processor",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.kube-consumer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "kube-consumer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.kube-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "kube-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.oci-registry-resolver.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "oci-registry-resolver",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.openapi-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "openapi-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.openapi-processor.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "openapi-processor",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.polar-git-server.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "polar-git-server",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.polar-scheduler-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "polar-scheduler-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.polar-scheduler.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "polar-scheduler",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.secret-harness-intruder.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "secret-harness-intruder",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.secret-harness-owner.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "secret-harness-owner",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "soft-state-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-processor.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.soft-state-processor.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.soft-state-processor.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "soft-state-processor",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.soft-state-processor.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.soft-state-processor.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.soft-state-processor.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.soft-state-processor.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "every agent's answer about its health"
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "selftest.soft-state-processor",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.soft-state-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.soft-state-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
         }
       ]
     }

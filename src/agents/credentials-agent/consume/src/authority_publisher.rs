@@ -43,7 +43,6 @@ use polar_agent_builder::authority::AuthorityHandle;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use rsa::RsaPrivateKey;
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -207,37 +206,11 @@ impl PublisherState {
     }
 }
 
-/// What a runtime section says, as the body of an update. A section that is not one of the two, or does not
-/// read as it should, is not published: the credentials agent validates a section when it receives it, so
-/// this is a second line.
+/// What a runtime section says, as the body of an update ([`AuthorityBody::of_section`]). A section that is not one of
+/// the two, or does not read as it should, is not published: the credentials agent validates a section when it receives
+/// it, so this is a second line.
 pub(crate) fn body_of(section: &str, body: &Value) -> Result<AuthorityBody, String> {
-    match section {
-        "policy" => body
-            .get("source")
-            .and_then(Value::as_str)
-            .map(|source| AuthorityBody::Policy {
-                source: source.to_string(),
-            })
-            .ok_or_else(|| "the policy section has no text `source`".to_string()),
-        "groups" => {
-            let memberships: BTreeMap<String, Vec<String>> = body
-                .get("memberships")
-                .cloned()
-                .ok_or_else(|| "the groups section has no `memberships`".to_string())
-                .and_then(|m| serde_json::from_value(m).map_err(|e| e.to_string()))?;
-            let hierarchy: cert_issuer_common::hierarchy::Hierarchy =
-                serde_json::from_value(serde_json::json!({
-                    "groups": body.get("groups").cloned().unwrap_or(serde_json::json!({})),
-                    "roles": body.get("roles").cloned().unwrap_or(serde_json::json!({})),
-                }))
-                .map_err(|e| e.to_string())?;
-            Ok(AuthorityBody::Groups {
-                memberships,
-                hierarchy,
-            })
-        }
-        other => Err(format!("`{other}` is not a section that is published")),
-    }
+    AuthorityBody::of_section(section, body)
 }
 
 #[ractor::async_trait]
