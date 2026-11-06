@@ -188,16 +188,21 @@ passed and one broker test failed once under its load, passing alone and with it
 Marked for review: the hold for a range or a migration is on Configuration, the reason a domain's own configuration hold uses, so releasing it can clear the domain's own,
 which the domain makes again at its next attempt; a reason of its own would need a change to the health wire.
 
-**Checked live on u7c, 2026-11-06, in part.** u7c upgraded from its volumes to `e7dfb4e5` (`up.nu --dev`): 11 of 11 held. The mapping signed as version 3 for agents
-from 99.0.0: `sections-in-range` was violated ("openapi-processor is 3.0.0+dev, outside it") and `sections-in-force` too (the processor held version 2). What was not seen
-is the agent's own refusal and hold: the scheduler did not deliver the pushed document. It pulled the push, and its watcher published nothing; a second push did not
-help; restarted, it scanned the file, and the restarted processor's request for a replay was not answered. The first live run on u7c had a push of the same kind go
-undelivered too, which was put down then to a quiet log. So the scheduler's delivery of a pushed document is not reliable, and nothing said so but the check
-(`remaining-work.md`). The agent's refusal, hold and release, and its wait on a migration, are tested through the real configuration actor; live, they wait on that.
+**Checked live on u7c, 2026-11-06**, upgraded from its volumes, then again with the scheduler's fix (`896b8b63`):
 
-Fixed then, in the scheduler's observer: after each pull the watcher reads the checkout again and publishes what changed against what it read last, so delivery no
-longer rests on a filesystem watcher whose thread failed silently; and a record under `migrations/` is a schedule file, which it was not, so `migration applied` records
-were never delivered at all (`polar-scheduler/observer/tests/rescan.rs`, six breakages of six caught).
+- The mapping signed as version 3 for agents from 99.0.0: the processor refused it ("signed configuration refused rejection=signed for from 99.0.0 of this agent,
+  and this is 3.0.0+dev"), kept what it held, and held health ("a signed document (openapi-projection-3) is signed for from 99.0.0 of this agent, and this is
+  3.0.0+dev: sign it for this version"); `sections-in-range` and `sections-in-force` were violated. A restarted processor was replayed the same document and refused it the same way.
+- Version 4 for this build, naming migration `m1` with its file committed beside it: verified, held ("runtime section waits on its migrations ... waiting=["m1"]"),
+  and health said so ("projection version 4 waits on migration m1: apply it, then sign its record (polar-sign migration applied)"). `polar-sign migration applied --push`:
+  within six seconds the record was verified, version 4 replaced the section, the hold was resolved and the mapping was in force. The check: 11 of 11, `migrations-applied`
+  "applied, by djshepard", `sections-in-range` "version 4 (from 3.0.0): openapi-processor is 3.0.0+dev".
+
+**A correction.** The first look at this run concluded that the scheduler did not deliver pushed documents. It did: the agents' configuration actor logs inside the
+transport's span, and the processor's log had been read filtered with `grep -v tcp_client`, which hid the refusals that were there. What the first look did find was
+real, and is fixed (`896b8b63`): a `migration-applied` record, under `migrations/`, was not a schedule file, so none would ever have been delivered; and the observer's
+filesystem watcher ran in a thread that unwrapped its errors, so a watcher that failed would have said nothing. Each pull is now followed by a rescan that publishes what
+changed, once (`polar-scheduler/observer/tests/rescan.rs`, six breakages of six caught). The replay through the observer's supervisor worked live and is still untested.
 
 Compiled repairs stay for what a write bug left behind, on every cluster. Whether a migration deletes or supersedes is its author's call; superseding is the documented default, since the graph has to answer what was known at the time.
 
