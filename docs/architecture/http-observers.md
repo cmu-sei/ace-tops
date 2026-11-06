@@ -497,6 +497,13 @@ The steps: the signed-list fix (`polar-sign` writes an optional field one entry 
 can hold a source with a credential and one without; a source's `credential`, read through a second operation, `Bound` with the credential the request names; a source's
 `paging`, a `Link` header, a page parameter or a cursor path; the Jira-shaped kind through the kit; the invariant in `polar-sign check`; a fresh bring-up.
 
+The credential, done (`polar-http-observer/src/sources.rs`, `observer.rs`). A kind declares `Kind::CREDENTIALED`, its `Bound` operation with `Credential::Chosen`, and
+`observer::read` asks it for a source that names one and the `Arbitrary` operation for a source that names none; a kind without one refuses such a source when it is read.
+Marked for review: which section a kind declares decides whether a source may name a credential, and it is refused when the section is signed, not only when read. A
+kind with no credentialed operation declares `SOURCES`, which refuses `credential`; one with it declares `CREDENTIALED_SOURCES`, which takes it and holds a source that
+names one to https, since the handler refuses a credential over plain http (`judge.rs`). Whether the named credential is one the agent holds is the handler's to say
+when it reads (`Failure::NoCredential`), since a credential may arrive after the sources that name it.
+
 ## What the OpenAPI pair fixes
 
 Seen reading the code, 2026-11-05. No target deploys them, so there is no data to migrate.

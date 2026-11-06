@@ -6104,6 +6104,7 @@ dependencies = [
  "cassini-types",
  "polar",
  "polar-agent-builder",
+ "polar-crypto",
  "proptest",
  "ractor",
  "rkyv",

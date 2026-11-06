@@ -51,11 +51,15 @@ pub trait Kind: Send + Sync + 'static {
     const NAME: &'static str;
     /// Where what it reads goes. The kind's processor subscribes to it, which is what pairs them.
     const TOPIC: &'static str;
-    /// Its one operation, declared `Location::Arbitrary`: a URL from a signed section, never with a credential.
+    /// Its operation for a source that names no credential, declared `Location::Arbitrary`: a URL from a signed section,
+    /// never with a credential.
     const OPERATION: OperationDecl;
+    /// Its operation for a source that names one, declared `Location::Bound` with `Credential::Chosen`: the credential's
+    /// signed binding must name the source's host. A kind without one refuses such a source.
+    const CREDENTIALED: Option<OperationDecl> = None;
 }
 
-/// A GET of a source's address.
+/// A GET of a source's address, with no credential.
 struct Fetch<K> {
     url: String,
     kind: PhantomData<fn() -> K>,
@@ -75,15 +79,66 @@ impl<K: Kind> Operation for Fetch<K> {
     }
 }
 
-/// A source's document, read through the protocol handler as this kind's one operation: what the observer publishes, and
-/// what a kind's tests read through the same handler (`polar-http-testkit`).
-pub async fn read<K: Kind>(protocols: &ProtocolHandle, url: String) -> Result<Vec<u8>, Failure> {
-    protocols
-        .ask(Fetch::<K> {
-            url,
-            kind: PhantomData,
-        })
-        .await
+/// A GET of a source's address, with the credential the source names.
+struct FetchWith<K> {
+    url: String,
+    credential: String,
+    kind: PhantomData<fn() -> K>,
+}
+
+impl<K: Kind> Operation for FetchWith<K> {
+    type Protocol = Http;
+    type Output = Vec<u8>;
+    // Never asked for a kind without one ([`read`] refuses first); and were it, the arbitrary operation carries none.
+    const DECL: OperationDecl = match K::CREDENTIALED {
+        Some(declared) => declared,
+        None => K::OPERATION,
+    };
+
+    fn request(&self) -> Request {
+        Request::get_at(self.url.clone())
+    }
+
+    fn credential(&self) -> Option<String> {
+        Some(self.credential.clone())
+    }
+
+    fn read(&self, reply: &Reply) -> Result<Vec<u8>, ReadFailure> {
+        read_document(reply.status.as_u16(), &reply.body)
+    }
+}
+
+/// A source's document, read through the protocol handler as one of this kind's operations, with the credential the
+/// source names or none: what the observer publishes, and what a kind's tests read through the same handler
+/// (`polar-http-testkit`).
+pub async fn read<K: Kind>(
+    protocols: &ProtocolHandle,
+    url: String,
+    credential: Option<String>,
+) -> Result<Vec<u8>, Failure> {
+    match (credential, K::CREDENTIALED) {
+        (None, _) => {
+            protocols
+                .ask(Fetch::<K> {
+                    url,
+                    kind: PhantomData,
+                })
+                .await
+        }
+        (Some(credential), Some(_)) => {
+            protocols
+                .ask(FetchWith::<K> {
+                    url,
+                    credential,
+                    kind: PhantomData,
+                })
+                .await
+        }
+        (Some(credential), None) => Err(Failure::Configuration(format!(
+            "the source names the credential `{credential}`, and {} reads every source with none",
+            K::NAME
+        ))),
+    }
 }
 
 /// Whether what came back is a document this observer can publish. What it says is the processor's to judge.
@@ -279,12 +334,13 @@ fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState,
                 name,
                 generation,
                 url,
+                credential,
             } => {
                 let protocols = state.protocols.clone();
                 let to = myself.clone();
                 // Off the actor, so a slow host holds up no other source.
                 tokio::spawn(async move {
-                    let outcome = read::<K>(&protocols, url).await;
+                    let outcome = read::<K>(&protocols, url, credential).await;
                     let _ = to.cast(ObserverMessage::Read {
                         name,
                         generation,
@@ -353,8 +409,9 @@ pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
 mod tests {
     use super::*;
     use crate::observing::next_read;
-    use polar_agent_builder::protocol::testing::http_handle;
-    use polar_agent_builder::protocol::{Location, ProtocolKind};
+    use polar_agent_builder::protocol::testing::{http_handle, http_handle_for};
+    use polar_agent_builder::protocol::{Credential, Location, ProtocolKind};
+    use polar_crypto::registry::{SecretBinding, SecretKind};
     use ractor::concurrency::Duration;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -428,6 +485,100 @@ mod tests {
             next_read(Duration::from_secs(60), &busy),
             Duration::from_secs(900)
         );
+    }
+
+    struct CredentialedKind;
+
+    const READ_WITH: OperationDecl = OperationDecl {
+        name: "test.document.read-with-credential",
+        doc: "reads a test's document with the credential its source names",
+        protocol: ProtocolKind::HTTP,
+        location: Location::Bound {
+            credential: Credential::Chosen,
+        },
+    };
+
+    impl Kind for CredentialedKind {
+        const NAME: &'static str = "test-credentialed-observer";
+        const TOPIC: &'static str = "test.credentialed.observations";
+        const OPERATION: OperationDecl = READ;
+        const CREDENTIALED: Option<OperationDecl> = Some(READ_WITH);
+    }
+
+    const TOKEN: &str = "a-token-found-nowhere-else";
+
+    /// A stand-in behind TLS on `localhost`, every request it saw, and a handler holding one token bound to `localhost`.
+    async fn credentialed_site() -> (MockServer, String, ProtocolHandle) {
+        static OPERATIONS: &[OperationDecl] = &[READ, READ_WITH];
+        let ca = polar::egress::testing::TestCa::new("a credentialed test's CA");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/projects"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .mount(&server)
+            .await;
+        let port = polar::egress::testing::https_front(&ca, &server.uri()).await;
+        let binding = SecretBinding {
+            host_pattern: "localhost".to_string(),
+            kind: SecretKind::Token,
+            username: None,
+        };
+        let site =
+            http_handle_for(&ca.pem, OPERATIONS, vec![], Some(("jira", TOKEN, binding))).await;
+        (
+            server,
+            format!("https://localhost:{port}/projects"),
+            site.handle,
+        )
+    }
+
+    async fn authorizations(server: &MockServer) -> Vec<Option<String>> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                r.headers
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_source_that_names_a_credential_is_read_with_it_and_one_that_names_none_with_nothing()
+    {
+        let (server, url, protocols) = credentialed_site().await;
+        let with =
+            read::<CredentialedKind>(&protocols, url.clone(), Some("jira".to_string())).await;
+        assert_eq!(with.unwrap(), b"[]".to_vec());
+        let without = read::<CredentialedKind>(&protocols, url, None).await;
+        assert_eq!(without.unwrap(), b"[]".to_vec());
+        assert_eq!(
+            authorizations(&server).await,
+            vec![Some(format!("Bearer {TOKEN}")), None]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_credential_the_agent_does_not_hold_is_a_failure_and_nothing_is_sent() {
+        let (server, url, protocols) = credentialed_site().await;
+        let got = read::<CredentialedKind>(&protocols, url, Some("gitlab".to_string())).await;
+        assert!(
+            matches!(got, Err(Failure::NoCredential { ref name }) if name == "gitlab"),
+            "{got:?}"
+        );
+        assert!(authorizations(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_kind_that_reads_with_no_credential_refuses_a_source_that_names_one_and_sends_nothing()
+     {
+        let (server, url, protocols) = credentialed_site().await;
+        let got = read::<TestKind>(&protocols, url, Some("jira".to_string())).await;
+        assert!(matches!(got, Err(Failure::Configuration(_))), "{got:?}");
+        assert!(authorizations(&server).await.is_empty());
     }
 
     #[test]

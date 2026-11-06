@@ -40,12 +40,25 @@ pub const MAX_URL: usize = 2048;
 pub const MIN_INTERVAL_SECS: u64 = 60;
 pub const MAX_INTERVAL_SECS: u64 = 7 * 24 * 3600;
 
+const DOC: &str = "What this observer reads, and how often. Replaced whole by each version, so a source left out is no longer read.";
+
+/// The section of a kind that reads every source with no credential.
 pub static SOURCES: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
-    doc: "What this observer reads, and how often. Replaced whole by each version, so a source left out is no longer read.",
+    doc: DOC,
     body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name", "required": true, "doc": "what is read, with a GET and no credential"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
     validate,
+};
+
+/// The section of a kind with a credentialed operation (`Kind::CREDENTIALED`): a source may name the credential it is read
+/// with.
+pub static CREDENTIALED_SOURCES: RuntimeSection = RuntimeSection {
+    authority: SectionAuthority::Runtime,
+    name: SECTION_NAME,
+    doc: DOC,
+    body: r#"{"sources": {"list_of": {"name": {"type": "text", "required": true, "doc": "what identifies this source in the graph; changing it makes new nodes"}, "url": {"type": "http or https URL of a host name; https when it names a credential", "required": true, "doc": "what is read, with a GET"}, "interval_secs": {"type": "whole number of seconds", "required": true, "doc": "how long between reads, 60 to 604800"}, "credential": {"type": "name of a credential", "required": false, "doc": "an entry of the observer's credentials section, whose signed binding must name the host; left out, the source is read with none"}}, "required": true, "doc": "the sources; an empty list reads nothing"}}"#,
+    validate: validate_credentialed,
 };
 
 /// Something to read.
@@ -54,10 +67,54 @@ pub struct Source {
     pub name: String,
     pub url: String,
     pub interval_secs: u64,
+    /// The credential it is read with, by name; none for a source read as anyone may.
+    pub credential: Option<String>,
+}
+
+/// Whether `name` can name a credential: as the `credentials` section names its entries.
+fn credential_problem(name: &str) -> Option<&'static str> {
+    let fits = !name.is_empty()
+        && name.len() <= MAX_NAME
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    (!fits).then_some("must be a credential's name: lowercase letters, digits and hyphens")
 }
 
 fn validate(body: &Value) -> Result<(), Vec<String>> {
-    parse(body).map(|_| ())
+    let problems: Vec<String> = parse(body)?
+        .iter()
+        .filter(|source| source.credential.is_some())
+        .map(|source| {
+            format!(
+                "`{}`: `credential` is not taken, since this observer reads every source with none",
+                source.name
+            )
+        })
+        .collect();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
+}
+
+fn validate_credentialed(body: &Value) -> Result<(), Vec<String>> {
+    let problems: Vec<String> = parse(body)?
+        .iter()
+        .filter(|source| source.credential.is_some() && !source.url.starts_with("https://"))
+        .map(|source| {
+            format!(
+                "`{}`: a source that names a `credential` is read over https, and its `url` is not",
+                source.name
+            )
+        })
+        .collect();
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
 }
 
 /// Whether an address can be read: http or https, which the parser holds to a host, and nothing that could be a secret in
@@ -109,7 +166,7 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
         problems.extend(
             entry
                 .keys()
-                .filter(|k| !["name", "url", "interval_secs"].contains(&k.as_str()))
+                .filter(|k| !["name", "url", "interval_secs", "credential"].contains(&k.as_str()))
                 .map(|k| format!("{at}: `{k}` is not a field")),
         );
         let name = entry.get("name").and_then(Value::as_str);
@@ -143,11 +200,28 @@ pub fn parse(body: &Value) -> Result<Vec<Source>, Vec<String>> {
                 "{at}: `interval_secs` must be from {MIN_INTERVAL_SECS} to {MAX_INTERVAL_SECS}"
             )),
         }
+        let credential = match entry.get("credential") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) => match credential_problem(name) {
+                None => Some(name.clone()),
+                Some(why) => {
+                    problems.push(format!("{at}: `credential` {why}"));
+                    None
+                }
+            },
+            Some(_) => {
+                problems.push(format!(
+                    "{at}: `credential` must be a credential's name, as text"
+                ));
+                None
+            }
+        };
         if let (Some(name), Some(url), Some(interval_secs)) = (name, url, interval) {
             sources.push(Source {
                 name: name.to_string(),
                 url: url.to_string(),
                 interval_secs,
+                credential,
             });
         }
     }
@@ -177,9 +251,79 @@ mod tests {
                 name: "shop".to_string(),
                 url: "https://shop.example/openapi.json".to_string(),
                 interval_secs: 900,
+                credential: None,
             }]
         );
         assert!(parse(&json!({ "sources": [] })).unwrap().is_empty());
+    }
+
+    /// Which section a kind declares decides whether a source may name a credential, and it is refused when signed, not
+    /// when read: a kind with no credentialed operation takes `SOURCES`, and one with it `CREDENTIALED_SOURCES`, where a
+    /// source read with a credential must be read over https, as the handler would refuse it otherwise.
+    #[test]
+    fn whether_a_source_may_name_a_credential_is_the_kind_s_and_is_judged_when_signed() {
+        let named = |url: &str, credential: Value| {
+            let mut e = entry("x", url, 60);
+            e["credential"] = credential;
+            json!({ "sources": [e] })
+        };
+        let plain = json!({ "sources": [entry("x", "https://h.example/x", 60)] });
+        let left_null = named("https://h.example/x", Value::Null);
+        let with = named("https://h.example/x", json!("jira"));
+        for body in [&plain, &left_null] {
+            assert!((SOURCES.validate)(body).is_ok(), "{body}");
+            assert!((CREDENTIALED_SOURCES.validate)(body).is_ok(), "{body}");
+        }
+        let refused = (SOURCES.validate)(&with).unwrap_err();
+        assert!(
+            refused.iter().any(|p| p.contains("`credential`")),
+            "{refused:?}"
+        );
+        assert!((CREDENTIALED_SOURCES.validate)(&with).is_ok());
+        let over_http =
+            (CREDENTIALED_SOURCES.validate)(&named("http://h.example/x", json!("jira")))
+                .unwrap_err();
+        assert!(
+            over_http.iter().any(|p| p.contains("https")),
+            "{over_http:?}"
+        );
+        assert!(!SOURCES.body.contains("\"credential\""));
+        assert!(CREDENTIALED_SOURCES.body.contains("\"credential\""));
+        assert_eq!(SOURCES.name, CREDENTIALED_SOURCES.name);
+    }
+
+    /// A source may name a credential of the observer's `credentials` section, read with it through the kind's credentialed
+    /// operation; one that names none, or null, as a signed list writes one left out, is read with none.
+    #[test]
+    fn a_source_may_name_a_credential_and_one_that_names_none_reads_without() {
+        let mut with = entry(
+            "projects",
+            "https://jira.example.org/rest/api/3/project/search",
+            900,
+        );
+        with["credential"] = json!("jira-cloud");
+        let mut left_null = entry(
+            "public",
+            "https://jira.example.org/rest/api/3/serverInfo",
+            900,
+        );
+        left_null["credential"] = Value::Null;
+        let read = parse(
+            &json!({ "sources": [with, left_null, entry("plain", "https://h.example/x", 60)] }),
+        )
+        .unwrap();
+        assert_eq!(read[0].credential.as_deref(), Some("jira-cloud"));
+        assert_eq!(read[1].credential, None);
+        assert_eq!(read[2].credential, None);
+        for bad in [json!("Jira"), json!(""), json!(7), json!("a b")] {
+            let mut e = entry("x", "https://h.example/x", 60);
+            e["credential"] = bad.clone();
+            let problems = parse(&json!({ "sources": [e] })).unwrap_err();
+            assert!(
+                problems.iter().any(|p| p.contains("`credential`")),
+                "{bad}: {problems:?}"
+            );
+        }
     }
 
     #[test]

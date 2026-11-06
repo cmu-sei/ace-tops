@@ -320,6 +320,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                     name: source.to_string(),
                     url: format!("{}{at}", self.server.uri()),
                     interval_secs: 60,
+                    credential: None,
                 });
                 observing::Event::Sources(self.sources.clone())
             }
@@ -330,12 +331,18 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
                 name,
                 generation,
                 url,
+                credential,
             },
         ] = &fetches[..]
         else {
             panic!("the observer reads `{source}` and only it: {fetches:?}");
         };
-        let outcome = polar_http_observer::observer::read::<O>(&self.protocols, url.clone()).await;
+        let outcome = polar_http_observer::observer::read::<O>(
+            &self.protocols,
+            url.clone(),
+            credential.clone(),
+        )
+        .await;
         let steps = self.observing.on(observing::Event::Read {
             name: name.clone(),
             generation: *generation,

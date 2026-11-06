@@ -42,5 +42,7 @@ url.workspace = true
 # Test CAs and a stand-in for what is observed.
 polar = { workspace = true, features = ["testing"] }
 polar-agent-builder = { workspace = true, features = ["testing"] }
+# A secret's signed binding, for a source read with a credential.
+polar-crypto.workspace = true
 proptest.workspace = true
 wiremock.workspace = true

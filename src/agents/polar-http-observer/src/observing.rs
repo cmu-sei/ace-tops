@@ -62,6 +62,8 @@ pub enum Step {
         name: String,
         generation: u64,
         url: String,
+        /// The credential it is read with, if it names one.
+        credential: Option<String>,
     },
     /// Publish what a source said.
     Publish {
@@ -221,6 +223,7 @@ impl Observing {
                 name: name.to_string(),
                 generation,
                 url: source.url.clone(),
+                credential: source.credential.clone(),
             });
         }
     }
@@ -244,6 +247,15 @@ mod tests {
             name: name.to_string(),
             url: url.to_string(),
             interval_secs: secs,
+            credential: None,
+        }
+    }
+
+    /// A generated source: its address, interval and credential, each from a few, so lists repeat and differ by one.
+    fn generated(name: &str, (u, secs, credential): &(u8, u64, Option<u8>)) -> Source {
+        Source {
+            credential: credential.map(|c| format!("credential-{c}")),
+            ..source(name, &format!("http://h/{u}"), *secs)
         }
     }
 
@@ -377,7 +389,7 @@ mod tests {
     /// What can happen to an observer, with a generation picked from those it has handed out, so stale ones come back.
     #[derive(Debug, Clone)]
     enum Happens {
-        Sources(BTreeMap<String, (u8, u64)>),
+        Sources(BTreeMap<String, (u8, u64, Option<u8>)>),
         Due(String, Index),
         Read(String, Index, Outcome),
         PrepareShutdown,
@@ -410,7 +422,8 @@ mod tests {
     fn happens() -> impl Strategy<Value = Happens> {
         let name = || "[a-d]".prop_map(String::from);
         prop_oneof![
-            2 => prop::collection::btree_map("[a-c]", (0u8..2, 60u64..62), 0..4).prop_map(Happens::Sources),
+            2 => prop::collection::btree_map("[a-c]", (0u8..2, 60u64..62, prop::option::of(0u8..2)), 0..4)
+                .prop_map(Happens::Sources),
             3 => (name(), any::<Index>()).prop_map(|(n, g)| Happens::Due(n, g)),
             6 => (name(), any::<Index>(), prop_oneof![
                 any::<u8>().prop_map(Outcome::Document),
@@ -446,7 +459,7 @@ mod tests {
                     Happens::Sources(list) => {
                         let list: Vec<Source> = list
                             .iter()
-                            .map(|(n, (u, s))| source(n, &format!("http://h/{u}"), *s))
+                            .map(|(n, generating)| generated(n, generating))
                             .collect();
                         let changed: BTreeSet<String> = list
                             .iter()
@@ -457,10 +470,12 @@ mod tests {
                         let mut fetched = BTreeSet::new();
                         for step in &steps {
                             match step {
-                                Step::Fetch { name, generation, url } => {
+                                Step::Fetch { name, generation, url, credential } => {
                                     prop_assert!(!shut);
                                     prop_assert!(!issued.contains(generation), "a new version, a new generation");
-                                    prop_assert_eq!(url, &list.iter().find(|s| &s.name == name).unwrap().url);
+                                    let of = list.iter().find(|s| &s.name == name).unwrap();
+                                    prop_assert_eq!(url, &of.url);
+                                    prop_assert_eq!(credential, &of.credential, "read with the credential it names");
                                     issued.push(*generation);
                                     live.insert(name.clone(), *generation);
                                     fetched.insert(name.clone());
@@ -490,6 +505,7 @@ mod tests {
                                 name: name.clone(),
                                 generation,
                                 url: listed[name].url.clone(),
+                                credential: listed[name].credential.clone(),
                             }],
                             _ => vec![],
                         };

@@ -37,7 +37,7 @@ pub mod problems;
 pub mod sources;
 
 pub use observer::{Kind, start};
-pub use sources::{SOURCES, Source};
+pub use sources::{CREDENTIALED_SOURCES, SOURCES, Source};
 
 use rkyv::{Archive, Deserialize, Serialize};
 
