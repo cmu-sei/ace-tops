@@ -949,3 +949,187 @@ proptest! {
         }
     }
 }
+
+/// Pages that share one envelope and hold different kinds of entry, as Jira's projects, groups and members do.
+fn paged_body() -> Value {
+    json!({
+        "guard": [{ "any_of": [{ "path": "body.values", "prefixes": [] }] }],
+        "rules": [
+            {
+                "name": "project", "parent": "",
+                "each": [{ "key": "i", "value": "item", "over": "body.values", "only": [] }],
+                "when": [{ "any_of": [{ "path": "item.projectTypeKey", "prefixes": [] }] }],
+                "label": "Project", "keys": [{ "name": "id", "from": "item.id" }],
+                "set": [{ "name": "key", "from": "item.key" }], "edge": ""
+            },
+            {
+                "name": "group", "parent": "",
+                "each": [{ "key": "i", "value": "item", "over": "body.values", "only": [] }],
+                "when": [{ "any_of": [{ "path": "item.groupId", "prefixes": [] }] }],
+                "label": "Group", "keys": [{ "name": "group_id", "from": "item.groupId" }],
+                "set": [{ "name": "name", "from": "item.name" }], "edge": ""
+            },
+            {
+                "name": "member", "parent": "",
+                "each": [{ "key": "i", "value": "item", "over": "body.values", "only": [] }],
+                "when": [
+                    { "any_of": [{ "path": "source", "prefixes": ["members-"] }] },
+                    { "any_of": [{ "path": "item.accountType", "prefixes": [] }] }
+                ],
+                "label": "User", "keys": [{ "name": "account_id", "from": "item.accountId" }],
+                "set": [], "edge": ""
+            }
+        ]
+    })
+}
+
+fn labels_written(projected: &Projected) -> Vec<String> {
+    projected
+        .writes
+        .iter()
+        .filter_map(|w| match w {
+            Write::Node { id, .. } => Some(id.label.clone()),
+            Write::Edge { .. } => None,
+        })
+        .collect()
+}
+
+/// A rule's `when` says which entries it is for: one it does not hold for is another rule's, written by none of this
+/// one and not counted as skipped; one it holds for and cannot identify is skipped, as before.
+#[test]
+fn a_rule_writes_only_the_entries_its_when_holds_for_and_skipped_still_means_a_miss() {
+    let projection = Projection::well_formed(&paged_body()).unwrap();
+    let projects = json!({ "isLast": true, "values": [
+        { "id": "1", "key": "A", "projectTypeKey": "software" },
+        { "id": "2", "key": "B", "projectTypeKey": "business" }
+    ]});
+    let got = projection.project("projects", &projects, &stamp()).unwrap();
+    assert_eq!(labels_written(&got), ["Project", "Project"]);
+    assert_eq!(
+        got.skipped, 0,
+        "the group and member rules are not for these"
+    );
+    let groups = json!({ "values": [{ "groupId": "g1", "name": "dev" }, { "name": "no id" }] });
+    let got = projection.project("groups", &groups, &stamp()).unwrap();
+    assert_eq!(labels_written(&got), ["Group"]);
+    assert_eq!(
+        got.skipped, 0,
+        "an entry with no groupId is not the group rule's"
+    );
+    let missing = json!({ "values": [{ "projectTypeKey": "software", "key": "C" }] });
+    let got = projection.project("projects", &missing, &stamp()).unwrap();
+    assert_eq!(
+        (got.writes.len(), got.skipped),
+        (0, 1),
+        "the project rule's, with no id"
+    );
+    // Every check must hold: the source's name and the entry.
+    let members = json!({ "values": [{ "accountId": "u1", "accountType": "atlassian" }] });
+    let got = projection
+        .project("members-dev", &members, &stamp())
+        .unwrap();
+    assert_eq!(labels_written(&got), ["User"]);
+    let got = projection.project("users", &members, &stamp()).unwrap();
+    assert!(got.writes.is_empty() && got.skipped == 0, "{got:?}");
+}
+
+/// A rule's checks are named as reads, `<rule> when <path>`, and reached where they hold.
+#[test]
+fn a_rule_s_checks_are_reads_and_reached_where_they_hold() {
+    let projection = Projection::well_formed(&paged_body()).unwrap();
+    let reads = projection.reads();
+    for name in [
+        "project when item.projectTypeKey",
+        "group when item.groupId",
+        "member when source",
+        "member when item.accountType",
+    ] {
+        assert!(reads.contains(name), "{name} in {reads:#?}");
+    }
+    let reached = projection.reached(
+        "groups",
+        &json!({ "values": [{ "groupId": "g1", "name": "dev" }] }),
+    );
+    assert!(reached.contains("group when item.groupId"), "{reached:#?}");
+    assert!(!reached.contains("project when item.projectTypeKey"));
+    assert!(
+        !reached.contains("member when source"),
+        "`groups` does not start with `members-`"
+    );
+}
+
+/// A rule's checks are judged as the guard's are, reading what the rule can see.
+#[test]
+fn a_rule_s_checks_are_judged_as_the_guard_s_are() {
+    let refused = |change: &dyn Fn(&mut Value), says: &str| {
+        let mut body = paged_body();
+        change(&mut body);
+        let problems = Projection::well_formed(&body).unwrap_err();
+        assert!(
+            problems.iter().any(|p| p.contains(says)),
+            "{says}: {problems:?}"
+        );
+    };
+    refused(
+        &|b| b["rules"][0]["when"][0]["any_of"] = json!([]),
+        "alternatives",
+    );
+    refused(
+        &|b| b["rules"][0]["when"][0]["any_of"][0]["path"] = json!("other.groupId"),
+        "nothing it can see",
+    );
+    refused(
+        &|b| b["rules"][0]["when"][0]["any_of"][0]["prefixes"] = json!([""]),
+        "empty prefix",
+    );
+    refused(
+        &|b| {
+            b["rules"][0]["when"] = json!(vec![
+                json!({ "any_of": [{ "path": "source", "prefixes": [] }] });
+                MAX_CHECKS + 1
+            ])
+        },
+        "checks",
+    );
+    // Left out, a rule runs on every entry, as a mapping written before `when` does.
+    let mut body = paged_body();
+    for rule in body["rules"].as_array_mut().unwrap() {
+        rule.as_object_mut().unwrap().remove("when");
+    }
+    let projection = Projection::well_formed(&body).unwrap();
+    let got = projection
+        .project(
+            "projects",
+            &json!({ "values": [{ "id": "1", "projectTypeKey": "software" }] }),
+            &stamp(),
+        )
+        .unwrap();
+    assert_eq!(
+        got.skipped, 2,
+        "the group and member rules, with nothing to say it is not theirs"
+    );
+}
+
+proptest! {
+    /// A guard moved onto every top-level rule as its `when` keeps exactly the documents it kept and writes what it wrote;
+    /// where it refused a document, the rules write nothing and skip nothing.
+    #[test]
+    fn a_guard_moved_onto_the_rules_writes_what_it_wrote_or_nothing((generated, document) in guarded_case()) {
+        let mut moved = generated.body.clone();
+        let guard = moved["guard"].clone();
+        moved["guard"] = json!([{ "any_of": [{ "path": "source", "prefixes": [] }] }]);
+        for rule in moved["rules"].as_array_mut().unwrap() {
+            if rule["parent"] == json!("") {
+                rule["when"] = guard.clone();
+            }
+        }
+        let original = Projection::well_formed(&generated.body).unwrap();
+        let moved = Projection::well_formed(&moved).unwrap();
+        let got = moved.project("s", &document, &stamp());
+        if guard_holds(&generated.body["guard"], "s", &document) {
+            prop_assert_eq!(got, original.project("s", &document, &stamp()));
+        } else {
+            prop_assert_eq!(got, Ok(Projected::default()));
+        }
+    }
+}

@@ -516,6 +516,17 @@ of the source, or a shutdown, stops a read between pages; the property test hold
 - A read that reaches `max_pages` with more named is published and counts as a problem for the source, as a failed read does: data left unread is worth saying, and
   raising `max_pages` is the way out.
 
+A rule's own guard, `when` (the maintainer's choice, 2026-11-06; `polar-projection/src/lib.rs`, `projection.dhall`). Writing the Jira-shaped mapping showed that a
+kind whose sources return different documents could not say which rule is for which: one mapping runs every rule on every page, and Jira's projects, groups and
+members pages share one envelope (`{startAt, maxResults, total, isLast, values}`), so the only thing keeping them apart was a rule's key, and a page of projects
+counted every project as skipped by the group and member rules. Now a rule may carry `when`, checks of the guard's kind, and writes only the entries every check
+holds for; one it does not is another rule's, written by none of this rule and not counted as skipped, so `skipped` again means an entry this rule could not
+identify. Marked for review: the checks are read for each entry, where the keys are, so they may test the entry (`item.groupId`) as well as the source's name
+(`source`, with a prefix) or the page (`body`); a check on the source or the page decides the same for every entry. Each alternative is a read, `<rule> when
+<path>`, so a projection test with full coverage needs a sample it holds for. The property `a_guard_moved_onto_the_rules_writes_what_it_wrote_or_nothing` holds it
+to the guard's model. Breaking for authors only: `projection.dhall`'s type now has `when`, so a mapping's Dhall says it on every rule (`[] : List {...}` for every
+entry); a body signed before reads it as left out, and no target deploys an HTTP pair, so nothing signed needs migrating.
+
 ## What the OpenAPI pair fixes
 
 Seen reading the code, 2026-11-05. No target deploys them, so there is no data to migrate.

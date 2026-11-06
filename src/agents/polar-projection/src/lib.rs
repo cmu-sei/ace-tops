@@ -104,6 +104,10 @@ pub struct Rule {
     /// The rule this one runs inside, once per node it wrote. Empty for none.
     pub parent: String,
     pub each: Vec<Step>,
+    /// Which entries are this rule's: every check must hold, read where the rule's keys are, with what its steps bound.
+    /// One that does not is another rule's: this one writes nothing for it, and it is not skipped. Left out, every entry.
+    #[serde(default)]
+    pub when: Vec<Check>,
     pub label: String,
     pub keys: Vec<Field>,
     pub set: Vec<Field>,
@@ -318,25 +322,10 @@ impl Projection {
         }
         for (i, check) in body.guard.iter().enumerate() {
             let at = format!("`guard[{i}]`");
-            if check.any_of.is_empty() || check.any_of.len() > MAX_ALTERNATIVES {
-                problems.push(format!(
-                    "{at}: `any_of` must have 1 to {MAX_ALTERNATIVES} alternatives"
-                ));
-            }
-            for alternative in &check.any_of {
-                match path_parts(&alternative.path) {
-                    Some(parts) if ROOTS.contains(&parts[0]) => {}
-                    _ => problems.push(format!(
-                        "{at}: `{}` must be a path from `source` or `body`",
-                        alternative.path
-                    )),
-                }
-                if alternative.prefixes.iter().any(String::is_empty) {
-                    problems.push(format!(
-                        "{at}: an empty prefix would match anything: leave `prefixes` empty to ask only that it is there"
-                    ));
-                }
-            }
+            judge_check(&at, check, &mut problems, |path| match path_parts(path) {
+                Some(parts) if ROOTS.contains(&parts[0]) => None,
+                _ => Some(format!("`{path}` must be a path from `source` or `body`")),
+            });
         }
         if body.rules.len() > MAX_RULES {
             problems.push(format!(
@@ -407,6 +396,26 @@ impl Projection {
             }
             for field in rule.keys.iter().chain(&rule.set) {
                 read(&format!("`{}`", field.name), &field.from, &scope);
+            }
+            if rule.when.len() > MAX_CHECKS {
+                problems.push(format!(
+                    "{at}: its `when` has {} checks, and at most {MAX_CHECKS} are taken",
+                    rule.when.len()
+                ));
+            }
+            for (i, check) in rule.when.iter().enumerate() {
+                judge_check(
+                    &format!("{at}: `when[{i}]`"),
+                    check,
+                    &mut problems,
+                    |path| match path_parts(path) {
+                        None => Some(format!("`{path}` is not a path")),
+                        Some(parts) if !scope.contains(parts[0]) => {
+                            Some(format!("`{path}` starts from nothing it can see"))
+                        }
+                        Some(_) => None,
+                    },
+                );
             }
             if bound.contains(&"") {
                 problems.push(format!(
@@ -527,6 +536,11 @@ impl Projection {
             r.each
                 .iter()
                 .map(|s| step_read(r, s))
+                .chain(
+                    r.when
+                        .iter()
+                        .flat_map(|c| c.any_of.iter().map(|a| when_read(r, &a.path))),
+                )
                 .chain(r.keys.iter().chain(&r.set).map(|f| field_read(r, f)))
         });
         guard.chain(rules).collect()
@@ -660,6 +674,17 @@ impl Projection {
         stamps: &[(String, Scalar)],
         out: &mut Walked,
     ) -> Result<(), Refused> {
+        if let Some(reached) = out.reach.as_mut() {
+            for alternative in rule.when.iter().flat_map(|c| &c.any_of) {
+                if alternative.holds(scope) {
+                    reached.insert(when_read(rule, &alternative.path));
+                }
+            }
+        }
+        // Another rule's entry: nothing of this one, and not a miss.
+        if !rule.when.iter().all(|check| check.holds(scope)) {
+            return Ok(());
+        }
         let mut keys = Vec::with_capacity(rule.keys.len());
         for field in &rule.keys {
             match scope.scalar(&field.from) {
@@ -727,6 +752,34 @@ struct Walked {
 
 fn guard_read(path: &str) -> String {
     format!("guard {path}")
+}
+
+fn when_read(rule: &Rule, path: &str) -> String {
+    format!("{} when {path}", rule.name)
+}
+
+/// A check, a guard's or a rule's: its alternatives, each a path `readable` takes and no prefix that would match anything.
+fn judge_check(
+    at: &str,
+    check: &Check,
+    problems: &mut Vec<String>,
+    readable: impl Fn(&str) -> Option<String>,
+) {
+    if check.any_of.is_empty() || check.any_of.len() > MAX_ALTERNATIVES {
+        problems.push(format!(
+            "{at}: `any_of` must have 1 to {MAX_ALTERNATIVES} alternatives"
+        ));
+    }
+    for alternative in &check.any_of {
+        if let Some(problem) = readable(&alternative.path) {
+            problems.push(format!("{at}: {problem}"));
+        }
+        if alternative.prefixes.iter().any(String::is_empty) {
+            problems.push(format!(
+                "{at}: an empty prefix would match anything: leave `prefixes` empty to ask only that it is there"
+            ));
+        }
+    }
 }
 
 fn step_read(rule: &Rule, step: &Step) -> String {

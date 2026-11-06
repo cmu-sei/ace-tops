@@ -51,6 +51,9 @@ let Rule =
       , -- The rule this one runs inside, once per node it wrote, seeing what it bound. It must come earlier.
         parent : Text
       , each : List Step
+      , -- Which entries are this rule's: every check holds, read where the keys are. One that does not is another rule's,
+        -- not written by this one and not skipped. For every entry: `when = [] : List { any_of : List { path : Text, prefixes : List Text } }`.
+        when : List Check
       , label : Text
       , -- What identifies the node. Each must be there, or that node is skipped.
         keys : List Field

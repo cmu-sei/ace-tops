@@ -34,6 +34,7 @@
   [ { name = "application"
     , parent = ""
     , each = [] : List { key : Text, value : Text, over : Text, only : List Text }
+    , when = [] : List { any_of : List { path : Text, prefixes : List Text } }
     , label = "OpenApiApplication"
     , keys = [ { name = "source", from = "source" } ]
     , set =
@@ -56,6 +57,7 @@
         , only = [ "get", "put", "post", "delete", "options", "head", "patch", "trace" ]
         }
       ]
+    , when = [] : List { any_of : List { path : Text, prefixes : List Text } }
     , label = "OpenApiEndpoint"
     , keys =
       [ { name = "source", from = "source" }
