@@ -186,7 +186,14 @@ Checked by deliberate breakage (`mut12.py`, 15 of 15): the order and the range, 
 passed and one broker test failed once under its load, passing alone and with its suite (`remaining-work.md`).
 
 Marked for review: the hold for a range or a migration is on Configuration, the reason a domain's own configuration hold uses, so releasing it can clear the domain's own,
-which the domain makes again at its next attempt; a reason of its own would need a change to the health wire. Not checked live yet.
+which the domain makes again at its next attempt; a reason of its own would need a change to the health wire.
+
+**Checked live on u7c, 2026-11-06, in part.** u7c upgraded from its volumes to `e7dfb4e5` (`up.nu --dev`): 11 of 11 held. The mapping signed as version 3 for agents
+from 99.0.0: `sections-in-range` was violated ("openapi-processor is 3.0.0+dev, outside it") and `sections-in-force` too (the processor held version 2). What was not seen
+is the agent's own refusal and hold: the scheduler did not deliver the pushed document. It pulled the push, and its watcher published nothing; a second push did not
+help; restarted, it scanned the file, and the restarted processor's request for a replay was not answered. The first live run on u7c had a push of the same kind go
+undelivered too, which was put down then to a quiet log. So the scheduler's delivery of a pushed document is not reliable, and nothing said so but the check
+(`remaining-work.md`). The agent's refusal, hold and release, and its wait on a migration, are tested through the real configuration actor; live, they wait on that.
 
 Compiled repairs stay for what a write bug left behind, on every cluster. Whether a migration deletes or supersedes is its author's call; superseding is the documented default, since the graph has to answer what was known at the time.
 
