@@ -32,6 +32,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod observer;
+pub mod observing;
 pub mod problems;
 pub mod sources;
 

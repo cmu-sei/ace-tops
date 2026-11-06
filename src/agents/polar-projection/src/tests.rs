@@ -530,6 +530,114 @@ fn a_child_sees_what_its_parent_bound() {
     assert_eq!(prop(&tags[0].1, "seen_at_path"), Some(&text("/a")));
 }
 
+/// Whether a guard lets a document by, read from what the language says rather than from the engine: a path finds a value
+/// through objects' fields alone, a null is nothing, and a prefix asks for text that starts with it.
+fn guard_holds(guard: &Value, source: &str, document: &Value) -> bool {
+    let source = Value::String(source.to_string());
+    guard.as_array().unwrap().iter().all(|check| {
+        check["any_of"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alternative| {
+                let mut parts = alternative["path"].as_str().unwrap().split('.');
+                let root = match parts.next() {
+                    Some("source") => &source,
+                    _ => document,
+                };
+                let found = parts.try_fold(root, |at, segment| match at {
+                    Value::Object(fields) => fields.get(segment),
+                    _ => None,
+                });
+                let prefixes = alternative["prefixes"].as_array().unwrap();
+                match found {
+                    None | Some(Value::Null) => false,
+                    Some(_) if prefixes.is_empty() => true,
+                    Some(found) => found.as_str().is_some_and(|text| {
+                        prefixes
+                            .iter()
+                            .any(|p| text.starts_with(p.as_str().unwrap()))
+                    }),
+                }
+            })
+    })
+}
+
+/// A guarded mapping, and a document built against its guard: each path it reads from `body` is, at random, left as it
+/// was, absent, null, text starting with one of its prefixes, text with the prefix later, or a number. So every way a check
+/// can go is common, not only the ones a random document happens on.
+fn guarded_case() -> impl Strategy<Value = (testing::Generated, Value)> {
+    testing::guarded()
+        .prop_flat_map(|generated| {
+            let alternatives = generated.body["guard"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|check| check["any_of"].as_array().unwrap().len())
+                .sum::<usize>();
+            (
+                Just(generated),
+                prop::collection::vec(0..6usize, alternatives),
+                testing::document(),
+            )
+        })
+        .prop_map(|(generated, kinds, document)| {
+            let mut document = if document.is_object() {
+                document
+            } else {
+                json!({})
+            };
+            let alternatives = generated.body["guard"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|check| check["any_of"].as_array().unwrap().clone());
+            for (alternative, kind) in alternatives.zip(kinds) {
+                let path = alternative["path"].as_str().unwrap();
+                let Some(rest) = path.strip_prefix("body.") else {
+                    continue;
+                };
+                let prefix = alternative["prefixes"][0].as_str().unwrap_or("");
+                let value = match kind {
+                    0 => continue,
+                    1 => None,
+                    2 => Some(Value::Null),
+                    3 => Some(json!(format!("{prefix}z{}", testing::MARK))),
+                    4 => Some(json!(format!("z{prefix}{}", testing::MARK))),
+                    _ => Some(json!(1)),
+                };
+                let segments: Vec<&str> = rest.split('.').collect();
+                let (last, parents) = segments.split_last().unwrap();
+                let mut at = &mut document;
+                for segment in parents {
+                    if !at[*segment].is_object() {
+                        at[*segment] = json!({});
+                    }
+                    at = &mut at[*segment];
+                }
+                match value {
+                    Some(value) => at[*last] = value,
+                    None => {
+                        at.as_object_mut().unwrap().remove(*last);
+                    }
+                }
+            }
+            (generated, document)
+        })
+}
+
+/// Exactly the four stamps, saying where the write came from.
+fn is_stamped(stamps: &[&(String, Scalar)], source: &str) -> bool {
+    let mut got: Vec<(&str, &Scalar)> = stamps.iter().map(|(n, v)| (n.as_str(), v)).collect();
+    got.sort_by_key(|(n, _)| *n);
+    got == [
+        ("polar_observed_at", &Scalar::Integer(1_000)),
+        ("polar_projection_version", &Scalar::Integer(7)),
+        ("polar_source", &text(source)),
+        ("polar_workload", &text("openapi-processor")),
+    ]
+}
+
 fn any_json() -> impl Strategy<Value = Value> {
     let leaf = prop_oneof![
         Just(Value::Null),
@@ -639,6 +747,86 @@ proptest! {
         let mut body = openapi_body();
         body["rules"][0]["label"] = json!(label);
         prop_assert_eq!(Projection::judged(&body, BOUNDS).is_ok(), label == "OpenApiApplication");
+    }
+
+    /// The generator makes only what an author could sign, inside the schema it says, so what follows holds of mappings.
+    #[test]
+    fn every_generated_mapping_is_judged_inside_its_schema(generated in testing::mapping()) {
+        let judged = generated.with_bounds(|bounds| Projection::judged(&generated.body, bounds));
+        prop_assert!(judged.is_ok(), "{:?}\n{}", judged, generated.body);
+    }
+
+    /// A guard alone, with no way to pass that every document has: it refuses exactly when a reading of the language says a
+    /// check fails, a null counting as nothing and a prefix as how text starts.
+    #[test]
+    fn a_guard_refuses_exactly_when_one_of_its_checks_fails(
+        (generated, document) in guarded_case(),
+        source in testing::source(),
+    ) {
+        let projection = generated
+            .with_bounds(|bounds| Projection::judged(&generated.body, bounds))
+            .unwrap();
+        let refused = matches!(projection.project(&source, &document, &stamp()), Err(Refused::Guard(_)));
+        prop_assert_eq!(
+            refused,
+            !guard_holds(&generated.body["guard"], &source, &document),
+            "{}\n{}", generated.body["guard"], document
+        );
+    }
+
+    /// For any mapping an author could sign and any document: the same writes each time, only what the mapping names,
+    /// every write stamped, never a null key, and nothing at all on a failed guard.
+    #[test]
+    fn any_mapping_and_any_document_write_only_what_the_mapping_says(
+        generated in testing::mapping(),
+        source in testing::source(),
+        document in testing::document(),
+    ) {
+        let projection = generated
+            .with_bounds(|bounds| Projection::judged(&generated.body, bounds))
+            .unwrap();
+        let first = projection.project(&source, &document, &stamp());
+        prop_assert_eq!(&first, &projection.project(&source, &document, &stamp()));
+        let passes = guard_holds(&generated.body["guard"], &source, &document);
+        let projected = match first {
+            Err(Refused::Guard(_)) => {
+                prop_assert!(!passes, "refused, though every check holds: {}", document);
+                return Ok(());
+            }
+            Err(Refused::TooLarge) => panic!("a small document is never too large"),
+            Ok(projected) => projected,
+        };
+        prop_assert!(passes, "let by, though a check fails: {}", document);
+        let rules = projection.rules();
+        let shapes = projection.shapes();
+        for write in &projected.writes {
+            match write {
+                Write::Node { id, props } => {
+                    let keys: Vec<&str> = id.keys.iter().map(|(k, _)| k.as_str()).collect();
+                    prop_assert_eq!(shapes.get(id.label.as_str()), Some(&keys));
+                    prop_assert!(id.keys.iter().all(|(_, v)| *v != Scalar::Null), "{:?}", id);
+                    let (stamps, set): (Vec<_>, Vec<_>) =
+                        props.iter().partition(|(name, _)| name.starts_with(STAMP_PREFIX));
+                    prop_assert!(is_stamped(&stamps, &source), "{:?}", stamps);
+                    for (name, _) in set {
+                        prop_assert!(
+                            rules.iter().any(|r| r.label == id.label && r.set.iter().any(|f| &f.name == name)),
+                            "`{}` is set by no rule of `{}`", name, id.label
+                        );
+                    }
+                }
+                Write::Edge { from, to, kind, props } => {
+                    prop_assert!(
+                        rules.iter().any(|r| &r.edge == kind
+                            && r.label == to.label
+                            && rules.iter().any(|p| p.name == r.parent && p.label == from.label)),
+                        "{} -{}-> {}", from.label, kind, to.label
+                    );
+                    let stamps: Vec<&(String, Scalar)> = props.iter().collect();
+                    prop_assert!(is_stamped(&stamps, &source), "{:?}", props);
+                }
+            }
+        }
     }
 
     #[test]

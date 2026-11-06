@@ -92,7 +92,7 @@ impl SourceProblems {
 }
 
 /// What health should be told, so it is told once and only when that changes.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthChange {
     Hold(String),
     Release,
@@ -116,14 +116,15 @@ impl Reported {
             None => HealthChange::Release,
         })
     }
+}
 
-    /// Makes health say what should stand now. A restart does not help a source, so it is a configuration problem to the
-    /// health actor: held and said, with the agent left running.
-    pub fn tell(&mut self, health: &HealthHandle, wanted: Option<String>) {
-        match self.next(wanted) {
-            Some(HealthChange::Hold(message)) => health.hold(HoldReason::Configuration, message),
-            Some(HealthChange::Release) => health.release(HoldReason::Configuration),
-            None => {}
+impl HealthChange {
+    /// Makes health say it. A restart does not help a source, so it is a configuration problem to the health actor: held
+    /// and said, with the agent left running.
+    pub fn apply(self, health: &HealthHandle) {
+        match self {
+            HealthChange::Hold(message) => health.hold(HoldReason::Configuration, message),
+            HealthChange::Release => health.release(HoldReason::Configuration),
         }
     }
 }

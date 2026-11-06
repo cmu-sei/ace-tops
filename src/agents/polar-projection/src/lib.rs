@@ -37,6 +37,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(feature = "graph")]
 pub mod graph;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 /// The Dhall type of a projection, for an author's file.
 pub const SCHEMA: &str = include_str!("../projection.dhall");

@@ -203,7 +203,7 @@ The bites, in order:
 1. **The scaffold becomes the contract.** Built: above.
 2. **Pure cores and engine properties.** The observer's and processor's decisions out of their actors, and a generator of valid mappings: for any valid mapping and any JSON, no panic, the same writes
    each time, only the labels and edges it names, every write stamped, nothing written on a failed guard, no null key, no document text in Cypher, a round trip through signing. The state machines
-   against a simple model: the last good document under the last accepted mapping.
+   against a simple model: the last good document under the last accepted mapping. Built: below.
 3. **A test kit for every kind.** `polar_http_tests!(Kind)` and a pair harness: the real handler, a stand-in service, the real signing path and real Neo4j, with samples and expected writes beside
    each mapping.
 4. **`polar-sign projection test`.** The same checks for a deployment's own mapping, writing a signed evidence record (the digests of mapping, scaffold and samples, the tool's version and the
@@ -214,6 +214,37 @@ The bites, in order:
    list; no credentialed fetch reaching the graph unreviewed; what each workload could touch.
 6. **Version ranges and migrations**, as designed above, both becoming facts.
 7. **Harder shapes.** Paging, `Bound` credentials and the signed-list fix, with Jira's projects, groups and users through the kit in tests, and a fresh bring-up.
+
+**Bite 2, built 2026-11-05.** The decisions are pure cores, as `Asking` is (`polar-running-config`): `Observing` (`polar-http-observer/src/observing.rs`) and `Processing`
+(`polar-http-processor/src/processing.rs`) take an event and say the steps (read, publish, read again, write, tell health), and the actors carry the steps out. `polar-projection`'s `testing`
+feature generates any valid mapping, with the schema it fits, and documents in its words whose every string carries a mark no mapping can hold (`src/testing.rs`). The properties:
+
+- for any such mapping and any such document: the same writes each time, only the labels, keys, properties and edges its rules name, the four stamps exact on every write, no null key, and a
+  guard that refuses exactly when a reading of the language, not the engine, says a check fails; and the same of the guard alone, from its own generator (`polar-projection/src/tests.rs`);
+- under any such mapping, the graph controller takes the operation and none of the document's text is in its Cypher (`graph.rs`);
+- any such mapping, signed with `polar-sign`, committed, verified and read back, is judged the same projection (`polar-sign/src/lib.rs`);
+- the observer, over any sequence of lists, reads, stale generations and a shutdown, against a model: a source read only at its latest version's generation while listed, a read published and
+  read again once, at its interval or the host's longer wait, nothing after shutdown, and health naming exactly the sources whose last two reads failed;
+- the processor, over any sequence of mappings, refusals, rereads, restarts and documents, against a model graph that does what MERGE and SET do and documents described plainly: each source's
+  last good document under the mapping in force when it came, with that version's stamps; anything else of the source from an earlier good document; a refused document, or one with no mapping
+  held, changing nothing; and health saying there is no mapping exactly when none is held.
+
+Each was checked to catch deliberate breakage of what it states, run against the new properties alone (`mut7.py`, 19 of 19). What the bite found:
+
+- **A generator that only makes valid mappings can still test little.** The first one wrote an edge in none of 256 cases, and two breakages of edges went uncaught. Biased toward keys from
+  `source`, a guard alternative every document passes, and steps over what was last bound, about six cases in ten pass the guard and one in fourteen writes an edge; but then the guard rarely
+  decided, and two breakages of it went uncaught. So the guard has its own generator, `guarded`, with no way to pass that every document has, and its own property, whose documents are built
+  against the guard's paths: each absent, null, text with a prefix first or later, or a number. A random document reached the decisive case, a null where a check looks, in four runs of five.
+
+- **Dhall evaluation grows exponentially with nesting.** Measured with the Dhall crates optimised: about three times longer for each level of records within records, and about nine times for
+  each level of records within lists; a list of records seven deep takes 81 seconds. A signed projection's file is five records and two lists of records deep and takes 0.1 to 0.8 seconds,
+  about ten times its body's, because signing wraps the body two levels deeper. A body much deeper than a projection's, or a projection grown deeper, would hold up the configuration actor for
+  seconds or minutes. Whether the parser or the type checker is the cause is not yet found; the fix is in the Dhall fork. Open, below.
+- **Dhall is slow unoptimised.** The example's file took 2.7 seconds to read in a debug build, 0.23 optimised. Marked for review: the workspace's `Cargo.toml` optimises `dhall`, `serde_dhall`,
+  `pest` and `pest_consume` in dev builds, as in a release, and nothing of Polar's own. With that the round trip still takes about two minutes for its 256 cases, which are kept.
+- **No signed-list limit for a projection.** Every rule and step has the same fields, so the signing tool types each list; the limit stays for lists whose entries differ (bite 7).
+- **A property a new mapping does not set stays**, as an entry a document dropped does: the model leaves it out. Open, with the dropped entries.
+- Marked for review: `polar-projection` gains an optional `proptest` dependency, behind `testing`, so other crates' properties use the same generator; nothing that ships enables it.
 
 What it closes, by the plan: no test against a real document (3, 4), a mapping outside its binary's schema (1, 5), an agent version mismatch (6), an issuer mistake and a stale state-agent list (5),
 what a workload could touch at a past version (5), and which version and configuration ran as declared (5; what actually ran is slice C). Detected, not fixed: a refused file replacing the good one
@@ -242,7 +273,9 @@ Seen reading the code, 2026-11-05. No target deploys them, so there is no data t
   somewhere durable to go. The handlers' `Recorder` is the place to attach it. Not designed.
 - **One workload per kind, or per site?** A kind with credentials may want one workload per site, so two Jira sites are not one identity. OpenAPI has none, so this waits for the second kind.
 - **A signed list cannot hold entries with different fields** (`remaining-work.md`). OpenAPI's `sources` are all required, so it does not stop the first kind. Credentials and paging will need the fix.
-- **An endpoint a document dropped** stays in the graph, with an older `polar_observed_at`. Not handled further yet.
+- **An endpoint a document dropped** stays in the graph, with an older `polar_observed_at`. Not handled further yet. So does a property a new version of the mapping no longer sets (bite 2).
+- **Dhall evaluation is exponential in nesting** (bite 2, above). A signed projection is within it today. Finding whether the parser or the type checker is the cause, and fixing it in the
+  Dhall fork, comes before any section body nested much deeper than a projection's.
 - **A mapping's first version.** A processor with no signed mapping holds and says so. It is not seeded: the mapping is in `polar-projection/examples/openapi.dhall`, to sign. A built-in default or a seed are the alternatives.
 - **Who owns the graph controller.** The processor spawns its own, as the others do, so it moves again when the builder owns it (`remaining-work.md`).
 - **A kind with no binary of its own** would have to reverse `own_name.rs`. This cut does not.

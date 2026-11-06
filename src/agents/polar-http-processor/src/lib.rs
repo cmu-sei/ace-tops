@@ -27,9 +27,11 @@
 
 #![deny(clippy::disallowed_methods)]
 
+pub mod processing;
+
 use cert_issuer_common::identity::workload_of;
 use polar::graph::controller::{
-    GraphControllerActor, GraphControllerArgs, GraphControllerMsg, GraphOp, GraphSignal, NodeShape,
+    GraphControllerActor, GraphControllerArgs, GraphControllerMsg, GraphSignal, NodeShape,
 };
 use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, Drain, HealthClient, HealthHandle,
@@ -37,8 +39,8 @@ use polar_agent_builder::{
     stop_graph_controller,
 };
 use polar_http_observer::Observation;
-use polar_http_observer::problems::{Reported, SourceProblems};
-use polar_projection::{Bounds, Projection, Stamp, graph};
+use polar_projection::{Bounds, Projection, graph};
+use processing::{Event, Processing, Step};
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, OutputPort, SupervisionEvent, async_trait};
 use serde_json::Value;
@@ -149,63 +151,6 @@ pub fn from_its_observer(published_by: Option<&str>, observer: &str) -> bool {
     published_by.and_then(workload_of) == Some(observer)
 }
 
-/// What became of a document.
-#[derive(Debug)]
-pub enum Outcome {
-    /// What to write, and how many entries could not be identified and were skipped.
-    Write { op: Option<GraphOp>, skipped: usize },
-    /// Nothing is written, and why.
-    Refused(String),
-}
-
-/// A document, through a mapping, into what the graph controller takes.
-pub fn process(
-    projection: &Projection,
-    version: u64,
-    workload: &str,
-    observation: &Observation,
-) -> Outcome {
-    let body: Value = match serde_json::from_slice(&observation.body) {
-        Ok(body) => body,
-        Err(e) => return Outcome::Refused(format!("it is not JSON: {e}")),
-    };
-    let stamp = Stamp {
-        workload,
-        version,
-        observed_at_unix_secs: observation.observed_at_unix_secs,
-    };
-    match projection.project(&observation.source, &body, &stamp) {
-        Ok(projected) => Outcome::Write {
-            op: graph::operation(projected.writes),
-            skipped: projected.skipped,
-        },
-        Err(refused) => Outcome::Refused(refused.to_string()),
-    }
-}
-
-/// What standing problem a document's outcome leaves its source with. A document was read and refused, so one is enough:
-/// nothing here is a blip of the network, and nothing of it was written.
-pub fn note_outcome(problems: &mut SourceProblems, source: &str, outcome: &Outcome) {
-    match outcome {
-        Outcome::Write { skipped: 0, .. } => problems.succeeded(source),
-        Outcome::Write { skipped, .. } => problems.failed(
-            source,
-            format!("{skipped} entries could not be identified and were skipped"),
-        ),
-        Outcome::Refused(why) => problems.failed(source, format!("not written: {why}")),
-    }
-}
-
-/// What should stand: having no mapping says more than anything a source could say. A source taken out of the observer's list
-/// is not known here, so its problem stands until the next rejuvenation, which is about an hour.
-fn wanted(has_mapping: bool, problems: &SourceProblems) -> Option<String> {
-    if has_mapping {
-        problems.standing()
-    } else {
-        Some(NO_MAPPING.to_string())
-    }
-}
-
 pub enum ProcessorMessage {
     ClientEvent { event: cassini_types::ClientEvent },
     Observed(Observation),
@@ -223,14 +168,9 @@ pub struct ProcessorState {
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     configuration: ConfigurationHandle,
     graph_controller: Option<ActorRef<GraphControllerMsg>>,
-    projection: Option<(u64, Projection)>,
-    problems: SourceProblems,
-    reported: Reported,
+    processing: Processing,
     drain: Drain,
 }
-
-const NO_MAPPING: &str = "no projection is signed yet, so what the observer publishes is not written. Sign one: \
-                          polar-sign runtime --section projection --projection <file>";
 
 #[async_trait]
 impl<K: Kind> Actor for Processor<K> {
@@ -300,20 +240,19 @@ impl<K: Kind> Actor for Processor<K> {
         .await
         .map_err(ActorProcessingErr::from)?;
 
-        let problems = SourceProblems::new(1);
-        let mut reported = Reported::default();
-        reported.tell(&resources.healthcheck, wanted(false, &problems));
-        myself.cast(ProcessorMessage::ProjectionChanged)?;
-        Ok(ProcessorState {
+        let mut processing = Processing::new(K::NAME);
+        let steps = processing.on(Event::Started);
+        let state = ProcessorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             configuration: resources.configuration,
             graph_controller: Some(graph_controller),
-            projection: None,
-            problems,
-            reported,
+            processing,
             drain: Drain::default(),
-        })
+        };
+        carry_out(&state, steps)?;
+        myself.cast(ProcessorMessage::ProjectionChanged)?;
+        Ok(state)
     }
 
     async fn handle(
@@ -355,44 +294,20 @@ impl<K: Kind> Actor for Processor<K> {
                     let _ = to.cast(ProcessorMessage::ProjectionRead(read));
                 });
             }
-            ProcessorMessage::ProjectionRead(read) => match read {
-                Ok(Some((version, projection))) => {
-                    info!("projection version {version} in force");
-                    state.projection = Some((version, projection));
-                    state
-                        .reported
-                        .tell(&state.healthcheck, wanted(true, &state.problems));
-                }
-                Ok(None) => info!("{NO_MAPPING}"),
-                // Judged when it arrived, so this is not expected. What is in force stays.
-                Err(problems) => error!("the projection in force: {problems:?}"),
-            },
+            ProcessorMessage::ProjectionRead(read) => {
+                let steps = state.processing.on(Event::Mapping(read));
+                carry_out(state, steps)?;
+            }
             ProcessorMessage::Observed(observation) => {
-                let source = observation.source.clone();
                 if state.drain.is_draining() {
-                    warn!("draining -- what `{source}` said is not written; its next read is");
+                    warn!(
+                        "draining -- what `{}` said is not written; its next read is",
+                        observation.source
+                    );
                     return Ok(());
                 }
-                let Some((version, projection)) = &state.projection else {
-                    warn!("what `{source}` said is not written: {NO_MAPPING}");
-                    return Ok(());
-                };
-                let outcome = process(projection, *version, K::NAME, &observation);
-                note_outcome(&mut state.problems, &source, &outcome);
-                state
-                    .reported
-                    .tell(&state.healthcheck, wanted(true, &state.problems));
-                match outcome {
-                    Outcome::Write { op, skipped } => {
-                        info!(
-                            "`{source}`: written under projection {version}, {skipped} entries skipped"
-                        );
-                        if let (Some(op), Some(controller)) = (op, &state.graph_controller) {
-                            controller.cast(GraphControllerMsg::Op(op))?;
-                        }
-                    }
-                    Outcome::Refused(why) => warn!("what `{source}` said is not written: {why}"),
-                }
+                let steps = state.processing.on(Event::Observed(observation));
+                carry_out(state, steps)?;
             }
             ProcessorMessage::PrepareShutdown => {
                 if state.drain.begin(
@@ -459,6 +374,25 @@ impl<K: Kind> Actor for Processor<K> {
     }
 }
 
+/// Does what was decided.
+fn carry_out(state: &ProcessorState, steps: Vec<Step>) -> Result<(), ActorProcessingErr> {
+    for step in steps {
+        match step {
+            Step::Write { source, writes } => {
+                if let (Some(op), Some(controller)) =
+                    (graph::operation(writes), &state.graph_controller)
+                {
+                    controller.cast(GraphControllerMsg::Op(op)).map_err(|e| {
+                        format!("could not hand what `{source}` said to the graph: {e}")
+                    })?;
+                }
+            }
+            Step::Health(change) => change.apply(&state.healthcheck),
+        }
+    }
+    Ok(())
+}
+
 /// The agent's `start`.
 pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
     configured.init_logging(K::NAME);
@@ -478,7 +412,6 @@ pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
 mod tests {
     use super::*;
     use polar_projection::Shape;
-    use proptest::prelude::*;
     use serde_json::json;
 
     const BOUNDS: Bounds<'static> = Bounds {
@@ -556,14 +489,6 @@ mod tests {
         }]})
     }
 
-    fn observation(document: &[u8]) -> Observation {
-        Observation {
-            source: "s".to_string(),
-            observed_at_unix_secs: 1,
-            body: document.to_vec(),
-        }
-    }
-
     #[test]
     fn a_mapping_is_judged_against_the_schema_and_cypher_s_own_rule() {
         judge(&body(), BOUNDS).unwrap();
@@ -588,83 +513,9 @@ mod tests {
     }
 
     #[test]
-    fn a_document_becomes_one_operation_and_what_is_not_json_is_refused() {
-        let projection = Projection::judged(&body(), BOUNDS).unwrap();
-        match process(&projection, 3, "w", &observation(br#"{"title":"t"}"#)) {
-            Outcome::Write {
-                op: Some(GraphOp::Transaction { ops }),
-                skipped: 0,
-            } => assert_eq!(ops.len(), 1),
-            other => panic!("{other:?}"),
-        }
-        for not_json in [&b"openapi: 3.0.0\n"[..], b"", b"{"] {
-            assert!(matches!(
-                process(&projection, 3, "w", &observation(not_json)),
-                Outcome::Refused(_)
-            ));
-        }
-    }
-
-    #[test]
-    fn a_document_that_fails_its_guard_stands_as_a_problem_until_a_good_one_comes() {
-        let projection = Projection::judged(&body(), BOUNDS).unwrap();
-        let mut problems = SourceProblems::new(1);
-        let refused = process(
-            &projection,
-            1,
-            "w",
-            &observation(br#"{"error":"password=hunter2"}"#),
-        );
-        assert!(
-            matches!(&refused, Outcome::Refused(_)),
-            "nothing is written"
-        );
-        note_outcome(&mut problems, "s", &refused);
-        let standing = wanted(true, &problems).unwrap();
-        assert!(
-            standing.contains("`s`") && standing.contains("body.title"),
-            "{standing}"
-        );
-        assert!(!standing.contains("hunter2"), "{standing}");
-        let good = process(&projection, 1, "w", &observation(br#"{"title":"t"}"#));
-        note_outcome(&mut problems, "s", &good);
-        assert_eq!(wanted(true, &problems), None);
-    }
-
-    #[test]
-    fn entries_that_could_not_be_identified_stand_as_a_problem_though_the_rest_are_written() {
-        let mut problems = SourceProblems::new(1);
-        note_outcome(
-            &mut problems,
-            "s",
-            &Outcome::Write {
-                op: None,
-                skipped: 2,
-            },
-        );
-        assert!(wanted(true, &problems).unwrap().contains("2 entries"));
-    }
-
-    #[test]
-    fn having_no_mapping_says_more_than_any_source_can() {
-        let mut problems = SourceProblems::new(1);
-        problems.failed("s", "no");
-        assert_eq!(wanted(false, &problems).as_deref(), Some(NO_MAPPING));
-        assert!(wanted(true, &problems).unwrap().contains("`s`"));
-    }
-
-    #[test]
     fn the_constraints_come_from_the_schema() {
         let shapes = node_shapes(BOUNDS);
         assert_eq!(shapes[0].labels, ["TestDoc"]);
         assert_eq!(shapes[0].keys, ["source"]);
-    }
-
-    proptest! {
-        #[test]
-        fn any_bytes_are_written_or_refused_and_never_panic(document in prop::collection::vec(any::<u8>(), 0..128)) {
-            let projection = Projection::judged(&body(), BOUNDS).unwrap();
-            let _ = process(&projection, 1, "w", &observation(&document));
-        }
     }
 }

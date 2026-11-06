@@ -52,6 +52,8 @@ path = "src/main.rs"
 
 [dev-dependencies]
 polar-signing = { workspace = true, features = ["testing"] }
+# Any mapping an author could sign, for the round trip through a signed file.
+polar-projection = { workspace = true, features = ["testing"] }
 # The key usage a test's escrow certificate says.
 rcgen.workspace = true
 # Random JSON trees, rendered to Dhall and read back (lib.rs).

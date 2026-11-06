@@ -134,6 +134,36 @@ mod tests {
         }
     }
 
+    proptest::proptest! {
+        /// Under any mapping an author could sign, whatever a document says: the graph controller takes the operation, and
+        /// none of the document's text is in the Cypher it runs, only in its parameters.
+        #[test]
+        fn under_any_mapping_no_document_text_reaches_cypher(
+            generated in crate::testing::mapping(),
+            source in crate::testing::source(),
+            document in crate::testing::document(),
+        ) {
+            let projection = generated
+                .with_bounds(|bounds| Projection::judged(&generated.body, bounds))
+                .unwrap();
+            let stamp = Stamp { workload: "w", version: 1, observed_at_unix_secs: 1 };
+            let Ok(projected) = projection.project(&source, &document, &stamp) else {
+                return Ok(());
+            };
+            let Some(op) = operation(projected.writes) else {
+                return Ok(());
+            };
+            let queries = polar::graph::controller::compile_graph_op(&op);
+            proptest::prop_assert!(queries.is_ok(), "{:?}", queries.err());
+            for query in queries.unwrap() {
+                proptest::prop_assert!(
+                    !query.query().contains(crate::testing::MARK),
+                    "{}", query.query()
+                );
+            }
+        }
+    }
+
     #[test]
     fn nothing_to_write_is_no_operation_and_a_document_is_one_transaction() {
         assert!(operation(vec![]).is_none());

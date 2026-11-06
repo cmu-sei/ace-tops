@@ -1023,4 +1023,37 @@ mod tests {
         assert_eq!(back, payload);
         assert_eq!(back["body"]["source"], source);
     }
+
+    /// One signer for every case: making a key is the slow part, and what is tested is the file.
+    fn one_signer() -> &'static (String, Identity) {
+        static SIGNER: std::sync::OnceLock<(String, Identity)> = std::sync::OnceLock::new();
+        SIGNER.get_or_init(|| {
+            let ca = root("Polar Internal CA");
+            let identity = identity_for(&ca);
+            (ca.pem, identity)
+        })
+    }
+
+    proptest::proptest! {
+        /// Any mapping an author could sign comes back from the file that is committed as the mapping it was: written as
+        /// Dhall, signed, verified and read back, the agent judges the same projection from it.
+        #[test]
+        fn any_mapping_comes_back_from_its_signed_file_as_the_same_projection(
+            generated in polar_projection::testing::mapping()
+        ) {
+            let (ca, identity) = one_signer();
+            let payload = runtime_payload("openapi-processor", "projection", 1, "id-1", generated.body.clone());
+            let file = sign_to_dhall(payload.clone(), identity);
+            proptest::prop_assert!(file.is_ok(), "{:?}\n{}", file, generated.body);
+            let (_, back) = verify_source(&file.unwrap(), std::slice::from_ref(ca), now()).unwrap();
+            proptest::prop_assert_eq!(&back, &payload);
+            generated.with_bounds(|bounds| {
+                proptest::prop_assert_eq!(
+                    polar_projection::Projection::judged(&back["body"], bounds),
+                    polar_projection::Projection::judged(&generated.body, bounds)
+                );
+                Ok(())
+            })?;
+        }
+    }
 }

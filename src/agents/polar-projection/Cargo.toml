@@ -33,9 +33,12 @@ thiserror.workspace = true
 polar-cypher.workspace = true
 # Only for turning writes into graph operations. The tool that signs a mapping has no use for a graph, or a runtime.
 polar = { workspace = true, optional = true }
+proptest = { workspace = true, optional = true }
 
 [features]
 graph = ["dep:polar"]
+# Strategies for other crates' property tests: any valid mapping, with its schema, and documents in its words.
+testing = ["dep:proptest"]
 
 [dev-dependencies]
 proptest.workspace = true

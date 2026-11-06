@@ -259,3 +259,14 @@ rcgen = { version = "0.14.7", features = ["x509-parser"] }
 # Remove dhall and serde_dhall from patch – they are now workspace deps
 [patch.crates-io]
 getrandom = { git = "https://github.com/rust-random/getrandom", tag = "v0.3.3" }
+
+# Dhall is slow unoptimised: one projection's file takes seconds to evaluate in a debug build, which a property of hundreds
+# of cases feels as minutes. Its crates are optimised in tests as they are in a release; nothing of Polar's own is.
+[profile.dev.package.dhall]
+opt-level = 3
+[profile.dev.package.serde_dhall]
+opt-level = 3
+[profile.dev.package.pest]
+opt-level = 3
+[profile.dev.package.pest_consume]
+opt-level = 3

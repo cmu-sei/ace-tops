@@ -21,10 +21,10 @@
    DM26-0670
 */
 
-//! The observer's supervisor: the builder's infrastructure, and a schedule of the sources in force. One source's failure is
-//! said and tried again at its next time, and touches no other.
+//! The observer's supervisor: the builder's infrastructure, and what [`Observing`] decides, carried out. One source's
+//! failure is said and tried again at its next time, and touches no other.
 
-use crate::problems::{Reported, SourceProblems};
+use crate::observing::{Event, Observing, Step};
 use crate::sources::{self, SECTION_NAME, Source};
 use crate::{MAX_DOCUMENT_BYTES, Observation};
 use cassini_client::{OfflineBehavior, PublishRequest};
@@ -38,9 +38,7 @@ use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
     InfrastructureSupervisorMessage, StartError,
 };
-use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
-use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use tracing::{debug, error, info, warn};
 
@@ -91,66 +89,6 @@ fn read_document(status: u16, body: &[u8]) -> Result<Vec<u8>, ReadFailure> {
     Ok(body.to_vec())
 }
 
-/// Two reads in a row, so a host's blip is not reported as a problem.
-const FAILED_READS_TO_REPORT: u32 = 2;
-
-/// What a read says of a source's health: a problem, or that it is well, or nothing when the host only asked for time.
-fn note_read(problems: &mut SourceProblems, source: &str, outcome: &Result<Vec<u8>, Failure>) {
-    match outcome {
-        Ok(_) => problems.succeeded(source),
-        Err(Failure::Backoff { .. } | Failure::NotYet { .. }) => {}
-        Err(failure) => problems.failed(source, failure.to_string()),
-    }
-}
-
-/// When a source is read next, given how the last read went: its interval, or longer if the host asked for time.
-fn next_read(interval: Duration, outcome: &Result<Vec<u8>, Failure>) -> Duration {
-    match outcome {
-        Err(Failure::Backoff { wait, .. }) | Err(Failure::NotYet { wait }) => interval.max(*wait),
-        _ => interval,
-    }
-}
-
-/// The sources in force, each with a generation, so what was scheduled or read under an older version of a source says so
-/// when it comes back and is dropped.
-#[derive(Debug, Default)]
-struct Schedule {
-    sources: BTreeMap<String, (Source, u64)>,
-    next_generation: u64,
-}
-
-impl Schedule {
-    /// Takes a new list whole. What is unchanged keeps its time, what is gone is forgotten, and what is new or changed is
-    /// returned, to be read now.
-    fn replace(&mut self, sources: Vec<Source>) -> Vec<(String, u64)> {
-        let mut kept = BTreeMap::new();
-        let mut start = Vec::new();
-        for source in sources {
-            let name = source.name.clone();
-            match self.sources.remove(&name) {
-                Some((held, generation)) if held == source => {
-                    kept.insert(name, (held, generation));
-                }
-                _ => {
-                    self.next_generation += 1;
-                    start.push((name.clone(), self.next_generation));
-                    kept.insert(name, (source, self.next_generation));
-                }
-            }
-        }
-        self.sources = kept;
-        start
-    }
-
-    /// The source, if `generation` is still the one in force.
-    fn current(&self, name: &str, generation: u64) -> Option<&Source> {
-        self.sources
-            .get(name)
-            .filter(|(_, held)| *held == generation)
-            .map(|(source, _)| source)
-    }
-}
-
 pub enum ObserverMessage {
     ClientEvent {
         event: ClientEvent,
@@ -180,10 +118,7 @@ pub struct ObserverState {
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     configuration: ConfigurationHandle,
     protocols: ProtocolHandle,
-    schedule: Schedule,
-    problems: SourceProblems,
-    reported: Reported,
-    shutting_down: bool,
+    observing: Observing,
 }
 
 fn now_unix_secs() -> i64 {
@@ -233,10 +168,7 @@ impl<K: Kind> Actor for Observer<K> {
             infrastructure: resources.infrastructure,
             configuration: resources.configuration,
             protocols,
-            schedule: Schedule::default(),
-            problems: SourceProblems::new(FAILED_READS_TO_REPORT),
-            reported: Reported::default(),
-            shutting_down: false,
+            observing: Observing::default(),
         })
     }
 
@@ -275,74 +207,28 @@ impl<K: Kind> Actor for Observer<K> {
                 });
             }
             ObserverMessage::SourcesRead(list) => {
-                info!("{} source(s) in force", list.len());
-                state
-                    .problems
-                    .keep_only(list.iter().map(|s| s.name.as_str()));
-                state
-                    .reported
-                    .tell(&state.healthcheck, state.problems.standing());
-                for (name, generation) in state.schedule.replace(list) {
-                    myself.cast(ObserverMessage::Due { name, generation })?;
-                }
+                let steps = state.observing.on(Event::Sources(list));
+                carry_out::<K>(&myself, state, steps);
             }
             ObserverMessage::Due { name, generation } => {
-                let Some(source) = state.schedule.current(&name, generation) else {
-                    return Ok(());
-                };
-                if state.shutting_down {
-                    return Ok(());
-                }
-                let fetch = Fetch::<K> {
-                    url: source.url.clone(),
-                    kind: PhantomData,
-                };
-                let protocols = state.protocols.clone();
-                let to = myself.clone();
-                // Off the actor, so a slow host holds up no other source.
-                tokio::spawn(async move {
-                    let outcome = protocols.ask(fetch).await;
-                    let _ = to.cast(ObserverMessage::Read {
-                        name,
-                        generation,
-                        outcome,
-                    });
-                });
+                let steps = state.observing.on(Event::Due { name, generation });
+                carry_out::<K>(&myself, state, steps);
             }
             ObserverMessage::Read {
                 name,
                 generation,
                 outcome,
             } => {
-                let Some(source) = state.schedule.current(&name, generation) else {
-                    debug!("a read of `{name}` came back after its source changed");
-                    return Ok(());
-                };
-                let wait = next_read(Duration::from_secs(source.interval_secs), &outcome);
-                if !state.shutting_down {
-                    note_read(&mut state.problems, &name, &outcome);
-                    state
-                        .reported
-                        .tell(&state.healthcheck, state.problems.standing());
-                    match outcome {
-                        Ok(body) => publish::<K>(&state.tcp_client, &name, body),
-                        Err(failure) => {
-                            warn!(
-                                "could not read `{name}`, and will try again in {wait:?}: {failure}"
-                            );
-                        }
-                    }
-                    drop(
-                        myself.send_after(wait, move || ObserverMessage::Due { name, generation }),
-                    );
-                }
+                let steps = state.observing.on(Event::Read {
+                    name,
+                    generation,
+                    outcome,
+                });
+                carry_out::<K>(&myself, state, steps);
             }
             ObserverMessage::PrepareShutdown => {
-                info!("PrepareShutdown received; a read in flight is not published");
-                state.shutting_down = true;
-                let _ = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
+                let steps = state.observing.on(Event::PrepareShutdown);
+                carry_out::<K>(&myself, state, steps);
             }
         }
         Ok(())
@@ -371,6 +257,47 @@ impl<K: Kind> Actor for Observer<K> {
             _ => {}
         }
         Ok(())
+    }
+}
+
+/// Does what was decided.
+fn carry_out<K: Kind>(myself: &ActorRef<ObserverMessage>, state: &ObserverState, steps: Vec<Step>) {
+    for step in steps {
+        match step {
+            Step::Fetch {
+                name,
+                generation,
+                url,
+            } => {
+                let fetch = Fetch::<K> {
+                    url,
+                    kind: PhantomData,
+                };
+                let protocols = state.protocols.clone();
+                let to = myself.clone();
+                // Off the actor, so a slow host holds up no other source.
+                tokio::spawn(async move {
+                    let outcome = protocols.ask(fetch).await;
+                    let _ = to.cast(ObserverMessage::Read {
+                        name,
+                        generation,
+                        outcome,
+                    });
+                });
+            }
+            Step::Publish { source, body } => publish::<K>(&state.tcp_client, &source, body),
+            Step::Again {
+                name,
+                generation,
+                after,
+            } => drop(myself.send_after(after, move || ObserverMessage::Due { name, generation })),
+            Step::Health(change) => change.apply(&state.healthcheck),
+            Step::ProceedWithShutdown => {
+                let _ = state
+                    .infrastructure
+                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
+            }
+        }
     }
 }
 
@@ -418,9 +345,10 @@ pub async fn start<K: Kind>(configured: Configured) -> Result<(), StartError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observing::next_read;
+    use ractor::concurrency::Duration;
     use polar_agent_builder::protocol::testing::http_handle;
     use polar_agent_builder::protocol::{Location, ProtocolKind};
-    use proptest::prelude::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -437,14 +365,6 @@ mod tests {
         const NAME: &'static str = "test-observer";
         const TOPIC: &'static str = "test.observations";
         const OPERATION: OperationDecl = READ;
-    }
-
-    fn source(name: &str, url: &str, secs: u64) -> Source {
-        Source {
-            name: name.to_string(),
-            url: url.to_string(),
-            interval_secs: secs,
-        }
     }
 
     async fn handler() -> ProtocolHandle {
@@ -509,92 +429,6 @@ mod tests {
         assert!(read_document(200, &[0; 8]).is_ok());
         for status in [199, 300, 404, 500] {
             assert!(read_document(status, b"{}").is_err(), "{status}");
-        }
-    }
-
-    #[test]
-    fn a_failure_or_success_waits_its_interval_and_a_shorter_wait_from_a_host_does_not_shorten_it()
-    {
-        let interval = Duration::from_secs(600);
-        assert_eq!(next_read(interval, &Ok(vec![])), interval);
-        assert_eq!(
-            next_read(interval, &Err(Failure::Transient("x".into()))),
-            interval
-        );
-        let short = Err(Failure::NotYet {
-            wait: Duration::from_secs(1),
-        });
-        assert_eq!(next_read(interval, &short), interval);
-    }
-
-    #[test]
-    fn a_failed_read_counts_against_its_source_and_a_host_asking_for_time_does_not() {
-        let mut problems = SourceProblems::new(2);
-        let failed: Result<Vec<u8>, Failure> = Err(Failure::Read("it answered 404".to_string()));
-        let wait = Duration::from_secs(1);
-        note_read(&mut problems, "a", &failed);
-        note_read(
-            &mut problems,
-            "a",
-            &Err(Failure::Backoff { status: 429, wait }),
-        );
-        note_read(&mut problems, "a", &Err(Failure::NotYet { wait }));
-        assert_eq!(
-            problems.standing(),
-            None,
-            "one failure, and a host asking for time"
-        );
-        note_read(&mut problems, "a", &failed);
-        assert!(problems.standing().unwrap().contains("it answered 404"));
-        note_read(&mut problems, "a", &Ok(vec![]));
-        assert_eq!(problems.standing(), None);
-    }
-
-    #[test]
-    fn a_new_list_reads_only_what_is_new_or_changed_and_forgets_what_is_gone() {
-        let mut schedule = Schedule::default();
-        let started = schedule.replace(vec![
-            source("a", "http://h/a", 60),
-            source("b", "http://h/b", 60),
-        ]);
-        assert_eq!(started.len(), 2);
-        let a = started.iter().find(|(n, _)| n == "a").unwrap().1;
-        let b = started.iter().find(|(n, _)| n == "b").unwrap().1;
-
-        let again = schedule.replace(vec![
-            source("a", "http://h/a", 60),
-            source("b", "http://h/moved", 60),
-            source("c", "http://h/c", 60),
-        ]);
-        let names: Vec<&str> = again.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["b", "c"]);
-        assert!(
-            schedule.current("a", a).is_some(),
-            "unchanged keeps its time"
-        );
-        assert!(
-            schedule.current("b", b).is_none(),
-            "what was scheduled under the old address is dropped"
-        );
-
-        assert!(schedule.replace(vec![]).is_empty());
-        assert!(schedule.current("a", a).is_none(), "gone");
-    }
-
-    proptest! {
-        /// After any sequence of lists: exactly the last list is in force, each at one generation.
-        #[test]
-        fn the_schedule_holds_exactly_the_last_list(
-            lists in prop::collection::vec(prop::collection::btree_map("[a-c]", (0u8..3, 60u64..63), 0..4), 1..6)
-        ) {
-            let mut schedule = Schedule::default();
-            let mut last = Vec::new();
-            for list in lists {
-                last = list.into_iter().map(|(n, (u, s))| source(&n, &format!("http://h/{u}"), s)).collect::<Vec<_>>();
-                schedule.replace(last.clone());
-            }
-            let held: Vec<Source> = schedule.sources.values().map(|(s, _)| s.clone()).collect();
-            prop_assert_eq!(held, last);
         }
     }
 }
