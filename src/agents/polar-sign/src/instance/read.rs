@@ -30,7 +30,7 @@
 //! - `polar-evidence`: every record, verified in the evidence domain; one that does not verify is left out, and said;
 //! - the scaffolds, as `nu infra/resolve.nu scaffolds <dir>` writes them.
 
-use super::{Deployed, Evidence, FactBase, Instance, ScaffoldFact, Section, Settings};
+use super::{Applied, Deployed, Evidence, FactBase, Instance, ScaffoldFact, Section, Settings};
 use crate::scaffold::Scaffold;
 use credentials_agent_model::Model;
 use serde_json::Value;
@@ -285,9 +285,10 @@ fn schedules(
     trust: &[String],
     now: i64,
     left_out: &mut Vec<String>,
-) -> Result<(Vec<Section>, Vec<Settings>), String> {
+) -> Result<Schedules, String> {
     let mut sections = Vec::new();
     let mut settings = Vec::new();
+    let mut applied = Vec::new();
     for path in files(dir, ".dhall")? {
         let file = relative(&path, dir);
         let text = std::fs::read_to_string(&path)
@@ -321,8 +322,37 @@ fn schedules(
                     signer: signer.username.unwrap_or_else(|| signer.serial.clone()),
                     versions: polar_version::VersionRange::parse(&payload["target"]["versions"])
                         .unwrap_or_default(),
+                    migrations: payload["migrations"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|m| crate::Migration {
+                            id: m["id"].as_str().unwrap_or("").to_string(),
+                            sha256: m["sha256"].as_str().unwrap_or("").to_string(),
+                            after: m["after"].as_bool().unwrap_or(false),
+                        })
+                        .collect(),
                     file,
                 });
+            }
+            Ok((signer, payload)) if payload["type"] == "migration-applied" => {
+                applied.push(Applied {
+                    agent: payload["target"]["agent"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    section: payload["section"].as_str().unwrap_or("").to_string(),
+                    migration: payload["migration"]["id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    sha256: payload["migration"]["sha256"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    signer: signer.username.unwrap_or_else(|| signer.serial.clone()),
+                    file,
+                })
             }
             Ok((_, payload)) if payload["type"] == "configuration" => settings.push(Settings {
                 agent: payload["target"]["agent"]
@@ -336,7 +366,35 @@ fn schedules(
             Ok(_) => {}
         }
     }
-    Ok((sections, settings))
+    let mut migration_files = BTreeMap::new();
+    for path in files(dir, ".cypher")? {
+        let file = relative(&path, dir);
+        let parts: Vec<&str> = file.split('/').collect();
+        if let ["migrations", agent, name] = parts.as_slice()
+            && let Some(id) = name.strip_suffix(".cypher")
+        {
+            let bytes =
+                std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            migration_files.insert(
+                (agent.to_string(), id.to_string()),
+                crate::migration_sha256(&bytes),
+            );
+        }
+    }
+    Ok(Schedules {
+        sections,
+        settings,
+        applied,
+        migration_files,
+    })
+}
+
+/// What `polar-schedules` holds that a check reads.
+struct Schedules {
+    sections: Vec<Section>,
+    settings: Vec<Settings>,
+    applied: Vec<Applied>,
+    migration_files: BTreeMap<(String, String), String>,
 }
 
 /// Every record in the evidence repository, and what was left out.
@@ -392,7 +450,12 @@ pub fn read(sources: &Sources<'_>, trusts: &Trusts<'_>, now: i64) -> Result<Read
         mut inputs,
     } = deployment(sources.deployment, trusts.deployment, now)?;
     let mut left_out = Vec::new();
-    let (sections, settings) = schedules(sources.schedules, trusts.polar, now, &mut left_out)?;
+    let Schedules {
+        sections,
+        settings,
+        applied,
+        migration_files,
+    } = schedules(sources.schedules, trusts.polar, now, &mut left_out)?;
     let evidence = evidence(sources.evidence, trusts.polar, now, &mut left_out)?;
     for (name, dir) in [
         ("schedules", sources.schedules),
@@ -420,6 +483,8 @@ pub fn read(sources: &Sources<'_>, trusts: &Trusts<'_>, now: i64) -> Result<Read
             inputs,
             settings,
             running: None,
+            applied,
+            migration_files,
         },
         left_out,
     })

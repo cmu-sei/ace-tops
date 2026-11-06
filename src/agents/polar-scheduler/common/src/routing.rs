@@ -77,6 +77,8 @@ fn routing(payload: &Value) -> Result<Routing, String> {
     let section = match kind.as_str() {
         document_type::CONFIGURATION => None,
         document_type::RUNTIME => Some(text(&payload["section"], "section")?),
+        // Delivered with the section whose migration it records, which the agent holds until it has one.
+        document_type::MIGRATION_APPLIED => Some(text(&payload["section"], "section")?),
         other => {
             return Err(format!(
                 "a `{other}` document is not handled by the scheduler yet"
@@ -181,6 +183,24 @@ mod tests {
                 Shape::Document(Err(why)) => assert!(why.contains(wanted), "{why}"),
                 other => panic!("{other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn a_record_of_an_applied_migration_goes_to_its_agent_with_its_section() {
+        let document = json!({
+            "payload": {"type": "migration-applied", "id": "m1-applied", "target": {"agent": "openapi-processor"},
+                        "section": "projection", "version": 1, "migration": {"id": "m1", "sha256": "aa"},
+                        "applied_at_unix_secs": 1, "report": "done"},
+            "signature": {}
+        });
+        match classify(&document.to_string()) {
+            Shape::Document(Ok(routing)) => {
+                assert_eq!(routing.agent, "openapi-processor");
+                assert_eq!(routing.section.as_deref(), Some("projection"));
+                assert_eq!(routing.id, "m1-applied");
+            }
+            _ => panic!("not routed"),
         }
     }
 }

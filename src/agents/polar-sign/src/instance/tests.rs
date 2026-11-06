@@ -89,6 +89,7 @@ fn section(agent: &str, name: &str, version: u64, body: Value) -> Section {
         signer: "alice".into(),
         file: format!("permanent/{agent}/{name}.dhall"),
         versions: polar_version::VersionRange::default(),
+        migrations: vec![],
     }
 }
 
@@ -188,6 +189,8 @@ fn base() -> FactBase {
         inputs: BTreeMap::new(),
         settings: vec![],
         running: None,
+        applied: vec![],
+        migration_files: BTreeMap::new(),
     }
 }
 
@@ -239,6 +242,7 @@ fn the_ids_are_stable_and_each_said_once() {
             "certified-by-the-credentials-agent",
             "seen-by-health",
             "sections-in-range",
+            "migrations-applied",
         ]
     );
 }
@@ -853,5 +857,71 @@ fn a_section_signed_for_versions_its_agent_is_not_violates_sections_in_range() {
     assert!(a_line(
         &status(&running, "sections-in-range").1,
         "openapi-processor (p-1) is 9.9.8, outside it"
+    ));
+}
+
+#[test]
+fn a_migration_intended_and_never_applied_or_not_the_file_signed_violates_migrations_applied() {
+    assert_eq!(
+        status(&base(), "migrations-applied").1,
+        ["no section in force names a migration"]
+    );
+    let sha = crate::migration_sha256(b"MATCH (n:OpenApiEndpoint) SET n.kind = 'operation'");
+    let named = |facts: &mut FactBase| {
+        let section = facts
+            .sections
+            .iter_mut()
+            .find(|s| s.name == "projection")
+            .unwrap();
+        section.migrations = vec![crate::Migration {
+            id: "m1".into(),
+            sha256: sha.clone(),
+            after: false,
+        }];
+        facts
+            .migration_files
+            .insert((PROCESSOR.into(), "m1".into()), sha.clone());
+    };
+    let applied = |sha256: &str| Applied {
+        agent: PROCESSOR.into(),
+        section: "projection".into(),
+        migration: "m1".into(),
+        sha256: sha256.into(),
+        signer: "alice".into(),
+        file: "migrations/openapi-processor/m1.applied.dhall".into(),
+    };
+    let mut never = base();
+    named(&mut never);
+    assert_eq!(
+        status(&never, "migrations-applied").1,
+        [
+            "openapi-processor projection version 3: migration m1: intended, and no record says it was applied"
+        ]
+    );
+    let mut done = base();
+    named(&mut done);
+    done.applied.push(applied(&sha));
+    assert_eq!(status(&done, "migrations-applied").0, Status::Holds);
+    let mut other = base();
+    named(&mut other);
+    other.applied.push(applied("another"));
+    assert_eq!(status(&other, "migrations-applied").0, Status::Violated);
+    let mut changed = base();
+    named(&mut changed);
+    changed.applied.push(applied(&sha));
+    changed
+        .migration_files
+        .insert((PROCESSOR.into(), "m1".into()), "edited".into());
+    assert!(a_line(
+        &status(&changed, "migrations-applied").1,
+        "its file is not the one signed"
+    ));
+    let mut missing = base();
+    named(&mut missing);
+    missing.applied.push(applied(&sha));
+    missing.migration_files.clear();
+    assert!(a_line(
+        &status(&missing, "migrations-applied").1,
+        "its file is not at migrations/openapi-processor/m1.cypher"
     ));
 }

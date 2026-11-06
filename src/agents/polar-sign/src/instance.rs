@@ -61,6 +61,19 @@ pub struct Section {
     pub file: String,
     /// Which versions of the agent it is for (`target.versions`); every version when it names none.
     pub versions: polar_version::VersionRange,
+    /// The migrations it names, which an administrator applies.
+    pub migrations: Vec<crate::Migration>,
+}
+
+/// A signed record of `polar-schedules` that an administrator applied a migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applied {
+    pub agent: String,
+    pub section: String,
+    pub migration: String,
+    pub sha256: String,
+    pub signer: String,
+    pub file: String,
 }
 
 /// A signed evidence record of `polar-evidence`, as verified.
@@ -103,6 +116,10 @@ pub struct FactBase {
     pub settings: Vec<Settings>,
     /// What the running agents said they hold, when they were asked (`check --ask`).
     pub running: Option<Running>,
+    /// Each record that a migration was applied.
+    pub applied: Vec<Applied>,
+    /// The digest of each migration's file in `polar-schedules` (`migrations/<agent>/<id>.cypher`), by agent and id.
+    pub migration_files: BTreeMap<(String, String), String>,
 }
 
 /// An agent's signed settings document (`type: configuration`) of `polar-schedules`.
@@ -295,6 +312,7 @@ pub fn check(facts: &FactBase) -> Checked {
         certified_by_the_credentials_agent(facts),
         seen_by_health(facts),
         sections_in_range(facts),
+        migrations_applied(facts),
     ];
     let mut verdicts = verdicts;
     if let Some(running) = &facts.running {
@@ -774,6 +792,59 @@ fn sections_in_range(facts: &FactBase) -> Verdict {
         }
     }
     verdict(ID, STATEMENT, findings, "no section in force names a range")
+}
+
+fn migrations_applied(facts: &FactBase) -> Verdict {
+    const ID: &str = "migrations-applied";
+    const STATEMENT: &str = "every migration a section in force names is in polar-schedules as signed, by its digest, and a \
+                             signed record says it was applied";
+    let mut findings = Vec::new();
+    for section in facts.in_force() {
+        for migration in &section.migrations {
+            let at = format!(
+                "{} {} version {}: migration {}",
+                section.agent, section.name, section.version, migration.id
+            );
+            match facts
+                .migration_files
+                .get(&(section.agent.clone(), migration.id.clone()))
+            {
+                None => findings.push((
+                    Status::Violated,
+                    format!(
+                        "{at}: its file is not at migrations/{}/{}.cypher",
+                        section.agent, migration.id
+                    ),
+                )),
+                Some(sha256) if *sha256 != migration.sha256 => findings.push((
+                    Status::Violated,
+                    format!("{at}: its file is not the one signed (its digest is {sha256})"),
+                )),
+                Some(_) => {}
+            }
+            let record = facts.applied.iter().find(|a| {
+                a.agent == section.agent
+                    && a.migration == migration.id
+                    && a.sha256 == migration.sha256
+            });
+            match record {
+                Some(a) => findings.push((
+                    Status::Holds,
+                    format!("{at}: applied, by {} ({})", a.signer, a.file),
+                )),
+                None => findings.push((
+                    Status::Violated,
+                    format!("{at}: intended, and no record says it was applied"),
+                )),
+            }
+        }
+    }
+    verdict(
+        ID,
+        STATEMENT,
+        findings,
+        "no section in force names a migration",
+    )
 }
 
 /// Which pod, as a line says it.

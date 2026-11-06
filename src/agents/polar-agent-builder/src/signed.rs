@@ -130,6 +130,29 @@ pub struct VerifiedRuntime {
     pub section: String,
     pub body: Value,
     pub signer: SignerInfo,
+    /// The migrations it names, which an administrator applies; the agent holds it until each not `after` is.
+    pub migrations: Vec<MigrationRef>,
+}
+
+/// A migration a runtime section names: its id, the digest of its file (`migrations/<agent>/<id>.cypher` in the schedules
+/// repository), and whether it runs after the section is in force rather than before.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationRef {
+    pub id: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub after: bool,
+}
+
+/// A record that a migration was applied, verified: which, for which section, and who signed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedApplied {
+    pub id: String,
+    pub section: String,
+    pub migration: String,
+    pub sha256: String,
+    pub signer: SignerInfo,
 }
 
 /// A signed document that passed the checks for its own kind.
@@ -137,6 +160,7 @@ pub struct VerifiedRuntime {
 pub enum VerifiedDocument {
     Configuration(Verified),
     Runtime(VerifiedRuntime),
+    Applied(VerifiedApplied),
 }
 
 /// What a runtime document says. Strict, like [`Payload`]: a field this does not know is refused, since it
@@ -152,6 +176,33 @@ struct RuntimePayload {
     section: String,
     version: u64,
     body: Value,
+    #[serde(default)]
+    migrations: Vec<MigrationRef>,
+}
+
+/// What a record of an applied migration says. Strict, as every payload is.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppliedPayload {
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    kind: String,
+    id: String,
+    target: Target,
+    section: String,
+    version: u64,
+    migration: AppliedMigration,
+    #[allow(dead_code)]
+    applied_at_unix_secs: u64,
+    #[allow(dead_code)]
+    report: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppliedMigration {
+    id: String,
+    sha256: String,
 }
 
 /// What an update says. Strict: a field this does not know is refused, since it would be signed but
@@ -368,16 +419,18 @@ impl UpdateVerifier {
     /// A configuration document only: anything else is refused as the wrong type.
     pub fn verify(&self, document: &Value) -> Result<Verified, Rejection> {
         let opened = self.open(document)?;
-        if let OpenedBody::Runtime(_) = opened.body {
+        if let OpenedBody::Runtime(_) | OpenedBody::Applied(_) = opened.body {
             return Err(Rejection::WrongType {
                 wanted: document_type::CONFIGURATION,
-                got: document_type::RUNTIME.to_string(),
+                got: opened.payload["type"].as_str().unwrap_or("").to_string(),
             });
         }
         self.floor(&opened).map_err(Rejection::Unauthorized)?;
         match self.close(opened)? {
             VerifiedDocument::Configuration(verified) => Ok(verified),
-            VerifiedDocument::Runtime(_) => unreachable!("refused above"),
+            VerifiedDocument::Runtime(_) | VerifiedDocument::Applied(_) => {
+                unreachable!("refused above")
+            }
         }
     }
 
@@ -411,6 +464,15 @@ impl UpdateVerifier {
                 self.common.check_range(payload.target.versions.as_ref())?;
                 OpenedBody::Runtime(payload)
             }
+            Some(document_type::MIGRATION_APPLIED) => {
+                self.common
+                    .expect_kind(&document, document_type::MIGRATION_APPLIED)?;
+                let payload: AppliedPayload = serde_json::from_value(document.payload.clone())
+                    .map_err(|e| Rejection::Payload(e.to_string()))?;
+                self.common.check_target(payload.target.agent.clone())?;
+                let _ = payload.version;
+                OpenedBody::Applied(payload)
+            }
             // A missing `type` and any other kind get the configuration path's own refusal, which says
             // what is wrong with it.
             _ => {
@@ -436,7 +498,8 @@ impl UpdateVerifier {
     pub fn floor(&self, opened: &Opened) -> Result<(), AuthorityRefusal> {
         let authority = match opened.body {
             OpenedBody::Configuration(_) => &self.authority,
-            OpenedBody::Runtime(_) => &self.runtime_authority,
+            // Who may sign that a section's migration was applied is who may sign the section.
+            OpenedBody::Runtime(_) | OpenedBody::Applied(_) => &self.runtime_authority,
         };
         authority.authorize(&opened.signer, &opened.payload)
     }
@@ -472,6 +535,14 @@ impl UpdateVerifier {
                 section: payload.section,
                 body: payload.body,
                 signer,
+                migrations: payload.migrations,
+            }),
+            OpenedBody::Applied(payload) => VerifiedDocument::Applied(VerifiedApplied {
+                id: payload.id,
+                section: payload.section,
+                migration: payload.migration.id,
+                sha256: payload.migration.sha256,
+                signer,
             }),
         })
     }
@@ -480,6 +551,7 @@ impl UpdateVerifier {
 enum OpenedBody {
     Configuration(Payload),
     Runtime(RuntimePayload),
+    Applied(AppliedPayload),
 }
 
 /// A document whose signature and shape have been checked and whose signer has not yet been judged.
@@ -504,6 +576,7 @@ impl Opened {
     pub fn runtime_section(&self) -> Option<&str> {
         match &self.body {
             OpenedBody::Runtime(payload) => Some(&payload.section),
+            OpenedBody::Applied(payload) => Some(&payload.section),
             OpenedBody::Configuration(_) => None,
         }
     }
@@ -548,6 +621,10 @@ impl Opened {
                     .collect(),
             ),
             OpenedBody::Runtime(payload) => (
+                "update-runtime",
+                vec![("Section", format!("{agent}/{}", payload.section))],
+            ),
+            OpenedBody::Applied(payload) => (
                 "update-runtime",
                 vec![("Section", format!("{agent}/{}", payload.section))],
             ),

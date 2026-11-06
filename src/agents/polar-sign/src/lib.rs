@@ -330,6 +330,56 @@ pub fn for_versions(mut payload: Value, range: &polar_version::VersionRange) -> 
     payload
 }
 
+/// A migration a runtime section names: its id, the file it is (`migrations/<agent>/<id>.cypher`), and whether it runs after
+/// the section is in force rather than before (docs/architecture/http-observers.md, "Versions and migrations").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Migration {
+    pub id: String,
+    pub sha256: String,
+    pub after: bool,
+}
+
+/// The digest a section names a migration's file by, and a record of its applying repeats.
+pub fn migration_sha256(file: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(file))
+}
+
+/// `payload`, a runtime document, naming `migrations`; none leaves it as it is.
+pub fn with_migrations(mut payload: Value, migrations: &[Migration]) -> Value {
+    if !migrations.is_empty() {
+        payload["migrations"] = Value::Array(
+            migrations
+                .iter()
+                .map(|m| serde_json::json!({ "id": m.id, "sha256": m.sha256, "after": m.after }))
+                .collect(),
+        );
+    }
+    payload
+}
+
+/// The payload of a record that an administrator applied migration `id` of `agent`'s section `section`, whose file has
+/// `sha256`, at `at`, with what they saw (`report`): the document the agent waits for before that section goes in force.
+pub fn applied_payload(
+    agent: &str,
+    section: &str,
+    id: &str,
+    sha256: &str,
+    at: u64,
+    report: &str,
+) -> Value {
+    serde_json::json!({
+        "type": "migration-applied",
+        "id": format!("{id}-applied-{}", &sha256[..sha256.len().min(12)]),
+        "target": { "agent": agent },
+        "section": section,
+        "version": 1,
+        "migration": { "id": id, "sha256": sha256 },
+        "applied_at_unix_secs": at,
+        "report": report,
+    })
+}
+
 /// A range from the command line's `--from` and `--below`, each a platform version.
 pub fn range_of(
     from: Option<&str>,
@@ -764,6 +814,30 @@ mod tests {
     }
 
     use polar_signing::testing::{Spec, now, root, signer};
+
+    #[test]
+    fn a_section_names_its_migrations_by_digest_and_a_record_repeats_it() {
+        let payload = runtime_payload("a", "projection", 2, "i", json!({}));
+        assert_eq!(with_migrations(payload.clone(), &[]), payload);
+        let sha = migration_sha256(b"MATCH (n:Old) SET n:New");
+        let named = with_migrations(
+            payload,
+            &[Migration {
+                id: "m1".into(),
+                sha256: sha.clone(),
+                after: false,
+            }],
+        );
+        assert_eq!(
+            named["migrations"],
+            json!([{ "id": "m1", "sha256": sha, "after": false }])
+        );
+        let record = applied_payload("a", "projection", "m1", &sha, 7, "3 nodes");
+        assert_eq!(record["type"], "migration-applied");
+        assert_eq!(record["migration"], json!({ "id": "m1", "sha256": sha }));
+        assert_eq!(record["target"], json!({ "agent": "a" }));
+        assert_eq!(record["section"], "projection");
+    }
 
     #[test]
     fn a_range_given_is_written_into_the_target_and_none_writes_nothing() {

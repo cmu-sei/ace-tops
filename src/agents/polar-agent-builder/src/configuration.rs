@@ -83,6 +83,9 @@ pub enum Refusal {
     /// The document was not accepted: it is unsigned, signed by someone untrusted or not allowed to,
     /// altered, or for another agent. Nothing about its contents was acted on.
     Unverified(Rejection),
+    /// A runtime section that names migrations not yet applied: held, and applied when a signed record of each
+    /// arrives (docs/architecture/http-observers.md, "Versions and migrations"). The ids it waits on.
+    Waiting(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +292,19 @@ pub struct ConfigurationState {
     health: Option<crate::health::HealthHandle>,
     /// Whether this actor holds the agent, for a document signed for other versions; released when one is applied.
     held_for_range: bool,
+    /// Migrations a signed record says were applied, by id and digest.
+    applied: std::collections::HashSet<(String, String)>,
+    /// A runtime section waiting on migrations, by section: applied when a record of each has arrived.
+    pending: HashMap<String, Pending>,
+}
+
+/// A runtime section verified and held until the migrations it names are applied.
+struct Pending {
+    id: String,
+    version: u64,
+    body: serde_json::Value,
+    signer: String,
+    migrations: Vec<crate::signed::MigrationRef>,
 }
 
 /// The id and version a document says it has, read without trusting any of it: only to label an outcome.
@@ -318,6 +334,14 @@ fn describe_outcome(outcome: &ApplyOutcome) -> (&'static str, Vec<String>, Vec<S
         ApplyOutcome::Refused(Refusal::Unverified(rejection)) => {
             (UNVERIFIED, vec![], vec![rejection.to_string()])
         }
+        ApplyOutcome::Refused(Refusal::Waiting(migrations)) => (
+            polar_scheduler_common::outcome::WAITING,
+            vec![],
+            migrations
+                .iter()
+                .map(|m| format!("waits on migration {m}"))
+                .collect(),
+        ),
     }
 }
 
@@ -391,6 +415,15 @@ impl ConfigurationState {
             Ok(VerifiedDocument::Runtime(verified)) => {
                 let signer = describe_signer(&verified.signer);
                 info!(id = %verified.id, section = %verified.section, version = verified.version, %signer, "signed runtime document verified");
+                let waiting = self.unapplied(&verified.migrations);
+                let held = self
+                    .runtime
+                    .get(&verified.section)
+                    .map(|v| v.version)
+                    .unwrap_or(0);
+                if !waiting.is_empty() && verified.version > held {
+                    return self.wait(verified, signer, waiting);
+                }
                 self.apply_runtime(
                     verified.id,
                     verified.version,
@@ -400,8 +433,95 @@ impl ConfigurationState {
                 )
                 .await
             }
+            Ok(VerifiedDocument::Applied(applied)) => self.migration_applied(applied).await,
             Err(rejection) => self.reject(claimed(document), rejection),
         }
+    }
+
+    /// The migrations of `named` that run before the section and have no record of being applied.
+    fn unapplied(&self, named: &[crate::signed::MigrationRef]) -> Vec<String> {
+        named
+            .iter()
+            .filter(|m| !m.after && !self.applied.contains(&(m.id.clone(), m.sha256.clone())))
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// Holds a verified section until its migrations are applied: what is in force stays, and health says what it waits on.
+    fn wait(
+        &mut self,
+        verified: crate::signed::VerifiedRuntime,
+        signer: String,
+        waiting: Vec<String>,
+    ) -> ApplyOutcome {
+        warn!(section = %verified.section, version = verified.version, ?waiting, "runtime section waits on its migrations");
+        if let Some(health) = &self.health {
+            health.hold(
+                polar_health::HoldReason::Configuration,
+                format!(
+                    "{} version {} waits on migration {}: apply it, then sign its record (polar-sign migration applied)",
+                    verified.section,
+                    verified.version,
+                    waiting.join(", ")
+                ),
+            );
+        }
+        let outcome = ApplyOutcome::Refused(Refusal::Waiting(waiting));
+        self.record(
+            Some(verified.id.clone()),
+            Some(verified.version),
+            verified.version,
+            Some(signer.clone()),
+            &outcome,
+        );
+        self.pending.insert(
+            verified.section,
+            Pending {
+                id: verified.id,
+                version: verified.version,
+                body: verified.body,
+                signer,
+                migrations: verified.migrations,
+            },
+        );
+        outcome
+    }
+
+    /// A signed record that a migration was applied: kept, and a section waiting on it applied once it waits on nothing.
+    async fn migration_applied(&mut self, applied: crate::signed::VerifiedApplied) -> ApplyOutcome {
+        let signer = describe_signer(&applied.signer);
+        info!(migration = %applied.migration, section = %applied.section, %signer, "a migration's record verified");
+        self.applied
+            .insert((applied.migration.clone(), applied.sha256.clone()));
+        let ready = self
+            .pending
+            .get(&applied.section)
+            .is_some_and(|p| self.unapplied(&p.migrations).is_empty());
+        if ready && let Some(pending) = self.pending.remove(&applied.section) {
+            let outcome = self
+                .apply_runtime(
+                    pending.id,
+                    pending.version,
+                    &applied.section,
+                    pending.body,
+                    pending.signer,
+                )
+                .await;
+            if matches!(outcome, ApplyOutcome::Applied { .. })
+                && self.pending.is_empty()
+                && !self.held_for_range
+                && let Some(health) = &self.health
+            {
+                health.release(polar_health::HoldReason::Configuration);
+            }
+            return outcome;
+        }
+        let outcome = ApplyOutcome::Applied {
+            changed: vec![],
+            notes: vec![format!("migration {} applied", applied.migration)],
+        };
+        self.record(Some(applied.id), None, 0, Some(signer), &outcome);
+        outcome
     }
 
     /// Replaces a runtime section, if the agent declares it, the version is higher than the section's
@@ -537,6 +657,7 @@ impl ConfigurationState {
     ) {
         if self.held_for_range
             && matches!(outcome, ApplyOutcome::Applied { .. })
+            && self.pending.is_empty()
             && let Some(health) = &self.health
         {
             health.release(polar_health::HoldReason::Configuration);
@@ -677,6 +798,8 @@ impl Actor for ConfigurationActor {
             followers: Vec::new(),
             health: None,
             held_for_range: false,
+            applied: std::collections::HashSet::new(),
+            pending: HashMap::new(),
         })
     }
 
@@ -2364,6 +2487,104 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(again, ApplyOutcome::Applied { .. }), "{again:?}");
+    }
+
+    /// A section that names a migration is held, what was in force stays, and health says what it waits on; a signed
+    /// record of that migration, by its digest, puts it in force and releases the agent. A record of another digest does
+    /// not, and a migration that runs after the section does not hold it.
+    #[tokio::test]
+    async fn a_section_waits_on_its_migrations_until_a_record_of_each_arrives() {
+        let signed = Signed::new();
+        let (config, _) = runtime_handle(signed.verifier()).await;
+        let s = signer(
+            &signed.ca,
+            Spec {
+                capabilities: vec!["c:update-runtime"],
+                ..Spec::default()
+            },
+        );
+        let sign = |payload: Value| {
+            polar_signing::sign(payload, std::slice::from_ref(&s.cert_pem), &s.key_pem)
+                .unwrap()
+                .to_value()
+        };
+        let section = |version: u64, migrations: Value| {
+            sign(
+                json!({"type": "runtime", "id": format!("r-{version}"), "target": {"agent": AGENT},
+                        "section": "repositories", "version": version,
+                        "body": repos(&[&format!("https://a.example/{version}.git")]), "migrations": migrations}),
+            )
+        };
+        let record = |migration: &str, sha256: &str| {
+            sign(
+                json!({"type": "migration-applied", "id": format!("applied-{migration}-{sha256}"), "target": {"agent": AGENT},
+                        "section": "repositories", "version": 1, "migration": {"id": migration, "sha256": sha256},
+                        "applied_at_unix_secs": 1, "report": "3 nodes relabelled"}),
+            )
+        };
+        assert!(matches!(
+            config.submit(section(1, json!([]))).await.unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            config
+                .submit(section(2, json!([{ "id": "m1", "sha256": "aa" }])))
+                .await
+                .unwrap(),
+            ApplyOutcome::Refused(Refusal::Waiting(vec!["m1".to_string()]))
+        );
+        let held = || async {
+            config
+                .runtime("repositories")
+                .await
+                .unwrap()
+                .unwrap()
+                .version
+        };
+        assert_eq!(held().await, 1, "what was in force stays");
+        assert!(matches!(
+            config.submit(record("m1", "bb")).await.unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            held().await,
+            1,
+            "a record of another digest releases nothing"
+        );
+        assert!(matches!(
+            config.submit(record("m1", "aa")).await.unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            held().await,
+            2,
+            "the section is in force once its migration is applied"
+        );
+        // A migration that runs after the section holds nothing.
+        assert!(matches!(
+            config
+                .submit(section(
+                    3,
+                    json!([{ "id": "m2", "sha256": "cc", "after": true }])
+                ))
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert_eq!(held().await, 3);
+        // A record that came first (as a replay may deliver it) is kept, and the section goes in force at once.
+        assert!(matches!(
+            config.submit(record("m3", "dd")).await.unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert!(matches!(
+            config
+                .submit(section(4, json!([{ "id": "m3", "sha256": "dd" }])))
+                .await
+                .unwrap(),
+            ApplyOutcome::Applied { .. }
+        ));
+        assert_eq!(held().await, 4);
     }
 
     /// A document signed for other versions of the agent is refused, what it held stays, and the agent holds on

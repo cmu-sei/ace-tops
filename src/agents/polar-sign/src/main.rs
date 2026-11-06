@@ -120,6 +120,13 @@ enum Command {
         /// The version of the agent it is no longer for; none if not given.
         #[arg(long)]
         below: Option<String>,
+        /// A migration the section needs, ID=FILE (its `.cypher` file, committed at migrations/<agent>/<ID>.cypher): the
+        /// agent holds the section until a signed record that it was applied arrives (`polar-sign migration applied`).
+        #[arg(long = "migration", value_name = "ID=FILE")]
+        migrations: Vec<String>,
+        /// As --migration, for one that runs after the section is in force: the agent does not wait for it.
+        #[arg(long = "migration-after", value_name = "ID=FILE")]
+        migrations_after: Vec<String>,
         #[arg(long)]
         user: String,
         #[arg(long)]
@@ -270,10 +277,53 @@ enum Command {
         #[arg(long = "git-config", value_name = "KEY=VALUE")]
         git_config: Vec<String>,
     },
+    /// Migrations a runtime section names, which an administrator applies.
+    Migration {
+        #[command(subcommand)]
+        command: MigrationCommand,
+    },
     /// What a projection, a mapping an HTTP processor writes the graph by, does.
     Projection {
         #[command(subcommand)]
         command: ProjectionCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MigrationCommand {
+    /// Sign a record that you applied a migration, for the agent holding the section that names it: who, when, its
+    /// file's digest and what you saw. Written to standard output unless --out or --push; with --push, committed at
+    /// migrations/<agent>/<id>.applied.dhall in the schedules repository, which the scheduler delivers.
+    Applied {
+        #[arg(long)]
+        agent: String,
+        /// The runtime section that names the migration.
+        #[arg(long)]
+        section: String,
+        /// The migration's id, as the section names it.
+        #[arg(long)]
+        id: String,
+        /// The migration's file, as applied.
+        #[arg(long)]
+        file: PathBuf,
+        /// What applying it reported (the counts, the rows changed), in a line.
+        #[arg(long)]
+        report: String,
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        push: bool,
+        /// The schedules repository; POLAR_SCHEDULES_URL by default.
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        #[arg(long = "git-config", value_name = "KEY=VALUE")]
+        git_config: Vec<String>,
     },
 }
 
@@ -652,12 +702,30 @@ fn main() -> Result<()> {
             id,
             from,
             below,
+            migrations,
+            migrations_after,
             user,
             dir,
             out,
         } => {
             let range = polar_sign::range_of(from.as_deref(), below.as_deref())
                 .map_err(anyhow::Error::msg)?;
+            let mut named = Vec::new();
+            for (given, after) in migrations
+                .iter()
+                .map(|m| (m, false))
+                .chain(migrations_after.iter().map(|m| (m, true)))
+            {
+                let (id, file) = given
+                    .split_once('=')
+                    .with_context(|| format!("--migration {given}: give ID=FILE"))?;
+                let bytes = std::fs::read(file).with_context(|| format!("cannot read {file}"))?;
+                named.push(polar_sign::Migration {
+                    id: id.to_string(),
+                    sha256: polar_sign::migration_sha256(&bytes),
+                    after,
+                });
+            }
             let text = match (body, body_file) {
                 (None, None) if projection.is_some() => String::new(),
                 (Some(text), None) => text,
@@ -685,9 +753,12 @@ fn main() -> Result<()> {
             // Nothing is signed that every agent would refuse.
             polar_sign::runtime_problems(&section, &body).map_err(anyhow::Error::msg)?;
             let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let payload = polar_sign::for_versions(
-                runtime_payload(&agent, &section, version, &id, body),
-                &range,
+            let payload = polar_sign::with_migrations(
+                polar_sign::for_versions(
+                    runtime_payload(&agent, &section, version, &id, body),
+                    &range,
+                ),
+                &named,
             );
             let identity = load_identity(&default_dir(dir)?, &user).map_err(anyhow::Error::msg)?;
             let file = sign_to_dhall(payload, &identity).map_err(anyhow::Error::msg)?;
@@ -825,6 +896,66 @@ fn main() -> Result<()> {
                         eprintln!(
                             "{relative} already holds exactly this record; nothing was pushed"
                         )
+                    }
+                }
+            } else {
+                write_or_print(&signed, out.as_deref(), &what)?;
+            }
+        }
+        Command::Migration {
+            command:
+                MigrationCommand::Applied {
+                    agent,
+                    section,
+                    id,
+                    file,
+                    report,
+                    user,
+                    dir,
+                    out,
+                    push: push_it,
+                    repo,
+                    workdir,
+                    git_config,
+                },
+        } => {
+            let dir = default_dir(dir)?;
+            let bytes =
+                std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
+            let sha256 = polar_sign::migration_sha256(&bytes);
+            let payload =
+                polar_sign::applied_payload(&agent, &section, &id, &sha256, now()? as u64, &report);
+            let identity = load_identity(&dir, &user).map_err(anyhow::Error::msg)?;
+            let signed = sign_to_dhall(payload, &identity).map_err(anyhow::Error::msg)?;
+            let what = format!("migration {id} of {agent}'s {section}, applied");
+            if push_it {
+                let trust = read_trust(&dir.join("ca.pem"))?;
+                let (signer, _) =
+                    verify_source(&signed, &trust, now()?).map_err(anyhow::Error::msg)?;
+                let remote = repo.or_else(|| env_var("POLAR_SCHEDULES_URL")).context(
+                    "--push needs the schedules repository: --repo, or POLAR_SCHEDULES_URL",
+                )?;
+                let workdir = workdir_for(workdir, "schedules")?;
+                let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                let relative = format!("migrations/{agent}/{id}.applied.dhall");
+                let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                let message = format!(
+                    "chore({agent}): migration {id} applied\n\n{report}\n\nSigned by {username} with polar-sign."
+                );
+                let plan = push::Plan {
+                    remote: &remote,
+                    workdir: &workdir,
+                    relative: &relative,
+                    content: &signed,
+                    message: &message,
+                    author_name: &username,
+                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                    git_config: &config,
+                };
+                match push::push(&plan).map_err(anyhow::Error::msg)? {
+                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                    push::Pushed::Unchanged => {
+                        eprintln!("{relative} already holds exactly this record")
                     }
                 }
             } else {

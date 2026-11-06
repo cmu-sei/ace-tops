@@ -50,6 +50,9 @@ pub mod document_type {
     pub const ADMISSION: &str = "admission";
     /// A one-time instruction to an agent.
     pub const COMMAND: &str = "command";
+    /// That an administrator applied a migration a runtime section names (docs/architecture/http-observers.md,
+    /// "Versions and migrations"): the agent holds that section until it has one for each.
+    pub const MIGRATION_APPLIED: &str = "migration-applied";
 }
 
 /// The topic a signed configuration document for `agent` is delivered on. Every builder agent subscribes
@@ -160,6 +163,8 @@ pub mod outcome {
     pub const INVALID: &str = "invalid";
     /// Not accepted as a signed document: unsigned, altered, untrusted, not allowed, or for another agent.
     pub const UNVERIFIED: &str = "unverified";
+    /// Verified and valid, and held until the migrations it names are applied.
+    pub const WAITING: &str = "waiting";
 }
 
 /// What an agent did with one signed configuration document. Carries names and reasons, never values.

@@ -453,3 +453,80 @@ fn a_deployment_commit_the_pipeline_did_not_sign_cannot_be_judged() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+#[test]
+fn a_migration_named_is_judged_by_its_file_and_its_applied_record_in_the_schedules() {
+    let site = Site::new();
+    let identity = polar_sign::load_identity(&site.admin(), "alice").unwrap();
+    let cypher = b"MATCH (n:OpenApiEndpoint) SET n.kind = 'operation'";
+    write(
+        &site
+            .schedules()
+            .join("migrations/openapi-processor/m1.cypher"),
+        std::str::from_utf8(cypher).unwrap(),
+    );
+    let sha = polar_sign::migration_sha256(cypher);
+    let section = polar_sign::with_migrations(
+        polar_sign::runtime_payload(
+            "openapi-processor",
+            "projection",
+            2,
+            "openapi-processor-projection-2",
+            polar_sign::projection_body(MAPPING).unwrap(),
+        ),
+        &[polar_sign::Migration {
+            id: "m1".into(),
+            sha256: sha.clone(),
+            after: false,
+        }],
+    );
+    write(
+        &site
+            .schedules()
+            .join("permanent/openapi-processor/projection.dhall"),
+        &polar_sign::sign_to_dhall(section, &identity).unwrap(),
+    );
+    commit_all(&site.schedules());
+    let verdict_of = |out: &Output, id: &str| -> String {
+        let record: Value = serde_json::from_slice(&out.stdout).unwrap();
+        verdicts(&record)
+            .into_iter()
+            .find(|(i, _)| i == id)
+            .unwrap()
+            .1
+    };
+    let out = site.check();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(verdict_of(&out, "migrations-applied"), "violated");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("intended, and no record says it was applied")
+    );
+
+    let record = polar_sign::applied_payload(
+        "openapi-processor",
+        "projection",
+        "m1",
+        &sha,
+        1,
+        "12 endpoints",
+    );
+    write(
+        &site
+            .schedules()
+            .join("migrations/openapi-processor/m1.applied.dhall"),
+        &polar_sign::sign_to_dhall(record, &identity).unwrap(),
+    );
+    commit_all(&site.schedules());
+    let out = site.check();
+    assert_eq!(
+        verdict_of(&out, "migrations-applied"),
+        "holds",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

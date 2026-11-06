@@ -167,6 +167,23 @@ runs it, so no signer gains power over the graph, and `repair.rs`'s rule stands:
 The steps: the range (`polar-version`, the agent's check where it opens a document, `polar-sign`); a section naming its migrations (`migrations: [{ id, sha256, after }]`,
 beside the body) and the agent holding it until each is applied, unless `after`; the applied record and its tool; both as facts and invariants of `polar-sign check`.
 
+**Bite 6, built 2026-11-06.** As planned above:
+
+- **The range.** `polar_version::VersionRange` and the order of platform versions (a property holds both). Where an agent opens a runtime or settings document, one outside its
+  range is refused (`Rejection::OutOfRange`), what it held stays, and the configuration actor holds health on Configuration ("a signed document (r-2) is signed for from 4.0.0
+  of this agent, and this is 3.1.0") until a document is applied; it releases only a hold it made. `polar-sign runtime` and `configuration` take `--from` and `--below`.
+- **Migrations.** A runtime document may name `migrations: [{ id, sha256, after }]`, written by `polar-sign runtime --migration ID=FILE` (or `--migration-after`), the digest
+  being the file's. The agent holds a section that names one not `after` and not yet recorded (outcome `waiting`, health on Configuration saying which), with what it had in
+  force; a signed `migration-applied` record of that id and digest puts it in force, and one that arrives first, as a replay may deliver it, is kept for it. `polar-sign
+  migration applied --agent --section --id --file --report` signs the record (who, when, the digest, what was reported) and pushes it to `migrations/<agent>/<id>.applied.dhall`,
+  which the scheduler now routes with the section (`polar_scheduler_common::routing`). Who may sign it is who may sign the section: the same authority, Cedar first.
+- **As facts.** `polar-sign check` reads each section's range and migrations, every applied record and every `migrations/<agent>/<id>.cypher`. Two more invariants:
+  `sections-in-range` (each section that names a range holds the agent's build: each pod's when asked, else its scaffold's) and `migrations-applied` (every migration a
+  section in force names is in the repository as signed, by its digest, and a signed record says it was applied).
+
+Marked for review: the hold for a range or a migration is on Configuration, the reason a domain's own configuration hold uses, so releasing it can clear the domain's own,
+which the domain makes again at its next attempt; a reason of its own would need a change to the health wire. Not checked live yet.
+
 Compiled repairs stay for what a write bug left behind, on every cluster. Whether a migration deletes or supersedes is its author's call; superseding is the documented default, since the graph has to answer what was known at the time.
 
 ## Mapping the security controls
