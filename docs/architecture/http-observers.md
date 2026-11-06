@@ -625,6 +625,22 @@ nothing of health; an item lacking a variable is a problem, not skipped in silen
 pages apart by what they hold (`when`), and a follow-up asks for its parent's id so the mapping can draw the edge. The model test holds the core to all of it over
 any sequence of events at 512 cases, with pages that hold several items so a follow-up failing with more left behind it is common; breaking that rule fails it.
 
+G3, done (`src/agents/gitlab-http/`: `common`, `observe`, `process`, `queries/`; `polar-http-testkit/src/graphql_schema.rs`). `gitlab-observer` declares
+`CREDENTIALED_SOURCES` and a `Bound` operation for a source's token; `gitlab-processor` writes `GitlabInstance` (keyed by origin), `GitlabProject`, `GitlabUser`,
+`GitlabGroup`, `GitlabRunner`, `GitlabPipeline`, `GitlabJob`, `GitlabContainerRepository` and `GitlabPackage` (each keyed by origin and GitLab's id), with
+`SUBGROUP_OF`, `HAS_MEMBER`, `HAS_PIPELINE`, `HAS_JOB`, `EXECUTED_BY`, `HAS_CONTAINER_REPOSITORY` and `HAS_PACKAGE`. Ten queries in `queries/`: metadata,
+projects, users, groups, runners, and the follow-ups a project's pipelines, jobs, container repositories and packages, and a group's members; each nested list is a
+source of its own, since one `each` query pages one connection. Every query is validated against GitLab's schema by `apollo-compiler`, and every sample is held to
+the shape of the query it answers, enum values included, none left out of that; the samples go through the kit's tests as every kind's do, and two reads go as a
+deployment's: projects page by page with the token, and projects following each project's pipelines. Marked for review:
+- The crates are `gitlab-http-*` while the older pair keeps `gitlab/`; the workloads are `gitlab-observer` and `gitlab-processor` now, and G5 moves the crates.
+- Edges run from the parent rule's node to the child's, so a membership is `Group HAS_MEMBER User`, not the older `User MEMBER_OF Group`; a member's access level is
+  the membership's, and an edge carries no property of a mapping's yet, so it is not written.
+- A job's pipeline is written from the job's page with nothing set, and the job as its child, so `Pipeline HAS_JOB Job` keeps the older direction; a node written
+  from another's page never clears what its own page set.
+- Not read yet: registry tags, package files and job artifacts, each a list nested in a nested item (a follow-up of a follow-up); the license (Enterprise only); and
+  the older `OBSERVED_*` edges from the instance, which every node's `origin` key already says.
+
 ## Open
 
 - **What it did touch.** What a workload could reach is answerable: the catalog, and each signed version of its sections, in git history. What it did reach is one log line per
