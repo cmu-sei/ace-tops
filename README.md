@@ -341,6 +341,13 @@ Things that look wrong and are not:
   fine, and only a browser needs the certificate.
 - **`no polar-scheduler-observer pod is running to probe from`** at the end of `up.nu` can appear while that pod runs. It
   means only that access to the outside was not checked; `up.nu` has otherwise finished.
+- **A change you push with `polar-sign` may not reach the agent.** The scheduler observer delivers a pushed file
+  through a watcher that can stop without a word; what it reads when it starts is always delivered. If the agent's log
+  shows nothing of the new version a minute after the push, run `kubectl -n polar rollout restart
+  deploy/polar-scheduler-observer`. Seen with jira-observer's credential, which the seed sealed and pushed; fixed on `main`.
+- **On a Mac, a VPN can hold the cluster's connections out.** The cluster's virtual machine hands each connection to the
+  Mac, so the Mac's VPN is in the path: a connection is made and nothing answers. If an agent cannot reach a site the Mac
+  can, try with the VPN off. `nu infra/jira-check.nu <target>` says which it is for Jira.
 - **The `neo4j` image is tagged `5.26.2`** and holds Neo4j 2025.08.0, built from source. The tag is a label to change later.
 
 What else is open is in `remaining-work.md`.
