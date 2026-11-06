@@ -28,10 +28,9 @@ use polar_scheduler_common::{
     ConfigurationNotification, GitScheduleChange, SCHEDULER_IN_TOPIC, configuration_topic,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct GitWatcherActor;
 
@@ -45,6 +44,12 @@ pub struct GitWatcherState {
     scanned: bool,
     /// Agents that asked before the scan finished; each is answered once, when it has.
     waiting: HashSet<String>,
+    /// Each schedule file's text when last read, by path: what a rescan compares with, so a file is read again and
+    /// published only when it changed.
+    texts: HashMap<String, String>,
+    /// A scan is running, and another was asked for meanwhile.
+    scanning: bool,
+    again: bool,
 }
 
 impl GitWatcherState {
@@ -86,97 +91,25 @@ impl GitWatcherActor {
         Ok(serde_json::to_string(&json)?)
     }
 
+    /// Whether a file of the checkout is one the scheduler reads: a schedule under `permanent/`, `adhoc/` or `ephemeral/`,
+    /// or a record that a migration was applied, under `migrations/` (docs/architecture/http-observers.md, "Versions and
+    /// migrations").
     fn is_schedule_file(path: &Path, repo_path: &str) -> bool {
         let repo_path = Path::new(repo_path);
         let relative = path.strip_prefix(repo_path).unwrap_or(path);
         relative.components().any(|c| {
             let s = c.as_os_str().to_string_lossy();
-            s == "permanent" || s == "adhoc" || s == "ephemeral"
+            s == "permanent" || s == "adhoc" || s == "ephemeral" || s == "migrations"
         })
     }
 
-    async fn start_filesystem_watcher(
-        repo_path: String,
-        myself: ActorRef<GitWatcherMsg>,
-    ) -> Result<(), ActorProcessingErr> {
-        let (tx, mut rx) = mpsc::channel(100);
-        let path = repo_path.clone();
-
-        // Spawn a blocking thread for notify (it's synchronous)
-        std::thread::spawn(move || {
-            let mut watcher: RecommendedWatcher = Watcher::new(
-                move |res: notify::Result<notify::Event>| {
-                    if let Ok(event) = res {
-                        let _ = tx.blocking_send(event);
-                    }
-                },
-                notify::Config::default(),
-            )
-            .unwrap();
-            watcher
-                .watch(Path::new(&path), RecursiveMode::Recursive)
-                .unwrap();
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-        });
-
-        // Process filesystem events
-        while let Some(event) = rx.recv().await {
-            for path in event.paths {
-                if path.extension().and_then(|s| s.to_str()) == Some("dhall")
-                    && Self::is_schedule_file(&path, &repo_path)
-                {
-                    let path_str = path.to_string_lossy().to_string();
-
-                    // Handle delete immediately
-                    if event.kind.is_remove() {
-                        let change = GitScheduleChange::Delete { path: path_str };
-                        myself.cast(GitWatcherMsg::PublishChange(change))?;
-                        continue;
-                    }
-
-                    // For create/modify, evaluate the file directly
-                    if event.kind.is_create() || event.kind.is_modify() {
-                        let path_clone = path.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            Self::evaluate_dhall_file_to_json(&path_clone)
-                        })
-                        .await;
-
-                        match result {
-                            Ok(Ok(json)) => {
-                                let change = if event.kind.is_create() {
-                                    GitScheduleChange::Create {
-                                        path: path_str,
-                                        json,
-                                    }
-                                } else {
-                                    GitScheduleChange::Update {
-                                        path: path_str,
-                                        json,
-                                    }
-                                };
-                                myself.cast(GitWatcherMsg::PublishChange(change))?;
-                            }
-                            Ok(Err(e)) => {
-                                error!("Failed to evaluate Dhall file {}: {:?}", path_str, e);
-                            }
-                            Err(e) => error!("Task join error for {}: {}", path_str, e),
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn initial_scan(
-        repo_path: String,
-        myself: ActorRef<GitWatcherMsg>,
-    ) -> Result<(), ActorProcessingErr> {
-        info!("Performing initial scan of {}", repo_path);
-        let walker = walkdir::WalkDir::new(&repo_path)
+    /// The schedule files of the checkout as they are now, against `known` (each file's text when last read): the text
+    /// of each, and what changed, each file whose text differs read again. A file that cannot be read as Dhall is said
+    /// and left out, as before. Blocking: it reads files and evaluates Dhall.
+    fn scan(repo_path: &str, known: &HashMap<String, String>) -> Scanned {
+        let mut texts = HashMap::new();
+        let mut changes = Vec::new();
+        let walker = walkdir::WalkDir::new(repo_path)
             .follow_links(true)
             .into_iter()
             .filter_entry(|e| {
@@ -185,49 +118,141 @@ impl GitWatcherActor {
                     .map(|s| s.starts_with('.'))
                     .unwrap_or(false)
             });
-        for entry in walker {
-            let entry = entry?;
-            if entry.file_type().is_file()
-                && let Some(ext) = entry.path().extension()
-                && ext == "dhall"
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !entry.file_type().is_file()
+                || path.extension().and_then(|e| e.to_str()) != Some("dhall")
+                || !Self::is_schedule_file(path, repo_path)
             {
-                let path = entry.path().to_path_buf();
-                if !Self::is_schedule_file(&path, &repo_path) {
-                    continue;
-                }
-                let path_str = path.to_string_lossy().to_string();
-                let path_clone = path.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    Self::evaluate_dhall_file_to_json(&path_clone)
-                })
-                .await;
-                match result {
-                    Ok(Ok(json)) => {
-                        let change = GitScheduleChange::Create {
-                            path: path_str,
+                continue;
+            }
+            let path_str = path.to_string_lossy().to_string();
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if known.get(&path_str) != Some(&text) {
+                match Self::evaluate_dhall_file_to_json(path) {
+                    Ok(json) if known.contains_key(&path_str) => {
+                        changes.push(GitScheduleChange::Update {
+                            path: path_str.clone(),
                             json,
-                        };
-                        myself.cast(GitWatcherMsg::PublishChange(change))?;
+                        })
                     }
-                    Ok(Err(e)) => {
-                        error!("Failed to evaluate Dhall file {}: {:?}", path_str, e)
-                    }
-                    Err(e) => error!("Task join error for {}: {}", path_str, e),
+                    Ok(json) => changes.push(GitScheduleChange::Create {
+                        path: path_str.clone(),
+                        json,
+                    }),
+                    Err(e) => error!("Failed to evaluate Dhall file {}: {:?}", path_str, e),
                 }
             }
+            texts.insert(path_str, text);
         }
-        // Everything the scan found was cast to the watcher before this, and a mailbox is in order.
-        myself.cast(GitWatcherMsg::InitialScanComplete)?;
+        for gone in known.keys().filter(|path| !texts.contains_key(*path)) {
+            changes.push(GitScheduleChange::Delete { path: gone.clone() });
+        }
+        Scanned { texts, changes }
+    }
+
+    /// Reads the checkout again off this actor's turn, and tells it what changed.
+    fn start_scan(state: &mut GitWatcherState, myself: &ActorRef<GitWatcherMsg>, initial: bool) {
+        if state.scanning {
+            state.again = true;
+            return;
+        }
+        state.scanning = true;
+        let repo_path = state.repo_path.clone();
+        let known = state.texts.clone();
+        let myself = myself.clone();
+        tokio::spawn(async move {
+            let scanned = tokio::task::spawn_blocking(move || Self::scan(&repo_path, &known)).await;
+            match scanned {
+                Ok(scanned) => {
+                    let _ = myself.cast(GitWatcherMsg::Rescanned { scanned, initial });
+                }
+                Err(e) => error!("the scan of the checkout did not finish: {e}"),
+            }
+        });
+    }
+
+    /// Asks for a rescan whenever the checkout changes on disk, for a checkout no pull changes (a local directory). A
+    /// watcher that cannot start says so; the rescan after each pull does not depend on it.
+    fn start_filesystem_watcher(repo_path: String, myself: ActorRef<GitWatcherMsg>) {
+        std::thread::spawn(move || {
+            let notify_myself = myself.clone();
+            let watcher = RecommendedWatcher::new(
+                move |res: notify::Result<notify::Event>| {
+                    if let Ok(event) = res
+                        && event
+                            .paths
+                            .iter()
+                            .any(|p| p.extension().and_then(|s| s.to_str()) == Some("dhall"))
+                    {
+                        let _ = notify_myself.cast(GitWatcherMsg::Rescan);
+                    }
+                },
+                notify::Config::default(),
+            );
+            let mut watcher = match watcher {
+                Ok(watcher) => watcher,
+                Err(e) => {
+                    warn!(
+                        "the checkout's changes on disk are not watched ({e}); each pull still rescans it"
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = watcher.watch(Path::new(&repo_path), RecursiveMode::Recursive) {
+                warn!(
+                    "the checkout's changes on disk are not watched ({e}); each pull still rescans it"
+                );
+                return;
+            }
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+    }
+
+    /// A change, held and sent to the scheduler.
+    fn publish(
+        state: &mut GitWatcherState,
+        change: GitScheduleChange,
+    ) -> Result<(), ActorProcessingErr> {
+        match &change {
+            GitScheduleChange::Create { path, json } | GitScheduleChange::Update { path, json } => {
+                state.held.record(path, json)
+            }
+            GitScheduleChange::Delete { path } => state.held.remove(path),
+        }
+        let payload = rkyv::to_bytes::<rkyv::rancor::Error>(&change)?.to_vec();
+        state.tcp_client.cast(TcpClientMessage::publish(
+            SCHEDULER_IN_TOPIC.to_string(),
+            payload,
+            None,
+        ))?;
+        debug!("Published schedule change");
         Ok(())
     }
+}
+
+/// The checkout as one scan read it: each schedule file's text, by path, and what changed since the scan before.
+#[derive(Debug)]
+pub struct Scanned {
+    texts: HashMap<String, String>,
+    changes: Vec<GitScheduleChange>,
 }
 
 #[derive(Debug)]
 pub enum GitWatcherMsg {
     PublishChange(GitScheduleChange),
     PerformInitialScan,
-    /// The initial scan has announced everything in the checkout.
-    InitialScanComplete,
+    /// Read the checkout again and publish what changed: after each pull, and when a file changes on disk.
+    Rescan,
+    /// What a scan found; the first one also answers the agents that asked before it.
+    Rescanned {
+        scanned: Scanned,
+        initial: bool,
+    },
     /// An agent that has just registered asks for the signed configuration held for it.
     Replay {
         agent: String,
@@ -252,6 +277,9 @@ impl Actor for GitWatcherActor {
             held: HeldDocuments::default(),
             scanned: false,
             waiting: HashSet::new(),
+            texts: HashMap::new(),
+            scanning: false,
+            again: false,
         })
     }
 
@@ -260,52 +288,39 @@ impl Actor for GitWatcherActor {
         myself: ActorRef<Self::Msg>,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        // Start filesystem watcher in background
-        let myself_clone = myself.clone();
-        let repo_path = state.repo_path.clone();
-        tokio::spawn(async move {
-            if let Err(e) = Self::start_filesystem_watcher(repo_path, myself_clone).await {
-                error!("Filesystem watcher error: {:?}", e);
-            }
-        });
-
+        Self::start_filesystem_watcher(state.repo_path.clone(), myself);
         Ok(())
     }
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         msg: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match msg {
-            GitWatcherMsg::PublishChange(change) => {
-                match &change {
-                    GitScheduleChange::Create { path, json }
-                    | GitScheduleChange::Update { path, json } => state.held.record(path, json),
-                    GitScheduleChange::Delete { path } => state.held.remove(path),
-                }
-                let payload = rkyv::to_bytes::<rkyv::rancor::Error>(&change)?.to_vec();
-                state.tcp_client.cast(TcpClientMessage::publish(
-                    SCHEDULER_IN_TOPIC.to_string(),
-                    payload,
-                    None,
-                ))?;
-                debug!("Published schedule change");
-            }
+            GitWatcherMsg::PublishChange(change) => Self::publish(state, change)?,
             GitWatcherMsg::PerformInitialScan => {
-                let myself = _myself.clone();
-                let repo_path = state.repo_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = Self::initial_scan(repo_path, myself).await {
-                        error!("Initial scan error: {:?}", e);
-                    }
-                });
+                info!("Performing initial scan of {}", state.repo_path);
+                Self::start_scan(state, &myself, true);
             }
-            GitWatcherMsg::InitialScanComplete => {
-                state.scanned = true;
-                for agent in std::mem::take(&mut state.waiting) {
-                    state.replay(&agent)?;
+            // Before the first scan there is nothing to compare with; it reads everything.
+            GitWatcherMsg::Rescan if state.scanned => Self::start_scan(state, &myself, false),
+            GitWatcherMsg::Rescan => {}
+            GitWatcherMsg::Rescanned { scanned, initial } => {
+                state.scanning = false;
+                for change in scanned.changes {
+                    Self::publish(state, change)?;
+                }
+                state.texts = scanned.texts;
+                if initial {
+                    state.scanned = true;
+                    for agent in std::mem::take(&mut state.waiting) {
+                        state.replay(&agent)?;
+                    }
+                }
+                if std::mem::take(&mut state.again) {
+                    Self::start_scan(state, &myself, false);
                 }
             }
             GitWatcherMsg::Replay { agent } => {

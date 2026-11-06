@@ -35,11 +35,17 @@ pub struct GitSyncArgs {
     pub tls: GitTls,
     /// Pull on this interval as well; none means only [`SyncMessage::Now`] pulls.
     pub interval: Option<Duration>,
+    /// Told after each pull that succeeds, so what it brought is read: the watcher rescans the checkout.
+    pub pulled: Option<Pulled>,
 }
+
+/// What is told that a pull succeeded.
+pub type Pulled = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 pub struct GitSyncState {
     repo_path: PathBuf,
     tls: GitTls,
+    pulled: Option<Pulled>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +80,7 @@ impl Actor for GitSyncActor {
         Ok(GitSyncState {
             repo_path: args.repo_path,
             tls: args.tls,
+            pulled: args.pulled,
         })
     }
 
@@ -90,12 +97,21 @@ impl Actor for GitSyncActor {
         let path = state.repo_path.clone();
         let tls = state.tls.clone();
         // A failed pull is logged and the next one tries again.
-        tokio::task::spawn_blocking(move || match pull_repo(&path, &tls) {
-            Ok(()) => info!("Pull completed successfully"),
-            Err(e) => error!("Failed to pull repo: {e:#}"),
+        let pulled = tokio::task::spawn_blocking(move || match pull_repo(&path, &tls) {
+            Ok(()) => {
+                info!("Pull completed successfully");
+                true
+            }
+            Err(e) => {
+                error!("Failed to pull repo: {e:#}");
+                false
+            }
         })
         .await
         .map_err(|e| ActorProcessingErr::from(e.to_string()))?;
+        if pulled && let Some(tell) = &state.pulled {
+            tell();
+        }
         Ok(())
     }
 }

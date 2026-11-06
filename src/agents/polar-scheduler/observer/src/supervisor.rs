@@ -76,6 +76,8 @@ pub enum SchedulerObserverMessage {
     RepoChanged(RepoChangedEvent),
     /// An agent that has just registered asks for the signed configuration held for it.
     ReplayRequested(String),
+    /// A pull brought the checkout up to date: what changed is read and published.
+    Pulled,
     PrepareShutdown,
 }
 
@@ -213,6 +215,12 @@ impl Actor for SchedulerObserverSupervisor {
                     repo_path: PathBuf::from(&settings.local_path),
                     tls,
                     interval,
+                    pulled: Some({
+                        let supervisor = myself.clone();
+                        std::sync::Arc::new(move || {
+                            let _ = supervisor.cast(SchedulerObserverMessage::Pulled);
+                        })
+                    }),
                 },
                 myself.get_cell(),
             )
@@ -318,6 +326,12 @@ impl Actor for SchedulerObserverSupervisor {
                 } else if let Some(sync) = &state.sync {
                     info!(repo = %event.repo, refname = %event.refname, pusher = %event.pusher, "repository changed; pulling");
                     sync.cast(SyncMessage::Now)?;
+                }
+            }
+            // The watcher reads the checkout again after each pull, and does not depend on noticing the files change.
+            SchedulerObserverMessage::Pulled => {
+                if let Some(watcher) = &state.watcher {
+                    watcher.cast(GitWatcherMsg::Rescan)?;
                 }
             }
             SchedulerObserverMessage::ReplayRequested(agent) => match &state.watcher {

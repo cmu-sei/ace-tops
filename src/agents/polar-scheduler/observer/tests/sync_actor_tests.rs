@@ -37,6 +37,7 @@ async fn test_sync_actor_spawns() {
             repo_path: dir.path().to_path_buf(),
             tls: GitTls::default(),
             interval: Some(Duration::from_secs(3600)),
+            pulled: None,
         },
     )
     .await
@@ -59,6 +60,7 @@ async fn test_sync_actor_receives_tick_missing_repo() {
             repo_path: nonexistent,
             tls: GitTls::default(),
             interval: Some(Duration::from_secs(3600)),
+            pulled: None,
         },
     )
     .await
@@ -84,6 +86,7 @@ async fn test_sync_actor_multiple_ticks_no_crash() {
             repo_path: nonexistent,
             tls: GitTls::default(),
             interval: Some(Duration::from_secs(3600)),
+            pulled: None,
         },
     )
     .await
@@ -133,6 +136,8 @@ async fn test_sync_actor_pulls_when_told_and_never_on_its_own() {
     )
     .unwrap();
 
+    let pulls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = pulls.clone();
     let (actor, handle) = Actor::spawn(
         None,
         GitSyncActor,
@@ -140,6 +145,10 @@ async fn test_sync_actor_pulls_when_told_and_never_on_its_own() {
             repo_path: checkout.clone(),
             tls: GitTls::default(),
             interval: None,
+            // Each pull that succeeds is told, so the watcher reads what it brought.
+            pulled: Some(std::sync::Arc::new(move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })),
         },
     )
     .await
@@ -162,6 +171,17 @@ async fn test_sync_actor_pulls_when_told_and_never_on_its_own() {
     assert!(
         checkout.join("second.dhall").exists(),
         "Now should pull the new commit"
+    );
+    for _ in 0..50 {
+        if pulls.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        pulls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the pull is told"
     );
 
     actor.stop(None);

@@ -195,6 +195,10 @@ help; restarted, it scanned the file, and the restarted processor's request for 
 undelivered too, which was put down then to a quiet log. So the scheduler's delivery of a pushed document is not reliable, and nothing said so but the check
 (`remaining-work.md`). The agent's refusal, hold and release, and its wait on a migration, are tested through the real configuration actor; live, they wait on that.
 
+Fixed then, in the scheduler's observer: after each pull the watcher reads the checkout again and publishes what changed against what it read last, so delivery no
+longer rests on a filesystem watcher whose thread failed silently; and a record under `migrations/` is a schedule file, which it was not, so `migration applied` records
+were never delivered at all (`polar-scheduler/observer/tests/rescan.rs`, six breakages of six caught).
+
 Compiled repairs stay for what a write bug left behind, on every cluster. Whether a migration deletes or supersedes is its author's call; superseding is the documented default, since the graph has to answer what was known at the time.
 
 ## Mapping the security controls
