@@ -287,6 +287,22 @@ def main [] {
             for k in ["DNS" "timeout" "TLS"] { assert (not (says (interpret (failing (sound) $k)) "The site is reached")) $k }
         }
 
+        # Seen on a Mac's cluster with the host's VPN on, 2026-11-06: openssl connected, its handshake never answered,
+        # and every request timed out. The VM hands the pod's connection to the Mac, which held it.
+        "a connection taken and then held is told from one never made, and points at the host's VPN or proxy": {
+            let held = (failing (sound) "timeout" | update tls_verify null)
+            let said = (interpret $held)
+            assert (says $said "connected, and TLS never answered") $"($said)"
+            assert (says $said "VPN or proxy")
+            assert (not (says $said "could not connect")) $"($said)"
+            # Never connected: as before.
+            let never = (interpret ($held | update address { class: "public", source: "the address a connection was attempted to, which did not complete" }))
+            assert (says $never "could not connect (timeout)") $"($never)"
+            assert (not (says $never "TLS never answered"))
+            # Connected and a verdict on the certificate: the handshake answered, so it is not this.
+            assert (not (says (interpret (failing (sound) "timeout")) "TLS never answered"))
+        }
+
         "a site reached says so, with the projects it shows the public": {
             assert (says (interpret (sound)) "The site is reached and answers: it shows the public 3 projects.")
             let none = (sound | update endpoints.2.projects 0)

@@ -318,7 +318,13 @@ export def interpret [facts: record] {
     if "DNS" in $kinds {
         $out = ($out | append "The pod cannot resolve JIRA-HOST: the cluster's DNS has no answer for it. A private name needs the cluster's DNS (CoreDNS) to forward its domain to a resolver that knows it (for ZPA, the resolver its connector uses).")
     }
-    if ("connection refused" in $kinds) or ("timeout" in $kinds) or ("unreachable" in $kinds) or ("connection reset" in $kinds) {
+    # openssl connected and had no verdict on the certificate: something took the connection and never answered the
+    # handshake. Where the cluster runs in a VM (a Mac's), the VM hands each connection to the host, whose VPN or
+    # proxy then holds it.
+    let held = ("timeout" in $kinds) and ($facts.address.source == "the address openssl connected to") and ($facts.tls_verify == null)
+    if $held {
+        $out = ($out | append $"The pod resolved JIRA-HOST and connected, and TLS never answered: something between took the connection and held it. The address is ($cls). Where the cluster runs in a VM, as on a Mac, the VM passes each connection to the host, so the host's VPN or proxy is in the path: try with it off, or have it pass the VM's traffic.")
+    } else if ("connection refused" in $kinds) or ("timeout" in $kinds) or ("unreachable" in $kinds) or ("connection reset" in $kinds) {
         let where = if $cls == "ZPA-style" { " The name resolves to a ZPA-style address (100.64/10): the node must reach ZPA's connector, which a pod usually cannot." } else if $cls == "no connection" { "" } else { $" The address is ($cls)." }
         $out = ($out | append $"The pod resolved JIRA-HOST but could not connect \(($kinds | where $it != 'DNS' | str join ', ')\).($where) Check the nodes' egress \(firewall, VPN, proxy\).")
     }
