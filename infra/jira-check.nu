@@ -180,9 +180,11 @@ export def hex_address [hex: string] {
 }
 
 # The remote addresses of the sockets in a /proc/net/tcp{,6} listing that go to `port`, a connection being made
-# (SYN sent, which is all a connection to nowhere ever shows) or made. A listening socket's remote port is 0.
+# (SYN sent, which is all a connection to nowhere ever shows) or made. A listening socket's remote port is 0. Only
+# a socket's line is read: the listing may be both files, and each begins with a header.
 export def proc_net_remotes [listing: string, port: int] {
-    $listing | lines | skip 1 | each {|l| $l | str trim | split row --regex '\s+' } | where {|f| ($f | length) > 3 }
+    $listing | lines | each {|l| $l | str trim | split row --regex '\s+' }
+    | where {|f| ($f | length) > 3 and ($f | get 2) =~ '^[0-9A-Fa-f]+:[0-9A-Fa-f]+$' }
     | each {|f|
         let remote = ($f | get 2 | split row ":")
         { address: ($remote | get 0), port: ($remote | get 1 | into int --radix 16) }

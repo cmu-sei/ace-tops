@@ -131,6 +131,12 @@ def main [] {
                 "   1: 00000000000000000000000000000000:A1B3 000000FD000000000000000001000000:01BB 06 0 0 0 0 0 0 0"
             ] | str join "\n")
             assert equal (proc_net_remotes $v6 443) ["10.1.2.3" "fd00:0:0:0:0:0:0:1"]
+            # Both listings, read one after the other as the pod reads them where the node has IPv6: the second's
+            # header, as tcp6 writes it, comes in the middle (seen on a Mac's cluster, 2026-11-06).
+            let v6_header = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+            let both = ([$v4 ($v6 | str replace $header $v6_header)] | str join "\n")
+            assert equal (proc_net_remotes $both 443) ["10.1.2.3" "fd00:0:0:0:0:0:0:1"]
+            assert equal (proc_net_remotes $both 80) ["127.0.0.1"]
             assert equal (hex_address "000080FE000000000000000001000000") "fe80:0:0:0:0:0:0:1"
             for _ in 1..$CASES {
                 let o = [(random int 0..255) (random int 0..255) (random int 0..255) (random int 0..255)]
