@@ -404,6 +404,12 @@ Each step is taken in bites, each reported before the next.
     ContainerImageCreated is keyed on `OCIArtifact{digest}` with the digest "" before a push (linker.rs ~569-571, events.rs ~326-328; `smoke-test.nu` ~114-123
     emits none), so those images merge into one node [2]. Unstated in the design: a build whose terminal event never arrives stays started for good [2]. Minor:
     supervisor.rs ~405 logs "linker" for the build handler; lib.rs has "polar.bullds.orchestrator".
+  - Found later (2026-11-07, agentic-control-plane `3c8e74e1`, `elide-intent.md`, "Tested on the drafts"; on the pre-merge code, re-check at the merge like
+    the rest). MEDIUM, plausible, disputed: the TcpClientActor's death is only logged (linked to the supervisor, `lib/src/cassini.rs` ~141-151; its
+    ActorFailed or Terminated reaches `supervisor.rs` ~306-340, which logs it), so health never hears CassiniDisconnected and the agent stays healthy
+    consuming nothing; earlier reviews held a TransportError sends CassiniDisconnected first and the Cassini deadline ends the agent, so whether an actor
+    death without a TransportError can happen is worth one look. LOW, plausible: the dependency certificate check's endpoints are hard-coded
+    (`supervisor.rs` ~113-118, Cassini's and the graph's host, namespace and port), so on a target laid out otherwise rejuvenation waits on one it cannot check.
 - [ ] **The HTTP observer and processor's failure handling** (`polar-http-observer`, `polar-http-processor`, the protocol handler; handed over 2026-11-07 by the
   agentic-control-plane session, from two blind reviews, U without questions and G with the survey's; write-up in that branch's `docs/architecture/polar-eden.md`,
   "Scored blind on the HTTP observer and processor", local at `8ea36cac`; code there is main's as of `fe2195a7`). Nothing fixed.
@@ -452,6 +458,12 @@ Each step is taken in bites, each reported before the next.
   - LOW-MEDIUM: an unchanged record stops verifying when the pipeline certificate expires (`agent/src/record.rs` ~42 verifies at now; `deploy-repo.nu`
     `next_record` re-signs only when the facts change; the certificate lasts 365 days, ~233): an ERROR every 30 s, and a restarted agent holds no record, so
     CannotSay to everything.
+  - Found later (2026-11-07, reviews judging the code against drafted intent, agentic-control-plane `3c8e74e1`, `docs/architecture/elide-intent.md`, "Tested on
+    the drafts"). LOW, confirmed by two: an unreadable deployment CA makes the agent crash-loop instead of holding (`agent/src/supervisor.rs` ~268-277 reads
+    and parses it before `AgentBuilder::build()`, ~287-293, so `pre_start` fails, no health actor runs, the process exits 1 in a loop, naming the path);
+    the drafted rules disagree on hold against crash-loop, so it is a decision for the maintainer. LOW, unstated in the design, one reviewer: the asker
+    assumes the attestation agent runs in the asker's own namespace and domain (`common/src/asker.rs` ~78-81); anywhere else every answer is refused with
+    a WARN and all issuance goes unattested.
   - LOW: a pod in a namespace not watched is answered NoSuchPod, not CannotSay (supervisor.rs ~76-82, verdict.rs ~143; record.rs ~88-92 drops the namespace; the
     drift path accounts for it, ~140). Plausible: a pod whose owner's watch lags is NoOwner (verdict.rs ~149, holdings.rs ~158); answers do not wait two checks as
     reports do. The drift grace runs on the wall clock (supervisor.rs ~238-243, ~404; record.rs ~230). A crash report whose publish failed is lost if the pod is
