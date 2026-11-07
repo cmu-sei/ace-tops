@@ -721,7 +721,14 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   `samples.example` wherever it is named, the samples' host, so a sample says nothing of where it was read; nothing else is changed. `answers.nu` runs it
   with the observer's read_api token. Ten `<query>-live.json` beside the hand-written samples, each held to its query's shape and to 19.5.3's schema, and
   what each becomes written by the kit (`POLAR_BLESS=1`) and read before it was committed: the jobs with `HAS_JOB` and `EXECUTED_BY`, the members with
-  `HAS_MEMBER`, nothing skipped. A property: masked, an answer names the test GitLab nowhere and is otherwise as it was. Still to do: `check --ask`.
+  `HAS_MEMBER`, nothing skipped. A property: masked, an answer names the test GitLab nowhere and is otherwise as it was.
+  `check --ask` (2026-11-07, u7c): the GitLab projection's test, with the live samples, signed and pushed to `polar-evidence` (`polar-sign projection test
+  --push`, with `--git-config` naming the git server's address and the administrator's certificate); then `polar-sign check --ask` asked 20 agents through
+  the broker's forward on 18081: 10 of 12 invariants hold. `credentialed-reads-reviewed` holds of real sources for the first time: the GitLab observer's,
+  read with its sealed token, reach the graph only through a projection that passed a signed test; `sections-in-force` holds, every agent answering, the pair
+  holding what was signed for it. Violated, one cause: `one-owner-per-label` (the state agent's `schema` names no owner of the nine GitLab labels) and
+  `seen-by-health` (the pair is not in its writer's `agents`), since both sections were seeded once, at version 1, before the configuration under test
+  enabled the pair, and a later version is an author's (`soft-state.md`). Open: who signs the versions that a configuration under test's workloads need.
 
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
 server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent
