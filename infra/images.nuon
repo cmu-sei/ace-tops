@@ -48,6 +48,12 @@
   {image: "busybox",  tag: "latest", kind: "mirror", upstream: "docker.io/library/busybox:latest"}
   {image: "local-path-provisioner", tag: "v0.0.35", kind: "mirror", upstream: "docker.io/rancher/local-path-provisioner:v0.0.35"}
 
+  # ── Under test (infra/under-test/) ──────────────────────────────────────
+  # The test GitLab's: GitLab CE, its runner, and the runner's helper (one tag for every architecture, an index).
+  {image: "gitlab-ce",            tag: "19.5.3-ce.0",        kind: "mirror", upstream: "docker.io/gitlab/gitlab-ce:19.5.3-ce.0"}
+  {image: "gitlab-runner",        tag: "alpine-v19.5.3",     kind: "mirror", upstream: "docker.io/gitlab/gitlab-runner:alpine-v19.5.3"}
+  {image: "gitlab-runner-helper", tag: "alpine3.21-v19.5.3", kind: "mirror", upstream: "docker.io/gitlab/gitlab-runner-helper:alpine3.21-v19.5.3"}
+
   # ── Core ────────────────────────────────────────────────────────────────
   {image: "cassini",     tag: "latest", kind: "nix", attr: "polarPkgs.cassini.cassiniImage"}
   {image: "cert-issuer", tag: "latest", kind: "nix", attr: "certIssuerImage"}

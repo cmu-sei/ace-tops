@@ -1,0 +1,51 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+# for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+# infra/under-test/gitlab/under-test.nuon
+#
+# The test GitLab, a configuration under test (docs/architecture/configurations-under-test.md, CT3): GitLab CE in its own
+# namespace, its server certificate from the credentials agent as Neo4j's is, and a runner with the Kubernetes executor, for the
+# GitLab pair's live run (docs/architecture/http-observers.md, "GitLab", G4). A cluster carries it with `up.nu <target>
+# --under-test gitlab`.
+{
+  adds: {
+    cluster: {
+      # Its pods are attested as Polar's are, and its server is on the floor, vouched for by the credentials agent.
+      attest_also: ["gitlab-test"]
+      issuance: {
+        server_also: [
+          { namespace: "gitlab-test", service_account: "gitlab", names: ["gitlab.gitlab-test.svc.cluster.local" "gitlab.gitlab-test.svc" "gitlab.gitlab-test" "gitlab"] }
+        ]
+      }
+    }
+  }
+  layer: {
+    files: ["gitlab-test.yaml"]
+    # Its ready script needs GitLab answering; the runner waits for the token that script gives it.
+    wait_for: [{ kind: "statefulset", ns: "gitlab-test", ref: "statefulset/gitlab", label: "gitlab" }]
+  }
+  # The root password, a generated Secret in the cluster only.
+  secrets: "secrets.nu"
+  # Once GitLab answers: root's token, for the seed and the observer, and the runner's registration.
+  ready: "ready.nu"
+  # Named in the runner's config.toml, not on an `image:` line: the job's image and the executor's helper.
+  images: ["busybox:latest" "gitlab-runner-helper:alpine3.21-v19.5.3"]
+}

@@ -137,6 +137,15 @@ its signed record.
   to what it mirrors; `run_secrets` runs each `secrets` script after the target's; a step `under-test` (`plan.nu`, after the pods and
   Flux) runs each `ready` script; the CA step puts `polar-ca` in every namespace Polar attests (`spread_ca`), each run. Tests:
   `tests/under-test.nu`, `tests/lock.nu`, `tests/plan.nu`.
+  *CT3b, the test GitLab declared (2026-11-07).* `infra/under-test/gitlab/`: `under-test.nuon` (namespace `gitlab-test` attested, GitLab's
+  server on the floor, the layer `gitlab-test.yaml` waiting for GitLab's StatefulSet, the scripts, and the job image, busybox, Polar's
+  mirror already, and the runner's helper, `gitlab-runner-helper:alpine3.21-v19.5.3`, one index for every architecture, found on Docker
+  Hub with the maintainer's leave); `main.nu`, the chart, what `gitlab-test.nu` applied, rendered: polar-init from the shared Dhall
+  functions, GitLab's names the declaration's floor entry's, the runner's config.toml a template whose token it reads from its Secret's
+  file at start (on no command line); `secrets.nu`, the root password, generated in the cluster once; `ready.nu`, root's token (made
+  here, into the pod on stdin) and the runner, made as root once, each kept in a Secret and never printed. `images.nuon` has GitLab's,
+  the runner's and the helper's rows. Tests: `tests/under-test-gitlab.nu` (8). `infra/gitlab-test.nu` stays, uncommitted, until the
+  live run has the new one up, and is removed then.
 
 **What G4 leaves for it.** `infra/attested.nu` and its use in `resolve.nu`, `render.nu` and the namespaces chart went in with CT1;
 `sandbox-local` carries none of it. Uncommitted on main, as CT3's material: `infra/gitlab-test.nu` (the test GitLab, with tests,
