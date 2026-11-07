@@ -58,8 +58,23 @@ def main [] {
             assert ($d.secrets | str ends-with "under-test/gitlab/secrets.nu")
             assert ($d.ready | str ends-with "under-test/gitlab/ready.nu")
             assert equal (marked [$d]).servers.0.service_account "gitlab"
-            assert equal $d.layer.files ["gitlab-test.yaml"]
+            assert equal $d.layer.files ["gitlab-test.yaml" "gitlab-observer-resources.yaml" "gitlab-observer.yaml" "gitlab-processor-resources.yaml" "gitlab-processor.yaml"]
             assert equal ($d.layer.wait_for | get ref) ["statefulset/gitlab"]
+        }
+
+        # G4c (docs/architecture/http-observers.md): sandbox-local leaves the GitLab pair out, and this configuration under test enables it
+        # and has the observer trust the cluster's CA, the file every pod has (the maintainer's "The CT may add it"), so it runs under test.
+        "it enables the GitLab pair sandbox-local leaves out, the observer trusting the cluster's CA, and its layer holds them": {
+            let d = (declaration $infra "gitlab")
+            let own = (open ($infra | path join "targets/sandbox-local/config.nuon"))
+            for w in ["gitlab-observer" "gitlab-processor"] {
+                assert equal ($own.workloads | get $w | get enabled) false $w
+                assert equal ($d.adds.workloads | get $w | get enabled) true $w
+                for f in [$"($w).yaml" $"($w)-resources.yaml"] { assert ($f in $d.layer.files) $f }
+            }
+            assert equal ($d.adds.workloads.gitlab-observer.env) [{ name: "POLAR_EGRESS_CLUSTER_CA", value: "/etc/polar-ca/ca.pem" }]
+            assert (($d.adds.workloads.gitlab-processor.env? | default []) | is-empty) "the processor reaches nothing outside"
+            assert equal (marked [$d]).workloads ["gitlab-observer" "gitlab-processor"]
         }
 
         "GitLab is told its address, the credentials agent's certificate, its registry, and no more than a test needs": {

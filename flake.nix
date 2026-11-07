@@ -237,6 +237,9 @@
           # ── GitLab agent ─────────────────────────────────────────────────────
           gitlabObserverImage  = polarPkgs.gitlabAgent.observerImage;
           gitlabConsumerImage  = polarPkgs.gitlabAgent.consumerImage;
+          # The pair on polar-http-observer (docs/architecture/http-observers.md, "GitLab"), named for its crates until G5.
+          gitlabHttpObserverImage  = polarPkgs.gitlabHttpAgent.observerImage;
+          gitlabHttpProcessorImage = polarPkgs.gitlabHttpAgent.processorImage;
 
           # ── Kubernetes agent ─────────────────────────────────────────────────
           kubeObserverImage    = polarPkgs.kubeAgent.observerImage;

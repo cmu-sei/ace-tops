@@ -234,6 +234,7 @@ workloads").
 | `soft-state-requests` | every agent with the `soft-state` capability (jira-observer), by rule | the state agent, soft-state-observer (`soft-state.md`) |
 | `soft-state-replies.{workload}` | the state agent, one topic for each workload it serves | that workload alone, by the `agent` rule |
 | `polar.openapi.observations` | the openapi observer | the openapi processor, which believes only that observer (`http-observers.md`) |
+| `polar.gitlab.observations` | gitlab-observer (the GitLab pair on the HTTP observer library) | gitlab-processor, which believes only that observer (`http-observers.md`, "GitLab"); run only where the test GitLab's configuration under test enables it |
 | `logging:consumer:logs` | nobody | the logger |
 
 Defined and unused: `kubernetes.cluster.observer.pods`, `polar.kubernetes.cluster.resources`, `git.repo.events`,

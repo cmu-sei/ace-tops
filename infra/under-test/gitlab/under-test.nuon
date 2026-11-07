@@ -36,9 +36,22 @@
         ]
       }
     }
+    # The GitLab pair, which sandbox-local leaves out: run under test, marked. The observer trusts the cluster's CA, the file every
+    # pod has, since the test GitLab's certificate is the credentials agent's (docs/architecture/egress.md, "The cluster's own CA").
+    workloads: {
+      gitlab-observer: { enabled: true, env: [{ name: "POLAR_EGRESS_CLUSTER_CA", value: "/etc/polar-ca/ca.pem" }] }
+      gitlab-processor: { enabled: true }
+    }
   }
   layer: {
-    files: ["gitlab-test.yaml"]
+    files: [
+      "gitlab-test.yaml"
+      # The GitLab pair it enables, rendered by the catalog.
+      "gitlab-observer-resources.yaml"
+      "gitlab-observer.yaml"
+      "gitlab-processor-resources.yaml"
+      "gitlab-processor.yaml"
+    ]
     # Its ready script needs GitLab answering; the runner waits for the token that script gives it.
     wait_for: [{ kind: "statefulset", ns: "gitlab-test", ref: "statefulset/gitlab", label: "gitlab" }]
   }

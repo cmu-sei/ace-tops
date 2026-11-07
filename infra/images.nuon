@@ -80,6 +80,10 @@
   {image: "soft-state-processor", tag: "latest", kind: "nix", attr: "polarPkgs.softState.processorImage"}
   {image: "openapi-observer",    tag: "latest", kind: "nix", attr: "polarPkgs.webAgent.observerImage"}
   {image: "openapi-processor",   tag: "latest", kind: "nix", attr: "polarPkgs.webAgent.processorImage"}
+  # The GitLab pair on polar-http-observer, named for its crates while the older pair (gitlab-observer, gitlab-consumer above) is
+  # still in the tree; G5 takes the older away (docs/architecture/http-observers.md, "GitLab").
+  {image: "gitlab-http-observer",  tag: "latest", kind: "nix", attr: "polarPkgs.gitlabHttpAgent.observerImage"}
+  {image: "gitlab-http-processor", tag: "latest", kind: "nix", attr: "polarPkgs.gitlabHttpAgent.processorImage"}
   {image: "scheduler-observer",  tag: "latest", kind: "nix", attr: "polarPkgs.scheduler.observerImage"}
   {image: "scheduler-processor", tag: "latest", kind: "nix", attr: "polarPkgs.scheduler.processorImage"}
   {image: "polar-git-server",    tag: "latest", kind: "nix", attr: "polarPkgs.polarGitServer.image"}

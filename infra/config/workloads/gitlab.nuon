@@ -1,0 +1,46 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+# for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+# infra/config/workloads/gitlab.nuon
+#
+# The GitLab pair on the HTTP observer library (docs/architecture/http-observers.md, "GitLab"). The observer reads the GraphQL sources
+# its signed `sources` section names, with the token its signed `credentials` section escrows; the processor writes what it reads to
+# the graph by its signed `projection` section. Neither is given anything here: with no section signed the observer reads nothing,
+# and the processor holds and says so. No target runs it yet: the test GitLab's configuration under test enables it
+# (infra/under-test/gitlab/), so it runs under test. Its images are named for its crates while the older pair is in the tree (G5).
+[
+  {
+    name: "gitlab-observer"
+    kind: "agent"
+    # It reads what its sources name and holds no graph password: the low-trust side (docs/architecture/placement.md).
+    pool: "observers"
+    image: "gitlab-http-observer"
+    config: "document"
+  }
+
+  {
+    name: "gitlab-processor"
+    kind: "agent"
+    pool: "writers"
+    image: "gitlab-http-processor"
+    config: "document"
+  }
+]
