@@ -363,6 +363,59 @@ Each step is taken in bites, each reported before the next.
   - Not re-read by that session: bodies of up to 256 MiB read whole and copied before `is_admin`, with no limit on concurrent requests; and, lesser, a push-log line or
     event lost on a crash, a 500 after 120 s though refs moved, `access.rs` writing without fsync, quarantine directories leaking and reused across restarts, `run_git`
     without a timeout, and signing-check errors logged as refusals.
+- [ ] **The Kubernetes agents' failure handling** (handed over 2026-11-07 by the agentic-control-plane session, from four blind reviews, two unguided and
+  two judging against the approved ELIDE rules; the count is how many found each; write-up in that branch's `docs/architecture/elide-intent.md`, "Tested
+  blind, on Kubernetes", local at `3d84b4ee`; lines are main's as of `fe2195a7`, paths under `src/agents/`). Not fixed unless said; for the maintainer to
+  schedule.
+  - HIGH K1 [4]: one message the consumer cannot handle ends the agent: `kubernetes/consume/src/supervisor.rs` ~587-593 `deserialize_and_dispatch(...)?`
+    returns from the root's handle any error of serde_json (~235), `from_value::<T>` (~207), `rkyv::from_bytes` (~264), the `todo!("Nodes")` panic (~247,
+    K12) and the `?` on `emit_provenance_event` and `graph.cast` in `lib.rs`; what was in the mailbox was acknowledged and is lost. Triggers: a newer Flux
+    adding a value to a closed kopium enum (`common/src/flux/kustomization.rs` ~582-588 `KustomizationSourceRefKind`, `oci_repositories.rs` ~182
+    provider) crashes it on every status update of that object; resolver/consumer rkyv skew on `ProvenanceEvent` does the same. Log and skip the one message.
+  - HIGH K18 [2]: that failure logs no reason: the root has no parent (`consume/src/agent.rs` ~96-101), ractor 0.15.13 does not log a handler error, and
+    start says only "the kube-consumer supervisor stopped" (~105-118).
+  - HIGH K5 [4]: a deletion in any gap is never recorded and the resource stays live in the graph: `observe/src/watches.rs` ~360 ignores Listing/Listed for
+    every kind but Namespace though `polar-agent-builder/src/protocol/kubernetes.rs` ~98-108 defines Listed as "an object said before and not since has
+    gone"; the handler ends the stream on every watcher error (~235) and relists after 5 s; the consumer has no sweep (`RESYNC_ACTIUON` unused); the module
+    doc (`watches.rs` ~27-28) accepts the loss and no design doc does.
+  - HIGH K14 [3]: a deleted namespace's pod, ReplicaSet and Job streams are dropped (`stop_namespace`, `watches.rs` ~332-336) before their pending Deleted
+    events are read.
+  - HIGH K19 [2]: pod env literals, args and command are written to Neo4j (`consume/src/lib.rs` ~805-809, PodContainer properties): a third-party pod's
+    password in an env `value:` is stored in the graph, against the rule that the graph holds only non-sensitive facts.
+  - HIGH K13 [1]: USES_IMAGE written to the tag's digest, not the kubelet's `image_id`. FIXED 2026-11-07 in `1f809267` (found independently, area 1
+    above); "EnsureEdge also keeps both edges" is the old edges not being taken back, recorded there as a migration step.
+  - MEDIUM K6 [4]: state nodes overwritten in place: Deployment keys on the newest condition's lastTransitionTime (`lib.rs` ~1111-1121, ~1144-1147),
+    ReplicaSet with conditions (~1231), Kustomization Ready time (~1537), a running container's started_at (~468-473); `UpdateState` is MERGE then SET
+    (`lib/src/graph/controller.rs` ~874-891), so a rollout or a 3→5 scale overwrites the earlier state's counts, against states.md §4.1.
+  - MEDIUM K7 [4]: a new state for every observation: Pod (~589-593), Job with no completionTime (~356-366), ReplicaSet with no conditions (~1231-1240) and a
+    Waiting container (~446-451) key on the consumer's `now_ms`; `ProjectionCache` is never used (`supervisor.rs` ~199 `_cache`); every relist or
+    redelivery adds a state per pod, unbounded.
+  - MEDIUM K16 [4]: `valid_from` mixes the consumer's clock with server and kubelet times, and the observer drops resourceVersion (`watches.rs` ~131): a
+    Deleted can sort before the last live state, and an Applied redelivered after a Deleted looks like a resurrection.
+  - MEDIUM K2 [2]: a failed graph write is dropped, not retried (`controller.rs` ~1262-1278; B2 of build-processor's, the same code).
+  - MEDIUM K3 [4]: rejuvenation throws away acknowledged work: `supervisor.rs` ~578-585 drops every message for the 5 s window though the graph is
+    healthy; DrainElapsed's `stop_and_wait` (~517-522) stops the controller ahead of its queued ops, where `drain_and_wait` would run them.
+  - MEDIUM K4 [4]: no backpressure: deliveries are acknowledged at hand-off, each event is 10-50 `graph.cast` ops into an unbounded controller mailbox, and
+    a slow Neo4j during a relist grows it until OOM.
+  - MEDIUM K9 [2]: the Volume node is keyed on (namespace, volume name) (`lib.rs` ~621-624, ~835-838), but a volume name is local to its pod, so two pods
+    sharing one share a node and each other's BACKED_BY secrets and PVCs.
+  - MEDIUM K10 [4]: RECONCILED and DEPLOYED (`lib.rs` ~1422-1437, ~1599-1611) match Flux anchors by name and namespace, not uid, so a recreated object's
+    old node gains the new edges; a MATCH on an OCIArtifact not yet written does nothing and is never retried.
+  - MEDIUM K8 [3]: image discovery is published with `OfflineBehavior::Drop` (`lib/src/lib.rs` ~194, from `consume/src/lib.rs` ~904): offline or with the
+    outbox full it is dropped silently, and a stable pod never gets USES_IMAGE.
+  - LOW K20 [2]: a configuration answer in the watcher's start (`watches.rs` ~421-424, `follow_group` with `call_within(.., None)`) kills the observer root
+    silently (`supervisor.rs` ~210-220 `?`); the wait is unbounded and blocks PrepareShutdown; `FollowError::Unreadable` is documented as "followed all
+    the same".
+  - LOW K21 [2]: the consumer ignores `published_by` (`supervisor.rs` ~577), the gap the docs already name.
+  - LOW K24 [2]: a domain child's failure exits the process directly, past the health actor's verdict: `observe/src/supervisor.rs` ~438-450 `exit(1)`,
+    `consume/src/supervisor.rs` ~553-556.
+  - LOW K11 [2]: a stale Err from a dropped stream ends its replacement for the same key (`watches.rs` ~384-395, ~458-461) after a namespace is recreated.
+  - LOW K15 [2]: Denied, NotYet and Backoff are retried on the 5 s "lost" timer (`watches.rs` ~390-393), ignoring the handler's wait: 4N+3 watches re-ask
+    every 5 s.
+  - LOW K17 [3]: the observer reports healthy while watching nothing (a 403 on namespaces is retried every 300 s with a warn).
+  - LOW K22 [1]: the observer can respawn its watches during shutdown: a Registered queued after PrepareShutdown (`observe/src/supervisor.rs` ~195, ~207-222).
+  - Unstated in the design: each event is many transactions, so a failure leaves a partial projection (`GraphOp::Transaction` exists); SessionEnded is
+    ignored, with no resync for a temporal consumer; the signed waits have no upper bound.
 - [ ] **build-processor's failure handling** (handed over 2026-11-07 by the agentic-control-plane session, from four blind reviews, two unguided and two guided,
   each fault with how many found it; write-up in that branch's `docs/architecture/polar-eden.md`, "The changed protocol, blind", local at `d2d4c5bf`; code there is
   main's as of `fe2195a7`). Nothing fixed. **Before fixing any: re-check against the upstream restructure.** Vaughn's `312d5dec` on github/main (2026-10-17,
