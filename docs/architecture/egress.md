@@ -143,9 +143,12 @@ each handler's own (`polar-agent-builder/src/protocol/http.rs`, `git.rs`).
 `POLAR_EGRESS_CLUSTER_CA` (`lib/src/egress.rs`) names a CA file a workload trusts beside the system's roots and `POLAR_EGRESS_CA_CERT`: the cluster's own CA,
 `/etc/polar-ca/ca.pem`, which every agent pod has, for a service in the cluster whose certificate the credentials agent issued, as Neo4j's is. It is the egress
 section's, so the HTTP and git handlers read it through the same bundle, and a file that is named and cannot be used stops the agent under that variable's name. The
-target's egress setting never sets it: only a workload's catalog entry does, so applying the catalog is the sign-off, and every other agent's trust is unchanged.
-The first is `gitlab-observer` in `sandbox-local`, reading the test GitLab (`http-observers.md`, "GitLab"); the maintainer's choice, "A per-workload setting", as
-the graph's (`GRAPH_CA_CERT`) and the scheduler's git client (`POLAR_SCHEDULER_GIT_CA_CERT`) trust theirs.
+target's egress setting never sets it: a workload's catalog entry does, or a configuration under test (`configurations-under-test.md`) for a workload it runs, so
+applying the catalog, or the signed render that carries the test, is the sign-off, and every other agent's trust is unchanged. The target's own config and the
+cluster's inputs may not, and the value is only ever that file: `env_problems` (`infra/egress.nu`), which the resolver applies to every workload (`resolve.nu`).
+The first is `gitlab-observer`, reading the test GitLab (`http-observers.md`, "GitLab"), trusting it as the test GitLab's configuration under test says; the
+maintainer's choices, "A per-workload setting", then "The CT may add it" (2026-11-07), as the graph's (`GRAPH_CA_CERT`) and the scheduler's git client
+(`POLAR_SCHEDULER_GIT_CA_CERT`) trust theirs.
 
 ## Not done
 

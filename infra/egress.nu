@@ -37,6 +37,14 @@
 # nothing, and every pod is as it was.
 
 const POLAR = "polar"
+
+# The cluster's own CA, which a workload may be told to trust beside the system's roots (docs/architecture/egress.md, "The cluster's
+# own CA, for one workload"): the file every agent pod has (resolve.nu, CUSTODY.ca_cert).
+export const CLUSTER_CA_VAR = "POLAR_EGRESS_CLUSTER_CA"
+export const CLUSTER_CA_FILE = "/etc/polar-ca/ca.pem"
+
+# Who gives a workload an env entry, as `env_problems` names them.
+const GIVERS = { catalog: "its catalog entry", target: "the target's config", under-test: "a configuration under test", cluster: "this cluster's inputs" }
 const PROBE_JOB = "polar-scheduler-observer"
 const DEFAULT_URL = "https://github.com/octocat/Hello-World"
 
@@ -255,4 +263,22 @@ export def egress_entries [settings: any, workload: string, declared: list] {
         mounts: [{ name: $CA_VOLUME, path: $CA_DIR, read_only: true, from: "egress" }]
         config_maps: [{ name: $config_map, key: $CA_KEY, content: $settings.ca_pem }]
     }
+}
+
+# Why the env entries `given` a workload, each `{ from: catalog | target | under-test | cluster, env }`, may not stand: the way out is
+# the cluster's setting (cluster.egress, `egress_entries`), so no one sets an egress variable, except that a catalog entry or a
+# configuration under test may have the workload trust the cluster's own CA, by its one file.
+export def env_problems [workload: string, given: list] {
+    $given | each {|g|
+        let who = ($GIVERS | get $g.from)
+        $g.env | where {|e| $e.name | str starts-with "POLAR_EGRESS_" } | each {|e|
+            if $e.name != $CLUSTER_CA_VAR {
+                $"($workload): ($e.name) is set by ($who), but it is the cluster's egress setting: set cluster.egress instead"
+            } else if $g.from not-in ["catalog" "under-test"] {
+                $"($workload): ($CLUSTER_CA_VAR) is set by ($who): only a catalog entry or a configuration under test has a workload trust the cluster's CA"
+            } else if $e.value != $CLUSTER_CA_FILE {
+                $"($workload): ($CLUSTER_CA_VAR) is ($e.value), and the cluster's own CA is ($CLUSTER_CA_FILE), which every pod has"
+            }
+        } | compact
+    } | flatten
 }

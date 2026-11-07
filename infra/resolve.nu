@@ -82,10 +82,15 @@ const CUSTODY = {
 
 # ── Loading ──────────────────────────────────────────────────────────────────
 
+# A target's config.nuon as committed.
+def target_own_config [target: string] {
+    let p = ($INFRA | path join $"targets/($target)/config.nuon")
+    if ($p | path exists) { open $p } else { {} }
+}
+
 # A target's config.nuon, with what this cluster's configurations under test add to it (infra/under-test.nu), which may only add.
 def target_config [target: string] {
-    let p = ($INFRA | path join $"targets/($target)/config.nuon")
-    let own = if ($p | path exists) { open $p } else { {} }
+    let own = (target_own_config $target)
     let carried = (under-test of_cluster $INFRA $target)
     if ($carried | is-empty) { return $own }
     let catalog_env = (catalog_workloads | reduce --fold {} {|w, acc| $acc | upsert $w.name ($w.env? | default [] | get -o name | default []) })
@@ -511,19 +516,20 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         $init_env = ($init_env | append (env_entry { name: "POLAR_CUSTODY_SOCKET", value: $CUSTODY.socket } $vars "custody" $name))
     }
 
-    # The way out of the cluster is the cluster's setting, written into the agents that declare it (below): neither the
-    # entry nor the target's env names it.
-    for given in [{ from: "its catalog entry", env: ($entry.env? | default []) } { from: $"target ($target)'s config", env: ($ov.env? | default []) }] {
-        for e in $given.env {
-            if ($e.name | str starts-with "POLAR_EGRESS_") {
-                error make { msg: $"($name): ($e.name) is set by ($given.from), but it is the cluster's egress setting: set cluster.egress instead" }
-            }
-        }
-    }
-
     # What the cluster supplies (its administrators, once the admin flow has made them) replaces a same-named entry of the
     # target's config; infra/cluster-inputs.nu.
     let supplied = (env_for (read_inputs (path_of $INFRA $target)) $name)
+
+    # The way out of the cluster is the cluster's setting, written into the agents that declare it (below): no one's env names
+    # it, except that the entry or a configuration under test may have the workload trust the cluster's own CA (infra/egress.nu).
+    let own_names = (target_own_config $target | get -o workloads | default {} | get -o $name | default {} | get -o env | default [] | get -o name | default [])
+    let egress_problems = (egress env_problems $name [
+        { from: "catalog", env: ($entry.env? | default []) }
+        { from: "target", env: ($ov.env? | default [] | where {|e| $e.name in $own_names }) }
+        { from: "under-test", env: ($ov.env? | default [] | where {|e| $e.name not-in $own_names }) }
+        { from: "cluster", env: $supplied }
+    ])
+    if ($egress_problems | is-not-empty) { error make { msg: ($egress_problems | str join "; ") } }
     for e in (($entry.env? | default []) ++ (env_merged ($ov.env? | default []) $supplied)) {
         $env_list = ($env_list | append (env_entry $e $vars "entry" $name))
     }

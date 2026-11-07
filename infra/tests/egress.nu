@@ -323,6 +323,31 @@ def main [] {
                 assert equal ($ca_only.env | get name) ["POLAR_EGRESS_CA_CERT"]
             }
         }
+        {
+            # docs/architecture/egress.md, "The cluster's own CA, for one workload": a catalog entry or a configuration under test
+            # (docs/architecture/configurations-under-test.md) trusts it, and only the file every pod has; nothing else sets an
+            # egress variable, which is the cluster's setting.
+            name: "only a catalog entry or a configuration under test trusts the cluster's CA, and only its own file; no one else sets egress"
+            body: {
+                let ca = { name: $CLUSTER_CA_VAR, value: $CLUSTER_CA_FILE }
+                let proxy = { name: "POLAR_EGRESS_PROXY", value: "http://proxy.corp.example:3128" }
+                let other = { name: "JIRA_URL", value: "https://jira.example" }
+                for from in ["catalog" "under-test"] {
+                    assert equal (env_problems "gitlab-observer" [{ from: $from, env: [$ca $other] }]) [] $from
+                    let wrong = (env_problems "gitlab-observer" [{ from: $from, env: [($ca | update value "/etc/elsewhere/ca.pem")] }])
+                    assert (($wrong | length) == 1 and ($wrong.0 | str contains $CLUSTER_CA_FILE)) $"($from): ($wrong | to nuon)"
+                }
+                for from in ["catalog" "target" "under-test" "cluster"] {
+                    let refused = (env_problems "jira-observer" [{ from: $from, env: [$proxy] }])
+                    assert (($refused | length) == 1 and ($refused.0 | str contains "set cluster.egress instead")) $"($from): ($refused | to nuon)"
+                }
+                for from in ["target" "cluster"] {
+                    let refused = (env_problems "gitlab-observer" [{ from: $from, env: [$ca] }])
+                    assert (($refused | length) == 1 and ($refused.0 | str contains "a catalog entry or a configuration under test")) $"($from): ($refused | to nuon)"
+                }
+                assert equal (env_problems "jira-observer" [{ from: "target", env: [$other] } { from: "cluster", env: [] }]) []
+            }
+        }
     ]
 
     let results = ($tests | each {|t|

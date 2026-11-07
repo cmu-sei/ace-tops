@@ -110,8 +110,8 @@ its signed record.
 one of which reads the `server_also` that `sandbox-local` no longer has).
 
 **Open for CT3.**
-- The GitLab observer's trust of the cluster CA: `egress.md` ("The cluster's own CA, for one workload") has only a catalog entry set
-  `POLAR_EGRESS_CLUSTER_CA`, and CT1 refuses nothing by that name, so a configuration under test could set it as a workload's env.
-  Whether it may, or the observer's catalog entry carries it, is the maintainer's to say before CT3.
+- *Settled (the maintainer, 2026-11-07, "The CT may add it").* The GitLab observer's trust of the cluster CA is the test GitLab's
+  configuration under test's to add: `POLAR_EGRESS_CLUSTER_CA` may come from a catalog entry or a configuration under test, never the
+  target's own config or the cluster's inputs, and only as `/etc/polar-ca/ca.pem` (`egress.nu`, `env_problems`; `egress.md`).
 - `render.nu` gives a chart its context by its directory's name; a configuration under test named `gitlab` would be given the old
   GitLab chart's (`layers/.../gitlab`, removed in G5). Harmless, but CT3 should not rely on it.
