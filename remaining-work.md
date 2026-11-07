@@ -723,7 +723,26 @@ Each step is taken in bites, each reported before the next.
   verified" where the old resolver had linked registry.k8s.io's tag as it then was, a digest the kubelet did not run. THAT EDGE IS STILL THERE: an
   edge the old resolver made is never taken back, so a graph built before `1f809267` may hold `USES_IMAGE` edges to images a container did not
   run; removing them (each `PodContainer` whose kubelet digest is not its edge's) is a migration step for after 3.0.0, not written. Polar's own
-  `localhost:30500` images still fail, as below ("The resolver cannot read images from the node's registry"). The history that
+  `localhost:30500` images still fail, as below ("The resolver cannot read images from the node's registry"). (2) READ 2026-11-07, not started (his branch
+  forks from v3.0.0; main is ~200 ahead). BUILD-PROCESSOR, his `de642e6a` (upstream `312d5dec`): a pure projection (`src/project/*`, one dispatch,
+  no wildcard) replacing the linker; it fixes the findings above B1 (a bad message no longer kills anything), B6 (timestamps out of MERGE
+  patterns), B19, B20, and removes B18's actor; B2-B5, B7-B17, B21 and the two later candidates still stand in it; new: N1 `dispatch` returns at
+  the first failed cast and drops the rest of that event's ops, N2 a controller dying between registrations is only logged (TODO
+  `supervisor.rs` ~299), N3 stale docs, N4 `tests/projection_neo4j.rs` is `#[ignore]` and was never run. It is still on the bare transport (refusals
+  to `_ => {}`), still a Job, still says "the broker log is the source of truth" (`supervisor.rs` ~47, ~84, ~280; README ~40), not in the
+  catalog, its graph password from a render-time Secret env. Its lib additions (`PackageAnalysisStarted`, `AnalysisFindingReported`,
+  `OCILayerDiffId`, `HAS_DIFF_ID`) have no producer on either branch. BUILD-ORCHESTRATOR (10 commits from `69cd7731`, ~9k lines, 37% tests; his
+  own note: ported, tests carried not written red-first, never run on a cluster): already on the builder (`PolarAgent`, `Subscription`, signed
+  `mappings` and escrowed `credentials` sections, pipeline images pinned by digest, a namespaced Role, build pods with no token, supervised actors,
+  build state owned by a registry actor and changed by message), which fits; against Polar's model: a YAML config rendered into a ConfigMap with
+  any field overridable by `BUILD_ORCHESTRATOR__*` env (namespace, clone image, job identity, broker address, store endpoint: render-time facts,
+  not signed), the object store's keys from a Kubernetes Secret env and its traffic over its own aws-sdk client on plain http (not a protocol
+  handler), `NEEDS` says `KubeApiRead` though it creates and deletes Jobs and Secrets and the Dhall declares its capabilities a second time,
+  deployed only through `src/deploy`'s Dhall library (not the catalog; main means to retire `src/deploy`), `requested_by` taken from the payload
+  and recorded as `triggered_by` with the broker-stamped `published_by` dropped, `std::process::exit(1)` on an essential child's failure
+  ("the operator starts a new pod"; main's rule is the HealthCheckActor's verdict), the escrowed git credential written in plaintext into a
+  per-build Secret, a clone image defaulting to an unbuilt `:latest`, a shared `client-tls` fallback, registry push not built (placeholder
+  credentials), the retention sweep a bare `tokio::spawn`. Only the pipeline log reaches the store; nothing is pushed. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
