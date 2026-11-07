@@ -365,7 +365,12 @@ Each step is taken in bites, each reported before the next.
     without a timeout, and signing-check errors logged as refusals.
 - [ ] **build-processor's failure handling** (handed over 2026-11-07 by the agentic-control-plane session, from four blind reviews, two unguided and two guided,
   each fault with how many found it; write-up in that branch's `docs/architecture/polar-eden.md`, "The changed protocol, blind", local at `d2d4c5bf`; code there is
-  main's as of `fe2195a7`). Nothing fixed. One cause runs through several: the crate drops events trusting a replay to bring them back (`supervisor.rs` ~85-87;
+  main's as of `fe2195a7`). Nothing fixed. **Before fixing any: re-check against the upstream restructure.** Vaughn's `312d5dec` on github/main (2026-10-17,
+  "revive cyclops ... restructure the build processor") deletes `linker.rs` and `projection.rs` for `src/project/{execution,findings,outputs,registry,mod}.rs`,
+  reworks `supervisor.rs` and adds `tests/projection_neo4j.rs`; it is still a Job and not on the builder. So the linker and projection findings below are to be
+  re-read against it when that merge happens, and none fixed in the old linker before it; the supervisor and Job ones (failed writes dropped, exit 0, drains,
+  backpressure, `published_by`, refusals unlogged, the dead controller reference) likely stand until build-processor moves to the builder. One cause runs
+  through several: the crate drops events trusting a replay to bring them back (`supervisor.rs` ~85-87;
   README, "the broker log is the source of truth"), and Cassini has no durable log and acknowledges on hand-off (`cassini-client-reliability.md` ~139-143), so every
   drop is for good.
   - HIGH [4], confirmed on main 2026-11-07: one bad message kills the linker, nothing restarts it, and health stays green. `linker.rs` ~855
