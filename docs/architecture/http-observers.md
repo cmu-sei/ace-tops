@@ -656,6 +656,16 @@ G4, planned (the maintainer's choices, 2026-11-06: "Omnibus container", "In sand
   instance by a small tool over introspection (`cynic-introspection`), its GitLab version in the file's header; real answers kept as masked samples; `check --ask`,
   where `credentialed-reads-reviewed` first holds of real sources.
 
+The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
+server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent
+(`infra/layers/2-services/neo4j/statefulset.dhall:78-92, 191-202`) and writes the certificate for `gitlab.gitlab-test.svc.cluster.local`, its key and the CA to an
+emptyDir that GitLab's nginx serves from. So cert-issuer accepts its token's audience (`infra/targets/sandbox-local/config.nuon:61`), it has a floor entry as Neo4j
+has (`infra/render.nu:369-389`), and the `polar-ca` ConfigMap is published to `gitlab-test` as well as `polar` and `polar-graph`
+(`credentials-agent/admin/src/main.rs:147`); the test GitLab comes up after Polar. Its client trusts it as Neo4j's clients (`GRAPH_CA_CERT`) and the scheduler's
+git client (`POLAR_SCHEDULER_GIT_CA_CERT`) trust theirs, by a setting of the one workload: the catalog may say that a workload's protocol handler trusts the
+cluster's CA (`/etc/polar-ca/ca.pem`, in every agent pod) for its outside requests besides the system's roots and the egress CA, and only `gitlab-observer`'s entry
+in `sandbox-local` says so; applying the catalog is the sign-off, and every other agent's trust is unchanged.
+
 ## Open
 
 - **What it did touch.** What a workload could reach is answerable: the catalog, and each signed version of its sections, in git history. What it did reach is one log line per
