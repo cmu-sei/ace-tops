@@ -35,7 +35,7 @@ And, of the catalog and its scripts: they began as "entirely deployment-time", a
 consistent runtime state, which it was never intended to handle", much as tools around the Windows registry do, which it must not become;
 with the GitOps controller already proposed, all three are to be considered "in the same light: lifecycle management".
 
-This is a draft to think with, not a plan. Nothing here is decided.
+A draft to think with; the questions at its end are decided as the maintainer answers them, and the rest is not a plan yet.
 
 ## What there is today (read 2026-11-07)
 
@@ -135,7 +135,9 @@ GitLab pair would appear in both as under test. Until a lifecycle document exist
 5. *Decided* (the maintainer, 2026-11-07, "Lifecycle first"): the lifecycle document and its reader first, then the state agent deriving
    its `schema` and `agents` (the GitLab case) and the render reading phases; then the catalog's split around it; then the controller on
    both, its proposal merged and reshaped around phases. Each step usable on its own.
-6. The interim answer for `schema` and `agents` while this is designed.
+6. *Decided* (the maintainer, 2026-11-07, "Leave them reported"): until the state agent derives them, `one-owner-per-label` and
+   `seen-by-health` stay violated on a cluster carrying the GitLab test, and say the truth: Polar does not yet recognize a workload under
+   test. Nothing is signed by hand that the derivation will replace.
 
 ## Also found
 
