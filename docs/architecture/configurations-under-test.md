@@ -157,9 +157,15 @@ its signed record.
   token in the pod; removed by hand, no Secret made). A StatefulSet whose pod never became ready does not roll to a new template until
   the pod is deleted (OrderedReady): each fix above needed `kubectl delete pod gitlab-0`. `infra/gitlab-test.nu` is retired: kept
   outside the tree, not committed.
-  *Found, open.* A server a configuration under test adds carries no `g:under-test` in its certificate: cert-issuer's `floor_names`
-  (`cert-issuer/server/src/floor.rs` ~170-205) skips a vouched-only entry, so a server the credentials agent vouches for (GitLab's, and
-  Neo4j's) is issued its DNS names alone, and the group on its floor entry (CT2, `main server-also`) is inert. The record marks it.
+  *Found, and fixed (the maintainer: "Carry it into the certificate").* A server a configuration under test adds carried no
+  `g:under-test` in its certificate: cert-issuer's `floor_names` (`cert-issuer/server/src/floor.rs`) skips a vouched-only entry, so a
+  server the credentials agent vouches for (GitLab's, and Neo4j's) was issued its DNS names alone, and the group on its floor entry
+  (CT2, `main server-also`) was inert. Now `floor::vouched_names` gives a vouched-only entry's topics and groups, and cert-issuer signs
+  them into that workload's certificate on either path the credentials agent vouches by (`/issue` from it, Step 3.3; `/internal/issue`,
+  Step 1.7), once each (`floor::with_names`): the credentials agent has no word on a server outside the catalog, and its floor entry,
+  from the signed render, is what it carries. A catalog workload's vouched-only entry has none (`rules.nu` `floor_entries`), so nothing
+  else changes; Neo4j's has none either. Tests: `floor.rs` (the names, and a property of `with_names`), `issue_extras_test.rs`,
+  `internal_issue_test.rs`.
 
 **What G4 leaves for it.** `infra/attested.nu` and its use in `resolve.nu`, `render.nu` and the namespaces chart went in with CT1;
 `sandbox-local` carries none of it. Uncommitted on main, as CT3's material: `infra/gitlab-test.nu` (the test GitLab, with tests,

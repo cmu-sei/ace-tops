@@ -422,3 +422,50 @@ async fn a_malformed_account_subject_is_an_internal_error_and_never_reaches_the_
         }
     }
 }
+
+/// The URI names of a certificate.
+fn uri_names(certificate_pem: &str) -> Vec<String> {
+    use x509_parser::prelude::*;
+    let (_, pem) = x509_parser::pem::parse_x509_pem(certificate_pem.as_bytes()).unwrap();
+    let (_, cert) = x509_parser::parse_x509_certificate(&pem.contents).unwrap();
+    cert.subject_alternative_name()
+        .unwrap()
+        .map(|san| {
+            san.value
+                .general_names
+                .iter()
+                .filter_map(|n| match n {
+                    GeneralName::URI(u) => Some(u.to_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_server_the_credentials_agent_vouches_for_carries_its_floor_entry_s_groups() {
+    // docs/architecture/configurations-under-test.md, CT2: the test GitLab's server certificate, as polar-init asks the credentials
+    // agent for it, carries `g:under-test` from its floor entry, which the credentials agent has no word on.
+    let identity = "gitlab.gitlab-test.serviceaccount.cluster.local";
+    let name = "gitlab.gitlab-test.svc.cluster.local";
+    let mut h = handler(real_ca(), vec![ALLOWED_CALLER]);
+    h.floor = Some(vec![cert_issuer::floor::BootstrapIdentity {
+        workload: "system:serviceaccount:gitlab-test:gitlab".to_string(),
+        cert_type: CertType::Server,
+        names: vec![name.to_string()],
+        vouched_only: true,
+        publish: vec![],
+        subscribe: vec![],
+        groups: vec!["under-test".to_string()],
+    }]);
+    let mut request = request_for(identity, identity);
+    request.cert_type = CertType::Server;
+    request.extra_sans = vec![name.to_string()];
+    let response = h.handle_internal_issue(Some(ALLOWED_CALLER), request).await;
+    assert_eq!(response.status, 200, "{:?}", response.body);
+    assert_eq!(
+        uri_names(&certificate_of(response.body)),
+        vec!["g:under-test".to_string()]
+    );
+}

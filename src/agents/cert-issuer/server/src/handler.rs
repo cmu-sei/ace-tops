@@ -498,7 +498,11 @@ impl Handler {
             (Some(floor), false) => {
                 crate::floor::floor_names(floor, &claims.workload_identity, &request.cert_type)
             }
-            _ => Vec::new(),
+            // A vouched-only entry's own, for a workload the credentials agent has no word on (a server outside the catalog).
+            (Some(floor), true) => {
+                crate::floor::vouched_names(floor, &claims.workload_identity, &request.cert_type)
+            }
+            (None, _) => Vec::new(),
         };
 
         // ---- Step 3.4: the floor's state ----
@@ -559,7 +563,7 @@ impl Handler {
                 &parsed_csr,
                 request.csr_pem,
                 request.cert_type,
-                request.extra_sans.into_iter().chain(floor_names).collect(),
+                crate::floor::with_names(request.extra_sans, floor_names),
                 request.subject_dn_defaults,
                 None,
                 // For the record: its own, vouched for by the credentials agent, against the credentials agent's
@@ -836,20 +840,26 @@ impl Handler {
 
         // ---- Step 1.7: a server certificate's names are its workload's ----
         //
-        // As on /issue for a vouched request: the floor's list of names for the workload, whoever asks.
+        // As on /issue for a vouched request: the floor's list of names for the workload, whoever asks; and what its
+        // vouched-only entry gives it beyond them (`floor::vouched_names`).
+        let mut request = request;
         if request.cert_type == cert_issuer_common::CertType::Server
             && let Some(floor) = &self.floor
         {
             let workload = cert_issuer_common::identity::kubernetes_subject_of(&request.identity);
+            let workload = workload.as_deref().unwrap_or(&request.identity);
             if let Err(refusal) = crate::floor::admit_vouched(
                 floor,
-                workload.as_deref().unwrap_or(&request.identity),
+                workload,
                 &request.cert_type,
                 &request.extra_sans,
             ) {
                 warn!(identity = %request.identity, "internal issuance refused: {refusal}");
                 return error_response(IssueOutcome::CallerNotAuthorized, &refusal.to_string());
             }
+            let given = crate::floor::vouched_names(floor, workload, &request.cert_type);
+            request.extra_sans =
+                crate::floor::with_names(std::mem::take(&mut request.extra_sans), given);
         }
 
         // ---- Step 2: CSR parsing ----

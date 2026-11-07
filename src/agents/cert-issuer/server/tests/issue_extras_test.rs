@@ -543,6 +543,33 @@ async fn the_credentials_agent_states_a_workload_s_topics_and_groups_on_the_vouc
     );
 }
 
+#[tokio::test]
+async fn a_vouched_only_server_is_signed_its_floor_entry_s_groups_once_whatever_the_credentials_agent_says()
+ {
+    // docs/architecture/configurations-under-test.md, CT2: a server a configuration under test adds is vouched for by the
+    // credentials agent, which has no word on its groups; its floor entry, from the signed render, says `under-test`.
+    let mut floor = floor_with_this_workload_vouched_only().unwrap();
+    floor[0].groups = vec!["under-test".to_string()];
+    let (handler, ca) = rig(Some(floor));
+    let name = "polar-git-server.polar.svc.cluster.local";
+    for stated in [vec![name], vec![name, "g:under-test"]] {
+        let response = handler
+            .handle(
+                Some(CREDENTIALS_AGENT),
+                &mint_default_token(),
+                request(CertType::Server, &stated),
+            )
+            .await;
+        assert_eq!(response.status, 200, "{:?}", response.body);
+    }
+    let asked = ca.asked.lock().unwrap();
+    assert_eq!(asked.len(), 2);
+    for request in asked.iter() {
+        let groups = request.1.iter().filter(|s| *s == "g:under-test").count();
+        assert_eq!(groups, 1, "{:?}", request.1);
+    }
+}
+
 // ---- the floor state and held requests (docs/architecture/core-restarts.md, "3 in detail") -----------------
 
 use cert_issuer::floor_state::{FloorState, Heard, Open};

@@ -172,14 +172,46 @@ pub fn floor_names(
     workload: &str,
     cert_type: &CertType,
 ) -> Vec<String> {
-    use cert_issuer_common::group::Group;
-    use cert_issuer_common::permission::{TopicAccess, TopicPermission};
-    let Some(entry) = floor
+    floor
         .iter()
         .find(|b| b.workload == workload && !b.vouched_only && &b.cert_type == cert_type)
-    else {
-        return Vec::new();
-    };
+        .map(entry_names)
+        .unwrap_or_default()
+}
+
+/// What a workload reached only through the credentials agent carries beyond what is asked for it: the topics and groups
+/// its vouched-only entry gives it, as `floor_names` does a bootstrap service's. For a catalog workload the credentials
+/// agent states its own and the entry has none; a server outside the catalog (Neo4j, a configuration under test's) has
+/// no word from the credentials agent, and its entry, from the signed render, is what it carries
+/// (docs/architecture/configurations-under-test.md, CT2).
+pub fn vouched_names(
+    floor: &[BootstrapIdentity],
+    workload: &str,
+    cert_type: &CertType,
+) -> Vec<String> {
+    floor
+        .iter()
+        .find(|b| b.workload == workload && b.vouched_only && &b.cert_type == cert_type)
+        .map(entry_names)
+        .unwrap_or_default()
+}
+
+/// `asked` with each of `given` (what the floor adds) that it does not hold already, in order: a name is in a certificate once,
+/// and nothing asked is lost or moved.
+pub fn with_names(asked: Vec<String>, given: Vec<String>) -> Vec<String> {
+    let mut names = asked;
+    for name in given {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// An entry's topics and groups as the names a certificate carries: `p:pub:`, `p:sub:` and `g:`.
+fn entry_names(entry: &BootstrapIdentity) -> Vec<String> {
+    use cert_issuer_common::group::Group;
+    use cert_issuer_common::permission::{TopicAccess, TopicPermission};
     let topic = |access, topic: &String| {
         TopicPermission {
             access,
@@ -429,6 +461,72 @@ mod tests {
             groups: vec![],
         });
         f
+    }
+
+    proptest::proptest! {
+        /// What is asked stays as it was, first; each name the floor adds is there exactly once; nothing else is.
+        #[test]
+        fn the_floor_s_names_are_added_once_and_what_is_asked_is_kept(
+            asked in proptest::collection::vec("[a-c]{1,2}", 0..6),
+            given in proptest::collection::vec("[a-c]{1,2}", 0..6),
+        ) {
+            let names = with_names(asked.clone(), given.clone());
+            proptest::prop_assert_eq!(&names[..asked.len()], &asked[..]);
+            for g in &given {
+                proptest::prop_assert!(names.contains(g));
+                if !asked.contains(g) {
+                    proptest::prop_assert_eq!(names.iter().filter(|n| *n == g).count(), 1);
+                }
+            }
+            proptest::prop_assert!(names.iter().all(|n| asked.contains(n) || given.contains(n)));
+        }
+    }
+
+    #[test]
+    fn a_vouched_only_entry_s_topics_and_groups_are_its_certificate_s_whoever_vouches_for_it() {
+        // A server outside the catalog (a configuration under test's, docs/architecture/configurations-under-test.md, CT2):
+        // the credentials agent has no word on its groups, and the floor, from the signed render, does.
+        let mut f = floor_with_a_vouched_only_server();
+        f.push(BootstrapIdentity {
+            workload: "system:serviceaccount:gitlab-test:gitlab".to_string(),
+            cert_type: CertType::Server,
+            names: vec!["gitlab.gitlab-test.svc.cluster.local".to_string()],
+            vouched_only: true,
+            publish: vec![],
+            subscribe: vec![],
+            groups: vec!["under-test".to_string()],
+        });
+        assert_eq!(
+            vouched_names(
+                &f,
+                "system:serviceaccount:gitlab-test:gitlab",
+                &CertType::Server
+            ),
+            vec!["g:under-test".to_string()]
+        );
+        // Only for the type its entry is, and only an entry that is vouched for: a bootstrap service's are `floor_names`'.
+        assert!(
+            vouched_names(
+                &f,
+                "system:serviceaccount:gitlab-test:gitlab",
+                &CertType::Client
+            )
+            .is_empty()
+        );
+        assert!(
+            vouched_names(
+                &f,
+                "system:serviceaccount:polar-graph:neo4j",
+                &CertType::Server
+            )
+            .is_empty()
+        );
+        assert!(
+            vouched_names(&f, "system:serviceaccount:polar:cassini", &CertType::Server).is_empty()
+        );
+        assert!(
+            vouched_names(&f, "system:serviceaccount:polar:nobody", &CertType::Server).is_empty()
+        );
     }
 
     #[test]

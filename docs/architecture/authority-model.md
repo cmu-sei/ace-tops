@@ -360,7 +360,8 @@ Polar has two, and "the groups document" is only the second (read from the code,
    `self-test`); the render puts them in the catalog, and the certificate carries them as `g:` names. Applying the
    catalog is their sign-off; they change only with a redeploy. One more the render adds, for what a workload is deployed
    as, not built as: `under-test`, on every certificate of what a configuration under test makes (the catalog workloads it
-   enables, in the authority model and the floor; the servers it adds, in their floor entries;
+   enables, in the authority model and the floor; the servers it adds, in their floor entries, which cert-issuer signs into a
+   vouched-only server's certificate, `floor::vouched_names`;
    `configurations-under-test.md`, CT2; `resolve.nu` `marks_of`, `main server-also`). It implies no topics (no `Rule` has
    it, `polar-topics/src/lib.rs:134-146`), so it changes nothing at the broker's floor; it is there for Cedar policy to
    keep what is under test from what production holds. A groups document that names such an identity replaces its
