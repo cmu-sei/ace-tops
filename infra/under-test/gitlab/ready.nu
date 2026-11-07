@@ -88,6 +88,10 @@ def secret_of [name: string, key: string, value: string] {
 }
 
 def main [target_dir: string, repo_root: string] {
+    # GitLab as the layer last made it: a run that changes its template (a polar-init rebuilt, say) restarts it after Flux has
+    # called the layer ready, and the seed would meet it booting (a 502, 2026-11-07 on u7c).
+    let rolled = (^kubectl -n $NAMESPACE rollout status $"statefulset/($NAME)" --timeout=20m | complete)
+    if $rolled.exit_code != 0 { error make --unspanned { msg: $"the test GitLab did not come up: ($rolled.stderr | str trim)" } }
     # What it wrote into the pod goes however this ends: a token is never left behind.
     try { made } catch {|e|
         try { exec_in null "rm" "-rf" $SCRATCH | ignore }
