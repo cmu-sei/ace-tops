@@ -930,6 +930,7 @@ mod tests {
             proxy: Some(proxy),
             no_proxy: Some("localhost,127.0.0.1,::1,.svc,.cluster.local".to_string()),
             ca_cert: None,
+            cluster_ca: None,
         };
         git_ca();
         let site = handle_of(
@@ -1141,6 +1142,7 @@ mod tests {
             proxy: None,
             no_proxy: None,
             ca_cert: Some(file.to_str().unwrap().to_string()),
+            cluster_ca: None,
         };
         let why = Git::ready(egress, CONNECT_TIMEOUT, SERVER_TIMEOUT)
             .await

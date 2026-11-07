@@ -1926,6 +1926,7 @@ mod tests {
             proxy: Some(proxy),
             no_proxy: Some("127.0.0.1".to_string()),
             ca_cert: Some(local.write(dir.path(), "ca.pem").display().to_string()),
+            cluster_ca: None,
         };
         let client = Http::client(&egress, CONNECT_TIMEOUT, Duration::from_secs(5))
             .await

@@ -50,7 +50,14 @@ pub static CA_CERT: Optional<String> = Optional::text(
     "PEM CA certificates trusted beside the system's; set and unreadable or empty stops the agent",
 );
 
-static VARIABLES: &[&dyn Described] = &[&PROXY, &NO_PROXY, &CA_CERT];
+pub static CLUSTER_CA: Optional<String> = Optional::text(
+    "POLAR_EGRESS_CLUSTER_CA",
+    "the cluster's own CA, trusted beside the system's and POLAR_EGRESS_CA_CERT, for a service in the cluster whose \
+     certificate the credentials agent issued; set only by a workload's catalog entry, and set and unreadable or empty \
+     stops the agent",
+);
+
+static VARIABLES: &[&dyn Described] = &[&PROXY, &NO_PROXY, &CA_CERT, &CLUSTER_CA];
 
 /// The section an agent that calls outside the cluster registers. The render writes the target's egress setting
 /// only into an agent that declares it.
@@ -109,18 +116,49 @@ pub fn proxy_url(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+/// Every certificate in the PEM file at `path`, which `variable` named.
+async fn certificates(variable: &'static str, path: &str) -> Result<Vec<Certificate>, EgressError> {
+    let data = tokio::fs::read(path)
+        .await
+        .map_err(|source| EgressError::Unreadable {
+            variable,
+            path: path.to_string(),
+            source,
+        })?;
+    let certs = Certificate::from_pem_bundle(&data).map_err(|e| EgressError::Invalid {
+        variable,
+        path: path.to_string(),
+        reason: e.to_string(),
+    })?;
+    if certs.is_empty() {
+        return Err(EgressError::Empty {
+            variable,
+            path: path.to_string(),
+        });
+    }
+    Ok(certs)
+}
+
 /// What stops an agent whose egress CA cannot be used.
 #[derive(Debug, thiserror::Error)]
 pub enum EgressError {
-    #[error("POLAR_EGRESS_CA_CERT {path} cannot be read: {source}")]
+    #[error("{variable} {path} cannot be read: {source}")]
     Unreadable {
+        variable: &'static str,
         path: String,
         source: std::io::Error,
     },
-    #[error("POLAR_EGRESS_CA_CERT {path} holds no PEM certificate")]
-    Empty { path: String },
-    #[error("POLAR_EGRESS_CA_CERT {path} holds a certificate that cannot be used: {reason}")]
-    Invalid { path: String, reason: String },
+    #[error("{variable} {path} holds no PEM certificate")]
+    Empty {
+        variable: &'static str,
+        path: String,
+    },
+    #[error("{variable} {path} holds a certificate that cannot be used: {reason}")]
+    Invalid {
+        variable: &'static str,
+        path: String,
+        reason: String,
+    },
 }
 
 /// The egress settings an agent was given.
@@ -129,6 +167,8 @@ pub struct Egress {
     pub proxy: Option<String>,
     pub no_proxy: Option<String>,
     pub ca_cert: Option<String>,
+    /// The cluster's own CA, for a workload told to trust it.
+    pub cluster_ca: Option<String>,
 }
 
 impl Egress {
@@ -137,38 +177,25 @@ impl Egress {
             proxy: config.read(&PROXY)?,
             no_proxy: config.read(&NO_PROXY)?,
             ca_cert: config.read(&CA_CERT)?,
+            cluster_ca: config.read(&CLUSTER_CA)?,
         })
     }
 
-    /// The CA file's path and content, or none when no CA is set.
-    async fn ca_file(&self) -> Result<Option<(String, Vec<u8>)>, EgressError> {
-        let Some(path) = &self.ca_cert else {
-            return Ok(None);
-        };
-        let data = tokio::fs::read(path)
-            .await
-            .map_err(|source| EgressError::Unreadable {
-                path: path.clone(),
-                source,
-            })?;
-        Ok(Some((path.clone(), data)))
-    }
-
-    /// Every certificate in the CA file, to trust beside the system's roots: none when no CA is set. A file that
-    /// cannot be read, holds no certificate or holds one that does not parse is an error, so a trust root that
-    /// was asked for is never left out in silence.
+    /// Every certificate of the CA files this workload trusts beside the system's roots: the egress CA's, then the
+    /// cluster's own when it is told to trust it; none when neither is set. A file that cannot be read, holds no
+    /// certificate or holds one that does not parse is an error naming its variable, so a trust root that was asked for
+    /// is never left out in silence.
     pub async fn ca_bundle(&self) -> Result<Vec<Certificate>, EgressError> {
-        let Some((path, data)) = self.ca_file().await? else {
-            return Ok(Vec::new());
-        };
-        let certs = Certificate::from_pem_bundle(&data).map_err(|e| EgressError::Invalid {
-            path: path.clone(),
-            reason: e.to_string(),
-        })?;
-        if certs.is_empty() {
-            return Err(EgressError::Empty { path });
+        let mut bundle = Vec::new();
+        for (variable, path) in [
+            (CA_CERT.name(), &self.ca_cert),
+            (CLUSTER_CA.name(), &self.cluster_ca),
+        ] {
+            if let Some(path) = path {
+                bundle.extend(certificates(variable, path).await?);
+            }
         }
-        Ok(certs)
+        Ok(bundle)
     }
 
     /// A reqwest client builder that trusts `bundle` beside the system's roots and goes out through the proxy,
@@ -432,7 +459,8 @@ mod tests {
             [
                 "POLAR_EGRESS_PROXY",
                 "POLAR_EGRESS_NO_PROXY",
-                "POLAR_EGRESS_CA_CERT"
+                "POLAR_EGRESS_CA_CERT",
+                "POLAR_EGRESS_CLUSTER_CA"
             ]
         );
     }
@@ -529,6 +557,32 @@ mod tests {
         let error = egress.ca_bundle().await.unwrap_err().to_string();
         assert!(
             error.contains("POLAR_EGRESS_CA_CERT") && error.contains("holds no PEM certificate"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cluster_ca_that_is_set_and_cannot_be_read_or_holds_nothing_names_its_own_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.pem").display().to_string();
+        let egress = Egress {
+            cluster_ca: Some(missing.clone()),
+            ..Egress::default()
+        };
+        let error = egress.ca_bundle().await.unwrap_err().to_string();
+        assert!(
+            error.contains("POLAR_EGRESS_CLUSTER_CA") && error.contains(&missing),
+            "{error}"
+        );
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "").unwrap();
+        let egress = Egress {
+            cluster_ca: Some(empty.display().to_string()),
+            ..Egress::default()
+        };
+        let error = egress.ca_bundle().await.unwrap_err().to_string();
+        assert!(
+            error.contains("POLAR_EGRESS_CLUSTER_CA") && error.contains("holds no PEM certificate"),
             "{error}"
         );
     }

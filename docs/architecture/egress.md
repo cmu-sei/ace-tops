@@ -138,6 +138,15 @@ same; with a proxy and a CA exactly the three agents gain exactly the egress ent
 bundle; a call outside arriving at a proxy as `CONNECT host:443`; a property that cluster hosts bypass the proxy), and
 each handler's own (`polar-agent-builder/src/protocol/http.rs`, `git.rs`).
 
+## The cluster's own CA, for one workload (2026-11-06)
+
+`POLAR_EGRESS_CLUSTER_CA` (`lib/src/egress.rs`) names a CA file a workload trusts beside the system's roots and `POLAR_EGRESS_CA_CERT`: the cluster's own CA,
+`/etc/polar-ca/ca.pem`, which every agent pod has, for a service in the cluster whose certificate the credentials agent issued, as Neo4j's is. It is the egress
+section's, so the HTTP and git handlers read it through the same bundle, and a file that is named and cannot be used stops the agent under that variable's name. The
+target's egress setting never sets it: only a workload's catalog entry does, so applying the catalog is the sign-off, and every other agent's trust is unchanged.
+The first is `gitlab-observer` in `sandbox-local`, reading the test GitLab (`http-observers.md`, "GitLab"); the maintainer's choice, "A per-workload setting", as
+the graph's (`GRAPH_CA_CERT`) and the scheduler's git client (`POLAR_SCHEDULER_GIT_CA_CERT`) trust theirs.
+
 ## Not done
 
 - No proxy credentials: the value is written into a ConfigMap. A proxy that needs them would need a Secret.

@@ -129,6 +129,40 @@ async fn the_egress_ca_is_trusted_beside_the_system_roots_not_in_their_place() {
     );
 }
 
+/// A workload whose catalog entry says so trusts the cluster's own CA for its outside requests, beside the egress CA: a
+/// service in the cluster whose certificate the credentials agent issued, as the test GitLab's is. One that does not is not
+/// told it, and does not trust it.
+#[tokio::test]
+async fn the_cluster_ca_is_trusted_only_where_a_workload_is_told_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = TestCa::new("Polar Internal CA");
+    let corporate = TestCa::new("corporate");
+    let cluster_pem = dir.path().join("polar-ca.pem");
+    let corporate_pem = dir.path().join("corporate.pem");
+    std::fs::write(&cluster_pem, &cluster.pem).unwrap();
+    std::fs::write(&corporate_pem, &corporate.pem).unwrap();
+    let in_cluster = https_server(&cluster).await.url;
+    let outside = https_server(&corporate).await.url;
+
+    let told = Egress {
+        ca_cert: Some(corporate_pem.display().to_string()),
+        cluster_ca: Some(cluster_pem.display().to_string()),
+        ..Egress::default()
+    };
+    assert_eq!(told.ca_bundle().await.unwrap().len(), 2);
+    let trusting = client(&told).await;
+    assert_eq!(reach(&trusting, &in_cluster).await, "ok");
+    assert_eq!(reach(&trusting, &outside).await, "ok");
+
+    let not_told = Egress {
+        ca_cert: Some(corporate_pem.display().to_string()),
+        ..Egress::default()
+    };
+    let other = client(&not_told).await;
+    assert_ne!(reach(&other, &in_cluster).await, "ok");
+    assert_eq!(reach(&other, &outside).await, "ok");
+}
+
 #[tokio::test]
 async fn every_certificate_of_a_bundle_is_trusted() {
     let dir = tempfile::tempdir().unwrap();
@@ -160,6 +194,7 @@ async fn a_call_outside_goes_through_the_proxy_and_a_bypassed_host_does_not() {
         proxy: Some(proxy),
         no_proxy: Some("localhost,127.0.0.1,::1,.svc,.cluster.local".to_string()),
         ca_cert: Some(ca_file.display().to_string()),
+        cluster_ca: None,
     };
     let client = client(&egress).await;
 
@@ -234,6 +269,7 @@ fn git_is_given_no_proxy_without_one_and_none_for_an_ssh_remote() {
         proxy: Some("http://proxy.corp.example:3128".to_string()),
         no_proxy: Some(".svc,.cluster.local".to_string()),
         ca_cert: None,
+        cluster_ca: None,
     };
     assert_eq!(
         egress
@@ -272,6 +308,7 @@ proptest! {
             proxy: Some(proxy.to_string()),
             no_proxy: Some(format!("localhost,127.0.0.1,::1,.svc,.{domain}")),
             ca_cert: None,
+            cluster_ca: None,
         };
         let scheme = if https { "https" } else { "http" };
         let host = names.join(".");
