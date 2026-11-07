@@ -1,0 +1,76 @@
+<!--
+  ACE Tool
+
+  Copyright 2026 Carnegie Mellon University.
+
+  NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+  FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+  EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+  PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+  MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+  TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+  Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+  for full terms.
+
+  [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+  distribution.  Please see Copyright notice for non-US Government use and distribution.
+
+  This Software includes and/or makes use of Third-Party Software each subject to its own license.
+
+  DM26-0670
+-->
+
+# Configurations under test (designing, 2026-11-07)
+
+**Why.** Polar's deployment is tight: the catalog is the sign-off, the render is signed and published, the floor admits only
+what the catalog and the target name, the attestation agent watches only Polar's namespaces and holds pods to the signed record.
+That is right for a deployment, and it left no place for infrastructure that is there only while something is tested. The
+GitLab pair's live run (`http-observers.md`, "GitLab", G4) showed it: its test GitLab needed a per-workload trust of the cluster
+CA, a namespace attested (`attest_also`), a floor entry (`server_also`), and kubectl to apply it, each landing in `sandbox-local`
+as if the target were permanently made of it. The maintainer (2026-11-07): "we need test configurations ... it's simply
+infrastructure under test, not something we're permanently declaring as part of polar", "possibly with its own trust levels within
+the polar boundary", which "would address things like A/B testing needs in the future too". Their choice: design it first; G4
+waits for it and is its first user.
+
+**What it is.** A configuration under test is a named, versioned addition to a target, declared in the repository beside the
+targets, layered onto one cluster's deployment for as long as a test needs it, and removed whole. It adds:
+- infrastructure: objects the render makes into a layer of its own (the test GitLab, its runner, a seeded dataset's job);
+- settings: what the target would otherwise have to say for it (namespaces attested, servers on the floor, workloads enabled, a
+  workload's settings, as the GitLab observer's trust of the cluster CA);
+- expectations: what the test should then find (a seed's nodes and edges), for the evidence it produces.
+
+**What the existing mechanisms already give it** (read 2026-11-07):
+- *The signed render and record.* A layer the render makes is published, signed and recorded in `provenance.json`
+  (`deploy-repo.nu:560-569`) and, for its workloads, in the deployment record (`deploy-objects.nu:223-247`), which the attestation
+  agent holds pods to (`attestation/agent/src/record.rs:30-67`). Infrastructure applied outside the render is issued certificates
+  unattested (`CannotSay`, `attestation/common/src/verdict.rs:116-118`) and shows as drift (`NotInRecord`, `record.rs:107-125`): so
+  infrastructure under test is rendered, not applied by hand.
+- *Per-cluster inputs.* `cluster-inputs.nuon` (`cluster-inputs.nu:26-36`) is per cluster, gitignored, tied to the cluster CA and
+  recorded in `provenance.json` (`deploy-repo.nu:470-481`): a cluster can carry a configuration under test without the committed
+  target saying so.
+- *A mark a certificate carries.* A `g:` group is a Cedar parent of the identity (`polar-policy/src/lib.rs:594-641`), so an
+  `under-test` group on every certificate a configuration under test is issued lets policy keep it from what production holds;
+  the signed groups document can also place an identity (`authority-model.md:45, 142-148`).
+- *Precedents.* The secret harness is "added to a target when it is what is being tested" (`policy-enforcement.md:81-83`,
+  `config.nuon:124-125`); the load harness's Jobs are made per run (`load-harness.nu`). Both are configurations under test in all
+  but name.
+
+**Constraints** (`AGENTS.md`, "Design Principles"): applying the catalog is the sign-off; control travels signed at run time;
+Kubernetes is the trust base; a trust setting is Static, never Dynamic (`dynamic-settings.md:134-165`); special cases around one
+mechanism mean its shape is wrong. And the provenance trail is not negotiable: what a deployment carried while tested stays in
+its signed record.
+
+**Open questions**, asked one at a time:
+1. Where infrastructure under test lives: rendered into a layer of the deployment, published and signed (recommended, by the
+   attestation and provenance facts above), or applied beside it.
+2. How a cluster takes one: by its per-cluster inputs (`up.nu <target> --under-test <name>`, recorded in `cluster-inputs.nuon`),
+   or by the committed target.
+3. Its trust level: an `under-test` group on its certificates and its workloads marked in the deployment record (a schema bump),
+   a namespace convention, or an intermediate CA of its own.
+4. A/B: a variant of an agent as a second workload of the same kind, its own identity, in a configuration under test; what it may
+   write (its own topics and labels, or the agent's), decided when the first variant is wanted.
+5. The secret harness and the load harness: moved into configurations under test now, or later.
+
+**What G4 leaves for it.** Uncommitted on main, as material: `infra/gitlab-test.nu` (the test GitLab, with tests), `infra/attested.nu`
+(`attest_also` and `server_also`, judged), and their use in `resolve.nu`, `render.nu`, the namespaces chart and `sandbox-local`.
