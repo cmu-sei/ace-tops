@@ -655,4 +655,40 @@ mod tests {
         }
         assert!(is_edges > 0, "no IS edge was written at all");
     }
+
+    /// A dependency is a Package, keyed by purl: a ref that is not one (a CycloneDX bom-ref such as cargo's
+    /// `path+file://...#0.1.0`) is not a package and makes no node, and the edges between purls are kept.
+    #[test]
+    fn a_dependency_ref_that_is_not_a_purl_makes_no_package() {
+        let bom_ref = "path+file:///work/polar#0.1.0";
+        let dep_ref = "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18";
+        let ops = project(
+            ProvenanceEvent::SbomAnalyzed(SbomGraphFragment {
+                artifact_content_hash: "sha256:sbom".into(),
+                filename: "polar.cdx.json".into(),
+                root: Some(package("pkg:cargo/polar@1.0.0")),
+                components: vec![package("pkg:cargo/itoa@1.0.18")],
+                edges: vec![
+                    DependencyEdge {
+                        from_ref: bom_ref.into(),
+                        to_refs: vec![dep_ref.into()],
+                    },
+                    DependencyEdge {
+                        from_ref: "pkg:cargo/polar@1.0.0".into(),
+                        to_refs: vec!["pkg:cargo/itoa@1.0.18".into(), dep_ref.into()],
+                    },
+                ],
+            }),
+            T0,
+        )
+        .unwrap();
+        let written = format!("{ops:?}");
+        for not_a_purl in [bom_ref, dep_ref] {
+            assert!(
+                !written.contains(not_a_purl),
+                "{not_a_purl} was written: {written}"
+            );
+        }
+        assert!(written.contains("pkg:cargo/itoa@1.0.18"));
+    }
 }

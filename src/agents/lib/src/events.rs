@@ -178,7 +178,9 @@ pub struct PackageRef {
 
 /// A dependency edge from the CycloneDX `dependencies` array.
 ///
-/// Encodes "from_ref depends on each of to_refs." This is NOT derived
+/// Encodes "from_ref depends on each of to_refs", each a purl, the key a Package is merged on: the producer gives
+/// each CycloneDX bom-ref as the purl of the component it names (scripts/pipeline/core/sbom.nu,
+/// `extract-graph-fragment`), and build-processor writes no package for a ref that is not one. This is NOT derived
 /// from iterating the flat `components` list — that list is an inventory.
 /// This is the actual tree structure the SBOM generator recorded.
 /// If the generator omits this key, the graph degrades gracefully to

@@ -55,6 +55,13 @@ fn string(s: impl Into<String>) -> GraphValue {
     GraphValue::String(s.into())
 }
 
+/// Whether a reference names a package as the graph keys one: a purl (`pkg:type/name@version`). A CycloneDX
+/// bom-ref that is not a purl (cargo-cyclonedx's `path+file://...#0.1.0`) names an entry of one SBOM, not a package,
+/// and the producer is to give dependencies by purl (scripts/pipeline/core/sbom.nu, `extract-graph-fragment`).
+fn is_purl(reference: &str) -> bool {
+    reference.starts_with("pkg:")
+}
+
 /// What `node` IS: an artifact (pipeline-design-reference.md, "The type-marker singleton idiom").
 fn type_edge(node: ArtifactNodeKey) -> GraphOp {
     edge(node, rel::IS, ArtifactNodeKey::Artifact, vec![])
@@ -212,7 +219,7 @@ pub fn sbom_analyzed(fragment: SbomGraphFragment) -> Vec<GraphOp> {
     // treat every component as a direct dependency.
     if let Some(ref root) = fragment.root {
         let deps: Vec<String> = match fragment.edges.iter().find(|e| e.from_ref == root.purl) {
-            Some(e) => e.to_refs.clone(),
+            Some(e) => e.to_refs.iter().filter(|r| is_purl(r)).cloned().collect(),
             None => {
                 warn!(
                     "SBOM {} has no dependency entry for root purl {}, falling back to flat linkage",
@@ -244,16 +251,26 @@ pub fn sbom_analyzed(fragment: SbomGraphFragment) -> Vec<GraphOp> {
     // ── The full dependency tree ─────────────────────────────────────────────
     // Every (from → to) pair. MERGE on both ends keeps it safe for purls that
     // aren't in `components`.
-    let pairs: Vec<GraphValue> = fragment
+    let all_pairs = fragment
         .edges
         .iter()
-        .flat_map(|e| {
-            e.to_refs.iter().map(|to| {
-                GraphValue::Map(vec![
-                    ("from".into(), string(&e.from_ref)),
-                    ("to".into(), string(to)),
-                ])
-            })
+        .flat_map(|e| e.to_refs.iter().map(|to| (&e.from_ref, to)));
+    let (pairs, skipped): (Vec<_>, Vec<_>) =
+        all_pairs.partition(|(from, to)| is_purl(from) && is_purl(to));
+    if !skipped.is_empty() {
+        warn!(
+            "SBOM {}: {} dependency edges name something that is not a purl and are not written",
+            fragment.filename,
+            skipped.len()
+        );
+    }
+    let pairs: Vec<GraphValue> = pairs
+        .into_iter()
+        .map(|(from, to)| {
+            GraphValue::Map(vec![
+                ("from".into(), string(from)),
+                ("to".into(), string(to)),
+            ])
         })
         .collect();
     let edge_count = pairs.len();

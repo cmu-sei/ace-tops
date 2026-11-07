@@ -818,7 +818,9 @@ Each step is taken in bites, each reported before the next.
   started, nothing refused. Open from B11: which build publisher owns which `build_id` (any publisher the topic admits may still report for
   any build). Next, the projection findings, one a commit: B13 DONE 2026-11-07 (artifacts IS `Artifact`,
   as the type-marker idiom says, and a registry no longer CONTAINS the anchor; migration step, not written: graphs written before hold
-  `(Artifact)-[:IS]->(x)` and `(OCIRegistry)-[:CONTAINS]->(Artifact)`, u7c's two resolved images among them, to reverse and remove), B8 (dependency tree keyed on bom-ref), B7 (empty purl),
+  `(Artifact)-[:IS]->(x)` and `(OCIRegistry)-[:CONTAINS]->(Artifact)`, u7c's two resolved images among them, to reverse and remove), B8 DONE 2026-11-07 (the pipeline gives the tree between purls, translating
+  bom-refs, and build-processor writes no package for a ref that is not a purl; `scripts/pipeline/tests/sbom.nu` is the pipeline scripts' first
+  test; migration step, not written: graphs written before hold `Package` nodes keyed by bom-refs, with their DEPENDS_ON edges, to remove), (dependency tree keyed on bom-ref), B7 (empty purl),
   B9 (null license erases), B5 (processing time as the state key), B15, B17, B21, B2/B10 (shared with kube-consumer's K2/K4). The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through

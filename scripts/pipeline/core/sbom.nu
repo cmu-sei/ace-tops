@@ -349,10 +349,17 @@ export def extract-graph-fragment [doc: record, artifact_content_hash: string]: 
     # gracefully — the agent gets nodes but no edges. That's still
     # useful for "what packages exist in this build" queries, just
     # not for "what depends on what" traversals.
+    #
+    # The spec writes the tree between bom-refs, which name entries of this one document (cargo-cyclonedx's
+    # `path+file://...#0.1.0`), while the graph keys a package by purl. Each ref is given as the purl of the component
+    # it names, and a ref no component gives a purl for is left out, as is an entry left with nothing it depends on.
+    let purls = ([$root_component] | append ($doc.components? | default []) | compact
+        | where { ($in."bom-ref"? | default "" | is-not-empty) and ($in.purl? | default "" | is-not-empty) }
+        | reduce --fold {} {|c, acc| $acc | upsert $c."bom-ref" $c.purl })
     let edges = ($doc.dependencies? | default [] | each {|dep|
         {
-            from_ref: ($dep.ref? | default "")
-            to_refs: ($dep.dependsOn? | default [])
+            from_ref: ($purls | get -o ($dep.ref? | default "") | default "")
+            to_refs: ($dep.dependsOn? | default [] | each {|r| $purls | get -o $r } | compact)
         }
     } | where { ($in.from_ref | is-not-empty) and ($in.to_refs | length) > 0 })
 
