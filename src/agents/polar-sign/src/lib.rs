@@ -464,8 +464,11 @@ pub fn sign_record(payload: &str, certificate_pem: &str, key_pem: &str) -> Resul
         .map_err(|e| e.to_string())
 }
 
-/// A payload signed by `identity`, written as the Dhall file to commit.
+/// A payload signed by `identity`, written as the Dhall file to commit. What is signed is what every reader will see: the
+/// payload as the Dhall it is written as evaluates, so a field one entry of a list leaves out is signed as null, as it reads
+/// back (an entry with no `paging` beside one with did not verify until 2026-11-07).
 pub fn sign_to_dhall(payload: Value, identity: &Identity) -> Result<String, String> {
+    let payload = evaluate(&dhall(&payload).map_err(|e| e.to_string())?)?;
     let document = polar_signing::sign(payload, &identity.chain, &identity.key_pem)
         .map_err(|e| e.to_string())?;
     document_dhall(&document).map_err(|e| e.to_string())
@@ -824,6 +827,53 @@ mod tests {
         // Still refused: a bare null, and a field whose present values are of two types.
         assert_eq!(dhall(&json!(null)), Err(DhallError::Unsupported("null")));
         assert!(dhall(&json!([{ "a": 1 }, { "a": "one" }])).is_err());
+    }
+
+    /// Signed, a list whose entries differ in an optional field verifies, and what verifies is what every reader sees: the
+    /// field null where an entry left it out (2026-11-07: the GitLab observer refused its `sources`, a source with no `paging`
+    /// beside one with, "the signature does not verify", since the signature was made over the body as given).
+    #[test]
+    fn a_list_whose_entries_differ_in_an_optional_field_is_signed_as_it_is_read_and_verifies() {
+        let ca = polar_signing::testing::root("Polar Internal CA");
+        let body = json!({ "sources": [
+            { "name": "metadata", "url": "https://g.example/api/graphql", "graphql": { "query": "{ metadata { version } }" } },
+            { "name": "projects", "url": "https://g.example/api/graphql", "graphql": { "query": "q" },
+              "paging": { "style": "graphql", "connection": "/data/projects" } },
+        ]});
+        let payload = runtime_payload(
+            "gitlab-observer",
+            "sources",
+            1,
+            "11111111-2222-4333-8444-555555555555",
+            body,
+        );
+        let file = sign_to_dhall(payload.clone(), &identity_for(&ca)).unwrap();
+        let (_, verified) = verify_source(&file, std::slice::from_ref(&ca.pem), now()).unwrap();
+        assert_eq!(verified["body"]["sources"][0]["paging"], Value::Null);
+        assert_eq!(
+            verified["body"]["sources"][1]["paging"],
+            payload["body"]["sources"][1]["paging"]
+        );
+        assert_eq!(verified, evaluate(&dhall(&payload).unwrap()).unwrap());
+    }
+
+    proptest::proptest! {
+        /// Any list of records, each leaving out any of its fields, signs to a file that verifies as what it reads back as.
+        #[test]
+        fn a_list_of_records_with_fields_left_out_signs_to_what_verifies(
+            entries in proptest::collection::vec(
+                proptest::collection::btree_map("[a-d]", proptest::option::of("[a-z]{0,4}"), 0..4), 1..5),
+        ) {
+            let list: Vec<Value> = entries.into_iter().map(|e| Value::Object(
+                e.into_iter().filter_map(|(k, v)| v.map(|v| (k, Value::String(v)))).collect()
+            )).collect();
+            let payload = runtime_payload("an-agent", "sources", 1, "id-1", json!({ "list": list }));
+            let (ca, identity) = one_signer();
+            let file = sign_to_dhall(payload.clone(), identity).unwrap();
+            let verified = verify_source(&file, std::slice::from_ref(ca), now());
+            proptest::prop_assert!(verified.is_ok(), "{:?}", verified);
+            proptest::prop_assert_eq!(verified.unwrap().1, evaluate(&dhall(&payload).unwrap()).unwrap());
+        }
     }
 
     #[test]
