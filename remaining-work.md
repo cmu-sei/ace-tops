@@ -811,8 +811,13 @@ Each step is taken in bites, each reported before the next.
   B4, B14 (a constraint for each of its sixteen labels), B16, B22, B23, N2, N3. Checked live on u7c: it ran 2/2 with no restart, made its
   constraints, and wrote the resolver's two Docker Hub images as `OCIArtifact`s `HOSTED_BY` docker.io, each an index with 12 `HAS_MANIFEST`
   platform manifests, which nothing wrote before. Migration step, not written: a cluster that ever applied the old chart keeps its
-  `build-processor` Job and ServiceAccount, to delete. P3 next: B11 (`published_by`), B12 and N1 (one event's writes as one transaction), then
-  the projection findings. The history that
+  `build-processor` Job and ServiceAccount, to delete. P3: B12 and N1 DONE 2026-11-07 (`2a304ef9`: one event's writes are one
+  `GraphOp::Transaction`); B11 DONE 2026-11-07 (`37c57e14`, the maintainer, "Split topics by whose word"): the resolver's verified registry facts
+  on `polar.provenance.resolutions`, which it alone declares, build reports on `polar.provenance.events`, each kind believed on one topic only
+  (`project::whose_word`, `believed_on`); checked live on u7c, the resolver's facts written by the new build-processor five seconds after it
+  started, nothing refused. Open from B11: which build publisher owns which `build_id` (any publisher the topic admits may still report for
+  any build). Next, the projection findings, one a commit: B13 (IS edges reversed), B8 (dependency tree keyed on bom-ref), B7 (empty purl),
+  B9 (null license erases), B5 (processing time as the state key), B15, B17, B21, B2/B10 (shared with kube-consumer's K2/K4). The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
