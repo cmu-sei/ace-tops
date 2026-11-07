@@ -77,6 +77,8 @@ def main [] {
             let init = (polar_init (context)).container
             assert equal $init.image $"($REG)/polar-init:latest"
             assert equal $init.command ["polar-init"]
+            # Its tag moves, so a node pulls it each time (render.nu, the pull policy check), as Neo4j's does.
+            assert equal $init.imagePullPolicy "Always"
             let given = ($init.env | reduce --fold {} {|e, acc| $acc | insert $e.name ($e.value? | default null) })
             assert equal $given.POLAR_INIT_ISSUER "credentials-agent"
             assert equal $given.POLAR_INIT_OBSERVER_URL "http://credentials-agent-observer.polar.svc.cluster.local:8080"

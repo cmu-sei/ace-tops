@@ -87,7 +87,7 @@ let Functions = ($schema)/functions.dhall
 in  { container =
         Functions.makePolarInitContainer
           \"($context.polarInitImage)\"
-          \"IfNotPresent\"
+          \"Always\"
           Constants.saTokenVolumeName
           \"\"
           \(Functions.credentialsAgentIssuerEnv \"($context.credentialsObserverUrl)\" \"($context.credentialsAgentIdentity)\"\)
