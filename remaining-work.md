@@ -708,13 +708,14 @@ Each step is taken in bites, each reported before the next.
   logged "not verified"; changed, hostless means Docker Hub only when a digest pins it, an unpinned hostless name is not verified (the maintainer,
   "Docker Hub only if pinned": a digest proves the image wherever it is fetched, a tag on Docker Hub may not be what a node loaded by that name);
   declined, `7621f9bb` (credentials from `DOCKER_CONFIG`, the file path main replaced with escrowed `credentials` sections in `775a1ecc`) and
-  `9132832e` (images named `localhost/<name>`, not taken now). Found doing it, not his: THE RESOLVER IGNORES THE KUBELET'S DIGEST. The kubernetes
-  consumer emits `OCIArtifactDiscovered` with `uri` the spec's tag and `image_id` (in `source_ref`) the digest the kubelet ran, and says the
-  resolver "must trust the kubelet and flag the disagreement" (`src/agents/kubernetes/consume/src/lib.rs`, "Image discovery: kubelet-attested
-  only"); nothing reads `image_id`: the resolver pulls the tag as it is now, and the consumer's `KUBERNETES_RESOLUTION_EVENTS` handler
-  (`src/agents/kubernetes/consume/src/supervisor.rs`) links `USES_IMAGE` to that digest, so a tag repointed after the pull attests an image the
-  pod is not running, the case the comment calls worse than no attestation. Fixing it reads `image_id` defensively (`repo@sha256:…`, a bare
-  `sha256:…`, `docker-pullable://`), fetches by that digest, and so also pins a hostless name the kubelet ran; not scheduled. The history that
+  `9132832e` (images named `localhost/<name>`, not taken now). Found doing it, not his, and FIXED 2026-11-07 (the maintainer, "the digest
+  fix"): nothing read the kubelet's `image_id`, though the kubernetes consumer says the resolver must trust it
+  (`src/agents/kubernetes/consume/src/lib.rs`, "Image discovery: kubelet-attested only"); the resolver pulled the spec's tag as it was then and the
+  consumer linked `USES_IMAGE` to that digest, so a tag repointed after the pull attested an image the pod was not running. Now a container is
+  read by the kubelet's digest from where the spec names (`src/agents/resolver/src/resolver.rs`, `image_source`, `kubelet_digest`), else by the
+  spec's own digest, else not verified; this also pins a hostless name the kubelet ran. Still open: a repoint is not flagged (the consumer's
+  contract asked for it, detection first), which takes a second read, of the tag, on every observation; and every observation reads the
+  registry again (no cache), which on Docker Hub meets its pull limits now that hostless names the kubelet ran are read there. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's

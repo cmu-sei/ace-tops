@@ -875,14 +875,16 @@ impl GraphOperable for Pod {
             // this container (regular OR init — the index covers both).
             //
             // Contract with the resolver: `image_id` is the authoritative
-            // digest pin; `uri` is the fetch path (the spec tag, which is
-            // what's reliably pullable). If the registry resolution of `uri`
-            // yields a digest that disagrees with `image_id`, the resolver
-            // must trust the kubelet and flag the disagreement — that
-            // mismatch IS a tag repoint being observed live. Resolver must
-            // also parse image_id defensively: containerd yields
+            // digest pin; `uri` names where to fetch it from (the spec's
+            // reference). The resolver reads the image by `image_id`'s digest
+            // from there, never by the tag, which may have been repointed
+            // since the pull (resolver/src/resolver.rs, `image_source`). It
+            // parses image_id defensively: containerd yields
             // `repo@sha256:...`, locally-loaded images can yield a bare
-            // `sha256:...`, and legacy runtimes prefixed `docker-pullable://`.
+            // `sha256:...` (the image's own ID, which no registry serves, so
+            // not verified), and legacy runtimes prefixed
+            // `docker-pullable://`. A repoint is not flagged: that would take
+            // a second read, of the tag (remaining-work.md).
             //
             // Emission recurs on every observation; discovery is idempotent
             // by design (resolver MERGEs on digest).

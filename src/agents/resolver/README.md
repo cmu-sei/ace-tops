@@ -63,9 +63,13 @@ For a private registry with an internal CA, or a proxy that inspects TLS, the ta
 
 ## Known Limitations
 
-**Images no registry vouches for** — The resolver reads a reference by Docker's rule (`oci_client::Reference`, a port of Docker's `normalize.go`): the first component is a registry host when a path follows it and it holds a dot or a colon, or is `localhost`, so a tag's dots are not a host (`neo4j:5.26.2`). `localhost:5000/…` is a registry like any other and is resolved. Two kinds of reference are never fetched and never vouched for:
+**Images no registry vouches for** — The resolver reads a reference by Docker's rule (`oci_client::Reference`, a port of Docker's `normalize.go`): the first component is a registry host when a path follows it and it holds a dot or a colon, or is `localhost`, so a tag's dots are not a host (`neo4j:5.26.2`). `localhost:5000/…` is a registry like any other and is resolved.
 
-- A name with no registry host and no digest (`polar-nu-init:latest`, `postgres:17.5`). Docker reads it as Docker Hub's, but a tag there may not be the image a node loaded by that name. The same name pinned by a digest (`postgres@sha256:…`) is looked up on Docker Hub, since the digest proves which image it is wherever it is fetched from.
+Only a digest proves which image a reference means, wherever it is fetched from, and a body with another digest is refused. A pod's container is the image its kubelet ran: the resolver reads it by the digest in the kubelet's `image_id` (`repo@sha256:…`, or the same after `docker-pullable://`), from the registry and repository the spec names, and never by the tag, which may have been moved since the pull. With no such digest it uses the spec's own digest, if it has one. A name with no registry host is Docker Hub's, so a pinned one is read there. A repoint is not flagged, since that would take a second read, of the tag.
+
+Never fetched and never vouched for:
+
+- An image nothing pins: a container whose kubelet reported no digest a registry serves (a bare `sha256:…` is the image's own ID, as for a locally loaded image) and whose spec names none, or a repository's name with no registry host and no digest. Docker reads a hostless name as Docker Hub's, but a tag there may not be the image a node loaded by that name.
 - A name whose registry is `localhost` (`localhost/blitz-portal:latest`), pinned or not: it is in a node's own image store, as podman names what it builds, and the resolver cannot see a node's store (it may run on another node).
 
 Each logs `not verified: …` and publishes no event, so the container gets no `USES_IMAGE` edge. Calling an image local or unpinned can only take a verification away, never give one. The gap is a query, not a node:

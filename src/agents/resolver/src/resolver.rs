@@ -43,44 +43,79 @@ pub struct ResolverAgent;
 /// Where an image reference says its image lives ([`ResolverAgent::image_source`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageSource {
-    /// A registry, by its name as Docker normalizes it (`docker.io` for a pinned name with no host).
-    Registry(String),
+    /// The image to read, from its registry as Docker normalizes it (`docker.io` for a pinned name with no host).
+    Registry(Reference),
     /// The node's own image store (registry `localhost`): never fetched, never verified.
     NodeLocal,
-    /// A name with no registry host and no digest: never fetched, never verified.
+    /// Nothing says which image it is: a name with no registry host and no digest, or a container whose kubelet reported
+    /// no digest a registry serves and whose spec names none. Never fetched, never verified.
     Unpinned,
+}
+
+/// The digest a kubelet's `image_id` says it ran, as a registry serves its manifest: containerd's `repo@sha256:...`, or
+/// the same after a legacy runtime's `docker-pullable://`. A bare `sha256:...` is the image's own ID, which no registry
+/// serves a manifest by, and is none; so is a digest of an algorithm a registry read does not check.
+pub fn kubelet_digest(image_id: &str) -> Option<&str> {
+    let (_, digest) = image_id
+        .trim_start_matches("docker-pullable://")
+        .split_once('@')?;
+    let (algorithm, hex) = digest.split_once(':')?;
+    let length = match algorithm {
+        "sha256" => 64,
+        "sha384" => 96,
+        "sha512" => 128,
+        _ => return None,
+    };
+    (hex.len() == length && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .then_some(digest)
 }
 
 impl ResolverAgent {
     /// Where an image reference says its image lives, by Docker's rule (`oci_client::Reference` is a port of Docker's
     /// normalize.go): the first component is a registry host when a path follows it and it holds a dot or a colon, or is
-    /// `localhost`; a tag's dots are not a host. A name with no host is Docker Hub's ("postgres:17.5" is
-    /// docker.io/library/postgres), and it is looked up there only when a digest pins it: the digest proves which image it
-    /// is wherever it is fetched from, and a tag on Docker Hub may not be the image a node loaded by that name. A registry
-    /// of `localhost` is the node's own image store, as podman names what it builds. `localhost:5000` is a registry like
-    /// any other. `None`: not a reference.
-    pub fn image_source(uri: &str) -> Option<ImageSource> {
+    /// `localhost`; a tag's dots are not a host. A registry of `localhost` is the node's own image store, as podman names
+    /// what it builds; `localhost:5000` is a registry like any other. `None`: not a reference.
+    ///
+    /// Only a digest proves which image a reference means wherever it is fetched from. A name with no host is Docker
+    /// Hub's ("postgres:17.5" is docker.io/library/postgres) and is looked up there only when pinned, since a tag there may
+    /// not be the image a node loaded by that name. A pod's container is the image its kubelet ran (`image_id`), read by
+    /// that digest from where the spec names and never by a tag, which may have been moved since the pull
+    /// (`kubernetes/consume`, "Image discovery: kubelet-attested only").
+    pub fn image_source(uri: &str, source_ref: &DiscoverySourceRef) -> Option<ImageSource> {
         let reference = Reference::from_str(uri).ok()?;
+        if reference.registry() == "localhost" {
+            return Some(ImageSource::NodeLocal);
+        }
         let names_a_host = uri.split_once('/').is_some_and(|(first, _)| {
             first.contains('.') || first.contains(':') || first == "localhost"
         });
-        Some(if reference.registry() == "localhost" {
-            ImageSource::NodeLocal
-        } else if !names_a_host && reference.digest().is_none() {
-            ImageSource::Unpinned
-        } else {
-            ImageSource::Registry(reference.registry().to_string())
+        Some(match source_ref {
+            DiscoverySourceRef::KubernetesPodContainer { image_id, .. } => {
+                match image_id.as_deref().and_then(kubelet_digest) {
+                    Some(ran) => {
+                        ImageSource::Registry(reference.clone_with_digest(ran.to_string()))
+                    }
+                    None if reference.digest().is_some() => ImageSource::Registry(reference),
+                    None => ImageSource::Unpinned,
+                }
+            }
+            DiscoverySourceRef::OCIRepository { .. } => {
+                if !names_a_host && reference.digest().is_none() {
+                    ImageSource::Unpinned
+                } else {
+                    ImageSource::Registry(reference)
+                }
+            }
         })
     }
 
     #[instrument(level = "debug", name = "resolver.inspect_image", skip(state))]
     async fn inspect_image(
         state: &mut ResolverAgentState,
-        image_ref: &str,
+        reference: &Reference,
     ) -> Result<(OciManifest, String), ActorProcessingErr> {
-        debug!("Attempting to resolve image: {image_ref}");
-        let reference = Reference::from_str(image_ref)?;
-        registry::pull_manifest(&state.protocols, &reference, &state.insecure_registries)
+        debug!("Attempting to resolve image: {reference}");
+        registry::pull_manifest(&state.protocols, reference, &state.insecure_registries)
             .await
             .map_err(ActorProcessingErr::from)
     }
@@ -133,8 +168,8 @@ impl Actor for ResolverAgent {
     ) -> Result<(), ActorProcessingErr> {
         match msg {
             ProvenanceEvent::OCIArtifactDiscovered { uri, source_ref } => {
-                let registry = match Self::image_source(&uri) {
-                    Some(ImageSource::Registry(registry)) => registry,
+                let reference = match Self::image_source(&uri, &source_ref) {
+                    Some(ImageSource::Registry(reference)) => reference,
                     // What no registry can vouch for fails closed: it is never fetched and no event is published, so the
                     // container has no USES_IMAGE edge. Calling an image local or unpinned can only take a verification
                     // away, never give one. The gap is in the graph as a PodContainer with no USES_IMAGE edge (README,
@@ -147,7 +182,7 @@ impl Actor for ResolverAgent {
                     }
                     Some(ImageSource::Unpinned) => {
                         info!(
-                            "not verified: {uri} names no registry and no digest, so nothing says which image it is"
+                            "not verified: nothing says which image {uri} is (no digest in it, and none a registry serves from the kubelet)"
                         );
                         return Ok(());
                     }
@@ -156,7 +191,7 @@ impl Actor for ResolverAgent {
                         return Ok(());
                     }
                 };
-                match Self::inspect_image(state, &uri).await {
+                match Self::inspect_image(state, &reference).await {
                     Ok((manifest, digest)) => {
                         debug!("Resolved image: \n {manifest:?}");
                         let manifest_data = serde_json::to_vec(&manifest)?;
@@ -166,7 +201,7 @@ impl Actor for ResolverAgent {
                             uri: uri.clone(),
                             digest,
                             manifest_data,
-                            registry,
+                            registry: reference.registry().to_string(),
                             source_ref: source_ref.clone(),
                         };
 
@@ -205,13 +240,37 @@ impl Actor for ResolverAgent {
 #[cfg(test)]
 mod tests {
     use super::ImageSource::{NodeLocal, Registry, Unpinned};
-    use super::{ImageSource, ResolverAgent};
+    use super::{ImageSource, ResolverAgent, kubelet_digest};
+    use polar::DiscoverySourceRef;
     use proptest::prelude::*;
 
     const DIGEST: &str = "sha256:74be7d88879d59479314d30d331733f73cd3ec640fe575a310c9aaa149a4ae6c";
+    const RAN: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    fn registry(host: &str) -> Option<ImageSource> {
-        Some(Registry(host.to_string()))
+    fn fetched(whole: &str) -> Option<ImageSource> {
+        Some(Registry(whole.parse().expect("a reference")))
+    }
+
+    /// Seen hosted in a repository: the reference is all there is.
+    fn hosted(uri: &str) -> Option<ImageSource> {
+        ResolverAgent::image_source(
+            uri,
+            &DiscoverySourceRef::OCIRepository {
+                repo_uri: uri.to_string(),
+            },
+        )
+    }
+
+    /// Run by a pod's container: the spec's reference and the kubelet's `image_id`.
+    fn ran(uri: &str, image_id: Option<&str>) -> Option<ImageSource> {
+        ResolverAgent::image_source(
+            uri,
+            &DiscoverySourceRef::KubernetesPodContainer {
+                pod_uid: "pod".to_string(),
+                image_id: image_id.map(str::to_string),
+                container_name: "app".to_string(),
+            },
+        )
     }
 
     #[test]
@@ -224,21 +283,104 @@ mod tests {
             ("polar-nu-init:latest", Some(Unpinned)),
             ("library/postgres:17.5", Some(Unpinned)),
             ("ferronserver/ferron:3", Some(Unpinned)),
-            (&format!("ws-image@{DIGEST}"), registry("docker.io")),
-            (&format!("postgres:17.5@{DIGEST}"), registry("docker.io")),
-            (&format!("library/postgres@{DIGEST}"), registry("docker.io")),
+            (
+                &format!("ws-image@{DIGEST}"),
+                fetched(&format!("docker.io/library/ws-image@{DIGEST}")),
+            ),
+            (
+                &format!("postgres:17.5@{DIGEST}"),
+                fetched(&format!("docker.io/library/postgres:17.5@{DIGEST}")),
+            ),
+            (
+                &format!("library/postgres@{DIGEST}"),
+                fetched(&format!("docker.io/library/postgres@{DIGEST}")),
+            ),
             // A registry host is the first component when a path follows it (a tag's dots are not a host).
-            ("ghcr.io/org/app:1", registry("ghcr.io")),
-            ("quay.io/keycloak/keycloak:26.2.4", registry("quay.io")),
-            ("docker.io/library/postgres:17.5", registry("docker.io")),
-            ("localhost:5000/repo:1", registry("localhost:5000")),
+            ("ghcr.io/org/app:1", fetched("ghcr.io/org/app:1")),
+            (
+                "quay.io/keycloak/keycloak:26.2.4",
+                fetched("quay.io/keycloak/keycloak:26.2.4"),
+            ),
+            (
+                "docker.io/library/postgres:17.5",
+                fetched("docker.io/library/postgres:17.5"),
+            ),
+            ("localhost:5000/repo:1", fetched("localhost:5000/repo:1")),
             // `localhost` alone is the node's own image store, pinned or not.
             ("localhost/blitz-portal:latest", Some(NodeLocal)),
             (&format!("localhost/polar-init@{DIGEST}"), Some(NodeLocal)),
             // Not a reference at all.
             ("UPPER/Case:bad tag", None),
         ] {
-            assert_eq!(ResolverAgent::image_source(uri), source, "{uri}");
+            assert_eq!(hosted(uri), source, "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_containers_image_is_the_one_the_kubelet_ran() {
+        let ran_from = |name: &str| Some(format!("{name}@{RAN}"));
+        for (uri, image_id, source) in [
+            // The kubelet's digest says which image ran, whatever the tag names now, and pins a name with no host.
+            (
+                "ghcr.io/org/app:1",
+                ran_from("ghcr.io/org/app"),
+                fetched(&format!("ghcr.io/org/app@{RAN}")),
+            ),
+            (
+                "neo4j:5.26.2",
+                ran_from("docker.io/library/neo4j"),
+                fetched(&format!("docker.io/library/neo4j@{RAN}")),
+            ),
+            (
+                "ghcr.io/org/app:1",
+                Some(format!("docker-pullable://ghcr.io/org/app@{RAN}")),
+                fetched(&format!("ghcr.io/org/app@{RAN}")),
+            ),
+            (
+                &format!("ghcr.io/org/app@{DIGEST}"),
+                ran_from("ghcr.io/org/app"),
+                fetched(&format!("ghcr.io/org/app@{RAN}")),
+            ),
+            // With no digest from the kubelet, only the spec's own digest says which image it is.
+            (
+                &format!("ghcr.io/org/app@{DIGEST}"),
+                None,
+                fetched(&format!("ghcr.io/org/app@{DIGEST}")),
+            ),
+            ("ghcr.io/org/app:1", None, Some(Unpinned)),
+            // A bare `sha256:...` is the image's own ID, which no registry serves a manifest by.
+            ("ghcr.io/org/app:1", Some(RAN.to_string()), Some(Unpinned)),
+            ("neo4j:5.26.2", Some(RAN.to_string()), Some(Unpinned)),
+            // The node's own store stays unverified, whatever the kubelet ran.
+            (
+                "localhost/polar-init:latest",
+                ran_from("localhost/polar-init"),
+                Some(NodeLocal),
+            ),
+            ("UPPER/Case:bad tag", ran_from("ghcr.io/org/app"), None),
+        ] {
+            assert_eq!(ran(uri, image_id.as_deref()), source, "{uri} {image_id:?}");
+        }
+    }
+
+    #[test]
+    fn a_kubelets_image_id_gives_the_digest_a_registry_serves() {
+        let sha512 = format!("sha512:{}", "ab".repeat(64));
+        for (image_id, digest) in [
+            (format!("docker.io/library/neo4j@{RAN}"), Some(RAN)),
+            (
+                format!("docker-pullable://ghcr.io/org/app@{RAN}"),
+                Some(RAN),
+            ),
+            (format!("ghcr.io/org/app@{sha512}"), Some(sha512.as_str())),
+            (RAN.to_string(), None),
+            (String::new(), None),
+            ("ghcr.io/org/app@sha256:abc".to_string(), None),
+            (format!("ghcr.io/org/app@md5:{}", "ab".repeat(16)), None),
+            (format!("ghcr.io/org/app@{}", RAN.to_uppercase()), None),
+            (format!("ghcr.io/org/app@{RAN}/../x"), None),
+        ] {
+            assert_eq!(kubelet_digest(&image_id), digest, "{image_id}");
         }
     }
 
@@ -246,11 +388,23 @@ mod tests {
         proptest::collection::vec("[a-z0-9]{1,6}", 1..3).prop_map(|parts| parts.join("/"))
     }
 
+    fn sha256() -> impl Strategy<Value = String> {
+        "[0-9a-f]{64}".prop_map(|hex| format!("sha256:{hex}"))
+    }
+
     fn pin() -> impl Strategy<Value = (Option<String>, Option<String>)> {
         (
             proptest::option::of("[a-z0-9][a-z0-9.]{0,6}"),
-            proptest::option::of("[0-9a-f]{64}".prop_map(|hex| format!("sha256:{hex}"))),
+            proptest::option::of(sha256()),
         )
+    }
+
+    fn host() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("localhost".to_string()),
+            "[a-z]{1,6}\\.[a-z]{2,4}",
+            "[a-z]{1,6}:[0-9]{2,5}",
+        ]
     }
 
     fn written(name: &str, (tag, digest): &(Option<String>, Option<String>)) -> String {
@@ -270,25 +424,54 @@ mod tests {
         /// digest proves which image it is wherever it is fetched from.
         #[test]
         fn a_name_with_no_host_is_resolved_only_when_pinned(name in name(), pin in pin()) {
-            let source = ResolverAgent::image_source(&written(&name, &pin));
-            let expected = if pin.1.is_some() { registry("docker.io") } else { Some(Unpinned) };
-            prop_assert_eq!(source, expected);
+            let uri = written(&name, &pin);
+            let expected = match &pin.1 {
+                Some(_) => Some(Registry(uri.parse().unwrap())),
+                None => Some(Unpinned),
+            };
+            prop_assert_eq!(hosted(&uri), expected);
         }
 
         /// A name with a registry host is that registry's, and the node's own store is never a registry, pinned or not.
         #[test]
-        fn a_name_with_a_host_is_that_hosts(
-            host in prop_oneof![
-                Just("localhost".to_string()),
-                "[a-z]{1,6}\\.[a-z]{2,4}",
-                "[a-z]{1,6}:[0-9]{2,5}",
-            ],
+        fn a_name_with_a_host_is_that_hosts(host in host(), name in name(), pin in pin()) {
+            let uri = written(&format!("{host}/{name}"), &pin);
+            let source = hosted(&uri);
+            if host == "localhost" {
+                prop_assert_eq!(source, Some(NodeLocal));
+            } else {
+                prop_assert_eq!(source, Some(Registry(uri.parse().unwrap())));
+            }
+        }
+
+        /// What a container is said to use is the image its kubelet ran: read by the kubelet's digest, from where the
+        /// spec names, and never by a tag alone.
+        #[test]
+        fn a_container_is_read_by_the_digest_it_ran(
+            host in proptest::option::of(host()),
             name in name(),
             pin in pin(),
+            kubelet in proptest::option::of(sha256()),
         ) {
-            let source = ResolverAgent::image_source(&written(&format!("{host}/{name}"), &pin));
-            let expected = if host == "localhost" { Some(NodeLocal) } else { registry(&host) };
-            prop_assert_eq!(source, expected);
+            let named = host.as_ref().map(|host| format!("{host}/{name}")).unwrap_or(name);
+            let uri = written(&named, &pin);
+            let image_id = kubelet.as_ref().map(|digest| format!("{named}@{digest}"));
+            let source = ran(&uri, image_id.as_deref());
+            let spec: oci_client::Reference = uri.parse().unwrap();
+            match source {
+                Some(NodeLocal) => prop_assert_eq!(spec.registry(), "localhost"),
+                Some(Unpinned) => {
+                    prop_assert_ne!(spec.registry(), "localhost");
+                    prop_assert!(kubelet.is_none() && pin.1.is_none());
+                }
+                Some(Registry(read)) => {
+                    prop_assert_ne!(spec.registry(), "localhost");
+                    prop_assert_eq!(read.digest(), kubelet.as_deref().or(pin.1.as_deref()));
+                    prop_assert_eq!(read.registry(), spec.registry());
+                    prop_assert_eq!(read.repository(), spec.repository());
+                }
+                None => prop_assert!(false, "{} is a reference", uri),
+            }
         }
     }
 }
