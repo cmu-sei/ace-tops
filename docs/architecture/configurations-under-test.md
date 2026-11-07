@@ -144,8 +144,22 @@ its signed record.
   functions, GitLab's names the declaration's floor entry's, the runner's config.toml a template whose token it reads from its Secret's
   file at start (on no command line); `secrets.nu`, the root password, generated in the cluster once; `ready.nu`, root's token (made
   here, into the pod on stdin) and the runner, made as root once, each kept in a Secret and never printed. `images.nuon` has GitLab's,
-  the runner's and the helper's rows. Tests: `tests/under-test-gitlab.nu` (8). `infra/gitlab-test.nu` stays, uncommitted, until the
-  live run has the new one up, and is removed then.
+  the runner's and the helper's rows. Tests: `tests/under-test-gitlab.nu` (9).
+  *Live on u7c (2026-11-07), `up.nu sandbox-local --dev --under-test gitlab`.* Every layer Ready, `under-test-gitlab` among them; the
+  step `configurations under test` made root's token and registered the runner, which is online; polar-init was issued GitLab's server
+  certificate by the credentials agent (the attestation agent watching `gitlab-test`, which G4a's script could not get); the signed
+  record is schema 2 and marks GitLab's StatefulSet and the runner's Deployment `under_test` and none of the other 26; `provenance.json`'s
+  `cluster_inputs` says `under_test: ["gitlab"]`; the attestation agent proved itself with it ("its verdicts stand", judged 27,
+  condemned 0). What the run found, each fixed with a test: polar-init's moving tag is pulled `Always` (render.nu's pull-policy check);
+  on this FIPS host the image's own OpenSSH cannot start ("PRNG is not seeded"), so the host keys are made by GitLab's embedded OpenSSL
+  and its OpenSSH is off; GitLab answers `/-/readiness` only from localhost, so the probe runs in the pod; `gitlab-rails runner` runs as
+  `git`, so the ready script's scratch directory is git's, and is removed however the script ends (a failed run had left root's new
+  token in the pod; removed by hand, no Secret made). A StatefulSet whose pod never became ready does not roll to a new template until
+  the pod is deleted (OrderedReady): each fix above needed `kubectl delete pod gitlab-0`. `infra/gitlab-test.nu` is retired: kept
+  outside the tree, not committed.
+  *Found, open.* A server a configuration under test adds carries no `g:under-test` in its certificate: cert-issuer's `floor_names`
+  (`cert-issuer/server/src/floor.rs` ~170-205) skips a vouched-only entry, so a server the credentials agent vouches for (GitLab's, and
+  Neo4j's) is issued its DNS names alone, and the group on its floor entry (CT2, `main server-also`) is inert. The record marks it.
 
 **What G4 leaves for it.** `infra/attested.nu` and its use in `resolve.nu`, `render.nu` and the namespaces chart went in with CT1;
 `sandbox-local` carries none of it. Uncommitted on main, as CT3's material: `infra/gitlab-test.nu` (the test GitLab, with tests,
