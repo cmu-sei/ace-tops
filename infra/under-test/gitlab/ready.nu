@@ -32,20 +32,25 @@ use ../../secrets-lib.nu [random_token, secret_exists]
 use ../../tools.nu
 use main.nu [NAMESPACE, NAME, RUNNER_TOKEN_SECRET, REGISTRY_PORT, names]
 
-# Root's token, which the seed tool and the observer's escrow read.
+# Root's token, which the seed tool reads.
 export const ROOT_TOKEN_SECRET = "gitlab-root-token"
+# The GitLab observer's: root's too, so it sees everything, and only read_api, so it can change nothing. The seed step seals it into
+# the observer's `credentials` section (under-test.nuon, `credentials`).
+export const OBSERVER_TOKEN_SECRET = "gitlab-observer-token"
 # What the GitLab pair's graph should hold once it has read the seed's dataset (gitlab-seed, docs/architecture/http-observers.md, G4b1).
 export const EXPECTED_CONFIGMAP = "gitlab-seed-expected"
 const POD = "gitlab-0"
 const SCRATCH = "/tmp/polar-under-test"
 
-# Ruby for `gitlab-rails runner`: root's token set to the one in `token_file` (made again if it exists), and its file removed.
-export def root_token_ruby [token_file: string] {
+# Ruby for `gitlab-rails runner`: root's token named `name`, with `scopes`, set to the one in `token_file` (made again if it exists),
+# and its file removed.
+export def root_token_ruby [token_file: string, name: string = "polar-test", scopes: list<string> = ["api" "read_api" "read_registry"]] {
+    let scoped = ($scopes | each {|s| $":($s)" } | str join ", ")
     [
         $"token = File.read\('($token_file)'\).strip"
         $"File.delete\('($token_file)'\)"
         "user = User.find_by_username!('root')"
-        "pat = user.personal_access_tokens.find_by(name: 'polar-test') || user.personal_access_tokens.build(name: 'polar-test', scopes: [:api, :read_api, :read_registry], expires_at: 300.days.from_now)"
+        $"pat = user.personal_access_tokens.find_by\(name: '($name)'\) || user.personal_access_tokens.build\(name: '($name)', scopes: [($scoped)], expires_at: 300.days.from_now\)"
         "pat.set_token(token)"
         "pat.save!"
     ] | str join "\n"
@@ -157,6 +162,15 @@ def made [] {
         rails (root_token_ruby $file) { $file: $token }
         secret_of $ROOT_TOKEN_SECRET "token" $token
         print $"  root's token: made, in secret/($ROOT_TOKEN_SECRET)"
+    }
+    if (secret_exists $OBSERVER_TOKEN_SECRET $NAMESPACE) {
+        print $"  the observer's token: secret/($OBSERVER_TOKEN_SECRET) is there"
+    } else {
+        let token = $"glpat-(random_token 24)"
+        let file = $"($SCRATCH)/observer-token"
+        rails (root_token_ruby $file "polar-observer" ["read_api"]) { $file: $token }
+        secret_of $OBSERVER_TOKEN_SECRET "token" $token
+        print $"  the observer's token: made, read_api only, in secret/($OBSERVER_TOKEN_SECRET)"
     }
     if (secret_exists $RUNNER_TOKEN_SECRET $NAMESPACE) {
         print $"  the runner: secret/($RUNNER_TOKEN_SECRET) is there"

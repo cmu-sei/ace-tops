@@ -152,6 +152,60 @@ def main [] {
             rm -rf $root
         }
 
+        # G4d (docs/architecture/http-observers.md): a configuration under test brings the signed documents its test needs, which the
+        # seed step signs when they are missing and removes when the cluster no longer carries it, and the credentials it seals from
+        # a Secret in the cluster.
+        "a declaration's documents and credentials are read, and what is wrong with one is said": {
+            let root = (mktemp --directory)
+            let dir = ($root | path join "under-test" "t")
+            mkdir $dir
+            "" | save ($dir | path join "main.nu")
+            "{}" | save ($dir | path join "make.nu")
+            mkdir ($root | path join "elsewhere")
+            "" | save ($root | path join "elsewhere/p.dhall")
+            let doc = { path: "permanent/a/sources.dhall", agent: "a", section: "sources", version: 1, make: "make.nu" }
+            let cred = { path: "permanent/a/credentials.dhall", agent: "a", version: 1, name: "tok", host_pattern: "h.example", secret: { namespace: "ns", name: "s", key: "token" } }
+            { adds: {}, layer: { files: [] }, documents: [$doc { path: "permanent/b/projection.dhall", agent: "b", section: "projection", version: 1, projection: "../../elsewhere/p.dhall" }], credentials: [$cred] }
+                | to nuon | save ($dir | path join "under-test.nuon")
+            let d = (declaration $root "t")
+            assert equal ($d.documents | get path) ["permanent/a/sources.dhall" "permanent/b/projection.dhall"]
+            assert equal ($d.documents.0.make) ($dir | path join "make.nu")
+            assert equal ($d.documents.1.projection) ($root | path join "elsewhere/p.dhall")
+            assert equal ($d.credentials.0.name) "tok"
+            for bad in [
+                [{ documents: [($doc | update path "elsewhere/x.dhall")] } "permanent/"]
+                [{ documents: [($doc | update version 0)] } "version"]
+                [{ documents: [($doc | reject make)] } "projection or make"]
+                [{ documents: [($doc | insert projection "make.nu")] } "projection or make"]
+                [{ documents: [($doc | update make "nowhere.nu")] } "nowhere.nu"]
+                [{ documents: [$doc $doc] } "twice"]
+                [{ credentials: [($cred | reject secret)] } "secret"]
+                [{ credentials: [($cred | update host_pattern "")] } "host_pattern"]
+            ] {
+                { adds: {}, layer: { files: [] } } | merge $bad.0 | to nuon | save --force ($dir | path join "under-test.nuon")
+                let r = (try { declaration $root "t"; "" } catch {|e| $e.msg })
+                assert ($r | str contains $bad.1) $"($bad.0 | to nuon): ($r)"
+            }
+            rm -rf $root
+        }
+
+        "the seed signs what a carried configuration lacks, and takes away what one no longer carried left": {
+            let a = { name: "a", documents: [{ path: "permanent/a/s.dhall" } { path: "permanent/a/p.dhall" }], credentials: [{ path: "permanent/a/c.dhall" }] }
+            let b = { name: "b", documents: [{ path: "permanent/b/s.dhall" }], credentials: [] }
+            let existing = ["permanent/a/s.dhall" "permanent/b/s.dhall" "permanent/policy.dhall"]
+            assert equal (documents_missing [$a] $existing | get path) ["permanent/a/p.dhall"]
+            assert equal (credentials_missing [$a] $existing | get path) ["permanent/a/c.dhall"]
+            # b is declared and not carried: what it left goes, and nothing else does.
+            assert equal (left_behind [$a $b] ["a"] $existing) ["permanent/b/s.dhall"]
+            assert equal (left_behind [$a $b] ["a" "b"] $existing) []
+        }
+
+        "a credential is sealed from an input that holds no secret, read from standard input": {
+            let c = { path: "permanent/a/credentials.dhall", agent: "a", version: 2, name: "tok", host_pattern: "h.example", secret: { namespace: "ns", name: "s", key: "token" } }
+            let input = (credential_input $c | from json)
+            assert equal $input { agent: "a", section: "credentials", version: 2, body: { credentials: [{ name: "tok", host_pattern: "h.example", kind: "token", secret: "-" }] } }
+        }
+
         "a cluster's inputs say which configurations under test it carries, and its signed record gives them back": {
             assert equal (under_test_of (empty)) []
             let one = (with_under_test (empty) ["gitlab"] "ca1")

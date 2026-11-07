@@ -61,7 +61,35 @@ export def name_problems [name: string, known: list<string>] {
 }
 
 # What `under-test.nuon` may say.
-const KEYS = ["adds" "layer" "secrets" "ready" "images"]
+const KEYS = ["adds" "layer" "secrets" "ready" "images" "documents" "credentials"]
+
+# Why a document or credential a declaration names cannot be signed: each is a section of polar-schedules (`permanent/`, where the
+# scheduler's watcher reads), at a version from 1; a document's body is a projection (Dhall, which `polar-sign runtime --projection`
+# checks against the agent's schema) or what a script prints (`make`), either a file found from the declaration's directory; a
+# credential is a token the cluster holds in a Secret (`secret: { namespace, name, key }`), sealed to the agent's escrow key.
+def document_problems [d: record, dir: string] {
+    let where = ($d.path? | default "")
+    let found = {|f| ($f | is-not-empty) and ($dir | path join $f | path exists) }
+    let made = ([($d.projection? | default "") ($d.make? | default "")] | where {|f| $f | is-not-empty })
+    [
+        (if not ($where | str starts-with "permanent/") { $"($where): a document is a section of polar-schedules under permanent/" })
+        (if ($d.agent? | default "" | is-empty) or ($d.section? | default "" | is-empty) { $"($where): an agent and a section" })
+        (if (($d.version? | describe) != "int") or ($d.version? | default 0) < 1 { $"($where): a version, a whole number from 1" })
+        (if ($made | length) != 1 { $"($where): its body from one file, a projection or make" })
+        ...($made | where {|f| not (do $found $f) } | each {|f| $"($where): no ($f) from infra/($DIR)" })
+    ] | compact
+}
+
+def credential_problems [c: record] {
+    let where = ($c.path? | default "")
+    [
+        (if not ($where | str starts-with "permanent/") { $"($where): a credential is a section of polar-schedules under permanent/" })
+        (if ($c.agent? | default "" | is-empty) or ($c.name? | default "" | is-empty) { $"($where): an agent and a name" })
+        (if ($c.host_pattern? | default "" | is-empty) { $"($where): a host_pattern, the host the credential is bound to" })
+        (if (($c.version? | describe) != "int") or ($c.version? | default 0) < 1 { $"($where): a version, a whole number from 1" })
+        (if ([namespace name key] | any {|k| ($c.secret? | default {} | get -o $k | default "" | is-empty) }) { $"($where): a secret, { namespace, name, key }, that holds it" })
+    ] | compact
+}
 
 # A declaration: its name, its chart, its layer, what it adds; the scripts up.nu runs for it, each a file beside its chart or null
 # (`secrets`, with the target's secrets; `ready`, once Flux has its layer ready); and the images it names outside an `image:` line,
@@ -86,6 +114,10 @@ export def declaration [infra_root: string, name: string] {
         ...($images | where {|i| not ($i =~ '^[a-z0-9][a-z0-9._-]*:[A-Za-z0-9._-]+$') } | each {|i|
             $"`images`: ($i) is to be an image of infra/images.nuon and its tag, as <image>:<tag>"
         })
+        ...($d | get -o documents | default [] | each {|doc| document_problems $doc $dir } | flatten)
+        ...($d | get -o credentials | default [] | each {|c| credential_problems $c } | flatten)
+        ...(($d | get -o documents | default []) ++ ($d | get -o credentials | default []) | get -o path | default [] | uniq --repeated
+            | each {|p| $"($p): named twice" })
     ]
     if ($wrong | is-not-empty) { error make --unspanned { msg: $"under test ($name): ($wrong | str join '; ')" } }
     {
@@ -96,7 +128,37 @@ export def declaration [infra_root: string, name: string] {
         secrets: (do $script "secrets")
         ready: (do $script "ready")
         images: $images
+        documents: ($d | get -o documents | default [] | each {|doc|
+            let at = {|key| if ($doc | get -o $key | default "" | is-empty) { null } else { $dir | path join ($doc | get $key) | path expand } }
+            $doc | upsert projection (do $at "projection") | upsert make (do $at "make")
+        })
+        credentials: ($d | get -o credentials | default [])
     }
+}
+
+# The documents of the configurations `carried` declares that polar-schedules (`existing`, its paths) does not hold yet.
+export def documents_missing [carried: list, existing: list<string>] {
+    $carried | each {|d| $d.documents } | flatten | where {|doc| $doc.path not-in $existing }
+}
+
+# Their credentials polar-schedules does not hold yet.
+export def credentials_missing [carried: list, existing: list<string>] {
+    $carried | each {|d| $d.credentials } | flatten | where {|c| $c.path not-in $existing }
+}
+
+# What a configuration under test the repository declares (`all`) and the cluster no longer carries (`carried`, names) left in
+# polar-schedules: its documents and credentials, which go with it.
+export def left_behind [all: list, carried: list<string>, existing: list<string>] {
+    $all | where {|d| $d.name not-in $carried } | each {|d| ($d.documents ++ $d.credentials) | get path } | flatten
+    | where {|p| $p in $existing } | uniq
+}
+
+# What `polar-sign sign` takes to seal credential `c`: its one entry, a token whose secret is read from standard input (`-`).
+export def credential_input [c: record] {
+    {
+        agent: $c.agent, section: "credentials", version: $c.version
+        body: { credentials: [{ name: $c.name, host_pattern: $c.host_pattern, kind: "token", secret: "-" }] }
+    } | to json
 }
 
 # The declarations of what this cluster carries (its inputs for `target`).

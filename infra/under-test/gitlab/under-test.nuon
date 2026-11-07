@@ -61,4 +61,14 @@
   ready: "ready.nu"
   # Named in the runner's config.toml, not on an `image:` line: the job's image and the executor's helper.
   images: ["busybox:latest" "gitlab-runner-helper:alpine3.21-v19.5.3"]
+  # What the GitLab pair reads and writes by, signed by the seed step while the cluster carries this, and removed when it does not:
+  # the observer's sources, one per query (sources.nu), and the processor's projection, the G3 mapping.
+  documents: [
+    { path: "permanent/gitlab-observer/sources.dhall", agent: "gitlab-observer", section: "sources", version: 1, make: "sources.nu" }
+    { path: "permanent/gitlab-processor/projection.dhall", agent: "gitlab-processor", section: "projection", version: 1, projection: "../../../src/agents/gitlab-http/process/examples/gitlab.dhall" }
+  ]
+  # The observer's token, read_api, which the ready script makes, sealed to its escrow key for the test GitLab's host alone.
+  credentials: [
+    { path: "permanent/gitlab-observer/credentials.dhall", agent: "gitlab-observer", version: 1, name: "gitlab", host_pattern: "gitlab.gitlab-test.svc.cluster.local", secret: { namespace: "gitlab-test", name: "gitlab-observer-token", key: "token" } }
+  ]
 }

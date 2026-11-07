@@ -818,6 +818,66 @@ def seed_git [username: string, args: list<string>] {
 # memory from the sops decryption and given to polar-sign on its standard input: never written, printed or put on a
 # command line. A seal that fails is said and the rest of the seed goes on; a run again tries it again, since
 # polar-schedules still has no such section.
+# The signed documents and credentials of the configurations under test this cluster carries (infra/under-test.nu) that
+# polar-schedules lacks, signed as `username` into the clone; and what one the cluster no longer carries left there, removed, so
+# the test's sections go with it. Returns { added: [{ path, section }], removed: [path] }.
+def seed_under_test [target: string, username: string, repo: string, existing: list<string>, work: string, sign: list<string>] {
+    let infra = ($env.PWD | path join "infra")
+    let carried = (under-test of_cluster $infra $target)
+    let all = (under-test declared $infra | each {|n| under-test declaration $infra $n })
+    let removed = (under-test left_behind $all ($carried | get name) $existing)
+    for p in $removed { ^git -C $repo rm -q $p }
+    let documents = (under-test documents_missing $carried $existing)
+    let credentials = (under-test credentials_missing $carried $existing)
+    if ($documents | is-empty) and ($credentials | is-empty) { return { added: [], removed: $removed } }
+    # The agents' own scaffolds, which polar-sign checks a projection and a credential against (cached under each image's digest).
+    let resolver = ($env.PWD | path join "infra/resolve.nu")
+    let scaffolds = ($work | path join "scaffolds")
+    let collected = (do { ^$nu.current-exe $resolver scaffolds $scaffolds --target $target } | complete)
+    if $collected.exit_code != 0 { fail $"cannot collect the agents' scaffolds for the documents under test: ($collected.stderr | str trim | lines | last 1 | str join)" }
+    mut added = []
+    for doc in $documents {
+        note $"signing ($doc.section) for ($doc.agent), version ($doc.version), under test"
+        let common = [runtime --agent $doc.agent --section $doc.section --version ($doc.version | into string) --user $username]
+        let signed = if $doc.projection != null {
+            ^($sign | first) ...($sign | skip 1) ...$common --projection $doc.projection --scaffold ($scaffolds | path join $"($doc.agent).json")
+        } else {
+            ^$nu.current-exe $doc.make | ^($sign | first) ...($sign | skip 1) ...$common --body-file -
+        }
+        if $env.LAST_EXIT_CODE != 0 { fail $"polar-sign runtime failed for ($doc.path)" }
+        let out = ($repo | path join $doc.path)
+        mkdir ($out | path dirname)
+        $signed | save --force $out
+        $added = ($added | append { path: $doc.path, section: $"($doc.agent) ($doc.section)" })
+    }
+    if ($credentials | is-not-empty) {
+        let forward = (try { ensure_observer_forward; null } catch {|e| $e.msg })
+        if $forward != null { fail $"the credentials under test cannot be sealed: ($forward)" }
+    }
+    for c in $credentials {
+        let input = ($work | path join $"($c.agent)-credentials.json")
+        under-test credential_input $c | save --force $input
+        let out = ($repo | path join $c.path)
+        mkdir ($out | path dirname)
+        let escrow_identity = (^$nu.current-exe $resolver identity $c.agent --target $target | str trim)
+        let args = (seed sign_args $input $username ($scaffolds | path join $"($c.agent).json") $escrow_identity $out)
+        let token = (^kubectl -n $c.secret.namespace get secret $c.secret.name -o $"jsonpath={.data.($c.secret.key)}" | decode base64 | decode)
+        let sealed = (with_retries 24 5sec {|n|
+            let r = (seed seal $sign $args $token)
+            let outcome = (seed seal_outcome $r.exit_code $r.stderr)
+            if (not $outcome.ok) and (not $outcome.final) { note $"($c.agent) has not escrowed its key yet, or the gateway's forward is reconnecting: trying again" }
+            $outcome
+        })
+        if not $sealed.ok {
+            rm -f $out
+            fail $"($c.agent)'s credential under test was not sealed after ($sealed.tries) tries: ($sealed.detail | lines | str trim | str join ' ')"
+        }
+        ok $"sealed ($c.agent)'s credential ($c.name) into ($c.path)"
+        $added = ($added | append { path: $c.path, section: $"($c.agent) credentials" })
+    }
+    { added: $added, removed: $removed }
+}
+
 def seed_jira_credential [target: string, config: record, username: string, repo: string, existing: list<string>, work: string, sign: list<string>] {
     let deployed = ($seed.JIRA_AGENT in (deployed_charts $config))
     let settings = (settings_of_document (seed jira_document $config.output_dir | default {}))
@@ -941,6 +1001,7 @@ def step_seed [target: string, config: record, username: string, mail: string, a
     let sign = (tools command "polar-sign")
     # Before the documents are written to the clone: the sections it finds are the ones already pushed.
     let jira = (seed_jira_credential $target $config $username $repo $existing $work $sign)
+    let tested = (seed_under_test $target $username $repo $existing $work $sign)
     for d in $todo {
         note $"signing ($d.section) for ($d.agent), version ($d.version)"
         # A computed body is the resolver's: the state agent's first schema from the agents' scaffolds, which the render
@@ -958,16 +1019,20 @@ def step_seed [target: string, config: record, username: string, mail: string, a
         mkdir ($target_file | path dirname)
         $signed | save --force $target_file
     }
-    let added = (($todo | select path section) ++ $jira)
-    if ($added | is-empty) {
+    let added = (($todo | select path section) ++ $jira ++ $tested.added)
+    if ($added | is-empty) and ($tested.removed | is-empty) {
         ok "every seed document is already in polar-schedules"
     } else {
         ^git -C $repo add -A
-        ^git -C $repo -c $"user.name=($username)" -c $"user.email=($mail)" commit -q -m $"feat\(seed\): the cluster's first ($added | get section | str join ', ')"
+        let said = ([
+            (if ($added | is-not-empty) { $"the cluster's first ($added | get section | str join ', ')" })
+            (if ($tested.removed | is-not-empty) { $"what a configuration no longer under test left: ($tested.removed | str join ', ')" })
+        ] | compact | str join "; ")
+        ^git -C $repo -c $"user.name=($username)" -c $"user.email=($mail)" commit -q -m $"feat\(seed\): ($said)"
         if $env.LAST_EXIT_CODE != 0 { fail "git commit failed" }
         let pushed = (do { seed_git $username [-C $repo push -q origin HEAD] } | complete)
         if $pushed.exit_code != 0 { fail $"cannot push to polar-schedules: ($pushed.stderr | str trim)" }
-        ok $"pushed: ($added | get path | str join ', ')"
+        ok $"pushed: (($added | get path) ++ ($tested.removed | each {|p| $'($p) removed' }) | str join ', ')"
     }
     rm -rf $work
 

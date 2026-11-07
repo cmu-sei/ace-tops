@@ -31,6 +31,7 @@
 use std/assert
 use ../under-test/gitlab/main.nu *
 use ../under-test/gitlab/ready.nu [root_token_ruby, runner_ruby]
+use ../under-test/gitlab/sources.nu [all_sources, CREDENTIAL]
 use ../under-test.nu [declaration, adds_problems, layer_problems, marked]
 
 const REG = "localhost:30500"
@@ -75,6 +76,23 @@ def main [] {
             assert equal ($d.adds.workloads.gitlab-observer.env) [{ name: "POLAR_EGRESS_CLUSTER_CA", value: "/etc/polar-ca/ca.pem" }]
             assert (($d.adds.workloads.gitlab-processor.env? | default []) | is-empty) "the processor reaches nothing outside"
             assert equal (marked [$d]).workloads ["gitlab-observer" "gitlab-processor"]
+        }
+
+        # G4d: what the pair reads and writes by, and its token, come with the test.
+        "the observer reads each query once, from the test GitLab, with the one credential the test seals for its host alone": {
+            let d = (declaration $infra "gitlab")
+            let all = (all_sources)
+            let queries = (ls ($infra | path join "../src/agents/gitlab-http/queries") | get name | path parse | get stem | sort)
+            let asked = ($all | each {|s| $s.graphql.each?.query? | default $s.graphql.query } )
+            assert equal ($asked | length) ($queries | length) "one source for each query"
+            assert equal ($all | get name | uniq | length) ($all | length) "each source named once"
+            assert ($all | all {|s| $s.url == $"https://(names | first)/api/graphql" and $s.credential == $CREDENTIAL })
+            let c = ($d.credentials | first)
+            assert equal [$c.agent $c.name $c.host_pattern] ["gitlab-observer" $CREDENTIAL (names | first)]
+            assert equal ($d.documents | get section) ["sources" "projection"]
+            assert (($d.documents | last | get projection) | path exists)
+            # The observer's token can read and nothing more.
+            assert ((root_token_ruby "/tmp/x" "polar-observer" ["read_api"]) | str contains "scopes: [:read_api]")
         }
 
         "GitLab is told its address, the credentials agent's certificate, its registry, and no more than a test needs": {
