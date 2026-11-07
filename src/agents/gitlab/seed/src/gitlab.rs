@@ -33,6 +33,10 @@ use serde_json::{Value, json};
 use std::net::SocketAddr;
 use url::Url;
 
+/// How long a read waits for a GitLab that is warming up: a try every `WARMING_WAIT`, `WARMING_TRIES` times.
+const WARMING_TRIES: u32 = 60;
+const WARMING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Gitlab {
     http: reqwest::Client,
     base: Url,
@@ -96,7 +100,32 @@ impl Gitlab {
         })
     }
 
+    /// A request, and for a read, asked again while GitLab answers that its gateway has no backend yet (502, 503, 504): a GitLab
+    /// just started does while Puma comes up. A write is asked once; a seed run again repairs what one left.
     async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(StatusCode, Value)> {
+        let mut tries = 0;
+        loop {
+            let answer = self.call_once(method.clone(), path, body).await?;
+            let warming = matches!(
+                answer.0,
+                StatusCode::BAD_GATEWAY
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::GATEWAY_TIMEOUT
+            );
+            if method != Method::GET || !warming || tries >= WARMING_TRIES {
+                return Ok(answer);
+            }
+            tries += 1;
+            tokio::time::sleep(WARMING_WAIT).await;
+        }
+    }
+
+    async fn call_once(
         &self,
         method: Method,
         path: &str,

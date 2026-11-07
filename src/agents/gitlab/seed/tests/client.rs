@@ -394,3 +394,23 @@ async fn an_image_is_pushed_with_a_token_from_gitlab_its_blobs_once_and_each_tag
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn a_read_gitlab_answers_with_a_bad_gateway_while_it_warms_up_is_asked_again() {
+    // A GitLab just started answers 502 while Puma comes up (2026-11-07 on u7c): a read is asked again; a write is not.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .respond_with(ResponseTemplate::new(502))
+        .up_to_n_times(2)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{ "id": 7 }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert_eq!(gitlab(&server).await.ensure_user(&user()).await.unwrap(), 7);
+}
