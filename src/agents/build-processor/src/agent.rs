@@ -38,10 +38,17 @@ impl PolarAgent for BuildProcessor {
     const PURPOSE: &'static str = "Projects the provenance stream (builds, what they produced, findings, what registries serve) into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
-        polar::topics::PROVENANCE_EVENTS,
-        "the provenance stream: builds, their outputs and findings, and what the resolver verified",
-    )];
+    const TOPICS: &'static [TopicDecl] = &[
+        TopicDecl::subscribe(
+            polar::topics::PROVENANCE_EVENTS,
+            "what builds report: executions, their outputs, what scanners found",
+        )
+        .waiting("build pipelines publish it (scripts/pipeline), outside the catalog; the build orchestrator is not merged yet"),
+        TopicDecl::subscribe(
+            polar::topics::PROVENANCE_RESOLUTIONS,
+            "what the resolver verified a registry serves, believed from nowhere else",
+        ),
+    ];
     // The labels it writes (`project`). Not `State`, the taxonomy anchor every state instance is OF_TYPE, which
     // kube-consumer writes too and which has no key; not a backend job's node or a `GitCommit`, which their observers
     // own and it only refers to.
@@ -118,15 +125,21 @@ mod tests {
         }
     }
 
-    /// It reads the provenance stream and nothing else: the legacy linker topic has had no publisher since the old
-    /// GitLab consumer went.
+    /// It reads what builds report and what the resolver verified, each on its own topic, and nothing else: the legacy
+    /// linker topic has had no publisher since the old GitLab consumer went.
     #[test]
-    fn it_subscribes_to_the_provenance_stream_alone() {
+    fn it_subscribes_to_the_build_stream_and_the_resolvers_topic_alone() {
         use polar_agent_builder::Access;
         let topics: Vec<(&str, bool)> = BuildProcessor::TOPICS
             .iter()
             .map(|t| (t.name, t.access == Access::Subscribe))
             .collect();
-        assert_eq!(topics, [(polar::topics::PROVENANCE_EVENTS, true)]);
+        assert_eq!(
+            topics,
+            [
+                (polar::topics::PROVENANCE_EVENTS, true),
+                (polar::topics::PROVENANCE_RESOLUTIONS, true)
+            ]
+        );
     }
 }

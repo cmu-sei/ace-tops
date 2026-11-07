@@ -107,8 +107,9 @@ is `infra/topics.nu` (tests `infra/tests/topics.nu`). A render warns about a top
 (`resolve.nu topics-check`), since it cannot see the workloads its target disables. Built 2026-10-21. Waiting today:
 four of the credentials agent's request and reply topics (nothing calls them yet; three more that waited were the
 unsigned grants, revocations and provisioning, removed 2026-10-22), the git controller's
-`polar-proposal-observe-repo` (no catalog agent proposes yet). The resolver's `polar.provenance.events` waited for
-`build-processor`, a chart, until it joined the catalog (2026-11-07).
+`polar-proposal-observe-repo` (no catalog agent proposes yet), and build-processor's `polar.provenance.events` (build
+pipelines publish it, outside the catalog; the build orchestrator is not merged). The resolver's verified registry facts
+waited for `build-processor`, a chart, until it joined the catalog, and have their own topic since (2026-11-07).
 
 ## Causes
 
@@ -223,7 +224,8 @@ workloads").
 | `kubernetes.cluster.consumer.Pod` (every kind, despite the name) | kube-observer (`RawKubeEvent`, JSON) | kube-consumer (does not check `published_by`) |
 | `polar.kubernetes.cluster.resolution` | oci-resolver | kube-consumer |
 | `polar.provenance.discovery` | kube-consumer | oci-resolver |
-| `polar.provenance.events` | oci-resolver | build-processor |
+| `polar.provenance.events` | build pipelines (`scripts/pipeline`, outside the catalog) | build-processor (believes only what builds report here) |
+| `polar.provenance.resolutions` | oci-resolver | build-processor (believes registry facts only here) |
 | `git.repo.config.events` | the git controller | the git observer |
 | `polar.git.repositories.events`, `polar.git.observation.status` | the git observer | the git processor |
 | `polar.git.proposals.decisions` | the git controller | the git processor |

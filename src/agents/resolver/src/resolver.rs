@@ -31,7 +31,7 @@ use oci_client::Reference;
 use polar::{
     DiscoverySourceRef, ProvenanceEvent,
     cassini::{CassiniClient, TcpClient},
-    topics::{KUBERNETES_RESOLUTION_EVENTS, PROVENANCE_EVENTS},
+    topics::{KUBERNETES_RESOLUTION_EVENTS, PROVENANCE_RESOLUTIONS},
 };
 use polar_agent_builder::protocol::ProtocolHandle;
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
@@ -196,7 +196,7 @@ impl ResolverAgent {
         let payload = rkyv::to_bytes::<rkyv::rancor::Error>(&event)?;
 
         Ok(state.cassini_client.publish(PublishRequest {
-            topic: PROVENANCE_EVENTS.to_string(),
+            topic: PROVENANCE_RESOLUTIONS.to_string(),
             payload: payload.into(),
             trace_ctx: WireTraceCtx::from_current_span(),
             offline_behavior: OfflineBehavior::default(),

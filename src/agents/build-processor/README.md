@@ -25,9 +25,10 @@
 
 The build processor writes Polar's software supply-chain facts into the
 knowledge graph: builds, what they produced, findings about packages, and what
-registries actually serve. Every agent that reports such a fact publishes a
-canonical [`ProvenanceEvent`] to `polar.provenance.events`. This agent is the
-one that records it.
+registries actually serve. A build reports such a fact as a canonical
+[`ProvenanceEvent`] on `polar.provenance.events`, and the resolver what a
+registry serves on `polar.provenance.resolutions`. This agent is the one that
+records them.
 
 ## Design
 
@@ -113,7 +114,13 @@ consumer).
 
 | Topic | Purpose |
 |---|---|
-| `polar.provenance.events` | All provenance events: rkyv from Rust agents, JSON from nushell stages |
+| `polar.provenance.events` | What builds report (executions, outputs, findings): rkyv from Rust agents, JSON from nushell stages |
+| `polar.provenance.resolutions` | What the resolver verified a registry serves; it alone declares this topic |
+
+Each event is believed on one topic only (`project::believed_on`): a registry fact on the build stream, or a build's
+report on the resolver's topic, is dropped with a warning. Who may publish on each is the broker's to decide, by its
+policy and the certificate floor on the publisher's broker-stamped identity, so a build publisher cannot speak for a
+registry.
 
 ## Deployment
 

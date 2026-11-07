@@ -53,8 +53,8 @@ impl PolarAgent for OciResolver {
         )
         .because(&[Cause::Topic(polar::topics::PROVENANCE_DISCOVERY)]),
         TopicDecl::publish(
-            polar::topics::PROVENANCE_EVENTS,
-            "every artifact it resolved (manifest, digest, registry), for the provenance stream",
+            polar::topics::PROVENANCE_RESOLUTIONS,
+            "every artifact it resolved (manifest, digest, registry), for build-processor",
         )
         .because(&[Cause::Topic(polar::topics::PROVENANCE_DISCOVERY)]),
     ];

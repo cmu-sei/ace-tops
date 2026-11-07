@@ -34,19 +34,17 @@
 //! ## Current topology
 //!
 //! ```text
-//! polar.provenance.events     ← all agents publish, all consumers subscribe
-//! polar.provenance.discovery  ← observer agents publish, resolver subscribes
+//! polar.provenance.events       ← what builds report, build-processor subscribes
+//! polar.provenance.resolutions  ← the resolver alone publishes, build-processor subscribes
+//! polar.provenance.discovery    ← observer agents publish, resolver subscribes
 //! polar.git.repositories      ← git observer publishes, git processor subscribes
 //! ```
 
 // ── Provenance ─────────────────────────────────────────────────────────────────
 
-/// Unified provenance event stream.
-///
-/// All agents that observe facts about the software supply chain publish here.
-/// This includes CI pipeline stages (nushell and Rust), the k8s observer,
-/// the GitLab observer, and the resolver. All consumers — the build processor,
-/// the provenance linker — subscribe here and filter on [`ProvenanceEvent`] variant.
+/// What builds report: executions and stages, what they produced, what scanners found. Build pipelines
+/// (nushell and Rust) publish here; build-processor subscribes. What a registry serves is not said here:
+/// that is the resolver's word, on [`PROVENANCE_RESOLUTIONS`], and build-processor believes it nowhere else.
 ///
 /// Wire formats accepted on this topic:
 /// - rkyv-serialized [`ProvenanceEvent`] (Rust agents)
@@ -58,9 +56,14 @@ pub const PROVENANCE_EVENTS: &str = "polar.provenance.events";
 /// Observer agents publish [`ProvenanceEvent::OCIArtifactDiscovered`] and
 /// [`ProvenanceEvent::ImageRefDiscovered`] here to trigger resolution.
 /// The resolver subscribes exclusively to this topic, fetches manifests,
-/// and publishes [`ProvenanceEvent::OCIArtifactResolved`] and
-/// [`ProvenanceEvent::ImageRefResolved`] back to [`PROVENANCE_EVENTS`].
+/// and publishes what it verified on [`PROVENANCE_RESOLUTIONS`].
 pub const PROVENANCE_DISCOVERY: &str = "polar.provenance.discovery";
+
+/// What the OCI resolver verified a registry serves ([`ProvenanceEvent::OCIArtifactResolved`]). Its own topic so that
+/// who may say it is decided as for any topic, by the broker's policy and the certificate floor on the publisher's
+/// broker-stamped identity: the resolver alone declares it. build-processor subscribes, and believes registry facts
+/// only from here.
+pub const PROVENANCE_RESOLUTIONS: &str = "polar.provenance.resolutions";
 
 // ── Git ────────────────────────────────────────────────────────────────────────
 

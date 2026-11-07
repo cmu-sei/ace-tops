@@ -229,6 +229,194 @@
       ]
     },
     {
+      "workload": "build-processor",
+      "identity": "build-processor.polar.serviceaccount.cluster.local",
+      "issuer": "credentials-agent",
+      "bootstrap": false,
+      "instances": "one",
+      "kind": "agent",
+      "config": "document",
+      "groups": [
+        "cassini-client",
+        "self-test"
+      ],
+      "topics": [
+        {
+          "name": "agent.build-processor.command",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.build-processor.configuration",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "agent.build-processor.health",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-authority-snapshot-replies",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "answers": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-snapshot-requests",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            },
+            {
+              "kind": "topic",
+              "name": "polar-authority-updates"
+            }
+          ]
+        },
+        {
+          "name": "polar-authority-updates",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar-command-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.build-processor.command"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-outcome",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.build-processor.configuration"
+            }
+          ]
+        },
+        {
+          "name": "polar-configuration-replay",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "registered"
+            }
+          ]
+        },
+        {
+          "name": "polar-health-replies",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "agent.build-processor.health"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-answers",
+          "access": "publish",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-running-configuration-questions"
+            }
+          ]
+        },
+        {
+          "name": "polar-running-configuration-questions",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        },
+        {
+          "name": "polar.provenance.events",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "what builds report: executions, their outputs, what scanners found",
+          "waits": "build pipelines publish it (scripts/pipeline), outside the catalog; the build orchestrator is not merged yet"
+        },
+        {
+          "name": "polar.provenance.resolutions",
+          "access": "subscribe",
+          "from": "declared",
+          "purpose": "what the resolver verified a registry serves, believed from nowhere else"
+        },
+        {
+          "name": "selftest.build-processor",
+          "access": "publish",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "selftest.build-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "self_test",
+          "why": "the agent's self-test is on",
+          "answers": [
+            {
+              "kind": "timer",
+              "name": "self-test"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.build-processor",
+          "access": "subscribe",
+          "from": "implied",
+          "rule": "agent",
+          "why": "every agent that is a Cassini client"
+        }
+      ]
+    },
+    {
       "workload": "cassini",
       "identity": "cassini.polar.serviceaccount.cluster.local",
       "issuer": "cert-issuer",
@@ -3642,11 +3830,10 @@
           "purpose": "an image reference to resolve against its registry"
         },
         {
-          "name": "polar.provenance.events",
+          "name": "polar.provenance.resolutions",
           "access": "publish",
           "from": "declared",
-          "purpose": "every artifact it resolved (manifest, digest, registry), for the provenance stream",
-          "waits": "read by build-processor, a chart outside the catalog",
+          "purpose": "every artifact it resolved (manifest, digest, registry), for build-processor",
           "causes": [
             {
               "kind": "topic",
@@ -4272,6 +4459,20 @@
           ]
         },
         {
+          "name": "agent.build-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "build-processor",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
           "name": "agent.credentials-agent-observer.configuration",
           "access": "publish",
           "from": "family",
@@ -4333,6 +4534,34 @@
           "from": "family",
           "pattern": "agent.{workload}.configuration",
           "workload": "git-repo-processor",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
+          "name": "agent.gitlab-observer.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "gitlab-observer",
+          "purpose": "a signed document for the workload, forwarded untouched for it to verify",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "scheduler.in"
+            }
+          ]
+        },
+        {
+          "name": "agent.gitlab-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "gitlab-processor",
           "purpose": "a signed document for the workload, forwarded untouched for it to verify",
           "causes": [
             {
@@ -4767,6 +4996,20 @@
           ]
         },
         {
+          "name": "agent.build-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "build-processor",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
           "name": "agent.credentials-agent-observer.configuration",
           "access": "publish",
           "from": "family",
@@ -4828,6 +5071,34 @@
           "from": "family",
           "pattern": "agent.{workload}.configuration",
           "workload": "git-repo-processor",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
+          "name": "agent.gitlab-observer.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "gitlab-observer",
+          "purpose": "the documents held for the workload, replayed when it asks",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "polar-configuration-replay"
+            }
+          ]
+        },
+        {
+          "name": "agent.gitlab-processor.configuration",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.configuration",
+          "workload": "gitlab-processor",
           "purpose": "the documents held for the workload, replayed when it asks",
           "causes": [
             {
@@ -5443,6 +5714,20 @@
           ]
         },
         {
+          "name": "soft-state-replies.build-processor",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "build-processor",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
           "name": "soft-state-replies.credentials-agent",
           "access": "publish",
           "from": "family",
@@ -5504,6 +5789,34 @@
           "from": "family",
           "pattern": "soft-state-replies.{workload}",
           "workload": "git-repo-processor",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.gitlab-observer",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "gitlab-observer",
+          "purpose": "the answer to the workload's request, on its own topic",
+          "causes": [
+            {
+              "kind": "topic",
+              "name": "soft-state-requests"
+            }
+          ]
+        },
+        {
+          "name": "soft-state-replies.gitlab-processor",
+          "access": "publish",
+          "from": "family",
+          "pattern": "soft-state-replies.{workload}",
+          "workload": "gitlab-processor",
           "purpose": "the answer to the workload's request, on its own topic",
           "causes": [
             {
@@ -5779,6 +6092,20 @@
           ]
         },
         {
+          "name": "agent.build-processor.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "build-processor",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
           "name": "agent.credentials-agent-observer.health",
           "access": "publish",
           "from": "family",
@@ -5840,6 +6167,34 @@
           "from": "family",
           "pattern": "agent.{workload}.health",
           "workload": "git-repo-processor",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.gitlab-observer.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "gitlab-observer",
+          "purpose": "the question about the workload's health, on its own topic",
+          "causes": [
+            {
+              "kind": "timer",
+              "name": "health round"
+            }
+          ]
+        },
+        {
+          "name": "agent.gitlab-processor.health",
+          "access": "publish",
+          "from": "family",
+          "pattern": "agent.{workload}.health",
+          "workload": "gitlab-processor",
           "purpose": "the question about the workload's health, on its own topic",
           "causes": [
             {

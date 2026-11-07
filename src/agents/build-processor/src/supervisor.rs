@@ -21,7 +21,8 @@
    DM26-0670
 */
 
-//! The build processor's supervisor: it receives the provenance stream through the builder's subscription, projects
+//! The build processor's supervisor: it receives what builds report and what the resolver verified, each on its own
+//! topic through the builder's subscriptions and believed only there (`project::believed_on`), projects
 //! each event (`project`) and hands the writes to its graph controller, and tells health what the graph and the broker
 //! say. An event it cannot read, or cannot project, is dropped with a warning and the next is read: the broker keeps
 //! no log, so what is dropped is gone, and nothing here claims otherwise.
@@ -81,6 +82,28 @@ impl ProcessorSupervisor {
         }
     }
 
+    /// A subscription to `topic` that hands over each event believed there ([`project::believed_on`]): a registry fact
+    /// on the build stream, or a build's report on the resolver's topic, is dropped with a warning.
+    fn stream(topic: &'static str, to: &ActorRef<ProcessorMessage>) -> Subscription {
+        let to = to.clone();
+        Subscription::new(topic, move |incoming| {
+            let Some(event) = Self::decode(&incoming.payload) else {
+                return;
+            };
+            if !project::believed_on(topic, &event) {
+                warn!(
+                    publisher = ?incoming.published_by,
+                    word = ?project::whose_word(&event),
+                    "an event that is not believed on {topic} -- dropped"
+                );
+                return;
+            }
+            if let Err(e) = to.cast(ProcessorMessage::Received(event)) {
+                error!("failed to hand an event to the supervisor: {e}");
+            }
+        })
+    }
+
     /// Projects one event and hands its writes to the graph controller as one transaction, all or none. An event that
     /// cannot be projected (a manifest that is not OCI JSON) writes nothing and is dropped with a warning.
     fn write(state: &ProcessorState, event: ProvenanceEvent) -> Result<(), ActorProcessingErr> {
@@ -116,16 +139,9 @@ impl Actor for ProcessorSupervisor {
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
         let key_indexes = configured.graph_key_indexes();
-        let to = myself.clone();
-        let stream = Subscription::new(polar::topics::PROVENANCE_EVENTS, move |incoming| {
-            if let Some(event) = Self::decode(&incoming.payload)
-                && let Err(e) = to.cast(ProcessorMessage::Received(event))
-            {
-                error!("failed to hand an event to the supervisor: {e}");
-            }
-        });
         let resources = AgentBuilder::new(myself.clone(), AGENT_NAME)
-            .with_subscription(stream)
+            .with_subscription(Self::stream(polar::topics::PROVENANCE_EVENTS, &myself))
+            .with_subscription(Self::stream(polar::topics::PROVENANCE_RESOLUTIONS, &myself))
             .with_lifecycle_handler(|event| Some(ProcessorMessage::ClientEvent { event }))
             .into_configured(configured)
             .build()

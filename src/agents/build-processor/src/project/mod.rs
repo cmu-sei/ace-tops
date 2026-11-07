@@ -165,6 +165,53 @@ pub fn project(
     Ok(ops)
 }
 
+/// Whose word an event is, which says the one topic it is believed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Word {
+    /// What a registry serves: the resolver's, on [`polar::topics::PROVENANCE_RESOLUTIONS`].
+    Registry,
+    /// What a build reports: on [`polar::topics::PROVENANCE_EVENTS`].
+    Build,
+    /// A request for the resolver to fetch and verify something, believed on neither.
+    Request,
+}
+
+/// Whose word `event` is. No wildcard: a new [`ProvenanceEvent`] variant does not compile until it is placed.
+pub fn whose_word(event: &ProvenanceEvent) -> Word {
+    match event {
+        ProvenanceEvent::OCIArtifactResolved { .. }
+        | ProvenanceEvent::OCIRegistryDiscovered { .. }
+        | ProvenanceEvent::ImageRefResolved { .. } => Word::Registry,
+        ProvenanceEvent::ExecutionStarted { .. }
+        | ProvenanceEvent::StageStarted { .. }
+        | ProvenanceEvent::StageCompleted { .. }
+        | ProvenanceEvent::ExecutionCompleted { .. }
+        | ProvenanceEvent::ExecutionFailed { .. }
+        | ProvenanceEvent::ExecutionCancelled { .. }
+        | ProvenanceEvent::ArtifactProduced(_)
+        | ProvenanceEvent::SbomAnalyzed(_)
+        | ProvenanceEvent::BinaryLinked(_)
+        | ProvenanceEvent::ContainerImageCreated(_)
+        | ProvenanceEvent::OCIArtifactCreated { .. }
+        | ProvenanceEvent::SecurityAdvisoryFound(_)
+        | ProvenanceEvent::PackageStatusFound(_)
+        | ProvenanceEvent::Ignored => Word::Build,
+        ProvenanceEvent::OCIArtifactDiscovered { .. }
+        | ProvenanceEvent::ArtifactDiscovered { .. } => Word::Request,
+    }
+}
+
+/// Whether `event`, arriving on `topic`, is believed: a registry fact only from the resolver's topic, a build's report
+/// only from the provenance stream. Who may publish on each is the broker's to decide, on the publisher's
+/// broker-stamped identity, so a build publisher cannot speak for a registry.
+pub fn believed_on(topic: &str, event: &ProvenanceEvent) -> bool {
+    match whose_word(event) {
+        Word::Registry => topic == polar::topics::PROVENANCE_RESOLUTIONS,
+        Word::Build => topic == polar::topics::PROVENANCE_EVENTS,
+        Word::Request => false,
+    }
+}
+
 /// One event's writes as one transaction ([`GraphOp::Transaction`]): the graph controller writes all of them or none,
 /// so a failure partway cannot leave half an event in the graph. `None` when the event writes nothing.
 pub fn transaction(
@@ -521,5 +568,54 @@ mod tests {
         )
         .unwrap();
         assert!(nothing.is_none());
+    }
+
+    /// What a registry serves is the resolver's word alone, on its own topic; everything a build reports is on the
+    /// provenance stream; and a discovery is a request to the resolver, believed on neither.
+    #[test]
+    fn each_kind_is_believed_on_one_topic_only() {
+        use super::Word::{Build, Registry, Request};
+        let registry_facts = [
+            ProvenanceEvent::OCIArtifactResolved {
+                uri: "reg/x@sha256:m".into(),
+                digest: "sha256:m".into(),
+                manifest_data: vec![],
+                registry: "reg".into(),
+                source_ref: polar::DiscoverySourceRef::OCIRepository {
+                    repo_uri: "reg/x".into(),
+                },
+            },
+            ProvenanceEvent::OCIRegistryDiscovered {
+                hostname: "reg".into(),
+            },
+        ];
+        for event in &registry_facts {
+            assert_eq!(whose_word(event), Registry, "{event:?}");
+            assert!(believed_on(polar::topics::PROVENANCE_RESOLUTIONS, event));
+            assert!(!believed_on(polar::topics::PROVENANCE_EVENTS, event));
+        }
+        for event in one_of_each().into_iter().filter(|e| {
+            !registry_facts
+                .iter()
+                .any(|r| std::mem::discriminant(r) == std::mem::discriminant(e))
+        }) {
+            assert_eq!(whose_word(&event), Build, "{event:?}");
+            assert!(believed_on(polar::topics::PROVENANCE_EVENTS, &event));
+            assert!(!believed_on(polar::topics::PROVENANCE_RESOLUTIONS, &event));
+        }
+        let request = ProvenanceEvent::OCIArtifactDiscovered {
+            uri: "reg/x:1".into(),
+            source_ref: polar::DiscoverySourceRef::OCIRepository {
+                repo_uri: "reg/x".into(),
+            },
+        };
+        assert_eq!(whose_word(&request), Request);
+        for topic in [
+            polar::topics::PROVENANCE_EVENTS,
+            polar::topics::PROVENANCE_RESOLUTIONS,
+            "elsewhere",
+        ] {
+            assert!(!believed_on(topic, &request), "{topic}");
+        }
     }
 }
