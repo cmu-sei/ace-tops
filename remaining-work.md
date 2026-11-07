@@ -363,6 +363,42 @@ Each step is taken in bites, each reported before the next.
   - Not re-read by that session: bodies of up to 256 MiB read whole and copied before `is_admin`, with no limit on concurrent requests; and, lesser, a push-log line or
     event lost on a crash, a 500 after 120 s though refs moved, `access.rs` writing without fsync, quarantine directories leaking and reused across restarts, `run_git`
     without a timeout, and signing-check errors logged as refusals.
+- [ ] **build-processor's failure handling** (handed over 2026-11-07 by the agentic-control-plane session, from four blind reviews, two unguided and two guided,
+  each fault with how many found it; write-up in that branch's `docs/architecture/polar-eden.md`, "The changed protocol, blind", local at `d2d4c5bf`; code there is
+  main's as of `fe2195a7`). Nothing fixed. One cause runs through several: the crate drops events trusting a replay to bring them back (`supervisor.rs` ~85-87;
+  README, "the broker log is the source of truth"), and Cassini has no durable log and acknowledges on hand-off (`cassini-client-reliability.md` ~139-143), so every
+  drop is for good.
+  - HIGH [4], confirmed on main 2026-11-07: one bad message kills the linker, nothing restarts it, and health stays green. `linker.rs` ~855
+    `serde_json::from_slice(&manifest_data)?` (and every `send_op` `?`, ~56-65) returns Err from `handle`, which stops the actor; `supervisor.rs` ~325-340 only logs
+    ActorFailed unless it is the health actor (despite ~89-94), and ~421-427 then drops every later artifact event until the next re-registration, while the
+    controller's 30 s canary keeps health green. Trigger: one OCIArtifactResolved whose manifest_data is not an OciManifest.
+  - HIGH [4]: a failed graph write is dropped for good (`lib/src/graph/controller.rs` ~1262-1278 logs, sends OpFailed, drops; projection.rs and linker.rs cast and
+    forget): a 90 s Neo4j restart loses every event in it, and ops that keep failing while `RETURN 1` succeeds never trip the deadline. HIGH [4]: a supervisor
+    Err exits 0 (`main.rs` ~43; supervisor.rs ~181, 195, 209 spawn `?`, ~226 subscribe), and the Job (restartPolicy Never, completions 1, `processor.dhall` ~65,
+    100-106) is Completed and never restarted, against `health-and-shutdown.md` ~59, "No agent ever exits with code 0".
+  - MEDIUM: every drain, rejuvenation's too, loses events (supervisor.rs ~317-322, 333-338 await `send_after`; queued messages dropped while draining, ~232-238;
+    ForceExit's `stop_and_wait` takes the stop before the queued ops, ~271-289, where `drain_and_wait` would run them; the BuildActor's and linker's mailboxes are
+    never drained) [4]. BuildJobState is keyed on processing time, and started_at/completed_at are processing time (`projection.rs` ~49-52, 63, 102-105, 186-189,
+    234-236, 255-258, 270-273, 321-324, 364-367): a redelivered ExecutionStarted after ExecutionCompleted, or a backward clock step, reads as running [4]. The edge
+    timestamp is inside the MERGE pattern (linker.rs ~705, 748, 779, 807, `MERGE ...-[:REPORTED { at: $observed_at }]->`), so each repeat delivery mints another
+    REPORTED, AFFECTS or CONCERNS edge, against `pipeline-design-reference.md` §5.5 (and §7 says fixed) [4]. SBOM components with no purl merge into one
+    `Package{purl:""}` (linker.rs ~207-216; `scripts/pipeline/core/sbom.nu` ~333-342) [2]; plausibly the dependency tree is keyed on a bom-ref as if a purl
+    (linker.rs ~233, 297-301; sbom.nu ~354) [2]; `SET p.license = row.license` with a null erases one another SBOM recorded (~211-215) [2]. No backpressure:
+    acked on hand-off, unbounded mailboxes to a serial controller (supervisor.rs ~404, 425) [4]. `published_by` is ignored (supervisor.rs ~232), so any publisher
+    allowed on `polar.provenance.events` or `.linker` sends any variant for any build_id, against "a request is judged by the broker-stamped identity" [2].
+    Multi-op events are separate transactions (`GraphOp::Transaction` unused; projection.rs ~144-147 checks `BackendJobIdentity::new(..)?` after three ops were
+    cast, leaving a BuildJob without its IS edge) [4]. The Artifact type edges point the wrong way (`(Artifact)-[:IS]->(x)`, linker.rs ~141-147, 363-369, 408,
+    488-494, 631-637, 890-896, 1019-1025, against `pipeline-design-reference.md` ~123-125; registries CONTAIN the type node, ~897-903, 1027-1033) [2]. Plausibly
+    MERGE races with no uniqueness constraint: the resolver publishes the same OCIArtifactResolved to kube-consumer and build-processor (`resolver.rs` ~148-164),
+    both MERGE `OCIArtifact{digest}`, and the GitCommit stub (projection.rs ~123-134) races git-processor [2].
+  - LOW: a backend identity with empty identity_props compiles to `MERGE (b:Label)` and matches every node of the label (projection.rs ~141-153, controller.rs
+    ~622-626) [3]. SubscribeRefused and RegistrationRefused fall into `_ => {}` (supervisor.rs ~253) [3]. `in_artifact` is never read, so the FOUND_IN fallback
+    (`pipeline-design-reference.md` ~197) is never written (linker.rs ~686-758, 763-817) [2]. Plausibly, after a re-registration respawns a dead graph controller,
+    the BuildActor and linker keep the dead reference (supervisor.rs ~175-197; build.rs ~88-90, 165-167) while the new one keeps health green [3]. Latent:
+    OCIArtifactCreated and ImageRefResolved go to the linker, which drops them (supervisor.rs ~415-417, linker.rs ~1145; README ~73 says handled) [3].
+    ContainerImageCreated is keyed on `OCIArtifact{digest}` with the digest "" before a push (linker.rs ~569-571, events.rs ~326-328; `smoke-test.nu` ~114-123
+    emits none), so those images merge into one node [2]. Unstated in the design: a build whose terminal event never arrives stays started for good [2]. Minor:
+    supervisor.rs ~405 logs "linker" for the build handler; lib.rs has "polar.bullds.orchestrator".
 - [ ] **The HTTP observer and processor's failure handling** (`polar-http-observer`, `polar-http-processor`, the protocol handler; handed over 2026-11-07 by the
   agentic-control-plane session, from two blind reviews, U without questions and G with the survey's; write-up in that branch's `docs/architecture/polar-eden.md`,
   "Scored blind on the HTTP observer and processor", local at `8ea36cac`; code there is main's as of `fe2195a7`). Nothing fixed.
