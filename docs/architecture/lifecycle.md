@@ -113,7 +113,9 @@ GitLab pair would appear in both as under test. Until a lifecycle document exist
 
 ## Open, for the maintainer
 
-1. The phases: are these the right ones, and are some of them per kind (declared, released) and others per workload on a cluster?
+1. *Decided* (the maintainer, 2026-11-07, "Two levels"): a kind has declared and released, whatever cluster it is on; a workload on a
+   cluster has under test, deployed, retiring and retired, and enters under test only from a released kind. A kind can be released once and
+   be under test on one cluster while deployed on another.
 2. Who signs a transition: always a person, or some (under test to deployed, after a test's measures hold) by a rule a person signed?
 3. Where the lifecycle document lives: polar-schedules (runtime, signed, per cluster) or the deployment repository (deploy-time, the
    pipeline's)?
