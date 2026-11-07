@@ -102,9 +102,9 @@ first`) Rust CLI tools over libraries, in time.
 
 **The controller moves workloads between phases.** The GitOps controller's desired state becomes the lifecycle document and the dependency
 graph; a transition is its operation; "done" is the phase's invariants holding (the ones `polar-sign check` has, by phase); what a
-workload leaves behind on retiring is its job, recorded in the graph first, as the Reaper's is. Derived documents (`schema`, `agents`)
-are computed in the same transition from the same signed decision, so nobody signs a fact the build computed (`AGENTS.md`, "nobody
-hand-declares them twice").
+workload leaves behind on retiring is its job, recorded in the graph first, as the Reaper's is. What follows from a move (the state agent's
+`schema` and `agents`, the authority model) is not a document at all: each agent derives it from the signed lifecycle and the kinds'
+releases (decision 4), so nobody signs a fact the build computed (`AGENTS.md`, "nobody hand-declares them twice").
 
 ## What it would mean for the case in hand
 
@@ -124,7 +124,14 @@ GitLab pair would appear in both as under test. Until a lifecycle document exist
 3. *Decided* (the maintainer, 2026-11-07, "polar-schedules"): the lifecycle document is signed runtime configuration in polar-schedules,
    as every other control fact, changed without a re-render ("control travels signed, at run time"); the agents read it through the
    scheduler as they read their sections, a move takes effect when its signed version arrives, and the deployment is rendered from it.
-4. The derived documents: signed by whom, when no person signed that exact body?
+4. *Decided* (the maintainer, 2026-11-07, "agents derive them", then "Answered when asked, checked"): there are no derived documents.
+   Each agent computes what it needs from what it already believes: the signed lifecycle and the facts of each kind's release (its
+   scaffold, by digest, in signed evidence). The state agent derives its `schema` and `agents`, the credentials agent its authority
+   model, so nothing is signed twice and nothing drifts from what it follows from. What an agent derived is observable as its
+   configuration is: in its answer to "what do you hold in force" (the derived body's digest, and the signed inputs it came from, the
+   lifecycle's version and the releases'), and `polar-sign check --ask` derives the same itself and compares, a disagreement a violated
+   invariant. The maintainer's question, whether agents should share what they derived somewhere: answered by introspection, as an
+   infrastructure actor answers for its configuration, and not stored again.
 5. The order of work: lifecycle first, then the catalog's split, then the controller on top; or the controller's proposal merged and
    reshaped around phases from the start.
 6. The interim answer for `schema` and `agents` while this is designed.
