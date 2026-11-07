@@ -618,4 +618,41 @@ mod tests {
             assert!(!believed_on(topic, &request), "{topic}");
         }
     }
+
+    /// The labels of an edge's two ends, for every edge a projection writes through a key.
+    fn edges_of(ops: &[GraphOp]) -> Vec<(String, String, String)> {
+        let label =
+            |key: &dyn polar::graph::controller::GraphNodeKey| key.identity().labels.join(":");
+        ops.iter()
+            .flat_map(|op| match op {
+                GraphOp::Transaction { ops } => edges_of(ops),
+                GraphOp::EnsureEdge {
+                    from, rel_type, to, ..
+                } => vec![(label(from.as_ref()), rel_type.clone(), label(to.as_ref()))],
+                _ => vec![],
+            })
+            .collect()
+    }
+
+    /// The type anchors are what an instance IS (pipeline-design-reference.md, "The type-marker singleton idiom"):
+    /// `(x)-[:IS]->(Artifact)`, never the other way, and nothing else points at an anchor or comes from one.
+    #[test]
+    fn an_instance_is_its_type_and_a_type_anchor_is_only_pointed_at_by_is() {
+        const ANCHORS: [&str; 3] = ["Artifact", "Finding", "BuildExecution"];
+        let mut is_edges = 0;
+        for event in one_of_each() {
+            let name = format!("{event:?}").chars().take(40).collect::<String>();
+            for (from, rel, to) in edges_of(&project(event, T0).unwrap()) {
+                assert!(
+                    !ANCHORS.contains(&from.as_str()),
+                    "{name}: ({from})-[:{rel}]->({to}) starts at an anchor"
+                );
+                if ANCHORS.contains(&to.as_str()) {
+                    assert_eq!(rel, "IS", "{name}: ({from})-[:{rel}]->({to})");
+                    is_edges += 1;
+                }
+            }
+        }
+        assert!(is_edges > 0, "no IS edge was written at all");
+    }
 }

@@ -88,6 +88,8 @@ outputs    (BuildJob)-[:PRODUCED]->(BuildArtifact)
 findings   (BuildJob)-[:REPORTED]->(SecurityAdvisory | PackageStatus)-[:IS]->(Finding)
            (SecurityAdvisory)-[:AFFECTS]->(Package),  (PackageStatus)-[:CONCERNS]->(Package)
 
+anchors    (BuildArtifact | Sbom | Binary | OCIArtifact)-[:IS]->(Artifact)
+
 registry   (OCIArtifact)-[:HOSTED_BY]->(OCIRegistry)
            (OCIArtifact)-[:HAS_LAYER {order}]->(OCILayer)
            (OCIArtifact)-[:HAS_MANIFEST {platform_*}]->(OCIArtifact)    indexes

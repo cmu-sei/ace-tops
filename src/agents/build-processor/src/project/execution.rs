@@ -150,7 +150,7 @@ pub fn started(
         }
     }
 
-    // Type hierarchy, as with (OCIArtifact)-[:IS]->(Artifact) for artifacts.
+    // What it IS, as (OCIArtifact)-[:IS]->(Artifact) for artifacts.
     ops.push(edge(
         job(&build_id),
         IS,

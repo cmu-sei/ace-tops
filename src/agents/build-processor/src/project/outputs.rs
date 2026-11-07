@@ -28,7 +28,7 @@
 //! `scripts/pipeline/core`).
 //!
 //! ```text
-//! (Artifact)-[:IS]->(BuildArtifact | Sbom | Binary | OCIArtifact)
+//! (BuildArtifact | Sbom | Binary | OCIArtifact)-[:IS]->(Artifact)
 //! (BuildJob)-[:PRODUCED]->(BuildArtifact)
 //! (BuildArtifact)-[:ANALYZED_AS]->(Sbom)                     sbom files
 //! (BuildArtifact)-[:INSTANCE_OF]->(OCIArtifact)              pushed images
@@ -55,8 +55,9 @@ fn string(s: impl Into<String>) -> GraphValue {
     GraphValue::String(s.into())
 }
 
+/// What `node` IS: an artifact (pipeline-design-reference.md, "The type-marker singleton idiom").
 fn type_edge(node: ArtifactNodeKey) -> GraphOp {
-    edge(ArtifactNodeKey::Artifact, rel::IS, node, vec![])
+    edge(node, rel::IS, ArtifactNodeKey::Artifact, vec![])
 }
 
 /// A file the pipeline produced, keyed by content hash. Some artifact types

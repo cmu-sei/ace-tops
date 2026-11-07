@@ -31,7 +31,7 @@
 //! something decided here.
 //!
 //! ```text
-//! (Artifact)-[:IS]->(OCIArtifact)-[:HOSTED_BY]->(OCIRegistry)-[:CONTAINS]->(Artifact)
+//! (OCIArtifact)-[:IS]->(Artifact),  (OCIArtifact)-[:HOSTED_BY]->(OCIRegistry)
 //! (OCIArtifact)-[:HAS_LAYER {order}]->(OCILayer)          image manifests
 //! (OCIArtifact)-[:HAS_MANIFEST {platform_*}]->(OCIArtifact)  image indexes
 //! ```
@@ -64,13 +64,7 @@ fn hosting(artifact: &ArtifactNodeKey, registry: String) -> Vec<GraphOp> {
             registry_k.clone(),
             vec![Property("hostname".into(), string(registry))],
         ),
-        edge(ArtifactNodeKey::Artifact, rel::IS, artifact.clone(), vec![]),
-        edge(
-            registry_k.clone(),
-            rel::CONTAINS,
-            ArtifactNodeKey::Artifact,
-            vec![],
-        ),
+        edge(artifact.clone(), rel::IS, ArtifactNodeKey::Artifact, vec![]),
         edge(artifact.clone(), rel::HOSTED_BY, registry_k, vec![]),
     ]
 }
