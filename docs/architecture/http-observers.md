@@ -696,6 +696,17 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   pinned template, so GitLab restarts after Flux calls the layer ready and the seed met it booting (a 502); the ready script now waits for its
   rollout. Tests: `under-test-gitlab.nu` (10), `catalog-topics.nu` with the pair in the catalog.
 - **G4d, live.** As planned above, the graph held to `gitlab-seed-expected`.
+  *The pair reading, done (2026-11-07).* A configuration under test declares its signed documents and credentials (the maintainer's "Declared by the CT";
+  `under-test.nu`, `configurations-under-test.md`), which up.nu's seed step signs as the administrator, seals from their Secret, and removes once the cluster
+  no longer carries it. The test GitLab's: the observer's `sources`, one per query, made by `under-test/gitlab/sources.nu`; the processor's `projection`, the
+  G3 mapping; the observer's `credentials`, a read_api token of root's the ready script makes, sealed for the test GitLab's host alone. Found: a list whose
+  entries differ in an optional field (a source with no `paging` beside one with) was signed as given and read back with nulls, so it did not verify; fixed
+  in `polar-sign` (`ac8638bf`, `remaining-work.md`). Live on u7c: the credentials applied and escrowed, the projection in force, every source read with the
+  credential, each request allowed for the one host; the graph holds every node and edge the seed expected, 68 and 46, by name (a user by username, a
+  project by full path, a pipeline by its project and ref, a job by its project and name, the rest likewise), and beyond them root, GitLab's own user.
+  Counts beyond the expectation are what GitLab says: 14 jobs (two of a pipeline the seed ran again), 27 memberships (`groupMembers` counts what a subgroup
+  inherits). Asked by Neo4j's HTTP endpoint through a forward, with the administrator's client certificate and the password given to curl on standard input.
+  Still to do: the schema refreshed from this GitLab, real answers kept as masked samples, `check --ask`, and the comparison made a tool.
 
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
 server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent
