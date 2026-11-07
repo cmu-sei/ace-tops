@@ -363,6 +363,64 @@ Each step is taken in bites, each reported before the next.
   - Not re-read by that session: bodies of up to 256 MiB read whole and copied before `is_admin`, with no limit on concurrent requests; and, lesser, a push-log line or
     event lost on a crash, a 500 after 120 s though refs moved, `access.rs` writing without fsync, quarantine directories leaking and reused across restarts, `run_git`
     without a timeout, and signing-check errors logged as refusals.
+- [ ] **The HTTP observer and processor's failure handling** (`polar-http-observer`, `polar-http-processor`, the protocol handler; handed over 2026-11-07 by the
+  agentic-control-plane session, from two blind reviews, U without questions and G with the survey's; write-up in that branch's `docs/architecture/polar-eden.md`,
+  "Scored blind on the HTTP observer and processor", local at `8ea36cac`; code there is main's as of `fe2195a7`). Nothing fixed.
+  - HIGH, G, checked and reproduced there, and confirmed on main 2026-11-07: a remote host's `Retry-After` poisons the protocol handler for the whole agent.
+    `polar-agent-builder/src/protocol.rs` ~608-612 inserts `Instant::now() + *wait` under the `not_before` lock, and `retry_after` (`protocol/http.rs` ~177-181)
+    takes any u64 of seconds: `Retry-After: 18446744073709551615` overflows and panics with the guard held, poisoning the mutex, and `wait_for` (~381,
+    `lock().unwrap()`) then panics on every request ("handler ended") until a restart, and again at the first read after. Every agent with the handler, not only
+    the observer. Direction: cap the wait (a hint never widens a signed bound) and `checked_add`.
+  - HIGH, U, checked: a failed publish is only logged and the source still reported healthy (`polar-http-observer/src/observer.rs` ~413-422; succeeded is marked
+    before the publish, `observing.rs` ~228-236; PublishRefused and PublishDropped fall into `_ => {}`, observer.rs ~283): BufferFull on later pages drops them while
+    health stays clear and the processor writes a partial set. (G held the next read republishes everything.)
+  - MEDIUM: the observer's and processor's standing problems share the configuration actor's one `HoldReason::Configuration` slot (`problems.rs` ~124-129,
+    `processing.rs` ~150-155, against `polar-health/src/machine.rs` ~393-412 and `polar-agent-builder/src/configuration.rs` ~458-466, 513-516, 606-613, 655-665), so
+    each releases the other's hold and Reported dedup never sends it again; an observer hold overwrites the handler's Credentials hold. A host's wait is honoured
+    with no ceiling and never reported (`observing.rs` ~98, ~106 `interval.max(*wait)`), stretching the signed interval without bound. A rate limit part-way
+    through a paged read drops the rest and restarts from page 0, unreported (~98, 209-215, 241-245). A credential that arrives late or is replaced after a refusal
+    waits for the next interval, up to 7 days (observer.rs ~246-257 never subscribes to `credentials_applied()`, as the jira and git observers do). A failed read of
+    the section in force is never tried again (observer.rs ~289-299; processor `lib.rs` ~287-295, `processing.rs` ~128, which keeps "no projection is signed
+    yet" and drops every document). Two section reads can race and install the older version (no version compared: observer.rs ~285-301, observing.rs ~175-183;
+    processor lib.rs ~284-299, processing.rs ~122-125). Plausible: an older observation can overwrite a newer one (no `observed_at` comparison; `polar-projection`
+    stamps unconditionally, lib.rs ~573-576). Nothing bounds concurrent fetches (observer.rs ~373-381, up to 500 at once) or what each holds (bodies buffered to
+    256 MiB before the ~64 MiB check). Plausible: no backpressure toward the graph (processor lib.rs ~189-207, ~385, an unbounded mailbox to a serial controller).
+  - LOW: 401 and 403 are Malformed, never CredentialRefused (observer.rs ~171-174), so a revoked token is presented on every read. The next page resolves against
+    the requested URL, not the final one after redirects (observer.rs ~79-81, 109-111, 152-168; `paging.rs` ~212-217): an http-to-https redirect fails every read
+    after page 0. Plausible: a Link header that is not visible ASCII is taken as the last page (observer.rs ~161, against ~150-151 and `http-observers.md` ~514).
+    Observations that keep failing to decode are only warned of, with no hold (processor lib.rs ~205). The processor says the graph connected when the broker
+    registers (lib.rs ~274-277; readiness only). Plausible: the processor's publisher check ignores the namespace (lib.rs ~150-152 via
+    `cert-issuer/common/src/identity.rs` ~167-172).
+- [ ] **Runtime attestation's failure handling** (`attestation-agent`, `attestation-common`; handed over 2026-11-07 by the agentic-control-plane session, from a blind
+  review and three repeats; write-up in that branch's `docs/architecture/polar-eden.md`, "Scored blind on runtime attestation" and "Re-evaluated", local at
+  `44bc51c8` and `e19f8fb2`; code there is main's as of `fe2195a7`). Nothing fixed.
+  - HIGH, checked, confirmed on main 2026-11-07, latent in sandbox-local (its record names no Job): the self-check fails whenever a recorded Job's pod is held.
+    `common/src/proof.rs` ~130 alters the owner to `{name}-altered`, which `verdict.rs` ~216-222 (`names_its_workload`) accepts for a Job by its `<record>-` prefix,
+    so the altered pod is Genuine and `prove` returns CannotSayNo ("another owner", proof.rs ~214-226): CannotSay to every question, every certificate issued
+    unattested, while any recorded Job's pods exist (Succeeded and Failed too). Reachable wherever `layers/3-workloads/agents/gitlab/{consumer,observer}.dhall` or
+    `build-processor/processor.dhall` (Jobs) are deployed and recorded. `tests/props.rs` builds only Deployments. Direction: an alteration no prefix matches
+    (`altered-{name}`), and a Job in the generator.
+  - MEDIUM: "ready" is listed once with no failure, not up to date (`agent/src/holdings.rs` ~136-138, supervisor.rs ~76-82): a half-open watch (kube's ~295 s read
+    timeout) freezes the holdings while ready, and a panicked watch task is drained by `try_join_next()` (`polar-agent-builder/src/protocol.rs` ~849-851) and never
+    restarted (plausible). One watch that keeps failing (a missing Role, a 403 or 404 retried every 5 s as temporary, supervisor.rs ~228-236) switches off every
+    verdict and every crash report (report() returns when not ready, ~129-131), against the design's "a crash is reported even while the agent doubts itself"
+    (one reviewer held it fail-open by design). A StatefulSet pod of the old revision is judged against the current template (holdings.rs ~240-241, ~267, ~296),
+    so a rolling update, OnDelete or a partition makes old pods AnotherImage; direction: judge by the pod's ControllerRevision. Plausible: the record's owner kind
+    and name apply the moment it arrives, with no grace (supervisor.rs ~437-443, verdict.rs ~199-204), though record and Flux may be ten minutes apart: a rename or
+    kind change refuses the old or the new pods AnotherOwner, and on the record's own delivery path may stick until a restart.
+  - LOW-MEDIUM: an unchanged record stops verifying when the pipeline certificate expires (`agent/src/record.rs` ~42 verifies at now; `deploy-repo.nu`
+    `next_record` re-signs only when the facts change; the certificate lasts 365 days, ~233): an ERROR every 30 s, and a restarted agent holds no record, so
+    CannotSay to everything.
+  - LOW: a pod in a namespace not watched is answered NoSuchPod, not CannotSay (supervisor.rs ~76-82, verdict.rs ~143; record.rs ~88-92 drops the namespace; the
+    drift path accounts for it, ~140). Plausible: a pod whose owner's watch lags is NoOwner (verdict.rs ~149, holdings.rs ~158); answers do not wait two checks as
+    reports do. The drift grace runs on the wall clock (supervisor.rs ~238-243, ~404; record.rs ~230). A crash report whose publish failed is lost if the pod is
+    gone by the next check (supervisor.rs ~152-161; `Reporting::check`, report.rs ~176), and offline, Queue requeues every standing report each minute until
+    BufferFull refuses the newest, a new crash. Records are accepted on their version alone (record.rs ~370-376, supervisor.rs ~377-378; no content compare, no
+    target check, ~343-357, common record.rs ~68-78): a recreated deploy repository at version 1 is refused as Older until a restart, and a higher version for
+    another target under the same CA is taken. Latent until slice C: a DaemonSet pod is always NoOwner (holdings.rs ~245; OwnerKind has none, record.rs refuses
+    one), so the planned node sensor would be refused on every node. Load-harness `--image-tag` runs are refused NotPinned (verdict.rs ~175-177 against
+    `load-harness.nu` ~305-319), and a large run with no record can push the proof to CondemnsMost. Unstated in the design: during the agent's own rollout both
+    instances answer and the first reply wins (asker.rs ~142-146), so an unproved instance's CannotSay can beat the old one's NotGenuine.
 - [ ] **Soft state's failure handling** (`soft-state-common`, `-observer`, `-processor`; handed over 2026-11-07 by the agentic-control-plane session, from two
   blind failure-handling reviews; its write-up is that branch's `docs/architecture/polar-eden.md`, "Scored blind on soft state", local at `05c74ef7`; soft state
   there is main's as of `fe2195a7`). Nothing fixed. "Checked" or "confirmed", traced in the code; "plausible", the trigger not seen. 1-6 both reviewers found.
