@@ -46,9 +46,10 @@ one that records it.
 - **One dispatch, no wildcard.** `project()` matches every `ProvenanceEvent`
   variant explicitly. A new variant doesn't compile until it's routed, and
   variants with no projection yet warn instead of disappearing.
-- **One mailbox.** The supervisor decodes each event, projects it, and sends the
-  operations in order to the `GraphControllerActor`, which serializes all
-  writes. There are no per-domain actors: projection holds no state, so they
+- **One mailbox, one transaction an event.** The supervisor decodes each event,
+  projects it, and sends its operations as one transaction to the
+  `GraphControllerActor`, which serializes all writes and writes each
+  transaction all or none. There are no per-domain actors: projection holds no state, so they
   would add a hop and split ordering without buying isolation.
 
 ## Modules

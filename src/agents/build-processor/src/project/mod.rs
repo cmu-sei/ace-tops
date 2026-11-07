@@ -25,9 +25,9 @@
 //! record it.
 //!
 //! Every projection is a pure function from an event to `Vec<GraphOp>`. Nothing
-//! here touches the graph or the broker. The supervisor sends the returned
-//! operations, in order, to the `GraphControllerActor`, which serializes all
-//! writes.
+//! here touches the graph or the broker. The supervisor sends one event's
+//! operations as one transaction ([`transaction`]) to the `GraphControllerActor`,
+//! which serializes all writes and writes a transaction all or none.
 //!
 //! Each operation is an idempotent MERGE, so projecting the same event twice
 //! (a broker replay) leaves the graph unchanged, and events about the same
@@ -163,6 +163,16 @@ pub fn project(
         ProvenanceEvent::Ignored => vec![],
     };
     Ok(ops)
+}
+
+/// One event's writes as one transaction ([`GraphOp::Transaction`]): the graph controller writes all of them or none,
+/// so a failure partway cannot leave half an event in the graph. `None` when the event writes nothing.
+pub fn transaction(
+    event: ProvenanceEvent,
+    observed_at: &str,
+) -> Result<Option<GraphOp>, ActorProcessingErr> {
+    let ops = project(event, observed_at)?;
+    Ok((!ops.is_empty()).then_some(GraphOp::Transaction { ops }))
 }
 
 // ── Shared op builders ─────────────────────────────────────────────────────────
@@ -486,5 +496,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// One event is one transaction: all of its writes or none, so a failure cannot leave a build without its type edge
+    /// or a manifest without its layers.
+    #[test]
+    fn every_event_is_written_as_one_transaction() {
+        for event in one_of_each() {
+            let name = format!("{event:?}").chars().take(40).collect::<String>();
+            let Some(op) = transaction(event, T0).unwrap() else {
+                panic!("{name} wrote nothing");
+            };
+            assert!(matches!(op, GraphOp::Transaction { .. }), "{name}");
+            compile_graph_op(&op).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        let nothing = transaction(
+            ProvenanceEvent::OCIArtifactDiscovered {
+                uri: "reg/x:1".into(),
+                source_ref: polar::DiscoverySourceRef::OCIRepository {
+                    repo_uri: "reg/x".into(),
+                },
+            },
+            T0,
+        )
+        .unwrap();
+        assert!(nothing.is_none());
     }
 }

@@ -26,7 +26,7 @@
 //!
 //! Requires a container runtime for testcontainers (with Podman, DOCKER_HOST at its socket).
 
-use build_processor::project::project;
+use build_processor::project::transaction;
 use neo4rs::{Graph, Query};
 use polar::graph::controller::compile_graph_op;
 use polar::{
@@ -36,13 +36,16 @@ use polar::{
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::neo4j::Neo4j;
 
-/// Project and execute one event, stamped `observed_at`.
+/// Project one event, stamped `observed_at`, and write it as the agent does: one transaction.
 async fn apply(graph: &Graph, event: ProvenanceEvent, observed_at: &str) {
-    for op in project(event, observed_at).unwrap() {
-        for query in compile_graph_op(&op).unwrap() {
-            graph.run(query).await.unwrap();
-        }
-    }
+    let Some(op) = transaction(event, observed_at).unwrap() else {
+        return;
+    };
+    let mut txn = graph.start_txn().await.unwrap();
+    txn.run_queries(compile_graph_op(&op).unwrap())
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
 }
 
 async fn count(graph: &Graph, cypher: &str) -> i64 {

@@ -81,25 +81,24 @@ impl ProcessorSupervisor {
         }
     }
 
-    /// Projects one event and hands its writes, in order, to the graph controller. An event that cannot be projected
-    /// (a manifest that is not OCI JSON) writes nothing and is dropped with a warning.
+    /// Projects one event and hands its writes to the graph controller as one transaction, all or none. An event that
+    /// cannot be projected (a manifest that is not OCI JSON) writes nothing and is dropped with a warning.
     fn write(state: &ProcessorState, event: ProvenanceEvent) -> Result<(), ActorProcessingErr> {
         let Some(controller) = &state.graph_controller else {
             warn!("the graph controller has ended -- event not written");
             return Ok(());
         };
-        let ops = match project::project(event, &Utc::now().to_rfc3339()) {
-            Ok(ops) => ops,
+        let op = match project::transaction(event, &Utc::now().to_rfc3339()) {
+            Ok(Some(op)) => op,
+            Ok(None) => return Ok(()),
             Err(e) => {
                 warn!(error = %e, "event could not be projected -- dropped");
                 return Ok(());
             }
         };
-        for op in ops {
-            controller
-                .cast(GraphControllerMsg::Op(op))
-                .map_err(|e| format!("could not hand a write to the graph controller: {e}"))?;
-        }
+        controller
+            .cast(GraphControllerMsg::Op(op))
+            .map_err(|e| format!("could not hand a write to the graph controller: {e}"))?;
         Ok(())
     }
 }
