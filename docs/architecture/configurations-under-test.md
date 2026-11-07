@@ -61,16 +61,35 @@ Kubernetes is the trust base; a trust setting is Static, never Dynamic (`dynamic
 mechanism mean its shape is wrong. And the provenance trail is not negotiable: what a deployment carried while tested stays in
 its signed record.
 
-**Open questions**, asked one at a time:
-1. Where infrastructure under test lives: rendered into a layer of the deployment, published and signed (recommended, by the
-   attestation and provenance facts above), or applied beside it.
-2. How a cluster takes one: by its per-cluster inputs (`up.nu <target> --under-test <name>`, recorded in `cluster-inputs.nuon`),
-   or by the committed target.
-3. Its trust level: an `under-test` group on its certificates and its workloads marked in the deployment record (a schema bump),
-   a namespace convention, or an intermediate CA of its own.
-4. A/B: a variant of an agent as a second workload of the same kind, its own identity, in a configuration under test; what it may
-   write (its own topics and labels, or the agent's), decided when the first variant is wanted.
-5. The secret harness and the load harness: moved into configurations under test now, or later.
+**Decided** (the maintainer, 2026-11-07):
+1. *Where it lives*: a layer of the signed deployment ("A layer of the signed deployment"). The render makes a configuration under
+   test into a layer of its own, published and signed with the rest; `provenance.json` and the deployment record name it, Flux
+   applies and prunes it, and the attestation agent holds its pods to the record.
+2. *How a cluster takes it*: per cluster, at bring-up ("Per cluster, at bring-up"). `up.nu <target> --under-test <name>` records
+   it in the cluster's own inputs (`cluster-inputs.nuon`), which the signed provenance already carries; the committed target never
+   says it, and running `up.nu` without it re-renders and Flux prunes the layer.
+3. *Its trust level*: a group on its certificates, and the record ("A group on its certificates, and the record"). Every
+   certificate issued to a configuration under test carries `g:under-test`, from the render's facts as other groups are, so Cedar
+   policy can keep it from what production holds; and the deployment record marks its workloads (a new schema), so the attestation
+   agent reports on them apart.
+4. *A/B*: decided when the first variant is wanted ("When the first is wanted"): a variant is a second workload of an agent's
+   kind, its own identity, in a configuration under test, marked by its group; what it may write is decided with it.
+5. *The harnesses*: later ("Later"): the test GitLab is the first user; once the mechanism holds, the secret harness and the load
+   harness move into it, each a step of its own.
+
+**The bites.**
+- **CT1, the declaration and the layering.** A configuration under test is a directory `infra/under-test/<name>/`: `under-test.nuon`
+  (the settings it adds to a target: namespaces attested, servers on the floor, workloads enabled and their settings) and a chart
+  the render makes into the layer `under-test-<name>`. `up.nu --under-test <name>` records it in `cluster-inputs.nuon`; the
+  resolver merges its settings over the target's, judged as the target's are; the target's layers gain it; `provenance.json`
+  names it. Tests first, for the merge (what it may add, and that it adds and never removes) and the layering.
+- **CT2, the mark.** The render gives `g:under-test` to every workload of a configuration under test, in its certificate facts and
+  any floor entry; the deployment record says which workloads are under test (schema 2), and the attestation agent reads both
+  schemas and reports on them apart. Properties: a workload is marked exactly when a configuration under test makes it.
+- **CT3, the test GitLab as the first.** `infra/under-test/gitlab/`: what `infra/gitlab-test.nu` applies, rendered as a chart; its
+  outside images pinned as the others are; its settings (`attest_also`, `server_also`, the GitLab observer's trust of the cluster
+  CA) moved out of `sandbox-local`; what needs the running GitLab (its root token, the runner's registration) a step `up.nu` runs
+  after the layer is ready. Then G4 resumes on it: the seed tool, the pair packaged, the live run.
 
 **What G4 leaves for it.** Uncommitted on main, as material: `infra/gitlab-test.nu` (the test GitLab, with tests), `infra/attested.nu`
 (`attest_also` and `server_also`, judged), and their use in `resolve.nu`, `render.nu`, the namespaces chart and `sandbox-local`.
