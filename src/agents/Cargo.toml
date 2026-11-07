@@ -212,9 +212,7 @@ jira_common = { path = "jira/common" }
 jwt_utils = { path = "jwt-utils" }
 kube-common = { path = "kubernetes/common" }
 polar = { path = "lib" }
-errno = "0.3.14"
 libc = "0.2"
-uninit = "0.3"
 polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }
 polar-signing = { path = "polar-signing" }
