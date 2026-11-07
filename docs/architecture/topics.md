@@ -107,8 +107,8 @@ is `infra/topics.nu` (tests `infra/tests/topics.nu`). A render warns about a top
 (`resolve.nu topics-check`), since it cannot see the workloads its target disables. Built 2026-10-21. Waiting today:
 four of the credentials agent's request and reply topics (nothing calls them yet; three more that waited were the
 unsigned grants, revocations and provisioning, removed 2026-10-22), the git controller's
-`polar-proposal-observe-repo` (no catalog agent proposes yet), and the resolver's `polar.provenance.events` (read by
-`build-processor`, a chart).
+`polar-proposal-observe-repo` (no catalog agent proposes yet). The resolver's `polar.provenance.events` waited for
+`build-processor`, a chart, until it joined the catalog (2026-11-07).
 
 ## Causes
 
@@ -222,9 +222,8 @@ workloads").
 |---|---|---|
 | `kubernetes.cluster.consumer.Pod` (every kind, despite the name) | kube-observer (`RawKubeEvent`, JSON) | kube-consumer (does not check `published_by`) |
 | `polar.kubernetes.cluster.resolution` | oci-resolver | kube-consumer |
-| `polar.provenance.discovery` | kube-consumer, the gitlab consumer | oci-resolver |
+| `polar.provenance.discovery` | kube-consumer | oci-resolver |
 | `polar.provenance.events` | oci-resolver | build-processor |
-| `polar.provenance.linker` | the gitlab consumer | build-processor |
 | `git.repo.config.events` | the git controller | the git observer |
 | `polar.git.repositories.events`, `polar.git.observation.status` | the git observer | the git processor |
 | `polar.git.proposals.decisions` | the git controller | the git processor |

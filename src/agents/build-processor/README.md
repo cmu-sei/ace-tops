@@ -113,20 +113,13 @@ consumer).
 | Topic | Purpose |
 |---|---|
 | `polar.provenance.events` | All provenance events: rkyv from Rust agents, JSON from nushell stages |
-| `polar.provenance.linker` | Legacy, still subscribed. Nothing has published here since the old GitLab consumer was removed |
 
-## Setup
+## Deployment
 
-```
-GRAPH_DB        — Neo4j database name
-GRAPH_USER      — Neo4j username
-GRAPH_PASSWORD  — Neo4j password
-GRAPH_ENDPOINT  — Bolt endpoint, e.g. bolt+s://neo4j.polar.svc.cluster.local:7687
-```
-
-Optional mTLS (all three or none): `GRAPH_CLIENT_CERT`, `GRAPH_CLIENT_KEY`,
-`GRAPH_CA_CERT`. The broker connection uses the standard `cassini-client`
-environment.
+A catalog workload (`infra/config/workloads/provenance.nuon`) on `polar-agent-builder`: `build-processor --scaffold`
+prints what it declares (the topic above, the graph-write capability, the labels it owns, its shutdown budget), and
+the catalog renders the rest. The graph-write capability gives it the graph (`GRAPH_*`, the pod's client
+certificate). It runs as a Deployment, and an agent that ends exits non-zero; health is its HealthCheckActor's.
 
 ## Tests
 

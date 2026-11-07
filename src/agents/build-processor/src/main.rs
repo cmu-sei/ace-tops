@@ -21,26 +21,13 @@
    DM26-0670
 */
 
-use build_processor::supervisor::BuildProcessorSupervisor;
-use polar::BUILD_PROCESSOR_NAME;
-use ractor::Actor;
+use build_processor::agent::BuildProcessor;
+use std::process::ExitCode;
 
-#[tokio::main]
-async fn main() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
-
-    polar::init_logging(BUILD_PROCESSOR_NAME.to_string());
-    let (_, handle) = Actor::spawn(
-        Some(BUILD_PROCESSOR_NAME.to_string()),
-        BuildProcessorSupervisor,
-        (),
-    )
-    .await
-    .expect("Failed to start actor!");
-
-    handle.await.expect("Actor failed to exit cleanly");
+// The one `main` every agent has: it answers `--help`, `--scaffold` and `--check`, judges the
+// configuration, and starts the processor. An agent that ends has failed, so it exits 1.
+fn main() -> ExitCode {
+    polar_agent_builder::run::<BuildProcessor>()
 }
 
 // Every Polar binary allocates with Scudo (docs/architecture/broker-baseline.md, "Decided").

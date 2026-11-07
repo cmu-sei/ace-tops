@@ -56,8 +56,7 @@ impl PolarAgent for OciResolver {
             polar::topics::PROVENANCE_EVENTS,
             "every artifact it resolved (manifest, digest, registry), for the provenance stream",
         )
-        .because(&[Cause::Topic(polar::topics::PROVENANCE_DISCOVERY)])
-        .waiting("read by build-processor, a chart outside the catalog"),
+        .because(&[Cause::Topic(polar::topics::PROVENANCE_DISCOVERY)]),
     ];
     const SECTIONS: &'static [&'static Section] = &[&settings::SECTION];
     const CREDENTIALS: Option<&'static RuntimeSection> = Some(&credentials::CREDENTIALS);

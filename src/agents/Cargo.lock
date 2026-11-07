@@ -926,18 +926,15 @@ dependencies = [
 name = "build-processor"
 version = "1.0.0"
 dependencies = [
- "anyhow",
- "cassini-client",
  "cassini-types",
  "chrono",
- "cyclonedx-bom",
  "neo4rs",
  "oci-client",
  "polar",
+ "polar-agent-builder",
  "polar-scudo",
  "proptest",
  "ractor",
- "reqwest 0.12.28",
  "rkyv",
  "rustls",
  "serde",

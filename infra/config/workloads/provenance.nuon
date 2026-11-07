@@ -21,9 +21,10 @@
 
 # infra/config/workloads/provenance.nuon
 #
-# The OCI resolver: follows image references other agents discover to their registry and publishes
-# the verified manifest. A PolarAgent: it says in its own code what it needs and how long it takes
-# to drain (`oci-resolver --scaffold`).
+# The provenance pair. The OCI resolver follows image references other agents discover to their registry
+# and publishes the verified manifest; the build processor writes the provenance stream (builds, what they
+# produced, findings, what the resolver verified) into the graph. PolarAgents: each says in its own code
+# what it needs and how long it takes to drain (`oci-resolver --scaffold`, `build-processor --scaffold`).
 [
   {
     # The Job and ServiceAccount keep the name the chart gave them.
@@ -33,5 +34,14 @@
     config: "document"
     # It reads registries outside the cluster and holds no graph password: the low-trust side (docs/architecture/placement.md).
     pool: "observers"
+  }
+
+  {
+    name: "build-processor"
+    kind: "agent"
+    image: "build-processor"
+    config: "document"
+    # It writes the graph: the high-trust side (docs/architecture/placement.md).
+    pool: "writers"
   }
 ]

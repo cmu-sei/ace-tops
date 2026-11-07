@@ -370,7 +370,7 @@ def main [] {
             let pools = {
                 core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server attestation-agent]
                 observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer oci-registry-resolver openapi-observer]
-                writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor openapi-processor]
+                writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor openapi-processor build-processor]
             }
             let placed = ($pools | transpose pool names | each {|p| $p.names | each {|n| { name: $n, pool: $p.pool } } } | flatten)
             with_target (laid_out "separated") {|t|

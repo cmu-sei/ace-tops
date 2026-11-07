@@ -22,6 +22,10 @@
 */
 
 //! Build processor: projects provenance events into the knowledge graph.
-//! See `supervisor` for the agent and `project` for the projections.
+//! See `agent` for what it declares, `supervisor` for the actor and `project` for the projections.
+pub mod agent;
 pub mod project;
 pub mod supervisor;
+
+/// The workload's name, in the catalog and on its certificate.
+pub const AGENT_NAME: &str = "build-processor";

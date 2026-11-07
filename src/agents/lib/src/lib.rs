@@ -56,16 +56,10 @@ use crate::topics::PROVENANCE_DISCOVERY;
 
 // ── Topic constants ────────────────────────────────────────────────────────────
 
-/// Topic the build processor subscribes to for all provenance events.
-/// All agents — CI pipeline stages, k8s observer, GitLab observer, resolver —
-/// publish canonical `ProvenanceEvent` instances here.
-pub const PROVENANCE_LINKER_TOPIC: &str = "polar.provenance.linker";
-
 pub const TRANSACTION_FAILED_ERROR: &str = "Expected to start a transaction with the graph";
 pub const QUERY_COMMIT_FAILED: &str = "Error committing transaction to graph";
 pub const QUERY_RUN_FAILED: &str = "Error running query on the graph.";
 pub const UNEXPECTED_MESSAGE_STR: &str = "Received unexpected message!";
-pub const BUILD_PROCESSOR_NAME: &str = "polar.builds.processor";
 
 /// The canonical topic for all provenance events.
 /// Replaces the old per-subject topics (polar.builds.artifact.produced, etc.).
