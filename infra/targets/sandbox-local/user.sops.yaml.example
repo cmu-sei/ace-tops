@@ -38,20 +38,6 @@
 #   SOPS_CONFIG=.user.sops.yaml sops --decrypt user.sops.yaml
 
 # =============================================================================
-# GitLab
-# =============================================================================
-
-# GitLab personal access token with read_api scope.
-# Used to create: gitlab-secret (polar namespace)
-gitlab_token: ""
-
-# GitLab username.
-gitlab_user: ""
-
-# GitLab instance endpoint.
-gitlab_endpoint: "https://gitlab.com"
-
-# =============================================================================
 # Jira
 # =============================================================================
 

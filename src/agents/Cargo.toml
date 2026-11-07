@@ -38,11 +38,6 @@ members = [
     "credentials-agent/model",
     "credentials-agent/observe",
     "git/common",
-    "gitlab/common",
-    "gitlab/consume",
-    "gitlab/observe",
-    "gitlab/query",
-    "gitlab/schema",
     "git/observe",
     "git/process",
     "git/controller",
@@ -201,13 +196,10 @@ polar-version = { path = "polar-version" }
 cassini-client = { path = "cassini/client" }
 cassini-tracing = { path = "cassini/cassini-tracing" }
 cassini-types = { path = "cassini/types" }
-common = { path = "gitlab/common" }                         # gitlab common
 credentials_agent_common = { path = "credentials-agent/common" }
 credentials-agent-client = { path = "credentials-agent/client" }
 credentials-agent-model = { path = "credentials-agent/model" }
 git-agent-common = { path = "git/common" }
-gitlab-queries = { path = "gitlab/query" }
-gitlab-schema = { path = "gitlab/schema" }
 harness-common = { path = "cassini/test/common" }
 jira_common = { path = "jira/common" }
 jwt_utils = { path = "jwt-utils" }

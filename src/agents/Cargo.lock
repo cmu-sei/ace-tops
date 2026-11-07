@@ -1454,27 +1454,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "common"
-version = "1.0.0"
-dependencies = [
- "cassini-client",
- "cynic",
- "cynic-codegen",
- "futures-lite",
- "gitlab-queries",
- "gitlab-schema",
- "polar",
- "ractor",
- "rkyv",
- "serde",
- "serde_json",
- "tcp-stream",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "concolor"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1962,7 +1941,6 @@ dependencies = [
  "ouroboros",
  "proc-macro2",
  "quote",
- "rkyv",
  "strsim 0.10.0",
  "syn 2.0.119",
  "thiserror 1.0.69",
@@ -3090,29 +3068,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitlab-consumer"
-version = "1.0.0"
-dependencies = [
- "cassini-backoff",
- "cassini-client",
- "cassini-types",
- "chrono",
- "common",
- "futures-lite",
- "gitlab-queries",
- "gitlab-schema",
- "neo4rs",
- "polar",
- "polar-scudo",
- "ractor",
- "rkyv",
- "serde_json",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "gitlab-http-common"
 version = "1.0.0"
 
@@ -3141,52 +3096,6 @@ dependencies = [
  "polar-scudo",
  "polar-sign",
  "serde_json",
-]
-
-[[package]]
-name = "gitlab-observer"
-version = "1.0.0"
-dependencies = [
- "cassini-client",
- "cassini-types",
- "common",
- "cynic",
- "cynic-codegen",
- "gitlab-queries",
- "gitlab-schema",
- "parse_link_header",
- "polar",
- "polar-scudo",
- "ractor",
- "rand 0.10.3",
- "reqwest 0.12.28",
- "rkyv",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "gitlab-queries"
-version = "1.0.0"
-dependencies = [
- "cynic",
- "cynic-codegen",
- "gitlab-schema",
- "rkyv",
-]
-
-[[package]]
-name = "gitlab-schema"
-version = "1.0.0"
-dependencies = [
- "cynic",
- "cynic-codegen",
- "rkyv",
- "serde",
 ]
 
 [[package]]
@@ -5637,17 +5546,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "parse_link_header"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4eb9c7a76731a2792f9b97fb34c1e774fff008badcd449d61fcdacb7a912392b"
-dependencies = [
- "http",
- "lazy_static",
- "regex",
-]
-
-[[package]]
 name = "pastey"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7925,12 +7823,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1_smol"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9117,7 +9009,6 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
- "sha1_smol",
  "wasm-bindgen",
 ]
 

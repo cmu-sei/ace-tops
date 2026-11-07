@@ -125,12 +125,6 @@ let graphConfig
       , graphPassword = neo4jSecret
       }
 
-let gitlabSecretKeySelector =
-      kubernetes.SecretKeySelector::{
-      , key = "token"
-      , name = Some "gitlab-secret"
-      }
-
 let graphPassword =
       kubernetes.SecretKeySelector::{
       , name = Some "polar-graph-pw"
@@ -273,7 +267,6 @@ in  { PolarNamespace
     , neo4jSecret
     , graphSecretKeySelector
     , graphConfig
-    , gitlabSecretKeySelector
     , graphPassword
     , RegistryResolverName
     , ArtifactLinkerName

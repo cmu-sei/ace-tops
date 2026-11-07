@@ -51,8 +51,6 @@ let ProvenanceLinker = GraphProcessor
 
 let KubeConsumer = GraphProcessor
 
-let GitlabConsumer = GraphProcessor
-
 let BuildProcessor = GraphProcessor
 
 let GitObserver = PolarAgent
@@ -63,21 +61,11 @@ let KubeObserver = PolarAgent //\\ WithServiceAccount
 
 let ProvenanceResolver = PolarAgent
 
-let GitlabObserver =
-          PolarAgent
-      //\\  { baseIntervalSecs : Natural
-            , maxBackoffSecs : Natural
-            , endpoint : Text
-            , token : Optional Text
-            }
-
 in  { ClientTlsConfig
     , GraphConfig
     , PolarAgent
     , GraphProcessor
     , WithServiceAccount
-    , GitlabObserver
-    , GitlabConsumer
     , KubeObserver
     , KubeConsumer
     , ProvenanceLinker

@@ -140,7 +140,6 @@ let
     crateFileset = lib.fileset.unions (subdirFilesets ++ [
       ./Cargo.toml
       ./Cargo.lock
-      ./gitlab/schema/src/gitlab.graphql
       # The type of a projection, which polar-sign checks a file against and so compiles in.
       ./polar-projection/projection.dhall
     ]);
@@ -164,12 +163,6 @@ let
     };
 
     cassini = import (workspaceRoot + /cassini/package.nix) {
-      inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
-      crateArgs = individualCrateArgs;
-      healthcheckDrv = healthcheck;
-    };
-
-    gitlabAgent = import (workspaceRoot + /gitlab/package.nix) {
       inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
       crateArgs = individualCrateArgs;
       healthcheckDrv = healthcheck;
@@ -286,5 +279,5 @@ let
     };
 in
 {
-        inherit scudo workspacePackages attestation gitlabAgent gitlabHttpAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit polarCustody polarTools healthcheck credentialsAgent secretHarness;
+        inherit scudo workspacePackages attestation gitlabHttpAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit polarCustody polarTools healthcheck credentialsAgent secretHarness;
 }

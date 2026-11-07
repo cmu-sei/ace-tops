@@ -109,16 +109,6 @@
         (u:
           u.Artifact {
             "content_type" = "elf-binary-set";
-            name = "gitlab-consumer";
-          })
-        (u:
-          u.Artifact {
-            "content_type" = "elf-binary-set";
-            name = "gitlab-observer";
-          })
-        (u:
-          u.Artifact {
-            "content_type" = "elf-binary-set";
             name = "harness-producer";
           })
         (u:
@@ -251,16 +241,6 @@
           u.Artifact {
             "content_type" = "elf-binary-set";
             name = "git-repo-processor";
-          })
-        (u:
-          u.Artifact {
-            "content_type" = "elf-binary-set";
-            name = "gitlab-consumer";
-          })
-        (u:
-          u.Artifact {
-            "content_type" = "elf-binary-set";
-            name = "gitlab-observer";
           })
         (u:
           u.Artifact {

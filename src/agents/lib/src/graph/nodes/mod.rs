@@ -23,7 +23,6 @@
 
 pub mod builds;
 pub mod git;
-pub mod gitlab;
 pub mod kube;
 pub mod schedule;
 
@@ -33,7 +32,6 @@ pub mod schedule;
 mod pattern_tests {
     use super::builds::{ArtifactNodeKey, BackendJobIdentity, BuildNodeKey};
     use super::git::GitNodeKey;
-    use super::gitlab::GitlabNodeKey;
     use super::kube::KubeNodeKey;
     use super::schedule::ScheduleKey;
     use crate::graph::controller::{
@@ -52,7 +50,6 @@ mod pattern_tests {
         let mut keys = boxed::<KubeNodeKey>();
         keys.extend(boxed::<BuildNodeKey>());
         keys.extend(boxed::<ArtifactNodeKey>());
-        keys.extend(boxed::<GitlabNodeKey>());
         keys.extend(boxed::<GitNodeKey>());
         keys.extend(boxed::<ScheduleKey>());
         keys
@@ -75,7 +72,6 @@ mod pattern_tests {
         assert!(distinct::<KubeNodeKey>());
         assert!(distinct::<BuildNodeKey>());
         assert!(distinct::<ArtifactNodeKey>());
-        assert!(distinct::<GitlabNodeKey>());
         assert!(distinct::<GitNodeKey>());
         assert!(distinct::<ScheduleKey>());
     }

@@ -44,8 +44,6 @@ let binaries =
       , "event-logger"
       , "git-repo-observer"
       , "git-repo-processor"
-      , "gitlab-consumer"
-      , "gitlab-observer"
       , "harness-producer"
       , "harness-sink"
       , "jira-consumer"
