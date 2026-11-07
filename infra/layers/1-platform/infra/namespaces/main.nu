@@ -49,7 +49,11 @@ def main [context_nuon: string] {
     let src = ($chart_dir | path join "namespaces.dhall")
     let out = ($output_dir | path join "namespaces.yaml")
     print $"  rendering namespaces.dhall -> namespaces.yaml"
-    dhall_yaml $src ["--documents"] | save --force $out
+    let also = ($context.attestAlso? | default [] | each {|name|
+        { apiVersion: "v1", kind: "Namespace", metadata: { name: $name } } | to yaml
+    })
+    # Polar's own namespaces, then each it attests besides (infra/attested.nu), which the attestation agent has a Role in.
+    [(dhall_yaml $src ["--documents"]) ...$also] | str join "---\n" | save --force $out
 
     print $"  namespaces: done"
 }

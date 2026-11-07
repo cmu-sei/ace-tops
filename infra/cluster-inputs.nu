@@ -29,7 +29,7 @@
 # because a cluster's identities are not the repository's.
 #
 #   infra/targets/<target>/cluster-inputs.nuon        gitignored
-#   { cluster: "<sha256 of the cluster CA>", topology: "<name>", workloads: { <name>: { env: [{ name, value }] } } }
+#   { cluster: "<sha256 of the cluster CA>", topology: "<name>", under_test: ["<name>"], workloads: { <name>: { env: [{ name, value }] } } }
 #
 # `workloads.<name>.env` has the shape of the same key in the target's config.nuon, and replaces an entry of that name there.
 # `cluster` ties the file to the cluster it was made for: a file from another cluster is discarded, not extended. A topology is
@@ -87,7 +87,22 @@ export def handed_off_of [inputs: record] { $inputs | get -o handed_off | defaul
 # This cluster's inputs from its signed record, `provenance.json`'s `cluster_inputs` (`cluster_inputs_fact`, infra/deploy-repo.nu), for a machine that holds none: rendering without them would take its administrators away. Null when the record is not this cluster's.
 export def inputs_from_record [fact: any, cluster: string] {
     if $fact == null or ($fact | get -o cluster_ca_sha256) != $cluster { return null }
-    { cluster: $cluster, workloads: ($fact | get -o values | default {}), topology: ($fact | get -o topology), handed_off: true }
+    {
+        cluster: $cluster, workloads: ($fact | get -o values | default {}), topology: ($fact | get -o topology), handed_off: true
+        under_test: ($fact | get -o under_test | default [])
+    }
+}
+
+# The configurations under test this cluster carries (`up.nu --under-test`, infra/under-test.nu).
+export def under_test_of [inputs: record] { $inputs | get -o under_test | default [] }
+
+# The inputs carrying exactly `names`, for `cluster`. `changed` is false when they already did; carrying none where none was carried
+# leaves the inputs as they are, untied, so a machine's first run against a cluster can still take its inputs from the record.
+export def with_under_test [inputs: record, names: list<string>, cluster: any] {
+    if ($names | is-empty) and (under_test_of $inputs | is-empty) { return { inputs: $inputs, changed: false } }
+    let current = (reconcile $inputs $cluster)
+    let chosen = ($current | upsert under_test $names)
+    { inputs: $chosen, changed: ($chosen != $inputs) }
 }
 
 # The inputs with that recorded, for `cluster`. `changed` is false when nothing would change.

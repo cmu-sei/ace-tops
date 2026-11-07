@@ -465,8 +465,9 @@ export def tree_files [target: string, layers: list, texts: record, server: stri
     ]
 }
 
-# What the cluster supplied to this render (its git server administrators): the file, its digest, the cluster it is tied to, and the
-# values, so the signed record says exactly which identities were rendered in. Null when there were none.
+# What the cluster supplied to this render (its git server administrators, the configurations under test it carries): the file, its
+# digest, the cluster it is tied to, and the values, so the signed record says exactly which identities and tests were rendered in.
+# Null when there were none.
 export def cluster_inputs_fact [config: record, target: string] {
     let path = (cluster-inputs path_of $config.infra_root $target)
     if not ($path | path exists) { return null }
@@ -477,6 +478,7 @@ export def cluster_inputs_fact [config: record, target: string] {
         cluster_ca_sha256: ($held | get -o cluster)
         topology: ($held | get -o topology)
         values: ($held | get -o workloads | default {})
+        under_test: (cluster-inputs under_test_of $held)
     }
 }
 

@@ -34,7 +34,7 @@
     config: "document"
     provides: ["deployment-ca"]
     env: [
-      { name: "POLAR_ATTESTATION_NAMESPACES", value: "{polar-namespaces}" }
+      { name: "POLAR_ATTESTATION_NAMESPACES", value: "{attested-namespaces}" }
     ]
   }
 ]

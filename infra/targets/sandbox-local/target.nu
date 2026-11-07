@@ -24,6 +24,7 @@
 # infra/targets/sandbox-local/target.nu
 
 use ../../registry.nu [node_registry]
+use ../../under-test.nu [layered]
 
 def main [] {
     let repo_root  = (git rev-parse --show-toplevel | str trim)
@@ -162,6 +163,7 @@ def main [] {
         }
     ]
 
+    # With the configurations under test this cluster carries (`layered`, infra/under-test.nu): each a layer after these, with its chart.
     {
         name       : "sandbox-local"
         repo_root  : $repo_root
@@ -211,5 +213,5 @@ def main [] {
             { identity: "graph.polar-graph.serviceaccount.cluster.local", lifetimeSecs: 31536000 }
             { identity: "ace.polar.serviceaccount.cluster.local", lifetimeSecs: 31536000 }
         ]
-    } | to nuon
+    } | layered | to nuon
 }

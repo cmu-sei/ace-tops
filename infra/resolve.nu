@@ -54,6 +54,8 @@ use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
 use egress.nu
+use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also]
+use under-test.nu
 const CONFIG = ($INFRA | path join "config")
 
 const DEFAULT_TARGET = "sandbox-local"
@@ -80,15 +82,26 @@ const CUSTODY = {
 
 # ── Loading ──────────────────────────────────────────────────────────────────
 
+# A target's config.nuon, with what this cluster's configurations under test add to it (infra/under-test.nu), which may only add.
 def target_config [target: string] {
     let p = ($INFRA | path join $"targets/($target)/config.nuon")
-    if ($p | path exists) { open $p } else { {} }
+    let own = if ($p | path exists) { open $p } else { {} }
+    let carried = (under-test of_cluster $INFRA $target)
+    if ($carried | is-empty) { return $own }
+    let catalog_env = (catalog_workloads | reduce --fold {} {|w, acc| $acc | upsert $w.name ($w.env? | default [] | get -o name | default []) })
+    let problems = ($carried | each {|d| under-test adds_problems $d.adds $own $catalog_env | each {|p| $"under test ($d.name): ($p)" } } | flatten)
+    if ($problems | is-not-empty) { error make { msg: $"($target): ($problems | str join '; ')" } }
+    under-test with_adds $own ($carried | get adds)
 }
 
 def load_cluster [target: string] {
     let overrides = (target_config $target | get -o cluster | default {})
     # The registry is resolved in one place (infra/registry.nu): the environment, then the target, then the default.
     let cluster = (open ($CONFIG | path join "cluster.nuon") | merge deep $overrides | upsert registry (node_registry $target))
+    let attested = (attest_also_problems ($cluster.attest_also? | default []) ($cluster.namespaces | values))
+    let servers = (server_also_problems ($cluster.issuance?.server_also? | default []) (attested_namespaces $cluster))
+    let problems = ($attested ++ $servers)
+    if ($problems | is-not-empty) { error make { msg: $"($target): ($problems | str join '; ')" } }
     # The pools to place by, from the topology in force: this cluster's choice, else the target's (docs/architecture/placement.md).
     let chosen = (topology_of (read_inputs (path_of $INFRA $target)))
     let layouts = ($cluster.placement? | default null)
@@ -123,7 +136,7 @@ def all_workloads [target: string] {
 def service_vars [services: record, cluster: record] {
     $services
     | transpose name s
-    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
+    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _attested: (attested_namespaces $cluster | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
         let ns = ($cluster.namespaces | get $it.s.namespace)
         let dns = $"($it.s.dns_name).($ns).svc.($cluster.domain)"
         let addr = $"($dns):($it.s.port)"
@@ -136,10 +149,10 @@ def service_vars [services: record, cluster: record] {
 # Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from) and {<service>.dns|port|addr}.
 # A placeholder left over is an error: it means a capability names a service that services.nuon does not have.
 def subst [text: string, vars: record, who: string] {
-    let start = ($text | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
+    let start = ($text | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
     let out = (
         $vars
-        | reject -o _registry _namespaces _deployment_source _handed_off
+        | reject -o _registry _namespaces _attested _deployment_source _handed_off
         | transpose name v
         | reduce --fold $start {|it, acc|
             $acc
@@ -477,9 +490,9 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         for r in ($cap.resources.cluster_roles? | default []) {
             $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: $r.rules, from: $n })
         }
-        # A Role in each of Polar's namespaces.
+        # A Role in each namespace Polar attests: its own, and those the target names besides.
         for r in ($cap.resources.namespaced_roles? | default []) {
-            for namespace in ($cluster.namespaces | values) {
+            for namespace in (attested_namespaces $cluster) {
                 $namespaced_roles = ($namespaced_roles | append { name: (subst $r.name $vars $name), namespace: $namespace, rules: $r.rules })
             }
         }
@@ -1277,6 +1290,16 @@ def "main placement" [--target: string = $DEFAULT_TARGET] {
 def "main topology" [--target: string = $DEFAULT_TARGET] {
     let layouts = (target_config $target | get -o cluster.placement)
     print (topology_in_force $layouts (topology_of (read_inputs (path_of $INFRA $target))) | default "")
+}
+
+# The namespaces a target attests besides Polar's own, as JSON: the namespaces chart makes each, as it makes Polar's.
+def "main attest-also" [--target: string = $DEFAULT_TARGET] {
+    load_cluster $target | get -o attest_also | default [] | to json --raw
+}
+
+# The floor's entries for the servers a target names beside Neo4j, as JSON: render.nu adds them as it adds Neo4j's.
+def "main server-also" [--target: string = $DEFAULT_TARGET] {
+    floor_entries_also (load_cluster $target | get -o issuance.server_also | default []) | to json --raw
 }
 
 def "main floor-enforced" [--target: string = $DEFAULT_TARGET] {

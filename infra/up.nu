@@ -74,6 +74,7 @@ use forwards.nu [ensure_observer_forward, forward_live, stop_stale]
 use egress.nu [egress_report, kube_probe, probe_url]
 use seed.nu
 use cluster-inputs.nu
+use under-test.nu
 use flux.nu [cluster_handed_off]
 use tools.nu
 use runtime.nu [container_runtime]
@@ -353,7 +354,7 @@ def check_topology_fits [target: string] {
     if ($name | is-not-empty) { ok $"topology ($name)" }
 }
 
-def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, topology: string, handed_off: bool, forwards: list] {
+def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, topology: string, handed_off: bool, forwards: list, under_test: list<string>] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
     }
@@ -379,6 +380,7 @@ def step_preflight [config: record, runtime_needed: bool, allow_dirty: bool, top
     discard_other_clusters_inputs $config.name
     if $handed_off { restore_inputs_from_record $config.name $forwards }
     if ($topology | is-not-empty) { choose_topology $config.name $topology }
+    choose_under_test $config.name $under_test
     if ($config.gitops? | default false) { record_handed_off $config.name $handed_off }
     check_topology_fits $config.name
     let ssl = (do { ^openssl version } | complete)
@@ -435,6 +437,18 @@ def choose_topology [target: string, topology: string] {
     let path = (cluster_inputs_path $target)
     let chosen = (cluster-inputs with_topology (cluster-inputs read_inputs $path) $topology (cluster_fingerprint))
     if $chosen.changed { $chosen.inputs | to nuon --indent 2 | save --force $path }
+}
+
+# `--under-test`: the configurations under test this cluster carries (docs/architecture/configurations-under-test.md), written down
+# where the render reads them. A run without one it carried removes it: Flux prunes its layer.
+def choose_under_test [target: string, names: list<string>] {
+    let path = (cluster_inputs_path $target)
+    let held = (cluster-inputs read_inputs $path)
+    let chosen = (cluster-inputs with_under_test $held $names (cluster_fingerprint))
+    if $chosen.changed { $chosen.inputs | to nuon --indent 2 | save --force $path }
+    let dropped = (cluster-inputs under_test_of $held | where {|n| $n not-in $names })
+    if ($dropped | is-not-empty) { note $"no longer under test, so removed: ($dropped | str join ', ')" }
+    if ($names | is-not-empty) { ok $"under test: ($names | str join ', ')" }
 }
 
 # Refuses a layout that would strand what is deployed: it asks the cluster what that is, since this machine's record can be another
@@ -972,6 +986,7 @@ def main [
     --import-tag: string = ""   # With --import-from: the release to import, e.g. 2.0.0 (images published as polar-<image>:<tag>-<arch>)
     --bootstrap-again       # Polar's git server cannot be brought back: run the bootstrap repository from this machine's mirror and read from it; the next run hands off again
     --topology: string = ""     # Which of the target's layouts this cluster is deployed in, e.g. single or separated; kept for it until another is chosen
+    --under-test: string = ""   # The configurations under test this cluster carries, comma-separated (infra/under-test/<name>); a run without them removes them
 ] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
@@ -980,7 +995,10 @@ def main [
     if not ($target_file | path exists) {
         fail $"unknown target ($target): no target.nu at ($target_file)"
     }
-    let config = (^$nu.current-exe $target_file | from nuon)
+    mut config = (^$nu.current-exe $target_file | from nuon)
+    let carried = ($under_test | split row "," | each {|n| $n | str trim } | where {|n| $n != "" } | uniq)
+    let unknown = ($carried | each {|n| under-test name_problems $n (under-test declared ($env.PWD | path join "infra")) } | flatten)
+    if ($unknown | is-not-empty) { fail ($unknown | str join "; ") }
 
     # A target whose registry is in its cluster: everything this run pushes, and asks digests of, goes through the forward the
     # registry step starts (infra/cluster-registry.nu).
@@ -1014,7 +1032,11 @@ def main [
         print ""
         print $"[($it.index + 1)/($total)] ($s.title)"
         match $s.id {
-            "preflight" => { step_preflight $config (needs_runtime $plan) $allow_dirty $topology $handed_off $forwards }
+            "preflight" => {
+                step_preflight $config (needs_runtime $plan) $allow_dirty $topology $handed_off $forwards $carried
+                # What the cluster carries under test is a layer of the target's (infra/under-test.nu), now that it is recorded.
+                $config = (^$nu.current-exe $target_file | from nuon)
+            }
             "registry" => { cluster-registry ensure $target | ignore }
             "images" => { $prepared = (step_images $target $in_cluster $dev $import_from $import_tag) }
             "render" => { step_render $target $prepared $config }

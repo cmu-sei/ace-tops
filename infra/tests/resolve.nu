@@ -36,6 +36,7 @@ use std/assert
 use ../test-cluster.nu
 use ../cluster-registry.nu
 use ../registry.nu [node_registry]
+use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also]
 
 const RESOLVER = (path self | path dirname | path dirname | path join "resolve.nu")
 
@@ -108,6 +109,25 @@ def with_target [config: record, body: closure] {
         $out
     } catch {|e|
         rm -rf $dir
+        error make { msg: $e.msg }
+    }
+}
+
+# Runs `body` with `target`'s cluster carrying a throwaway configuration under test that adds `adds` (infra/under-test.nu), and
+# removes both afterwards.
+def with_under_test [target: string, adds: record, body: closure] {
+    let name = $"zz-test-(random chars --length 8 | str downcase)"
+    let dir = ($INFRA | path join "under-test" $name)
+    let inputs = ($INFRA | path join "targets" $target "cluster-inputs.nuon")
+    mkdir $dir
+    { adds: $adds, layer: { files: [], wait_for: [] } } | to nuon | save --force ($dir | path join "under-test.nuon")
+    { cluster: null, workloads: {}, under_test: [$name] } | to nuon | save --force $inputs
+    try {
+        let out = (do $body)
+        rm -rf $dir $inputs
+        $out
+    } catch {|e|
+        rm -rf $dir $inputs
         error make { msg: $e.msg }
     }
 }
@@ -402,10 +422,11 @@ def main [] {
             assert $mount.read_only
         }
 
-        "the attestation agent gets a read-only Role in each of Polar's namespaces, and no ClusterRole": {
+        "the attestation agent gets a read-only Role in each namespace Polar attests, and no ClusterRole": {
             let resources = (^nu $RESOLVER resources attestation-agent | from json)
             assert equal $resources.cluster_roles []
             let namespaces = ($resources.namespaced_roles | get namespace | sort)
+            # Polar's own: sandbox-local attests no other (a configuration under test may add one, infra/under-test.nu).
             assert equal $namespaces ["polar" "polar-auth" "polar-graph"]
             for role in $resources.namespaced_roles {
                 let verbs = ($role.rules | get verbs | flatten | uniq | sort)
@@ -414,6 +435,91 @@ def main [] {
                 assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
             }
             assert equal (env_value (resolve "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" | split row "," | sort) ["polar" "polar-auth" "polar-graph"]
+        }
+
+        # docs/architecture/http-observers.md, "GitLab": a namespace that is not Polar's, whose pods Polar's CA issues to, is one
+        # the attestation agent attests, or the credentials agent refuses its pods as not found.
+        "a target may name more namespaces Polar attests, and not one that is Polar's own, Kubernetes' or not a name": {
+            let own = ["polar" "polar-graph" "polar-auth"]
+            assert equal (attest_also_problems ["gitlab-test"] $own) []
+            assert equal (attest_also_problems [] $own) []
+            for bad in [["polar-graph"] ["kube-system"] ["default"] ["Bad_Name"] [""] ["gitlab-test" "gitlab-test"]] {
+                assert ((attest_also_problems $bad $own) | is-not-empty) $"($bad)"
+            }
+            assert ((attest_also_problems "gitlab-test" $own) | is-not-empty) "a list"
+            let cluster = { namespaces: { polar: "polar", graph: "polar-graph", auth: "polar-auth" } }
+            assert equal (attested_namespaces $cluster) $own
+            assert equal (attested_namespaces ($cluster | insert attest_also ["gitlab-test"])) [...$own "gitlab-test"]
+            # What the render is told, to make the namespace as it makes Polar's: none for sandbox-local as committed (a copy, so
+            # this machine's cluster-inputs.nuon, whatever it carries, is not read).
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                assert equal (^nu $RESOLVER attest-also --target $t | from json) []
+            }
+        }
+
+        # As Neo4j's (render.nu, neo4j_floor_entries): a server the credentials agent vouches for, in a namespace Polar attests,
+        # with the names its init container asks for.
+        "a target may name more servers the floor admits, each in a namespace Polar attests": {
+            let attested = ["polar" "polar-graph" "gitlab-test"]
+            let entry = { namespace: "gitlab-test", service_account: "gitlab", names: ["gitlab.gitlab-test.svc.cluster.local"] }
+            assert equal (server_also_problems [$entry] $attested) []
+            assert equal (server_also_problems [] $attested) []
+            for bad in [
+                ($entry | update namespace "elsewhere")
+                ($entry | update names [])
+                ($entry | update names ["not a name"])
+                ($entry | update service_account "")
+                ($entry | reject names)
+            ] {
+                assert ((server_also_problems [$bad] $attested) | is-not-empty) $"($bad)"
+            }
+            assert equal (floor_entries_also [$entry]) [{
+                workload: "system:serviceaccount:gitlab-test:gitlab", cert_type: "SERVER"
+                names: ["gitlab.gitlab-test.svc.cluster.local"], vouched_only: true, publish: [], subscribe: [], groups: []
+            }]
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                assert equal (^nu $RESOLVER server-also --target $t | from json) [] "sandbox-local as committed names none"
+            }
+        }
+
+        # docs/architecture/configurations-under-test.md, CT1: what a cluster carries under test is the resolver's as the target's
+        # own would be, and judged as it is; what would change the target stops it.
+        "a cluster's configurations under test add to its target as the resolver reads it, and only add": {
+            let adds = {
+                cluster: {
+                    attest_also: ["gitlab-test"]
+                    issuance: { server_also: [{ namespace: "gitlab-test", service_account: "gitlab", names: ["gitlab.gitlab-test.svc.cluster.local"] }] }
+                }
+            }
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                with_under_test $t $adds {
+                    assert equal (^nu $RESOLVER attest-also --target $t | from json) ["gitlab-test"]
+                    assert equal (^nu $RESOLVER server-also --target $t | from json | get workload) ["system:serviceaccount:gitlab-test:gitlab"]
+                }
+                # Judged as the target's: a server in a namespace nothing attests.
+                with_under_test $t ($adds | reject cluster.attest_also) {
+                    let r = (do { ^nu $RESOLVER server-also --target $t } | complete)
+                    assert ($r.exit_code != 0) "a server in a namespace nothing attests"
+                }
+                with_under_test $t { cluster: { issuance: { floor_enforced: false } } } {
+                    let r = (do { ^nu $RESOLVER attest-also --target $t } | complete)
+                    assert ($r.exit_code != 0 and ($r.stderr | str contains "floor_enforced")) $r.stderr
+                }
+                # The secret harness's precedent: a workload the target leaves out, run while it is what is tested.
+                assert ("secret-harness-owner" not-in (^nu $RESOLVER names --target $t | from json))
+                with_under_test $t { workloads: { secret-harness-owner: { enabled: true } } } {
+                    assert ("secret-harness-owner" in (^nu $RESOLVER names --target $t | from json))
+                }
+                for refused in [
+                    [{ workloads: { jira-observer: { env: [{ name: "JIRA_URL", value: "https://elsewhere.example" }] } } } "JIRA_URL"]
+                    [{ workloads: { no-such-workload: { enabled: true } } } "no-such-workload"]
+                ] {
+                    with_under_test $t $refused.0 {
+                        let r = (do { ^nu $RESOLVER names --target $t } | complete)
+                        assert ($r.exit_code != 0 and ($r.stderr | str contains $refused.1)) $r.stderr
+                    }
+                }
+            }
         }
 
         "no other workload's capabilities give it a namespaced Role": {

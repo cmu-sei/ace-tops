@@ -131,6 +131,8 @@ def main [
                     # Its own projected token is for this audience: it is signed its client certificate on it.
                     certIssuerAudience: $cert_issuer_audience
                 }
+                # The namespaces Polar attests beside its own, made as Polar's are (resolve.nu, attest-also).
+                "namespaces" => { attestAlso: (^nu ($infra_root | path join "resolve.nu") attest-also --target $target | from json) }
                 # The node pools the target declares, for its own (docs/architecture/placement.md).
                 "neo4j" => { polarInitImage: $polar_init_image, credentialsObserverUrl: $credentials_observer_url, credentialsAgentIdentity: $credentials_agent_identity, placement: (^nu ($infra_root | path join "resolve.nu") placement --target $target | from json) }
                 "gitlab" => { neo4jBoltAddr: $neo4j_bolt_addr, certIssuerUrl: $cert_issuer_url, certIssuerAudience: $cert_issuer_audience, polarInitImage: $polar_init_image }
@@ -152,7 +154,9 @@ def main [
     print "Rendering catalog workloads..."
     # Neo4j is not a catalog workload, so its floor entry is handed to the catalog, which writes it into cert-issuer's
     # floor beside every bootstrap service's (resolve.nu, POLAR_FLOOR_EXTRA).
-    let floor_extra = (neo4j_floor_entries $infra_root $config.overrides)
+    # Neo4j's, and each server the target names besides (cluster.issuance.server_also, resolve.nu).
+    let also = (^nu ($infra_root | path join "resolve.nu") server-also --target $target | from json)
+    let floor_extra = (neo4j_floor_entries $infra_root $config.overrides | from json | append $also | to json --raw)
     let rendered = (with-env { POLAR_FLOOR_EXTRA: $floor_extra } {
         ^nu ($infra_root | path join "render-catalog.nu") $target $output_dir
         $env.LAST_EXIT_CODE

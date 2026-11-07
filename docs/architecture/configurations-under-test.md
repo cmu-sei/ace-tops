@@ -83,6 +83,20 @@ its signed record.
   the render makes into the layer `under-test-<name>`. `up.nu --under-test <name>` records it in `cluster-inputs.nuon`; the
   resolver merges its settings over the target's, judged as the target's are; the target's layers gain it; `provenance.json`
   names it. Tests first, for the merge (what it may add, and that it adds and never removes) and the layering.
+  *Done (2026-11-07).* `infra/under-test.nu`: `declared` and `name_problems` (a DNS label the repository declares), `declaration`
+  (`under-test.nuon`'s `adds` and `layer`, and `main.nu` as its chart), `adds_problems` (only `cluster.attest_also` and
+  `cluster.issuance.server_also`, extended as lists; `workloads.<name>.enabled: true`; a workload's env entries that neither the
+  target nor the catalog sets; anything else is refused by name), `with_adds` (a deep merge that appends lists), `with_layers` and
+  `layered` (the layer `under-test-<name>`, after the target's last, its chart after the target's, and `under_test` in the record).
+  `cluster-inputs.nu` records `under_test` (`with_under_test`, which leaves inputs untied when there is nothing to record, so a
+  first run against a handed-off cluster still restores from the record; `inputs_from_record` gives it back); `deploy-repo.nu`'s
+  `cluster_inputs_fact` puts it in `provenance.json`. The resolver's `target_config` (`resolve.nu`) merges what the cluster carries
+  and stops on any refusal, so every reader of the target's config sees one merged config, judged as the target's (`attested.nu`:
+  `attest_also`, `server_also`, their floor entries, the attested namespaces given to the attestation agent and made by the
+  namespaces chart). `targets/sandbox-local/target.nu` ends with `layered`, so the eight readers of a target's record see the same
+  layers. `up.nu --under-test a,b` checks the names, records them in preflight (after the discard and the restore from the record)
+  and reads the target again. Tests: `tests/under-test.nu` (merge, refusals, layering, inputs), `tests/resolve.nu` ("a cluster's
+  configurations under test add to its target as the resolver reads it, and only add").
 - **CT2, the mark.** The render gives `g:under-test` to every workload of a configuration under test, in its certificate facts and
   any floor entry; the deployment record says which workloads are under test (schema 2), and the attestation agent reads both
   schemas and reports on them apart. Properties: a workload is marked exactly when a configuration under test makes it.
@@ -91,5 +105,13 @@ its signed record.
   CA) moved out of `sandbox-local`; what needs the running GitLab (its root token, the runner's registration) a step `up.nu` runs
   after the layer is ready. Then G4 resumes on it: the seed tool, the pair packaged, the live run.
 
-**What G4 leaves for it.** Uncommitted on main, as material: `infra/gitlab-test.nu` (the test GitLab, with tests), `infra/attested.nu`
-(`attest_also` and `server_also`, judged), and their use in `resolve.nu`, `render.nu`, the namespaces chart and `sandbox-local`.
+**What G4 leaves for it.** `infra/attested.nu` and its use in `resolve.nu`, `render.nu` and the namespaces chart went in with CT1;
+`sandbox-local` carries none of it. Uncommitted on main, as CT3's material: `infra/gitlab-test.nu` (the test GitLab, with tests,
+one of which reads the `server_also` that `sandbox-local` no longer has).
+
+**Open for CT3.**
+- The GitLab observer's trust of the cluster CA: `egress.md` ("The cluster's own CA, for one workload") has only a catalog entry set
+  `POLAR_EGRESS_CLUSTER_CA`, and CT1 refuses nothing by that name, so a configuration under test could set it as a workload's env.
+  Whether it may, or the observer's catalog entry carries it, is the maintainer's to say before CT3.
+- `render.nu` gives a chart its context by its directory's name; a configuration under test named `gitlab` would be given the old
+  GitLab chart's (`layers/.../gitlab`, removed in G5). Harmless, but CT3 should not rely on it.
