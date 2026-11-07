@@ -721,6 +721,10 @@ Each step is taken in bites, each reported before the next.
 
 ## Infra and up.nu, images and release
 
+- [ ] **`infra/tests/resolve.nu`'s "every wait of a target's layers names a workload its render makes" fails on main** (found 2026-11-07, run against u7s's
+  scaffolds with `POLAR_TEST_CLUSTER_KUBECONFIG`; 86 of 87 pass on `f1d60e13`, and the same one fails with the GitLab test material too). It says "These are not
+  equal" for `sandbox-local`: one of the target's layer waits names something the render did not make, or a render step failed. Not looked into.
+
 - [ ] **A SERVICE DEPENDENCY GRAPH INSTEAD OF LAYERS** (the maintainer, 2026-11-02: agents declare their dependencies and the infrastructure works out the order, "no need for shit like layers"; and it holds what each requires, out of the catalog,
   so that a controller can enforce the catalog's intent). The design, with its two kinds of edge, is in the GitOps controller proposal (`docs/architecture/gitops-controller.md`, on its branch until vetted). It can be proved on Flux first, by generating `apply_layers` and `dependsOn`. Where it falls in the order of work is open: suggested after the handoff.
 - [x] **HANDING OFF TO POLAR'S GIT SERVER** (the maintainer, 2026-11-02: the bootstrap repository is for the bootstrap; Flux follows a copy on Polar's git server, and the bootstrap
