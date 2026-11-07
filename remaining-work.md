@@ -689,7 +689,22 @@ Each step is taken in bites, each reported before the next.
 
 ## The agent builder and its migration
 
-- [ ] MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
+- [ ] UPSTREAM'S WORK, BY VAUGHN'S PORT, TAKEN APART AREA BY AREA (decided 2026-11-07, the maintainer, "Yes, oci fixes first"). What there is (read
+  2026-11-07): cmu-sei/Polar `main` (`5074f15f`, 2026-10-17, 14 commits since `9aea62f6`) and `blitz-deploy` (`df69bce`, 2026-10-31, those and 43
+  more: the operator, the `polar` CLI, the Dhall deployment library, the build orchestrator), neither moved since; on gitea, Vaughn's
+  `port/public-polar-blitz-deploy` (`b59ea4d4`, 2026-11-05), all of `blitz-deploy` re-made on our v3.0.0 (13 port commits, each naming the upstream
+  commits it carries) and his work after it (build-orchestrator hardening, oci-resolver reference fixes, images named `localhost/<name>`, a
+  `polar-sign next` proposal, a merge of `release/3.0.x`), 29 ahead of main and 195 behind, his own note (`docs/requests/public-polar-port.md` on
+  it) calling it "a worked version of that merge for the owner to take apart"; and `fix/git-observer-report-moved-refs-only`, already on main
+  (`db133f93`). The branch is not merged or rebased: each area comes to main as its own bite, by our rules (tests first, one fix a commit, on the
+  builder). In order: (1) his oci-resolver fixes, each with a test; the `localhost/<name>` naming checked against one artifact per target before it
+  is taken; (2) build-processor and the build orchestrator together, his port the starting point, moved onto the builder and into the catalog, the
+  failure findings re-read on that code (merging and migrating one step per area); (3) the kube agents' cluster-scoped identity and discovery, its
+  own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide;
+  (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design; (5) the `polar` CLI
+  and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
+  against lifecycle's decisions first. The history that follows, superseded:
+  MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
   upstream code, his restructure of it around cyclops (`312d5dec`) and the build orchestrator included; whether the merge comes before or after the migration
   is the maintainer's to decide then, not settled. An input to it: the build-processor failure findings above were read on the linker and projection that
