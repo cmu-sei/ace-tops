@@ -61,6 +61,7 @@ members = [
     "gitlab-http/common",
     "gitlab-http/observe",
     "gitlab-http/process",
+    "gitlab-http/seed",
     "polar-crypto",
     "polar-escrow",
     "polar-env",

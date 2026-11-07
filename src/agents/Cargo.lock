@@ -3178,6 +3178,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gitlab-seed"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "polar-scudo",
+ "proptest",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

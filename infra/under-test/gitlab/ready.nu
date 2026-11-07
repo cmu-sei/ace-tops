@@ -24,15 +24,18 @@
 # infra/under-test/gitlab/ready.nu
 #
 # What needs the test GitLab answering (docs/architecture/configurations-under-test.md, CT3), run by up.nu once Flux has its layer
-# ready: root's personal access token, for the seed tool and, escrowed, the GitLab observer; and the runner, created as root and
-# its authentication token given to the runner's Deployment. Each is made once, kept in a Secret in the cluster, and never
+# ready: root's personal access token, for the seed tool and, escrowed, the GitLab observer; the runner, created as root and
+# its authentication token given to the runner's Deployment; and the seed's dataset (gitlab-seed). Each is made once, kept in a Secret in the cluster, and never
 # printed: the token is made here and goes into the pod on stdin, the runner's comes out on stdout into a Secret on stdin.
 
 use ../../secrets-lib.nu [random_token, secret_exists]
-use main.nu [NAMESPACE, NAME, RUNNER_TOKEN_SECRET]
+use ../../tools.nu
+use main.nu [NAMESPACE, NAME, RUNNER_TOKEN_SECRET, names]
 
 # Root's token, which the seed tool and the observer's escrow read.
 export const ROOT_TOKEN_SECRET = "gitlab-root-token"
+# What the GitLab pair's graph should hold once it has read the seed's dataset (gitlab-seed, docs/architecture/http-observers.md, G4b1).
+export const EXPECTED_CONFIGMAP = "gitlab-seed-expected"
 const POD = "gitlab-0"
 const SCRATCH = "/tmp/polar-under-test"
 
@@ -91,6 +94,48 @@ def main [target_dir: string, repo_root: string] {
         error make --unspanned { msg: $e.msg }
     }
     exec_in null "rm" "-rf" $SCRATCH | ignore
+    seed
+}
+
+# A local port forwarded to GitLab's Service, for as long as `body` runs; stopped by its own PID however it ends.
+def through_forward [body: closure] {
+    let log = (mktemp)
+    let pid = (^bash -c $"kubectl -n ($NAMESPACE) port-forward svc/($NAME) :443 > ($log) 2>&1 & echo $!" | str trim | into int)
+    let stop = {|| if $pid > 1 { ^kill $pid | complete | ignore }; rm -f $log }
+    let port = (try {
+        mut found: any = null
+        for _ in 1..60 {
+            let at = (open --raw $log | parse --regex 'Forwarding from 127\.0\.0\.1:(?<port>\d+)' | get -o 0.port)
+            if $at != null { $found = ($at | into int); break }
+            sleep 500ms
+        }
+        if $found == null { error make --unspanned { msg: $"no forward to GitLab: (open --raw $log | str trim)" } }
+        $found
+    } catch {|e| do $stop; error make --unspanned { msg: $e.msg } })
+    let out = (try { do $body $port } catch {|e| do $stop; error make --unspanned { msg: $e.msg } })
+    do $stop
+    $out
+}
+
+# The seed's dataset made in GitLab, what is missing of it, and what the GitLab pair's graph should then hold kept in a ConfigMap: run from
+# this machine through a forward, checking GitLab's certificate by the cluster's CA under GitLab's own name, root's token on stdin.
+def seed [] {
+    let ca = (mktemp)
+    ^kubectl -n $NAMESPACE get configmap polar-ca -o jsonpath='{.data.ca\.pem}' | save --force $ca
+    let token = (^kubectl -n $NAMESPACE get secret $ROOT_TOKEN_SECRET -o jsonpath='{.data.token}' | decode base64 | decode)
+    let tool = (tools command "gitlab-seed")
+    let r = (try {
+        through_forward {|port|
+            $token | do { ^($tool | first) ...($tool | skip 1) --url $"https://(names | first)" --connect $"127.0.0.1:($port)" --ca $ca } | complete
+        }
+    } catch {|e| rm -f $ca; error make --unspanned { msg: $e.msg } })
+    rm -f $ca
+    if $r.exit_code != 0 { error make --unspanned { msg: $"the seed failed: ($r.stderr | lines | last 3 | str join '; ')" } }
+    for line in ($r.stderr | lines | where {|l| ($l | str starts-with "made ") or ($l | str starts-with "the runner ") }) { print $"  ($line)" }
+    let applied = ({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: $EXPECTED_CONFIGMAP, namespace: $NAMESPACE }, data: { "expected.json": $r.stdout } }
+        | to json | do { ^kubectl apply -f - } | complete)
+    if $applied.exit_code != 0 { error make --unspanned { msg: $"could not keep what the graph should hold: ($applied.stderr | str trim)" } }
+    print $"  the seed: what the graph should hold is in configmap/($EXPECTED_CONFIGMAP)"
 }
 
 def made [] {

@@ -656,6 +656,28 @@ G4, planned (the maintainer's choices, 2026-11-06: "Omnibus container", "In sand
   instance by a small tool over introspection (`cynic-introspection`), its GitLab version in the file's header; real answers kept as masked samples; `check --ask`,
   where `credentialed-reads-reviewed` first holds of real sources.
 
+G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitLab is `infra/under-test/gitlab/`, a configuration under test
+(`configurations-under-test.md`), up on u7c with its runner. The rest, cleared with the maintainer ("Push, then G4"; the seed "Here, through forwards"):
+- **G4b1, the seed's dataset.** `gitlab-seed` (`src/agents/gitlab-http/seed`), a static Rust CLI over GitLab's REST API, run from this machine by the configuration's
+  `ready` script through port-forwards, verifying GitLab's certificate by the cluster's CA under its own name, root's token on stdin. It makes what is missing and
+  nothing twice (safe to run again): twelve users, three groups nested, each user a member of one, thirty projects across the groups, six with CI the runner runs
+  (two jobs each, one keeping an artifact), and waits for their pipelines. It prints what the graph should then hold, by the names people use (usernames, full
+  paths, the runner's description, a project's pipeline on `main`, its jobs by name) and the G3 mapping's edges between them; the ready script keeps it in a
+  ConfigMap, `gitlab-seed-expected`, for G4d. The dataset and the expectation are pure, with properties (every edge's ends are nodes; the sizes are what was asked).
+  *Done (2026-11-07).* `gitlab-seed` (`dataset.rs`, `expected.rs`, `gitlab.rs`, `main.rs`; `tests/props.rs`, and `tests/client.rs` against a stand-in GitLab:
+  what is there is not made again, a user's password is random and told to no one, an error names the call and never the token); a failed pipeline is run
+  again, twice at most, so a seed run again repairs what an earlier one left. `ready.nu` runs it through a forward it starts and stops by its own PID, the CA
+  from `polar-ca`, the token from `gitlab-root-token` on stdin. Live on u7c: twelve users, three groups, thirty projects, six pipelines of two jobs, all run by
+  the runner; `gitlab-seed-expected` holds 12 users, 3 groups, 30 projects, 6 pipelines, 12 jobs, the runner and the instance, with 12 `HAS_MEMBER`, 2
+  `SUBGROUP_OF`, 6 `HAS_PIPELINE`, 12 `HAS_JOB` and 12 `EXECUTED_BY`. Found on the way: the first run's job pods could not start, "unable to join session
+  keyring: disk quota exceeded": every container takes a session keyring, and u7s and u7c side by side held 167 of the 200 keys the kernel gives one user
+  (`kernel.keys.maxkeys`), no leak but too many containers for the default; u7s is stopped (the maintainer, 2026-11-07), and a cluster that runs this much
+  beside another needs the quota raised.
+- **G4b2, the rest of the dataset.** An image pushed to a project's registry over the registry API, a generic package with files, and a mirror of Polar's `main`.
+- **G4c, the pair into Polar.** Packaging and catalog entries; `sandbox-local` leaves the pair out, and the GitLab configuration under test enables it and gives
+  the observer its trust of the cluster's CA (the maintainer's "Only what it makes" and "The CT may add it"), so the pair runs under test, marked.
+- **G4d, live.** As planned above, the graph held to `gitlab-seed-expected`.
+
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
 server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent
 (`infra/layers/2-services/neo4j/statefulset.dhall:78-92, 191-202`) and writes the certificate for `gitlab.gitlab-test.svc.cluster.local`, its key and the CA to an

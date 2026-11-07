@@ -1,0 +1,261 @@
+/*
+   ACE Tool
+
+   Copyright 2026 Carnegie Mellon University.
+
+   NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+   FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+   EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+   PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+   MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+   TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+   Licensed under a MIT (SEI)-style license, please see license.txt or contact
+   permission@sei.cmu.edu for full terms.
+
+   [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+   distribution.  Please see Copyright notice for non-US Government use and distribution.
+
+   This Software includes and/or makes use of Third-Party Software each subject to its own license.
+
+   DM26-0670
+*/
+
+//! GitLab's REST API, as much as the seed needs: each `ensure_` finds a thing by its name and makes it only if it is not there, so the
+//! seed is safe to run again. The token is sent as `PRIVATE-TOKEN` and is never in an error.
+
+use crate::dataset::{Group, Project, User};
+use anyhow::{Context, Result, anyhow};
+use reqwest::{Method, StatusCode};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use std::net::SocketAddr;
+use url::Url;
+
+pub struct Gitlab {
+    http: reqwest::Client,
+    base: Url,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct Id {
+    id: u64,
+}
+
+/// A pipeline as the API lists it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Pipeline {
+    pub id: u64,
+    pub status: String,
+}
+
+/// A pipeline's status that will not change.
+pub fn finished(status: &str) -> bool {
+    matches!(status, "success" | "failed" | "canceled" | "skipped")
+}
+
+fn segment(text: &str) -> String {
+    url::form_urlencoded::byte_serialize(text.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+}
+
+impl Gitlab {
+    /// `base` is GitLab's own address; `ca`, a PEM the server's certificate chains to, in place of the system's roots; `connect`, where
+    /// to reach it (a port-forward), the name in `base` still the one its certificate is checked against.
+    pub fn new(
+        base: Url,
+        token: String,
+        ca: Option<&[u8]>,
+        connect: Option<SocketAddr>,
+    ) -> Result<Self> {
+        let mut builder = reqwest::Client::builder();
+        if let Some(pem) = ca {
+            let certificate =
+                reqwest::Certificate::from_pem(pem).context("the CA is not a PEM certificate")?;
+            builder = builder
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(certificate);
+        }
+        let mut base = base;
+        if let Some(addr) = connect {
+            let host = base
+                .host_str()
+                .ok_or_else(|| anyhow!("{base} has no host"))?
+                .to_string();
+            base.set_port(Some(addr.port()))
+                .map_err(|_| anyhow!("{base} cannot take a port"))?;
+            builder = builder.resolve(&host, addr);
+        }
+        Ok(Gitlab {
+            http: builder.build()?,
+            base,
+            token,
+        })
+    }
+
+    async fn call(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(StatusCode, Value)> {
+        let url = self
+            .base
+            .join(path)
+            .with_context(|| format!("{path} is not a path"))?;
+        let mut request = self
+            .http
+            .request(method.clone(), url)
+            .header("PRIVATE-TOKEN", &self.token);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| anyhow!("{method} {path}: {}", e.without_url()))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+    }
+
+    /// The answer to a GET, or None when GitLab has no such thing.
+    async fn find<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
+        match self.call(Method::GET, path, None).await? {
+            (StatusCode::NOT_FOUND, _) => Ok(None),
+            (s, body) if s.is_success() => {
+                Ok(Some(serde_json::from_value(body).with_context(|| {
+                    format!("GET {path}: an answer of another shape")
+                })?))
+            }
+            (s, _) => Err(anyhow!("GET {path}: {s}")),
+        }
+    }
+
+    async fn make<T: DeserializeOwned>(&self, path: &str, body: Value) -> Result<T> {
+        match self.call(Method::POST, path, Some(&body)).await? {
+            (s, answer) if s.is_success() => serde_json::from_value(answer)
+                .with_context(|| format!("POST {path}: an answer of another shape")),
+            (s, answer) => Err(anyhow!(
+                "POST {path}: {s}: {}",
+                answer.get("message").cloned().unwrap_or(Value::Null)
+            )),
+        }
+    }
+
+    /// A user, with a random password no one is told: the seed's users never sign in.
+    pub async fn ensure_user(&self, u: &User) -> Result<u64> {
+        let found: Vec<Id> = self
+            .find(&format!("/api/v4/users?username={}", segment(&u.username)))
+            .await?
+            .unwrap_or_default();
+        if let Some(user) = found.first() {
+            return Ok(user.id);
+        }
+        let made: Id = self
+            .make(
+                "/api/v4/users",
+                json!({
+                    "username": u.username, "name": u.name, "email": u.email,
+                    "force_random_password": true, "skip_confirmation": true,
+                }),
+            )
+            .await?;
+        Ok(made.id)
+    }
+
+    /// A group by its full path, made under `parent` (its id) if it is not there.
+    pub async fn ensure_group(&self, g: &Group, parent: Option<u64>) -> Result<u64> {
+        if let Some(found) = self
+            .find::<Id>(&format!("/api/v4/groups/{}", segment(&g.full_path)))
+            .await?
+        {
+            return Ok(found.id);
+        }
+        let mut body = json!({ "name": g.path, "path": g.path, "visibility": "private" });
+        if let Some(parent) = parent {
+            body["parent_id"] = json!(parent);
+        }
+        Ok(self.make::<Id>("/api/v4/groups", body).await?.id)
+    }
+
+    pub async fn ensure_member(&self, group: u64, user: u64, access_level: u8) -> Result<()> {
+        if self
+            .find::<Id>(&format!("/api/v4/groups/{group}/members/{user}"))
+            .await?
+            .is_none()
+        {
+            self.make::<Value>(
+                &format!("/api/v4/groups/{group}/members"),
+                json!({ "user_id": user, "access_level": access_level }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// A project by its full path, made in its group (`namespace`, an id) with a `main` branch if it is not there.
+    pub async fn ensure_project(&self, p: &Project, namespace: u64) -> Result<u64> {
+        if let Some(found) = self
+            .find::<Id>(&format!("/api/v4/projects/{}", segment(&p.full_path)))
+            .await?
+        {
+            return Ok(found.id);
+        }
+        let made: Id = self
+            .make("/api/v4/projects", json!({
+                "name": p.path, "path": p.path, "namespace_id": namespace, "visibility": "private",
+                "initialize_with_readme": true, "default_branch": "main",
+            }))
+            .await?;
+        Ok(made.id)
+    }
+
+    /// A file on `main`, committed only if it is not there: true when it was.
+    pub async fn ensure_file(
+        &self,
+        project: u64,
+        path: &str,
+        content: &str,
+        message: &str,
+    ) -> Result<bool> {
+        let at = format!(
+            "/api/v4/projects/{project}/repository/files/{}",
+            segment(path)
+        );
+        if self
+            .find::<Value>(&format!("{at}?ref=main"))
+            .await?
+            .is_some()
+        {
+            return Ok(false);
+        }
+        self.make::<Value>(
+            &at,
+            json!({ "branch": "main", "content": content, "commit_message": message }),
+        )
+        .await?;
+        Ok(true)
+    }
+
+    /// Runs a pipeline's failed jobs again.
+    pub async fn retry_pipeline(&self, project: u64, pipeline: u64) -> Result<()> {
+        self.make::<Value>(
+            &format!("/api/v4/projects/{project}/pipelines/{pipeline}/retry"),
+            json!({}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The project's pipelines on `main`, newest first.
+    pub async fn pipelines(&self, project: u64) -> Result<Vec<Pipeline>> {
+        Ok(self
+            .find(&format!("/api/v4/projects/{project}/pipelines?ref=main"))
+            .await?
+            .unwrap_or_default())
+    }
+}
