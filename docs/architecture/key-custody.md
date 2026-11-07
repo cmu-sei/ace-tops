@@ -1392,7 +1392,10 @@ asked; Mullvad off for the run):** what was checked, how, and what was not.
   with `encryption` cannot run without the daemon (`remaining-work.md` at `f03666c4`).
 
 **Step 9's follow-ups (decided by the maintainer and built, 2026-10-28).**
-- *Kept:* `polar-kernel-keyring`, in the tree though nothing uses it.
+- *Kept:* `polar-kernel-keyring`, in the tree though nothing uses it. **Retired 2026-11-07** (the maintainer): its tests were the
+  only code that loaded keys into the kernel keyring, and left three keys in the user keyring of whoever ran them, counted
+  against the per-user key quota that a rootless cluster's containers share (one session keyring each); with it went
+  `keyutils-raw`, which nothing else used. The history above names its files as they were.
 - *The refusal by its code.* `ClientMessage::RegistrationResponse` carries `Result<String, Refusal>`, a `Refusal`
   being a `RefusalCode` (`Revoked`, `Other`) and its words (`cassini/types/src/lib.rs`). The listener refuses a revoked
   certificate `Revoked` and everything else `Other`; the broker's internal messages stay text, since only the listener

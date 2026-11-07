@@ -4277,17 +4277,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyutils-raw"
-version = "0.5.0"
-source = "git+https://github.com/daveman1010221/rust-keyutils.git?rev=f22e830#f22e830c0663a2e3ed16b8ac05c8408c03ed34f2"
-dependencies = [
- "errno",
- "libc",
- "log",
- "uninit",
-]
-
-[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6305,21 +6294,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wiremock",
-]
-
-[[package]]
-name = "polar-kernel-keyring"
-version = "1.0.0"
-dependencies = [
- "errno",
- "keyutils-raw",
- "libc",
- "rand 0.10.3",
- "rsa 0.10.0-rc.18",
- "sha2 0.11.0",
- "thiserror 1.0.69",
- "tracing",
- "uninit",
 ]
 
 [[package]]
@@ -8985,12 +8959,6 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
-name = "uninit"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac20c07bcac4f505f1e4fbd2e55b54f6297a35a27538f107cb3d4254b4514146"
 
 [[package]]
 name = "universal-hash"
