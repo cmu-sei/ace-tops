@@ -235,9 +235,9 @@
           cassiniSinkImage     = polarPkgs.cassini.sinkImage;
 
           # ── GitLab agent ─────────────────────────────────────────────────────
-          # The pair on polar-http-observer (docs/architecture/http-observers.md, "GitLab"), named for its crates until G5.
-          gitlabHttpObserverImage  = polarPkgs.gitlabHttpAgent.observerImage;
-          gitlabHttpProcessorImage = polarPkgs.gitlabHttpAgent.processorImage;
+          # The pair on polar-http-observer (docs/architecture/http-observers.md, "GitLab").
+          gitlabObserverImage  = polarPkgs.gitlabAgent.observerImage;
+          gitlabProcessorImage = polarPkgs.gitlabAgent.processorImage;
 
           # ── Kubernetes agent ─────────────────────────────────────────────────
           kubeObserverImage    = polarPkgs.kubeAgent.observerImage;

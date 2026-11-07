@@ -23,7 +23,7 @@
 
 //! What the GitLab processor is, as the infrastructure asks to be told: see `polar_agent_builder::PolarAgent`.
 
-use gitlab_http_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME, PROCESSOR_NAME};
+use gitlab_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME, PROCESSOR_NAME};
 use polar::graph::controller::NodeShape;
 use polar_agent_builder::runtime::SectionAuthority;
 use polar_agent_builder::{

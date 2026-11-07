@@ -82,7 +82,7 @@ def main [] {
         "the observer reads each query once, from the test GitLab, with the one credential the test seals for its host alone": {
             let d = (declaration $infra "gitlab")
             let all = (all_sources)
-            let queries = (ls ($infra | path join "../src/agents/gitlab-http/queries") | get name | path parse | get stem | sort)
+            let queries = (ls ($infra | path join "../src/agents/gitlab/queries") | get name | path parse | get stem | sort)
             let asked = ($all | each {|s| $s.graphql.each?.query? | default $s.graphql.query } )
             assert equal ($asked | length) ($queries | length) "one source for each query"
             assert equal ($all | get name | uniq | length) ($all | length) "each source named once"

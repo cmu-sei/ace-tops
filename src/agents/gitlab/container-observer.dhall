@@ -19,7 +19,7 @@
 --
 -- DM26-0670
 
--- src/agents/gitlab-http/container-observer.dhall
+-- src/agents/gitlab/container-observer.dhall
 
 let Lib = ../../containers/container-lib.dhall
 
@@ -31,8 +31,8 @@ let healthcheckLayer =
     ]
 
 in defaults.minimalContainer //
-  { name       = "gitlab-http-observer"
-  , entrypoint = Some "gitlab-http-observer"
+  { name       = "gitlab-observer"
+  , entrypoint = Some "gitlab-observer"
   , staticUid  = Some 1000
   , staticGid  = Some 1000
   , packageLayers = defaults.minimalContainer.packageLayers # [ healthcheckLayer ]

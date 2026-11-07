@@ -22,7 +22,7 @@
 */
 
 //! Real answers from the test GitLab, kept as the GitLab pair's samples (`gitlab-seed answers`, G4d): each query of
-//! `src/agents/gitlab-http/queries` asked once, a follow-up of an item the seed filled, and the test GitLab's host replaced by the
+//! `src/agents/gitlab/queries` asked once, a follow-up of an item the seed filled, and the test GitLab's host replaced by the
 //! samples' everywhere it is named, so a sample says nothing of where it was read and reads as the hand-written ones do.
 
 use crate::dataset::{Size, TOP, dataset};

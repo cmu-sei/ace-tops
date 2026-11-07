@@ -602,6 +602,13 @@ The bites:
   answers become masked samples; `credentialed-reads-reviewed` first holds of a real source. `polar-sign` gains validating a GraphQL source against a schema file
   when it signs one.
 - **G5, the old pair goes.** The five crates, the hand-written chart, `gitlab-secret` and the GitLab variables, once G4 has shown the new pair working.
+  *Done (2026-11-07).* G5a removed the older pair: its five crates, its node vocabulary in the library (`graph/nodes/gitlab.rs`), its Nix package
+  and images, the hand-written chart and its context in `render.nu`, its Dhall types and `gitlab-secret` selector, the `GITLAB_*` variables and the
+  `gitlab_*` sops examples (the encrypted `secrets.sops.yaml` still holds its keys, read by nothing, until someone with the key rewrites it). G5b
+  moved the pair into `src/agents/gitlab/` under its lasting names: crates `gitlab-common`, `gitlab-observer`, `gitlab-processor` (and
+  `gitlab-seed`), images `gitlab-observer` and `gitlab-processor` (`polarPkgs.gitlabAgent`), the schema at `gitlab/schema/gitlab.graphql`.
+  Found, left: `src/agents/jira/query` is no workspace member, a copy of the older GitLab code that imports its schema crate and is built
+  by nothing.
 
 G1, done (`polar-http-observer/src/graphql.rs`, `paging.rs`, `observer.rs`; `polar-projection`'s `Stamp`). A source may carry `graphql: {query}`, POSTed as
 `{query, variables: {after}}` to its URL with `Request::post_at`, the builder's POST of a whole address. The query is judged when signed by `cynic-parser`: one

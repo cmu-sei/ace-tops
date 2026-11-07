@@ -21,7 +21,7 @@
    DM26-0670
 */
 
-use gitlab_http_processor::agent::GitlabProcessor;
+use gitlab_processor::agent::GitlabProcessor;
 use std::process::ExitCode;
 
 /// The agent says what it is in `GitlabProcessor`; `run` answers the commands (`--help`, `--scaffold`, `--check`), judges

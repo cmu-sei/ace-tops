@@ -21,12 +21,15 @@
    DM26-0670
 */
 
-//! What the GitLab observer and processor share (docs/architecture/http-observers.md, "GitLab"). The crates are
-//! `gitlab-http-*` until the older GitLab pair in `gitlab/` is removed (G5); the workloads have their lasting names.
+use gitlab_observer::agent::GitlabObserver;
+use std::process::ExitCode;
 
-/// The observer, which the processor takes pages from.
-pub const OBSERVER_NAME: &str = "gitlab-observer";
-/// The processor.
-pub const PROCESSOR_NAME: &str = "gitlab-processor";
-/// Where the observer publishes what it reads, which pairs the two.
-pub const OBSERVATIONS_TOPIC: &str = "polar.gitlab.observations";
+/// The agent says what it is in `GitlabObserver`; `run` answers the commands (`--help`, `--scaffold`, `--check`), judges the
+/// configuration and starts it.
+fn main() -> ExitCode {
+    polar_agent_builder::run::<GitlabObserver>()
+}
+
+// Every Polar binary allocates with Scudo (docs/architecture/broker-baseline.md, "Decided").
+#[global_allocator]
+static GLOBAL: polar_scudo::Scudo = polar_scudo::Scudo;

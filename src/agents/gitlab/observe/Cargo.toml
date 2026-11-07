@@ -20,7 +20,17 @@
 # DM26-0670
 
 [package]
-name = "gitlab-http-common"
+name = "gitlab-observer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+gitlab-common.workspace = true
+polar-agent-builder.workspace = true
+polar-http-observer.workspace = true
+polar-scudo.workspace = true
+
+[[bin]]
+name = "gitlab-observer"
+path = "src/main.rs"

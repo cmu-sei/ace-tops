@@ -84,10 +84,10 @@ struct AnswersArgs {
     /// The CA its certificate chains to.
     #[arg(long)]
     ca: Option<PathBuf>,
-    /// The queries (src/agents/gitlab-http/queries).
+    /// The queries (src/agents/gitlab/queries).
     #[arg(long)]
     queries: PathBuf,
-    /// Where the samples go (src/agents/gitlab-http/process/examples/samples).
+    /// Where the samples go (src/agents/gitlab/process/examples/samples).
     #[arg(long)]
     out: PathBuf,
 }
@@ -103,7 +103,7 @@ struct SchemaArgs {
     /// The CA its certificate chains to.
     #[arg(long)]
     ca: Option<PathBuf>,
-    /// The file to write (src/agents/gitlab-http/schema/gitlab.graphql).
+    /// The file to write (src/agents/gitlab/schema/gitlab.graphql).
     #[arg(long)]
     out: PathBuf,
 }

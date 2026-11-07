@@ -32,7 +32,7 @@ use ../../tools.nu
 use main.nu [NAMESPACE, NAME, names]
 use ready.nu [OBSERVER_TOKEN_SECRET]
 
-const AGENTS = (path self | path dirname | path join "../../../src/agents/gitlab-http")
+const AGENTS = (path self | path dirname | path join "../../../src/agents/gitlab")
 
 def main [] {
     let work = (mktemp --directory)

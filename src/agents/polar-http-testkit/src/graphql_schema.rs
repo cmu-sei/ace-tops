@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn gitlab_s_schema_is_read_and_holds_a_query_to_it() {
         let gitlab = GraphQlSchema::read(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../gitlab-http/schema/gitlab.graphql"),
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../gitlab/schema/gitlab.graphql"),
         )
         .unwrap();
         gitlab

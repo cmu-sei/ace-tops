@@ -19,7 +19,7 @@
 #
 # DM26-0670
 
-# src/agents/gitlab-http/package.nix
+# src/agents/gitlab/package.nix
 { pkgs
 , craneLib
 , crateArgs
@@ -32,15 +32,15 @@
 }:
 let
   observer = craneLib.buildPackage (crateArgs // {
-    pname = "gitlab-http-observer";
-    cargoExtraArgs = "--bin gitlab-http-observer --locked";
-    src = workspaceFileset ./gitlab-http/observe;
+    pname = "gitlab-observer";
+    cargoExtraArgs = "--bin gitlab-observer --locked";
+    src = workspaceFileset ./gitlab/observe;
   });
 
   processor = craneLib.buildPackage (crateArgs // {
-    pname = "gitlab-http-processor";
-    cargoExtraArgs = "--bin gitlab-http-processor --locked";
-    src = workspaceFileset ./gitlab-http/process;
+    pname = "gitlab-processor";
+    cargoExtraArgs = "--bin gitlab-processor --locked";
+    src = workspaceFileset ./gitlab/process;
   });
 
   healthcheckInputs = inputs // {

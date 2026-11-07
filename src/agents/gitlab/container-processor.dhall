@@ -19,7 +19,7 @@
 --
 -- DM26-0670
 
--- src/agents/gitlab-http/container-processor.dhall
+-- src/agents/gitlab/container-processor.dhall
 
 let Lib = ../../containers/container-lib.dhall
 
@@ -31,8 +31,8 @@ let healthcheckLayer =
     ]
 
 in defaults.minimalContainer //
-  { name       = "gitlab-http-processor"
-  , entrypoint = Some "gitlab-http-processor"
+  { name       = "gitlab-processor"
+  , entrypoint = Some "gitlab-processor"
   , staticUid  = Some 1000
   , staticGid  = Some 1000
   , packageLayers = defaults.minimalContainer.packageLayers # [ healthcheckLayer ]

@@ -3068,25 +3068,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitlab-http-common"
+name = "gitlab-common"
 version = "1.0.0"
 
 [[package]]
-name = "gitlab-http-observer"
+name = "gitlab-observer"
 version = "1.0.0"
 dependencies = [
- "gitlab-http-common",
+ "gitlab-common",
  "polar-agent-builder",
  "polar-http-observer",
  "polar-scudo",
 ]
 
 [[package]]
-name = "gitlab-http-processor"
+name = "gitlab-processor"
 version = "1.0.0"
 dependencies = [
- "gitlab-http-common",
- "gitlab-http-observer",
+ "gitlab-common",
+ "gitlab-observer",
  "polar",
  "polar-agent-builder",
  "polar-http-observer",

@@ -20,17 +20,28 @@
 # DM26-0670
 
 [package]
-name = "gitlab-http-observer"
+name = "gitlab-processor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-gitlab-http-common.workspace = true
+gitlab-common.workspace = true
+polar.workspace = true
 polar-agent-builder.workspace = true
-polar-http-observer.workspace = true
+polar-http-processor.workspace = true
+polar-projection.workspace = true
 polar-scudo.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The tool that signs a mapping judges it by this agent's scaffold.
+polar-sign = { path = "../../polar-sign" }
+# The tests every kind has, and GitLab's own: queries and samples held to GitLab's schema, pages read as a deployment does.
+polar-http-testkit.workspace = true
+polar-http-observer.workspace = true
+gitlab-observer = { path = "../observe" }
 
 [[bin]]
-name = "gitlab-http-observer"
+name = "gitlab-processor"
 path = "src/main.rs"

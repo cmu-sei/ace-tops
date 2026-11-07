@@ -24,13 +24,13 @@
 # infra/under-test/gitlab/sources.nu
 #
 # The GitLab observer's `sources` section for the test GitLab (docs/architecture/http-observers.md, G4d), printed as the JSON body the
-# seed step signs (`make` in under-test.nuon): one source per query in src/agents/gitlab-http/queries, POSTed to the test GitLab's
+# seed step signs (`make` in under-test.nuon): one source per query in src/agents/gitlab/queries, POSTed to the test GitLab's
 # GraphQL endpoint with its `gitlab` credential, each paged by GraphQL's cursor, ten to a page; a project's pipelines, jobs, registry
 # and packages, and a group's members, are follow-ups of the projects and groups sources, a query per item.
 
 use main.nu [names]
 
-const QUERIES = (path self | path dirname | path join "../../../src/agents/gitlab-http/queries")
+const QUERIES = (path self | path dirname | path join "../../../src/agents/gitlab/queries")
 # The credential, an entry of the observer's `credentials` section (under-test.nuon, `credentials`).
 export const CREDENTIAL = "gitlab"
 # Read every five minutes: often enough for a test, gentle on a GitLab with one Puma.

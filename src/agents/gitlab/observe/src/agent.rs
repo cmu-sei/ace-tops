@@ -23,7 +23,7 @@
 
 //! What the GitLab observer is, as the infrastructure asks to be told: see `polar_agent_builder::PolarAgent`.
 
-use gitlab_http_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME};
+use gitlab_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME};
 use polar_agent_builder::protocol::credentials::section;
 use polar_agent_builder::protocol::{Credential, Location, OperationDecl, ProtocolKind};
 use polar_agent_builder::{

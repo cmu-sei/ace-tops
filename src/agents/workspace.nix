@@ -180,9 +180,8 @@ let
       healthcheckDrv = healthcheck;
     };
 
-    # The GitLab pair on polar-http-observer (docs/architecture/http-observers.md, "GitLab"); its images are named for its crates
-    # until the older pair (gitlabAgent) goes in G5.
-    gitlabHttpAgent = import ./gitlab-http/package.nix {
+    # The GitLab pair on polar-http-observer (docs/architecture/http-observers.md, "GitLab").
+    gitlabAgent = import ./gitlab/package.nix {
       inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
       crateArgs = individualCrateArgs;
       healthcheckDrv = healthcheck;
@@ -279,5 +278,5 @@ let
     };
 in
 {
-        inherit scudo workspacePackages attestation gitlabHttpAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit polarCustody polarTools healthcheck credentialsAgent secretHarness;
+        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit polarCustody polarTools healthcheck credentialsAgent secretHarness;
 }

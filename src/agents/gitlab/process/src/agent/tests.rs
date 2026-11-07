@@ -26,7 +26,7 @@
 //! deployment reads them, page by page, over TLS, with a token bound to the host.
 
 use super::*;
-use gitlab_http_observer::agent::GitlabObserver;
+use gitlab_observer::agent::GitlabObserver;
 use polar_http_observer::graphql::{Each, GraphQl, Variable};
 use polar_http_observer::paging::{Paging, Style};
 use polar_http_testkit::graphql_schema::GraphQlSchema;

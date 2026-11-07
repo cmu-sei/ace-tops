@@ -20,7 +20,7 @@
 # DM26-0670
 {
   ai = null;
-  entrypoint = "gitlab-http-processor";
+  entrypoint = "gitlab-processor";
   extraEnv = [
     {
       name = "SSL_CERT_FILE";
@@ -43,7 +43,7 @@
   ];
   mode = u:
     u.Minimal;
-  name = "gitlab-http-processor";
+  name = "gitlab-processor";
   nix = {
     buildUserCount = u:
       u.Dynamic;

@@ -25,14 +25,14 @@
 # its signed `sources` section names, with the token its signed `credentials` section escrows; the processor writes what it reads to
 # the graph by its signed `projection` section. Neither is given anything here: with no section signed the observer reads nothing,
 # and the processor holds and says so. No target runs it yet: the test GitLab's configuration under test enables it
-# (infra/under-test/gitlab/), so it runs under test. Its images are named for its crates while the older pair is in the tree (G5).
+# (infra/under-test/gitlab/), so it runs under test.
 [
   {
     name: "gitlab-observer"
     kind: "agent"
     # It reads what its sources name and holds no graph password: the low-trust side (docs/architecture/placement.md).
     pool: "observers"
-    image: "gitlab-http-observer"
+    image: "gitlab-observer"
     config: "document"
   }
 
@@ -40,7 +40,7 @@
     name: "gitlab-processor"
     kind: "agent"
     pool: "writers"
-    image: "gitlab-http-processor"
+    image: "gitlab-processor"
     config: "document"
   }
 ]
