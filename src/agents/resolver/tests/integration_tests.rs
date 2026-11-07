@@ -312,37 +312,6 @@ async fn the_handler_logs_in_to_a_real_registry_that_asks_for_it() {
 // Pure-function unit tests (no container needed)
 // ---------------------------------------------------------------------------
 
-/// registry_from_image_ref extracts the hostname component from a fully
-/// qualified image reference and returns None for Docker Hub short refs.
-#[test]
-fn registry_from_image_ref_extracts_hostname() {
-    fn registry_from_image_ref(uri: &str) -> Option<String> {
-        let first = uri.split('/').next()?;
-        let has_dot = first.contains('.');
-        let has_port = first.contains(':') && uri.contains('/');
-        if has_dot || has_port {
-            Some(first.to_string())
-        } else {
-            None
-        }
-    }
-
-    // Fully qualified with dot — hostname present.
-    assert_eq!(
-        registry_from_image_ref("ghcr.io/myorg/myimage:latest"),
-        Some("ghcr.io".into())
-    );
-    // Host:port with path — hostname present.
-    assert_eq!(
-        registry_from_image_ref("localhost:5000/myimage:tag"),
-        Some("localhost:5000".into())
-    );
-    // Bare name:tag with no slash — not a hostname.
-    assert_eq!(registry_from_image_ref("myimage:latest"), None);
-    // Docker Hub two-part ref — "library" has no dot or port, not a hostname.
-    assert_eq!(registry_from_image_ref("library/ubuntu"), None);
-}
-
 /// OciImageManifest serialises and deserialises cleanly via serde_json —
 /// validates the round-trip used by emit_oci_resolved_event.
 #[test]

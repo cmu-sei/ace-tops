@@ -703,7 +703,19 @@ Each step is taken in bites, each reported before the next.
   own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide;
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design; (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
-  against lifecycle's decisions first. The history that follows, superseded:
+  against lifecycle's decisions first. (1) DONE 2026-11-07: taken from `2cce4722`/`5189c650`, Docker's rule for the registry host (a tag's dots
+  are not a host: `neo4j:5.26.2` had been sent to a registry named "neo4j:5.26.2") and a `localhost` registry as the node's own store, never fetched,
+  logged "not verified"; changed, hostless means Docker Hub only when a digest pins it, an unpinned hostless name is not verified (the maintainer,
+  "Docker Hub only if pinned": a digest proves the image wherever it is fetched, a tag on Docker Hub may not be what a node loaded by that name);
+  declined, `7621f9bb` (credentials from `DOCKER_CONFIG`, the file path main replaced with escrowed `credentials` sections in `775a1ecc`) and
+  `9132832e` (images named `localhost/<name>`, not taken now). Found doing it, not his: THE RESOLVER IGNORES THE KUBELET'S DIGEST. The kubernetes
+  consumer emits `OCIArtifactDiscovered` with `uri` the spec's tag and `image_id` (in `source_ref`) the digest the kubelet ran, and says the
+  resolver "must trust the kubelet and flag the disagreement" (`src/agents/kubernetes/consume/src/lib.rs`, "Image discovery: kubelet-attested
+  only"); nothing reads `image_id`: the resolver pulls the tag as it is now, and the consumer's `KUBERNETES_RESOLUTION_EVENTS` handler
+  (`src/agents/kubernetes/consume/src/supervisor.rs`) links `USES_IMAGE` to that digest, so a tag repointed after the pull attests an image the
+  pod is not running, the case the comment calls worse than no attestation. Fixing it reads `image_id` defensively (`repo@sha256:…`, a bare
+  `sha256:…`, `docker-pullable://`), fetches by that digest, and so also pins a hostless name the kubelet ran; not scheduled. The history that
+  follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
   upstream code, his restructure of it around cyclops (`312d5dec`) and the build orchestrator included; whether the merge comes before or after the migration
