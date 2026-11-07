@@ -125,7 +125,8 @@ mod tests {
             [
                 "POLAR_EGRESS_PROXY",
                 "POLAR_EGRESS_NO_PROXY",
-                "POLAR_EGRESS_CA_CERT"
+                "POLAR_EGRESS_CA_CERT",
+                "POLAR_EGRESS_CLUSTER_CA"
             ]
         );
     }
