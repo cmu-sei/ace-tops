@@ -24,7 +24,7 @@
 //! The resolver's supervisor: the builder's infrastructure (health, the Cassini client and the
 //! subscription), the resolver actor, and the order in which they come down.
 
-use crate::resolver::{ResolverAgent, ResolverAgentState};
+use crate::resolver::{ReadCache, ResolverAgent, ResolverAgentState};
 use crate::settings::ResolverSettings;
 use crate::{BROKER_CLIENT_NAME, RESOLVER_SUPERVISOR_NAME};
 use cassini_types::ClientEvent;
@@ -136,6 +136,7 @@ impl Actor for ResolverSupervisor {
                 cassini_client: resources.tcp_client.clone(),
                 protocols,
                 insecure_registries: settings.insecure_registries,
+                read: ReadCache::default(),
             },
             myself.get_cell(),
         )

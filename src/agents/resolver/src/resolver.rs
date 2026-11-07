@@ -27,7 +27,7 @@
 use crate::registry;
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::WireTraceCtx;
-use oci_client::{Reference, manifest::OciManifest};
+use oci_client::Reference;
 use polar::{
     DiscoverySourceRef, ProvenanceEvent,
     cassini::{CassiniClient, TcpClient},
@@ -35,6 +35,7 @@ use polar::{
 };
 use polar_agent_builder::protocol::ProtocolHandle;
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
+use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -68,6 +69,62 @@ pub fn kubelet_digest(image_id: &str) -> Option<&str> {
     };
     (hex.len() == length && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
         .then_some(digest)
+}
+
+/// The most reads the resolver keeps; past it they are all dropped and made again, so a cluster that runs endless
+/// images cannot make it hold endless manifests (the broker's decision cache does the same).
+pub const MOST_KEPT: usize = 1024;
+
+/// What a read of an image found: its manifest's digest and the manifest as published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub digest: String,
+    pub manifest_data: Vec<u8>,
+}
+
+/// The images read by their digest, kept by where they were read: a digest names one content forever, so a container
+/// seen again, or another running the same image, is not read again. Every observation of a pod discovers its images
+/// again, and a registry counts the reads (Docker Hub limits them). An image read by a tag is never kept, since a tag
+/// can be moved, and neither is a failure.
+#[derive(Default)]
+pub struct ReadCache {
+    entries: HashMap<(String, String, String), Resolved>,
+}
+
+impl ReadCache {
+    /// Where and by which digest `reference` reads its image, if a digest pins it.
+    fn key(reference: &Reference) -> Option<(String, String, String)> {
+        let digest = reference.digest()?;
+        Some((
+            reference.registry().to_string(),
+            reference.repository().to_string(),
+            digest.to_string(),
+        ))
+    }
+
+    /// What reading `reference` found before, if a digest pins it and it is still kept.
+    pub fn get(&self, reference: &Reference) -> Option<&Resolved> {
+        self.entries.get(&Self::key(reference)?)
+    }
+
+    /// Keeps what reading `reference` found, if a digest pins it.
+    pub fn put(&mut self, reference: &Reference, resolved: Resolved) {
+        let Some(key) = Self::key(reference) else {
+            return;
+        };
+        if self.entries.len() >= MOST_KEPT {
+            self.entries.clear();
+        }
+        self.entries.insert(key, resolved);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 impl ResolverAgent {
@@ -109,15 +166,27 @@ impl ResolverAgent {
         })
     }
 
+    /// What reading `reference` finds: kept from an earlier read when a digest pins it, otherwise read from its registry.
     #[instrument(level = "debug", name = "resolver.inspect_image", skip(state))]
     async fn inspect_image(
         state: &mut ResolverAgentState,
         reference: &Reference,
-    ) -> Result<(OciManifest, String), ActorProcessingErr> {
+    ) -> Result<Resolved, ActorProcessingErr> {
+        if let Some(kept) = state.read.get(reference) {
+            debug!("Already read: {reference}");
+            return Ok(kept.clone());
+        }
         debug!("Attempting to resolve image: {reference}");
-        registry::pull_manifest(&state.protocols, reference, &state.insecure_registries)
-            .await
-            .map_err(ActorProcessingErr::from)
+        let (manifest, digest) =
+            registry::pull_manifest(&state.protocols, reference, &state.insecure_registries)
+                .await?;
+        debug!("Resolved image: \n {manifest:?}");
+        let resolved = Resolved {
+            digest,
+            manifest_data: serde_json::to_vec(&manifest)?,
+        };
+        state.read.put(reference, resolved.clone());
+        Ok(resolved)
     }
 
     fn forward_event(
@@ -142,6 +211,8 @@ pub struct ResolverAgentState {
     pub protocols: ProtocolHandle,
     /// The registries spoken to over plain http.
     pub insecure_registries: Vec<String>,
+    /// The images already read by their digest.
+    pub read: ReadCache,
 }
 
 #[async_trait]
@@ -192,10 +263,10 @@ impl Actor for ResolverAgent {
                     }
                 };
                 match Self::inspect_image(state, &reference).await {
-                    Ok((manifest, digest)) => {
-                        debug!("Resolved image: \n {manifest:?}");
-                        let manifest_data = serde_json::to_vec(&manifest)?;
-
+                    Ok(Resolved {
+                        digest,
+                        manifest_data,
+                    }) => {
                         // construct new event, pass source_ref through
                         let event = ProvenanceEvent::OCIArtifactResolved {
                             uri: uri.clone(),
@@ -240,7 +311,8 @@ impl Actor for ResolverAgent {
 #[cfg(test)]
 mod tests {
     use super::ImageSource::{NodeLocal, Registry, Unpinned};
-    use super::{ImageSource, ResolverAgent, kubelet_digest};
+    use super::{ImageSource, MOST_KEPT, ReadCache, Resolved, ResolverAgent, kubelet_digest};
+    use oci_client::Reference;
     use polar::DiscoverySourceRef;
     use proptest::prelude::*;
 
@@ -384,6 +456,68 @@ mod tests {
         }
     }
 
+    fn resolved(digest: &str) -> Resolved {
+        Resolved {
+            digest: digest.to_string(),
+            manifest_data: digest.as_bytes().to_vec(),
+        }
+    }
+
+    fn reference(whole: &str) -> Reference {
+        whole.parse().expect("a reference")
+    }
+
+    /// The `n`th of many images in one repository, each read by its digest, parsed once.
+    fn nth(n: usize) -> Reference {
+        static MANY: std::sync::OnceLock<Vec<Reference>> = std::sync::OnceLock::new();
+        MANY.get_or_init(|| {
+            (0..2 * MOST_KEPT)
+                .map(|n| reference(&format!("ghcr.io/org/app@sha256:{n:064x}")))
+                .collect()
+        })[n]
+            .clone()
+    }
+
+    #[test]
+    fn an_image_read_by_its_digest_is_kept_and_one_read_by_a_tag_is_not() {
+        let mut cache = ReadCache::default();
+        cache.put(&reference("ghcr.io/org/app:1"), resolved(RAN));
+        assert!(cache.get(&reference("ghcr.io/org/app:1")).is_none());
+        assert!(cache.is_empty());
+
+        cache.put(&reference(&format!("ghcr.io/org/app@{RAN}")), resolved(RAN));
+        assert_eq!(
+            cache.get(&reference(&format!("ghcr.io/org/app@{RAN}"))),
+            Some(&resolved(RAN))
+        );
+        // A tag beside the digest names the same image.
+        assert_eq!(
+            cache.get(&reference(&format!("ghcr.io/org/app:1@{RAN}"))),
+            Some(&resolved(RAN))
+        );
+        // The same digest from another repository or registry is another read: where it was read is part of what is said.
+        for other in [
+            format!("ghcr.io/org/other@{RAN}"),
+            format!("quay.io/org/app@{RAN}"),
+            format!("ghcr.io/org/app@{DIGEST}"),
+        ] {
+            assert!(cache.get(&reference(&other)).is_none(), "{other}");
+        }
+    }
+
+    #[test]
+    fn past_the_most_kept_every_read_is_dropped_and_made_again() {
+        let mut cache = ReadCache::default();
+        for n in 0..MOST_KEPT {
+            cache.put(&nth(n), resolved(&n.to_string()));
+        }
+        assert_eq!(cache.len(), MOST_KEPT);
+        cache.put(&nth(MOST_KEPT), resolved("last"));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(&nth(0)).is_none());
+        assert_eq!(cache.get(&nth(MOST_KEPT)), Some(&resolved("last")));
+    }
+
     fn name() -> impl Strategy<Value = String> {
         proptest::collection::vec("[a-z0-9]{1,6}", 1..3).prop_map(|parts| parts.join("/"))
     }
@@ -420,6 +554,18 @@ mod tests {
     }
 
     proptest! {
+        /// However many images are read, and in whatever order, no more than the most kept are held, and the last read
+        /// is always one of them, with what was read.
+        #[test]
+        fn the_cache_is_bounded_and_keeps_the_last_read(reads in proptest::collection::vec(0..2 * MOST_KEPT, 0..3 * MOST_KEPT)) {
+            let mut cache = ReadCache::default();
+            for n in &reads {
+                cache.put(&nth(*n), resolved(&n.to_string()));
+                prop_assert!(cache.len() <= MOST_KEPT);
+                prop_assert_eq!(cache.get(&nth(*n)), Some(&resolved(&n.to_string())));
+            }
+        }
+
         /// A name with no registry host is looked up on Docker Hub when, and only when, a digest pins it, since only a
         /// digest proves which image it is wherever it is fetched from.
         #[test]

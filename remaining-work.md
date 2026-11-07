@@ -714,8 +714,10 @@ Each step is taken in bites, each reported before the next.
   consumer linked `USES_IMAGE` to that digest, so a tag repointed after the pull attested an image the pod was not running. Now a container is
   read by the kubelet's digest from where the spec names (`src/agents/resolver/src/resolver.rs`, `image_source`, `kubelet_digest`), else by the
   spec's own digest, else not verified; this also pins a hostless name the kubelet ran. Still open: a repoint is not flagged (the consumer's
-  contract asked for it, detection first), which takes a second read, of the tag, on every observation; and every observation reads the
-  registry again (no cache), which on Docker Hub meets its pull limits now that hostless names the kubelet ran are read there. The history that
+  contract asked for it, detection first), which takes a second read, of the tag, on every observation; and a read that fails is made again
+  on every observation. Every observation used to read the registry again, which on Docker Hub meets its pull limits now that hostless names the
+  kubelet ran are read there; since 2026-11-07 an image read by its digest is kept (`ReadCache`, at most 1024 then all dropped, as the broker's
+  decision cache), so it is read once. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
