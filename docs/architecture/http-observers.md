@@ -706,7 +706,11 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   project by full path, a pipeline by its project and ref, a job by its project and name, the rest likewise), and beyond them root, GitLab's own user.
   Counts beyond the expectation are what GitLab says: 14 jobs (two of a pipeline the seed ran again), 27 memberships (`groupMembers` counts what a subgroup
   inherits). Asked by Neo4j's HTTP endpoint through a forward, with the administrator's client certificate and the password given to curl on standard input.
-  Still to do: the schema refreshed from this GitLab, real answers kept as masked samples, `check --ask`, and the comparison made a tool.
+  The comparison is a tool (2026-11-07): `gitlab-seed check` (`check.rs`), the seeding `gitlab-seed make`; `infra/under-test/gitlab/check.nu <user>` runs it
+  through a forward of its own with the administrator's client certificate (Neo4j's asks for one) and the password on standard input, and fails when
+  anything expected is missing. Tests: what is missing is exactly what the graph lacks (a property), what is there besides is said and no failure, Neo4j's
+  rows, the client certificate (the workspace's reqwest builds native TLS beside rustls, so a PEM identity needs `use_rustls_tls`). Live: 68 of 68 nodes,
+  46 of 46 edges, root besides. Still to do: the schema refreshed from this GitLab, real answers kept as masked samples, `check --ask`.
 
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
 server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent

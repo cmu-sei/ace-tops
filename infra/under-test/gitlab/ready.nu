@@ -138,7 +138,7 @@ def seed [repo_root: string] {
         through_forward 443 {|port|
             through_forward $REGISTRY_PORT {|registry|
                 $token | do {
-                    (^($tool | first) ...($tool | skip 1) --url $"https://(names | first)" --connect $"127.0.0.1:($port)" --ca $ca
+                    (^($tool | first) ...($tool | skip 1) make --url $"https://(names | first)" --connect $"127.0.0.1:($port)" --ca $ca
                         --registry-url $"https://(names | first):($REGISTRY_PORT)" --registry-connect $"127.0.0.1:($registry)" --repo $repo_root)
                 } | complete
             }

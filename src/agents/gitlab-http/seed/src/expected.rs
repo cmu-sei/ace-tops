@@ -27,11 +27,11 @@
 //! by. It says what is there at least: GitLab has users of its own (root, its bots), and a re-run makes nothing new.
 
 use crate::dataset::Dataset;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An edge as the G3 mapping draws it: from the parent rule's node to the child's.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Edge {
     #[serde(rename = "type")]
     pub kind: String,
@@ -39,7 +39,7 @@ pub struct Edge {
     pub to: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Expected {
     pub origin: String,
     /// By label, the names of the nodes it should hold.

@@ -22,18 +22,22 @@
 */
 
 //! `gitlab-seed`: makes the test GitLab's known dataset, what is missing of it, and prints what the GitLab pair's graph should then hold
-//! (docs/architecture/http-observers.md, G4b1). Root's token on stdin. The configuration under test's `ready` script runs it through a
-//! port-forward (infra/under-test/gitlab/ready.nu).
+//! (docs/architecture/http-observers.md, G4b1); and holds the graph to that (G4d). Root's token, or Neo4j's password, on stdin. The
+//! configuration under test's `ready` script runs `make` through a port-forward (infra/under-test/gitlab/ready.nu), and its `check.nu`
+//! runs `check`.
 //!
-//!   gitlab-seed --url https://gitlab.gitlab-test.svc.cluster.local --connect 127.0.0.1:<port> --ca <cluster CA> < token
+//!   gitlab-seed make --url https://gitlab.gitlab-test.svc.cluster.local --connect 127.0.0.1:<port> --ca <cluster CA> ... < token
+//!   gitlab-seed check --expected <file> --url https://polar-db-svc.polar-graph.svc.cluster.local:7473 --connect ... < password
 
 #[global_allocator]
 static GLOBAL: polar_scudo::Scudo = polar_scudo::Scudo;
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use gitlab_seed::check::{Neo4j, compare};
 use gitlab_seed::dataset::{Dataset, Size, dataset};
+use gitlab_seed::expected::Expected;
 use gitlab_seed::expected::expected;
 use gitlab_seed::gitlab::{Gitlab, finished};
 use gitlab_seed::oci::image;
@@ -49,9 +53,43 @@ use url::Url;
 const RETRIES: usize = 2;
 
 #[derive(Parser)]
-#[command(
-    about = "Make the test GitLab's known dataset, and print what the GitLab pair's graph should then hold"
-)]
+#[command(about = "The test GitLab's known dataset: made, and the GitLab pair's graph held to it")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Make what is missing of the dataset, and print what the GitLab pair's graph should then hold. Root's token on stdin.
+    Make(Args),
+    /// Hold the graph to what `make` printed: every node and edge it expects, by name. Neo4j's password on stdin; fails when
+    /// anything expected is missing, and says what is there besides.
+    Check(CheckArgs),
+}
+
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// What `make` printed.
+    #[arg(long)]
+    expected: PathBuf,
+    /// Neo4j's HTTP endpoint, by the name its certificate carries.
+    #[arg(long)]
+    url: Url,
+    /// Where to reach it (a port-forward).
+    #[arg(long)]
+    connect: Option<SocketAddr>,
+    /// The CA its certificate chains to.
+    #[arg(long)]
+    ca: Option<PathBuf>,
+    /// A client certificate Neo4j takes, and its key (an administrator's).
+    #[arg(long)]
+    cert: Option<PathBuf>,
+    #[arg(long)]
+    key: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
 struct Args {
     /// GitLab's own address, the origin its nodes are keyed by.
     #[arg(long)]
@@ -81,7 +119,55 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    match Cli::parse().command {
+        Command::Make(args) => make(args).await,
+        Command::Check(args) => check(args).await,
+    }
+}
+
+async fn check(args: CheckArgs) -> Result<()> {
+    let mut password = String::new();
+    std::io::stdin()
+        .read_to_string(&mut password)
+        .context("reading the password from stdin")?;
+    let expected: Expected = serde_json::from_slice(
+        &std::fs::read(&args.expected).context("reading what was expected")?,
+    )
+    .context("what was expected is not what `make` prints")?;
+    let read = |p: &Option<PathBuf>| p.as_ref().map(std::fs::read).transpose();
+    let ca = read(&args.ca).context("reading the CA")?;
+    let identity = match (read(&args.cert)?, read(&args.key)?) {
+        (Some(mut cert), Some(key)) => {
+            cert.extend_from_slice(&key);
+            Some(cert)
+        }
+        (None, None) => None,
+        _ => bail!("a client certificate takes both --cert and --key"),
+    };
+    let neo4j = Neo4j::new(
+        args.url,
+        password.trim().to_string(),
+        ca.as_deref(),
+        identity.as_deref(),
+        args.connect,
+    )?;
+    let report = compare(&expected, &neo4j.graph().await?);
+    let wanted: usize = expected.nodes.values().map(|n| n.len()).sum();
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    eprintln!(
+        "{} of {wanted} nodes and {} of {} edges expected are there; {} nodes besides",
+        wanted - report.missing_nodes.len(),
+        expected.edges.len() - report.missing_edges.len(),
+        expected.edges.len(),
+        report.beyond.len()
+    );
+    if !report.passed() {
+        bail!("the graph does not hold what the seed made");
+    }
+    Ok(())
+}
+
+async fn make(args: Args) -> Result<()> {
     let mut token = String::new();
     std::io::stdin()
         .read_to_string(&mut token)
