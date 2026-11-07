@@ -60,17 +60,42 @@ export def name_problems [name: string, known: list<string>] {
     []
 }
 
-# A declaration: its name, its chart, its layer and what it adds.
+# What `under-test.nuon` may say.
+const KEYS = ["adds" "layer" "secrets" "ready" "images"]
+
+# A declaration: its name, its chart, its layer, what it adds; the scripts up.nu runs for it, each a file beside its chart or null
+# (`secrets`, with the target's secrets; `ready`, once Flux has its layer ready); and the images it names outside an `image:` line,
+# as `<image>:<tag>` rows of infra/images.nuon, which the images step mirrors and the render pins.
 export def declaration [infra_root: string, name: string] {
     let problems = (name_problems $name (declared $infra_root))
     if ($problems | is-not-empty) { error make --unspanned { msg: ($problems | str join "; ") } }
     let dir = ($infra_root | path join $DIR $name)
     let d = (open ($dir | path join "under-test.nuon"))
+    let script = {|key|
+        let given = ($d | get -o $key)
+        if $given == null { return null }
+        let p = ($dir | path join $given)
+        if ($given | path dirname | is-not-empty) or not ($p | path exists) { null } else { $p }
+    }
+    let images = ($d | get -o images | default [])
+    let wrong = [
+        ...($d | columns | where {|k| $k not-in $KEYS } | each {|k| $"`($k)`: a declaration says only ($KEYS | str join ', ')" })
+        ...(["secrets" "ready"] | where {|k| ($d | get -o $k) != null and (do $script $k) == null } | each {|k|
+            $"`($k)`: ($d | get $k) is to be a file beside its chart, in infra/($DIR)/($name)/"
+        })
+        ...($images | where {|i| not ($i =~ '^[a-z0-9][a-z0-9._-]*:[A-Za-z0-9._-]+$') } | each {|i|
+            $"`images`: ($i) is to be an image of infra/images.nuon and its tag, as <image>:<tag>"
+        })
+    ]
+    if ($wrong | is-not-empty) { error make --unspanned { msg: $"under test ($name): ($wrong | str join '; ')" } }
     {
         name: $name
         chart: ($dir | path join "main.nu")
         layer: ($d | get -o layer | default { files: [], wait_for: [] })
         adds: ($d | get -o adds | default {})
+        secrets: (do $script "secrets")
+        ready: (do $script "ready")
+        images: $images
     }
 }
 

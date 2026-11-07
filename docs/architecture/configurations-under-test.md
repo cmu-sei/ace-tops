@@ -116,6 +116,27 @@ its signed record.
   outside images pinned as the others are; its settings (`attest_also`, `server_also`, the GitLab observer's trust of the cluster
   CA) moved out of `sandbox-local`; what needs the running GitLab (its root token, the runner's registration) a step `up.nu` runs
   after the layer is ready. Then G4 resumes on it: the seed tool, the pair packaged, the live run.
+  *Planned (2026-11-07), from what the render and up.nu already do for Neo4j* (read: `render.nu` ~89-148, the Neo4j chart, `images.nuon`,
+  `lock.nu`, `secrets-lib.nu`, `plan.nu`, `up.nu` `step_ca`). Decided by precedent: the chart reuses `Functions.makePolarInitContainer`,
+  `credentialsAgentIssuerEnv`, `Constants.saTokenVolume` and `polarCaMount`, as ACE's does, with Neo4j's token audience (the maintainer's
+  "the same way neo4j's service is handled"); a configuration under test's chart is given its context for being under `infra/under-test/`,
+  not by its directory's name (which would give `gitlab` the old chart's); GitLab's and the runner's images are mirror rows in `images.nuon`,
+  pinned by digest as Neo4j's; the volume takes `cluster.storage.class`; `up.nu`'s CA step, which made `polar-ca` only in `polar` and
+  `polar-graph` and only with a new CA (`polar-admin-grant bootstrap-ca`), makes sure every namespace Polar attests has it, each run. The
+  GitLab pair's packaging stays G4's, which then adds its workloads to this configuration under test. Decided by the maintainer:
+  - "Declared scripts up.nu runs": `under-test.nuon` may name a `secrets` script, which `up.nu` runs with the target's secrets step (the
+    root password, a generated Secret in the cluster only, as `cassini-shutdown-token` is), and a `ready` script, run once Flux reports its
+    layer ready (the root token, for the seed tool and, escrowed, the observer; the runner's registration).
+  - "Declared and pinned by the chart": `under-test.nuon` lists the images it names outside an `image:` line (the runner's job and helper
+    images, in its `config.toml`); the images step mirrors them as any other, the chart names each under the registry it is given, and
+    the render pins each wherever its layer's files name it, refusing one the lock has no digest for.
+  *CT3a, the mechanism, done (2026-11-07).* `under-test.nu` `declaration` reads `secrets`, `ready` (files beside the chart) and `images`
+  (`<image>:<tag>`), and refuses any other key. `render.nu` gives a chart under `infra/under-test/` `under_test_context` (polar-init's
+  image, the credentials agent's observer and identity, Neo4j's token audience, the storage class, the registry), and pins the declared
+  images with `lock.nu` `pin_refs` (wherever a file names one, once, not a longer tag). `up.nu`: the images step adds the declared images
+  to what it mirrors; `run_secrets` runs each `secrets` script after the target's; a step `under-test` (`plan.nu`, after the pods and
+  Flux) runs each `ready` script; the CA step puts `polar-ca` in every namespace Polar attests (`spread_ca`), each run. Tests:
+  `tests/under-test.nu`, `tests/lock.nu`, `tests/plan.nu`.
 
 **What G4 leaves for it.** `infra/attested.nu` and its use in `resolve.nu`, `render.nu` and the namespaces chart went in with CT1;
 `sandbox-local` carries none of it. Uncommitted on main, as CT3's material: `infra/gitlab-test.nu` (the test GitLab, with tests,

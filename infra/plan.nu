@@ -43,6 +43,8 @@ export def build_plan [config: record, dev: bool, options: record = {}] {
     # Polar's git server holds the deployment, read from where Flux reads (infra/flux.nu); `bootstrap_again` is a run recovering through a bootstrap server (`up.nu --bootstrap-again`).
     let handed_off = ($options.handed_off? | default false)
     let bootstrap_again = ($options.bootstrap_again? | default false)
+    # The configurations under test this run carries (`up.nu --under-test`, infra/under-test.nu).
+    let under_test = ($options.under_test? | default [])
     let d = (deployed_charts $config)
     let order = $config.apply_order
     let ca_cm = ($config.cert_issuer_ca_configmap? | default "")
@@ -81,6 +83,8 @@ export def build_plan [config: record, dev: bool, options: record = {}] {
         { id: "flux", title: "install Flux", on: $gitops, why: "target is not applied by Flux" }
         { id: "flux-wait", title: "wait for Flux to reconcile", on: $gitops, why: "target is not applied by Flux" }
         { id: "pods", title: "waiting for core services", on: $has_core, why: "target deploys none of cert-issuer, cassini, credentials-agent, neo4j" }
+        # What needs a configuration under test running, once Flux has its layer ready: each one's `ready` script.
+        { id: "under-test", title: "configurations under test", on: ($under_test | is-not-empty), why: "this cluster carries no configuration under test (--under-test)" }
         { id: "forwards", title: "port-forwards", on: ($has_ca_agent or $has_neo4j), why: "target deploys neither credentials-agent nor neo4j" }
         { id: "admin", title: "admin flow", on: $has_ca_agent, why: "target does not deploy credentials-agent" }
         {

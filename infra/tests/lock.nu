@@ -24,7 +24,7 @@
 # The image lock: pinning a manifest's images by digest, and keeping the lock itself.
 
 use std/assert
-use ../lock.nu [committed_what, format_lock, lay_over, lock_problems, lookup, pin_text, upsert]
+use ../lock.nu [committed_what, format_lock, lay_over, lock_problems, lookup, pin_refs, pin_text, upsert]
 
 const REG = "10.0.2.2:5000"
 const D1 = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -57,6 +57,33 @@ def main [] {
                 assert equal $r.pinned 2
                 assert equal $r.missing []
                 assert equal $r.text $"        image: ($REG)/kube:latest@($D1)\n  - 'image': \"($REG)/init:v2@($D2)\"\n        imagePullPolicy: IfNotPresent\n    name: kube\n"
+            }
+        }
+        {
+            # docs/architecture/configurations-under-test.md, CT3: an image named outside an `image:` line (a runner's config.toml),
+            # which a configuration under test declares, is pinned wherever it is named, and once.
+            name: "a declared image is pinned wherever the text names it, once, and one with no entry is reported"
+            body: {
+                let lock = [(entry "alpine" "3.22" "amd64" $D1) (entry "helper" "v1" "amd64" $D2)]
+                let text = $"[runners.kubernetes]
+  image = "($REG)/alpine:3.22"
+  helper_image = "($REG)/helper:v1"
+  # also ($REG)/alpine:3.22
+"
+                let r = (pin_refs $text ["alpine:3.22" "helper:v1"] $lock $REG "amd64")
+                assert equal $r.missing []
+                assert equal $r.text $"[runners.kubernetes]
+  image = "($REG)/alpine:3.22@($D1)"
+  helper_image = "($REG)/helper:v1@($D2)"
+  # also ($REG)/alpine:3.22@($D1)
+"
+                assert equal (pin_refs $r.text ["alpine:3.22" "helper:v1"] $lock $REG "amd64").text $r.text "pinning twice gives what pinning once did"
+                # A longer tag that starts with a declared one is another image.
+                let longer = $"image = "($REG)/alpine:3.22.1"
+"
+                assert equal (pin_refs $longer ["alpine:3.22"] $lock $REG "amd64").text $longer
+                assert equal (pin_refs $text ["nowhere:1"] $lock $REG "amd64").missing ["nowhere:1"]
+                assert equal (pin_refs $text ["nowhere:1"] $lock $REG "amd64").text $text
             }
         }
         {

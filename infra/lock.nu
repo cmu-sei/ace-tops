@@ -155,6 +155,24 @@ def pin_line [line: string, rows: list, registry: string, arch: string] {
 
 # The manifest text with every image of `registry` named by digest. `missing` lists what the lock has no entry
 # for (for `arch`); those lines are left as they were, and the caller decides what that means.
+# `text` with each of `refs` (`<image>:<tag>`, under `registry`) pinned wherever it names one, not only on an `image:` line: the images a
+# configuration under test declares it names elsewhere, as a runner's config.toml does (docs/architecture/configurations-under-test.md, CT3).
+# `missing` are the refs the lock has no digest for, left as they were.
+export def pin_refs [text: string, refs: list<string>, rows: list, registry: string, arch: string] {
+    $refs | reduce --fold { text: $text, missing: [] } {|ref, acc|
+        let name = ($ref | split row ":" | first)
+        let tag = ($ref | split row ":" | skip 1 | str join ":")
+        let digest = (lookup $rows $name $tag $arch)
+        if $digest == null {
+            $acc | update missing ($acc.missing | append $ref)
+        } else {
+            # Only where the ref ends: not one already pinned, nor a longer tag that starts with this one.
+            let pattern = ('(' + ($"($registry)/($ref)" | str replace --all --regex '([.\\+*?()\[\]{}|^$/])' '\$1') + ')(?![@\w.:-])')
+            $acc | update text ($acc.text | str replace --all --regex $pattern $"${1}@($digest)")
+        }
+    }
+}
+
 export def pin_text [text: string, rows: list, registry: string, arch: string] {
     let results = ($text | lines | each {|l| pin_line $l $rows $registry $arch })
     let joined = ($results | get out | str join "\n")

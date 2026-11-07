@@ -126,6 +126,32 @@ def main [] {
             assert (($problems | length) == 1 and ($problems.0 | str contains "gitlab-observer.yaml")) ($problems | to nuon)
         }
 
+        # CT3: a declaration may name its own secrets and ready scripts, beside its chart, and the images it names outside an `image:` line.
+        "a declaration's scripts are its own files, and its images are named as the image table names them": {
+            let root = (mktemp --directory)
+            let dir = ($root | path join "under-test" "t")
+            mkdir $dir
+            "" | save ($dir | path join "main.nu")
+            "" | save ($dir | path join "secrets.nu")
+            { adds: {}, layer: { files: [] }, secrets: "secrets.nu", images: ["alpine:3.22"] } | to nuon | save ($dir | path join "under-test.nuon")
+            let d = (declaration $root "t")
+            assert equal $d.secrets ($dir | path join "secrets.nu")
+            assert equal $d.ready null
+            assert equal $d.images ["alpine:3.22"]
+            for bad in [
+                [{ ready: "ready.nu" } "ready.nu"]
+                [{ secrets: "../elsewhere.nu" } "elsewhere.nu"]
+                [{ images: ["alpine"] } "alpine"]
+                [{ images: ["r/alpine:3.22"] } "r/alpine:3.22"]
+                [{ surprise: 1 } "surprise"]
+            ] {
+                { adds: {}, layer: { files: [] } } | merge $bad.0 | to nuon | save --force ($dir | path join "under-test.nuon")
+                let r = (try { declaration $root "t"; "" } catch {|e| $e.msg })
+                assert ($r | str contains $bad.1) $"($bad.0 | to nuon): ($r)"
+            }
+            rm -rf $root
+        }
+
         "a cluster's inputs say which configurations under test it carries, and its signed record gives them back": {
             assert equal (under_test_of (empty)) []
             let one = (with_under_test (empty) ["gitlab"] "ca1")

@@ -39,7 +39,8 @@ use validate.nu *
 use rules.nu [job_replacement_problems, in_place_problems, parallelism_problems, apply_order_problems, pull_policy_problems]
 use layers.nu [layer_problems, to_apply]
 use registry.nu [node_registry]
-use lock.nu [effective, lock_problems, pin_text]
+use lock.nu [effective, lock_problems, pin_refs, pin_text]
+use under-test.nu [of_cluster]
 use dhall-cache.nu
 
 def main [
@@ -118,8 +119,11 @@ def main [
 
         print $"── ($chart_name) ──"
 
-        # Build chart-specific context by extending base context
+        # Build chart-specific context by extending base context. A configuration under test's chart is known by where it is, not
+        # by its name, which may be any (infra/under-test.nu).
+        let under_test = ($chart_dir | path dirname) == ($infra_root | path join "under-test")
         let chart_context = ($base_context | merge { chart_dir: $chart_dir } | merge (
+            if $under_test { under_test_context $chart_name $infra_root $config.target_dir $config.overrides $polar_init_image $credentials_observer_url $credentials_agent_identity } else {
             match $chart_name {
                 "cert-issuer" => {
                     identityLifetimeOverrides: $identity_lifetime_overrides
@@ -140,6 +144,7 @@ def main [
                 "build-processor" => { neo4jBoltAddr: $neo4j_bolt_addr, certIssuerUrl: $cert_issuer_url, certIssuerAudience: $cert_issuer_audience, polarInitImage: $polar_init_image }
                 "ace"         => { neo4jBoltAddr: $neo4j_bolt_addr, certIssuerUrl: $cert_issuer_url, certIssuerAudience: $cert_issuer_audience, polarInitImage: $polar_init_image, credentialsObserverUrl: $credentials_observer_url, credentialsAgentIdentity: $credentials_agent_identity }
                 _             => { _placeholder: "" }
+            }
             }
         ))
 
@@ -217,6 +222,15 @@ def main [
             if $r.text != $text { $r.text | save --force $f }
             $missing = ($missing | append $r.missing)
             $pinned = $pinned + $r.pinned
+        }
+        # And the images a configuration under test names outside an `image:` line, which it declares, in its layer's files.
+        for d in (of_cluster $infra_root $target | where {|d| $d.images | is-not-empty }) {
+            for f in ($d.layer.files | each {|f| $output_dir | path join $f } | where {|f| $f | path exists }) {
+                let text = (open --raw $f)
+                let r = (pin_refs $text $d.images $rows $env.POLAR_NODE_REGISTRY $cluster.arch)
+                if $r.text != $text { $r.text | save --force $f }
+                $missing = ($missing | append $r.missing)
+            }
         }
         let unknown = ($missing | uniq | sort)
         if ($unknown | is-not-empty) {
@@ -372,14 +386,41 @@ def check_and_emit_service_accounts [output_dir: string] {
 
 # Neo4j's floor entry: its chart's service account and namespace, with the names its init container asks for, which
 # the target sets (`neo4jSans`). It goes through the credentials agent, so it is never signed on a token alone.
-def neo4j_floor_entries [infra_root: string, overrides: string] {
+# Neo4j's chart values, as the target overrides them.
+def neo4j_values [infra_root: string, overrides: string] {
     let values = ($infra_root | path join "layers/2-services/neo4j/values.dhall")
     let r = ($"\(($values)\) // \(($overrides)\).neo4j" | ^dhall-to-json | complete)
     if $r.exit_code != 0 {
-        print -e $"  ERROR: Neo4j's floor entry: ($r.stderr | str trim)"
+        print -e $"  ERROR: Neo4j's values: ($r.stderr | str trim)"
         exit 1
     }
-    let neo4j = ($r.stdout | from json)
+    $r.stdout | from json
+}
+
+# What a configuration under test's chart is given (docs/architecture/configurations-under-test.md, CT3): what a service outside
+# the catalog needs to have the credentials agent issue it a server certificate, as Neo4j's is, with the audience Neo4j's token is
+# for; the storage class the cluster's volumes take; and the registry its images are named under, which the render pins.
+def under_test_context [name: string, infra_root: string, target_dir: string, overrides: string, polar_init_image: string, observer_url: string, agent_identity: string] {
+    {
+        underTest: $name
+        polarInitImage: $polar_init_image
+        credentialsObserverUrl: $observer_url
+        credentialsAgentIdentity: $agent_identity
+        certIssuerAudience: (neo4j_values $infra_root $overrides).certIssuerAudience
+        storageClass: (storage_class $infra_root $target_dir)
+        registry: $env.POLAR_NODE_REGISTRY
+    }
+}
+
+# The storage class the cluster's volumes take: cluster.storage.class, as the target sets it over the default.
+def storage_class [infra_root: string, target_dir: string] {
+    let own = ($target_dir | path join "config.nuon")
+    let target = if ($own | path exists) { open $own | get -o cluster.storage.class } else { null }
+    $target | default (open ($infra_root | path join "config" "cluster.nuon") | get storage.class)
+}
+
+def neo4j_floor_entries [infra_root: string, overrides: string] {
+    let neo4j = (neo4j_values $infra_root $overrides)
     [{
         workload: $"system:serviceaccount:($neo4j.namespace):($neo4j.serviceAccountName)"
         cert_type: "SERVER"

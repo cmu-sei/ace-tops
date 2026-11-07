@@ -75,6 +75,21 @@ def main [] {
             }
         }
         {
+            # docs/architecture/configurations-under-test.md, CT3: what needs a configuration under test running, after Flux has it.
+            name: "a cluster carrying a configuration under test runs its steps once Flux has it, and one carrying none skips them"
+            body: {
+                let c = (config ["cert-issuer" "neo4j"] ["namespaces.yaml" "credentials-agent.yaml" "polar-git-server.yaml" "polar-scheduler-observer.yaml"] | insert gitops true)
+                let on = {|plan, id| $plan | where id == $id | first | get on }
+                assert (not (do $on (build_plan $c false) "under-test"))
+                let carrying = (build_plan $c false { under_test: ["gitlab"] })
+                assert (do $on $carrying "under-test")
+                let ids = ($carrying | get id)
+                let at = {|id| $ids | enumerate | where item == $id | first | get index }
+                assert ((do $at "flux-wait") < (do $at "under-test"))
+                assert ((do $at "pods") < (do $at "under-test"))
+            }
+        }
+        {
             name: "a container runtime is needed here only to build images (--dev) with the registry on this machine"
             body: {
                 let c = (config ["cert-issuer" "neo4j"] ["namespaces.yaml" "credentials-agent.yaml" "polar-git-server.yaml"])

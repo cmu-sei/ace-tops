@@ -518,7 +518,9 @@ def target_images [target: string] {
         fail "rendering the charts, for the images they name, failed (above)"
     }
     let catalog = (^$nu.current-exe infra/resolve.nu images --target $target | from json)
-    let rows = (try { images needed (glob ($charts | path join "*.yaml")) $catalog } catch {|e| rm -rf $charts; fail $e.msg })
+    # And the images a configuration under test names outside an `image:` line, which it declares (infra/under-test.nu).
+    let declared = (under-test of_cluster ($env.PWD | path join "infra") $target | get images | flatten | each {|i| $"($env.POLAR_NODE_REGISTRY)/($i)" })
+    let rows = (try { images needed (glob ($charts | path join "*.yaml")) ($catalog ++ $declared) } catch {|e| rm -rf $charts; fail $e.msg })
     rm -rf $charts
     $rows
 }
@@ -546,7 +548,7 @@ def step_images [target: string, in_cluster: bool, dev: bool, import_from: strin
     $rows | get image
 }
 
-def step_ca [] {
+def step_ca [config: record] {
     let have_ca = ({ ^kubectl -n $POLAR get secret cert-issuer-ca -o name } | cmd_ok)
     if $have_ca {
         ok "secret/cert-issuer-ca already exists, skipping bootstrap-ca"
@@ -556,19 +558,52 @@ def step_ca [] {
         if $env.LAST_EXIT_CODE != 0 { fail "bootstrap-ca failed" }
         ok "cluster CA created"
     }
+    spread_ca $config.name $config.cert_issuer_ca_configmap
 }
 
-# `quiet` keeps what secrets.nu prints back, unless it fails.
+# The CA's ConfigMap in every namespace Polar attests beside its own (infra/attested.nu), each run: bootstrap-ca makes it in
+# `polar` and `polar-graph`, once, and a pod in another that asks the credentials agent for a certificate checks it by it.
+def spread_ca [target: string, configmap: string] {
+    let others = (^$nu.current-exe infra/resolve.nu attest-also --target $target | from json)
+    if ($others | is-empty) { return }
+    let source = (^kubectl -n $POLAR get configmap $configmap -o json | from json)
+    for namespace in $others {
+        {
+            apiVersion: "v1", kind: "ConfigMap"
+            metadata: { name: $configmap, namespace: $namespace }
+            data: $source.data
+        } | to json | ^kubectl apply -f - | ignore
+        if $env.LAST_EXIT_CODE != 0 { fail $"could not put the CA's ConfigMap in ($namespace)" }
+    }
+    ok $"the CA's ConfigMap in ($others | str join ', ')"
+}
+
+# What needs each configuration under test this cluster carries running, once Flux has its layer ready: its `ready` script
+# (infra/under-test.nu), given the target's directory and the repository's root as the target's secrets.nu is.
+def step_under_test [config: record] {
+    for d in (under-test of_cluster ($env.PWD | path join "infra") $config.name) {
+        if $d.ready == null { continue }
+        print $"  ($d.name)"
+        ^$nu.current-exe $d.ready $config.target_dir $config.repo_root
+        if $env.LAST_EXIT_CODE != 0 { fail $"under test ($d.name): its ready script failed" }
+    }
+    ok "configurations under test ready"
+}
+
+# `quiet` keeps what secrets.nu prints back, unless it fails. The target's, then each its cluster carries under test declares
+# (infra/under-test.nu), given the same.
 def run_secrets [config: record, --quiet] {
-    let secrets_script = ($config.target_dir | path join "secrets.nu")
-    if ($secrets_script | path exists) {
+    let own = ($config.target_dir | path join "secrets.nu")
+    let under_test = (under-test of_cluster ($env.PWD | path join "infra") $config.name | where secrets != null)
+    let scripts = (if ($own | path exists) { [{ path: $own, what: "secrets.nu" }] } else { [] }) ++ ($under_test | each {|d| { path: $d.secrets, what: $"under test ($d.name): its secrets script" } })
+    for script in $scripts {
         if $quiet {
-            let r = (do { ^$nu.current-exe $secrets_script $config.target_dir $config.repo_root } | complete)
-            if $r.exit_code != 0 { print -e $r.stdout $r.stderr; fail "secrets.nu failed" }
+            let r = (do { ^$nu.current-exe $script.path $config.target_dir $config.repo_root } | complete)
+            if $r.exit_code != 0 { print -e $r.stdout $r.stderr; fail $"($script.what) failed" }
         } else {
-            print "  creating secrets..."
-            ^$nu.current-exe $secrets_script $config.target_dir $config.repo_root
-            if $env.LAST_EXIT_CODE != 0 { fail "secrets.nu failed" }
+            print $"  creating secrets \(($script.what)\)..."
+            ^$nu.current-exe $script.path $config.target_dir $config.repo_root
+            if $env.LAST_EXIT_CODE != 0 { fail $"($script.what) failed" }
         }
     }
 }
@@ -1013,7 +1048,7 @@ def main [
     }
     # Where this cluster's Flux reads says whether it is handed off. This machine's record of that can be another cluster's, or gone.
     let handed_off = ($config.gitops? | default false) and (cluster_handed_off) and (not $bootstrap_again)
-    let plan = (build_plan $config $dev { in_cluster: $in_cluster, import_from: $import_from, handed_off: $handed_off, bootstrap_again: $bootstrap_again })
+    let plan = (build_plan $config $dev { in_cluster: $in_cluster, import_from: $import_from, handed_off: $handed_off, bootstrap_again: $bootstrap_again, under_test: $carried })
     let enabled = ($plan | where on)
     let waits = (build_waits $config)
     let forwards = (build_forwards $config)
@@ -1041,7 +1076,7 @@ def main [
             "images" => { $prepared = (step_images $target $in_cluster $dev $import_from $import_tag) }
             "render" => { step_render $target $prepared $config }
             "namespaces" => { apply_file $config.output_dir "namespaces.yaml" }
-            "ca" => { step_ca }
+            "ca" => { step_ca $config }
             "infra" => { step_infra $config }
             "secrets" => { step_secrets $config }
             "deploy-host" => { step_deploy_host $target }
@@ -1057,6 +1092,7 @@ def main [
                 wait_pods $waits 10min
                 report_stale_images
             }
+            "under-test" => { step_under_test $config }
             "forwards" => { step_forwards $forwards }
             "admin" => { step_admin $username $mail }
             "browser" => { step_browser $username }
