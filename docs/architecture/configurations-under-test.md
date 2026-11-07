@@ -165,7 +165,8 @@ its signed record.
   Step 1.7), once each (`floor::with_names`): the credentials agent has no word on a server outside the catalog, and its floor entry,
   from the signed render, is what it carries. A catalog workload's vouched-only entry has none (`rules.nu` `floor_entries`), so nothing
   else changes; Neo4j's has none either. Tests: `floor.rs` (the names, and a property of `with_names`), `issue_extras_test.rs`,
-  `internal_issue_test.rs`.
+  `internal_issue_test.rs`. Live on u7c the same day (images rebuilt, GitLab's pod restarted): its certificate's names are its five DNS names and
+  `URI:g:under-test`.
 
 **What G4 leaves for it.** `infra/attested.nu` and its use in `resolve.nu`, `render.nu` and the namespaces chart went in with CT1;
 `sandbox-local` carries none of it. Uncommitted on main, as CT3's material: `infra/gitlab-test.nu` (the test GitLab, with tests,
