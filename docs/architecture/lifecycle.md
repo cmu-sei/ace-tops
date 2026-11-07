@@ -132,8 +132,9 @@ GitLab pair would appear in both as under test. Until a lifecycle document exist
    lifecycle's version and the releases'), and `polar-sign check --ask` derives the same itself and compares, a disagreement a violated
    invariant. The maintainer's question, whether agents should share what they derived somewhere: answered by introspection, as an
    infrastructure actor answers for its configuration, and not stored again.
-5. The order of work: lifecycle first, then the catalog's split, then the controller on top; or the controller's proposal merged and
-   reshaped around phases from the start.
+5. *Decided* (the maintainer, 2026-11-07, "Lifecycle first"): the lifecycle document and its reader first, then the state agent deriving
+   its `schema` and `agents` (the GitLab case) and the render reading phases; then the catalog's split around it; then the controller on
+   both, its proposal merged and reshaped around phases. Each step usable on its own.
 6. The interim answer for `schema` and `agents` while this is designed.
 
 ## Also found
