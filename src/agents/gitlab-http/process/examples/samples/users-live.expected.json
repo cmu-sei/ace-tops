@@ -1,0 +1,156 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/10"
+      },
+      "set": {
+        "username": "seed-user-09",
+        "name": "Seed User 09",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:05Z",
+        "web_url": "https://samples.example/seed-user-09"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/11"
+      },
+      "set": {
+        "username": "seed-user-10",
+        "name": "Seed User 10",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:06Z",
+        "web_url": "https://samples.example/seed-user-10"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/12"
+      },
+      "set": {
+        "username": "seed-user-11",
+        "name": "Seed User 11",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:06Z",
+        "web_url": "https://samples.example/seed-user-11"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/13"
+      },
+      "set": {
+        "username": "seed-user-12",
+        "name": "Seed User 12",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:07Z",
+        "web_url": "https://samples.example/seed-user-12"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/4"
+      },
+      "set": {
+        "username": "seed-user-03",
+        "name": "Seed User 03",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:03Z",
+        "web_url": "https://samples.example/seed-user-03"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/5"
+      },
+      "set": {
+        "username": "seed-user-04",
+        "name": "Seed User 04",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:03Z",
+        "web_url": "https://samples.example/seed-user-04"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/6"
+      },
+      "set": {
+        "username": "seed-user-05",
+        "name": "Seed User 05",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:04Z",
+        "web_url": "https://samples.example/seed-user-05"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/7"
+      },
+      "set": {
+        "username": "seed-user-06",
+        "name": "Seed User 06",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:04Z",
+        "web_url": "https://samples.example/seed-user-06"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/8"
+      },
+      "set": {
+        "username": "seed-user-07",
+        "name": "Seed User 07",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:05Z",
+        "web_url": "https://samples.example/seed-user-07"
+      }
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/9"
+      },
+      "set": {
+        "username": "seed-user-08",
+        "name": "Seed User 08",
+        "state": "active",
+        "bot": false,
+        "created_at": "2026-11-07T15:21:05Z",
+        "web_url": "https://samples.example/seed-user-08"
+      }
+    }
+  ],
+  "edges": []
+}

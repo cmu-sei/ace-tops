@@ -1,0 +1,122 @@
+{
+  "data": {
+    "projects": {
+      "nodes": [
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:44:43Z",
+          "description": null,
+          "fullPath": "polar-seed/polar",
+          "id": "gid://gitlab/Project/31",
+          "lastActivityAt": "2026-11-07T15:44:43Z",
+          "name": "polar",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/polar"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:20Z",
+          "description": null,
+          "fullPath": "polar-seed/platform/agents/project-30",
+          "id": "gid://gitlab/Project/30",
+          "lastActivityAt": "2026-11-07T15:21:20Z",
+          "name": "project-30",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/platform/agents/project-30"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:19Z",
+          "description": null,
+          "fullPath": "polar-seed/platform/project-29",
+          "id": "gid://gitlab/Project/29",
+          "lastActivityAt": "2026-11-07T15:21:19Z",
+          "name": "project-29",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/platform/project-29"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:19Z",
+          "description": null,
+          "fullPath": "polar-seed/project-28",
+          "id": "gid://gitlab/Project/28",
+          "lastActivityAt": "2026-11-07T15:21:19Z",
+          "name": "project-28",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/project-28"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:19Z",
+          "description": null,
+          "fullPath": "polar-seed/platform/agents/project-27",
+          "id": "gid://gitlab/Project/27",
+          "lastActivityAt": "2026-11-07T15:21:19Z",
+          "name": "project-27",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/platform/agents/project-27"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:19Z",
+          "description": null,
+          "fullPath": "polar-seed/platform/project-26",
+          "id": "gid://gitlab/Project/26",
+          "lastActivityAt": "2026-11-07T15:21:18Z",
+          "name": "project-26",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/platform/project-26"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:18Z",
+          "description": null,
+          "fullPath": "polar-seed/project-25",
+          "id": "gid://gitlab/Project/25",
+          "lastActivityAt": "2026-11-07T15:21:18Z",
+          "name": "project-25",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/project-25"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:18Z",
+          "description": null,
+          "fullPath": "polar-seed/platform/agents/project-24",
+          "id": "gid://gitlab/Project/24",
+          "lastActivityAt": "2026-11-07T15:21:18Z",
+          "name": "project-24",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/platform/agents/project-24"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:17Z",
+          "description": null,
+          "fullPath": "polar-seed/platform/project-23",
+          "id": "gid://gitlab/Project/23",
+          "lastActivityAt": "2026-11-07T15:21:17Z",
+          "name": "project-23",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/platform/project-23"
+        },
+        {
+          "archived": false,
+          "createdAt": "2026-11-07T15:21:17Z",
+          "description": null,
+          "fullPath": "polar-seed/project-22",
+          "id": "gid://gitlab/Project/22",
+          "lastActivityAt": "2026-11-07T15:21:17Z",
+          "name": "project-22",
+          "visibility": "private",
+          "webUrl": "https://samples.example/polar-seed/project-22"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "eyJpZCI6IjIyIn0",
+        "hasNextPage": true
+      }
+    }
+  }
+}

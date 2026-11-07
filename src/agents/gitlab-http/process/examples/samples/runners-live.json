@@ -1,0 +1,20 @@
+{
+  "data": {
+    "runners": {
+      "nodes": [
+        {
+          "createdAt": "2026-11-07T14:35:18Z",
+          "description": "polar-test",
+          "id": "gid://gitlab/Ci::Runner/1",
+          "paused": false,
+          "runnerType": "INSTANCE_TYPE",
+          "status": "ONLINE"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0wNyAxNDozNToxOC4wNTg1NTQwMDAgKzAwMDAiLCJpZCI6IjEifQ",
+        "hasNextPage": false
+      }
+    }
+  }
+}

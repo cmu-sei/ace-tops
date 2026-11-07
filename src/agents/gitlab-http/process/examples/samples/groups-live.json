@@ -1,0 +1,43 @@
+{
+  "data": {
+    "groups": {
+      "nodes": [
+        {
+          "createdAt": "2026-11-07T15:21:07Z",
+          "fullPath": "polar-seed/platform/agents",
+          "id": "gid://gitlab/Group/16",
+          "name": "agents",
+          "parent": {
+            "id": "gid://gitlab/Group/15"
+          },
+          "visibility": "private",
+          "webUrl": "https://samples.example/groups/polar-seed/platform/agents"
+        },
+        {
+          "createdAt": "2026-11-07T15:21:07Z",
+          "fullPath": "polar-seed/platform",
+          "id": "gid://gitlab/Group/15",
+          "name": "platform",
+          "parent": {
+            "id": "gid://gitlab/Group/14"
+          },
+          "visibility": "private",
+          "webUrl": "https://samples.example/groups/polar-seed/platform"
+        },
+        {
+          "createdAt": "2026-11-07T15:21:07Z",
+          "fullPath": "polar-seed",
+          "id": "gid://gitlab/Group/14",
+          "name": "polar-seed",
+          "parent": null,
+          "visibility": "private",
+          "webUrl": "https://samples.example/groups/polar-seed"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "eyJuYW1lIjoicG9sYXItc2VlZCIsImlkIjoiMTQifQ",
+        "hasNextPage": false
+      }
+    }
+  }
+}

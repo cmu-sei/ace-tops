@@ -1,0 +1,99 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/14"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/14"
+      },
+      "set": {
+        "full_path": "polar-seed",
+        "name": "polar-seed",
+        "visibility": "private",
+        "created_at": "2026-11-07T15:21:07Z",
+        "web_url": "https://samples.example/groups/polar-seed"
+      }
+    },
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/15"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/15"
+      },
+      "set": {
+        "full_path": "polar-seed/platform",
+        "name": "platform",
+        "visibility": "private",
+        "created_at": "2026-11-07T15:21:07Z",
+        "web_url": "https://samples.example/groups/polar-seed/platform"
+      }
+    },
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/16"
+      },
+      "set": {
+        "full_path": "polar-seed/platform/agents",
+        "name": "agents",
+        "visibility": "private",
+        "created_at": "2026-11-07T15:21:07Z",
+        "web_url": "https://samples.example/groups/polar-seed/platform/agents"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/15"
+        }
+      },
+      "type": "SUBGROUP_OF",
+      "to": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/14"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/16"
+        }
+      },
+      "type": "SUBGROUP_OF",
+      "to": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/15"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "data": {
+    "project": {
+      "containerRepositories": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-07T15:44:42Z",
+            "id": "gid://gitlab/ContainerRepository/1",
+            "location": "samples.example:5050/polar-seed/platform/project-02",
+            "name": "",
+            "path": "polar-seed/platform/project-02",
+            "tagsCount": 2
+          }
+        ],
+        "pageInfo": {
+          "endCursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0wNyAxNTo0NDo0Mi44MTAyNjEwMDAgKzAwMDAiLCJpZCI6IjEifQ",
+          "hasNextPage": false
+        }
+      },
+      "id": "gid://gitlab/Project/2"
+    }
+  }
+}

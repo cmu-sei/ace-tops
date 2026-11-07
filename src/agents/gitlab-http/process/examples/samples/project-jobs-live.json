@@ -1,0 +1,49 @@
+{
+  "data": {
+    "project": {
+      "id": "gid://gitlab/Project/1",
+      "jobs": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-07T15:21:12Z",
+            "duration": 5,
+            "finishedAt": "2026-11-07T15:21:33Z",
+            "id": "gid://gitlab/Ci::Build/2",
+            "name": "test",
+            "pipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1"
+            },
+            "runner": {
+              "id": "gid://gitlab/Ci::Runner/1"
+            },
+            "stage": {
+              "name": "test"
+            },
+            "status": "SUCCESS"
+          },
+          {
+            "createdAt": "2026-11-07T15:21:12Z",
+            "duration": 5,
+            "finishedAt": "2026-11-07T15:21:22Z",
+            "id": "gid://gitlab/Ci::Build/1",
+            "name": "build",
+            "pipeline": {
+              "id": "gid://gitlab/Ci::Pipeline/1"
+            },
+            "runner": {
+              "id": "gid://gitlab/Ci::Runner/1"
+            },
+            "stage": {
+              "name": "build"
+            },
+            "status": "SUCCESS"
+          }
+        ],
+        "pageInfo": {
+          "endCursor": "eyJpZCI6IjEifQ",
+          "hasNextPage": false
+        }
+      }
+    }
+  }
+}

@@ -24,6 +24,7 @@
 //! The test GitLab's known dataset (docs/architecture/http-observers.md, "G4 as built on configurations under test", G4b1), what the GitLab pair's
 //! graph should hold once it has read it, and the client that makes it.
 
+pub mod answers;
 pub mod check;
 pub mod dataset;
 pub mod expected;

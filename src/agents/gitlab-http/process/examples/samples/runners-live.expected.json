@@ -1,0 +1,20 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabRunner",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Runner/1"
+      },
+      "set": {
+        "description": "polar-test",
+        "runner_type": "INSTANCE_TYPE",
+        "status": "ONLINE",
+        "paused": false,
+        "created_at": "2026-11-07T14:35:18Z"
+      }
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,17 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabInstance",
+      "keys": {
+        "origin": "https://samples.example"
+      },
+      "set": {
+        "version": "19.5.3",
+        "revision": "0d4c9a9a2fa",
+        "enterprise": false
+      }
+    }
+  ],
+  "edges": []
+}

@@ -1,0 +1,26 @@
+{
+  "data": {
+    "project": {
+      "id": "gid://gitlab/Project/1",
+      "pipelines": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-07T15:21:12Z",
+            "duration": 10,
+            "finishedAt": "2026-11-07T15:21:33Z",
+            "id": "gid://gitlab/Ci::Pipeline/1",
+            "iid": "1",
+            "ref": "main",
+            "sha": "c873ad93d50dff9a5eb9a0625de3aff7917c2aa2",
+            "source": "push",
+            "status": "SUCCESS"
+          }
+        ],
+        "pageInfo": {
+          "endCursor": "eyJpZCI6IjEifQ",
+          "hasNextPage": false
+        }
+      }
+    }
+  }
+}

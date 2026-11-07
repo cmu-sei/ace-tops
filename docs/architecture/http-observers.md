@@ -715,7 +715,13 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   writes the SDL with the license banner and the version it came from, GitLab 19.5.3 (0d4c9a9a2fa); `infra/under-test/gitlab/schema.nu` runs it with the
   observer's read_api token. It goes to `src/agents/gitlab-http/schema/gitlab.graphql`, which the pair's tests and the kit's hold queries and samples to:
   the older pair's crates generate their code from `gitlab/schema/src/gitlab.graphql` with cynic and do not build against the new one, so they keep theirs
-  until G5 takes them away. Every query and sample holds to 19.5.3's schema. Still to do: real answers kept as masked samples, `check --ask`.
+  until G5 takes them away. Every query and sample holds to 19.5.3's schema.
+  Real answers kept as samples (2026-11-07): `gitlab-seed answers` (`answers.rs`) asks each query once of the test GitLab, a follow-up of an item the seed
+  filled (the first project's pipelines and jobs, the image's project, the package's, the top group's members), and masks it: the test GitLab's host is
+  `samples.example` wherever it is named, the samples' host, so a sample says nothing of where it was read; nothing else is changed. `answers.nu` runs it
+  with the observer's read_api token. Ten `<query>-live.json` beside the hand-written samples, each held to its query's shape and to 19.5.3's schema, and
+  what each becomes written by the kit (`POLAR_BLESS=1`) and read before it was committed: the jobs with `HAS_JOB` and `EXECUTED_BY`, the members with
+  `HAS_MEMBER`, nothing skipped. A property: masked, an answer names the test GitLab nowhere and is otherwise as it was. Still to do: `check --ask`.
 
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
 server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent

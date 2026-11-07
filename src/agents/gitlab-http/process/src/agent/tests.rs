@@ -54,9 +54,7 @@ fn here() -> PathBuf {
 /// GitLab's schema, as the older GitLab agents were written against it.
 fn gitlab() -> &'static GraphQlSchema {
     static SCHEMA: OnceLock<GraphQlSchema> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        GraphQlSchema::read(&here().join("../schema/gitlab.graphql")).unwrap()
-    })
+    SCHEMA.get_or_init(|| GraphQlSchema::read(&here().join("../schema/gitlab.graphql")).unwrap())
 }
 
 fn query(name: &str) -> String {
@@ -80,6 +78,20 @@ const ANSWERS: &[(&str, &str)] = &[
     ),
     ("project-packages-1", "project-packages"),
     ("group-members-1", "group-members"),
+    // Real answers from the test GitLab, CE 19.5.3, its host masked (`gitlab-seed answers`, G4d).
+    ("metadata-live", "metadata"),
+    ("projects-live", "projects"),
+    ("users-live", "users"),
+    ("groups-live", "groups"),
+    ("runners-live", "runners"),
+    ("project-pipelines-live", "project-pipelines"),
+    ("project-jobs-live", "project-jobs"),
+    (
+        "project-container-repositories-live",
+        "project-container-repositories",
+    ),
+    ("project-packages-live", "project-packages"),
+    ("group-members-live", "group-members"),
 ];
 
 fn sample(name: &str) -> serde_json::Value {

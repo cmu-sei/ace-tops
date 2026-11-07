@@ -1,0 +1,23 @@
+{
+  "data": {
+    "project": {
+      "id": "gid://gitlab/Project/3",
+      "packages": {
+        "nodes": [
+          {
+            "createdAt": "2026-11-07T15:44:43Z",
+            "id": "gid://gitlab/Packages::Generic::Package/1",
+            "name": "seed-tools",
+            "packageType": "GENERIC",
+            "status": "DEFAULT",
+            "version": "1.0.0"
+          }
+        ],
+        "pageInfo": {
+          "endCursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0wNyAxNTo0NDo0My4wNTE1MDgwMDAgKzAwMDAiLCJpZCI6IjEifQ",
+          "hasNextPage": false
+        }
+      }
+    }
+  }
+}

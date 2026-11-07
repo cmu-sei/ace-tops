@@ -1,0 +1,60 @@
+{
+  "data": {
+    "group": {
+      "groupMembers": {
+        "nodes": [
+          {
+            "accessLevel": {
+              "stringValue": "DEVELOPER"
+            },
+            "id": "gid://gitlab/GroupMember/13",
+            "user": {
+              "id": "gid://gitlab/User/11"
+            }
+          },
+          {
+            "accessLevel": {
+              "stringValue": "DEVELOPER"
+            },
+            "id": "gid://gitlab/GroupMember/10",
+            "user": {
+              "id": "gid://gitlab/User/8"
+            }
+          },
+          {
+            "accessLevel": {
+              "stringValue": "DEVELOPER"
+            },
+            "id": "gid://gitlab/GroupMember/7",
+            "user": {
+              "id": "gid://gitlab/User/5"
+            }
+          },
+          {
+            "accessLevel": {
+              "stringValue": "DEVELOPER"
+            },
+            "id": "gid://gitlab/GroupMember/4",
+            "user": {
+              "id": "gid://gitlab/User/2"
+            }
+          },
+          {
+            "accessLevel": {
+              "stringValue": "OWNER"
+            },
+            "id": "gid://gitlab/GroupMember/1",
+            "user": {
+              "id": "gid://gitlab/User/1"
+            }
+          }
+        ],
+        "pageInfo": {
+          "endCursor": "eyJpZCI6IjEifQ",
+          "hasNextPage": false
+        }
+      },
+      "id": "gid://gitlab/Group/14"
+    }
+  }
+}

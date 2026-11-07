@@ -1,0 +1,49 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabPipeline",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Ci::Pipeline/1"
+      },
+      "set": {
+        "iid": "1",
+        "status": "SUCCESS",
+        "ref": "main",
+        "sha": "c873ad93d50dff9a5eb9a0625de3aff7917c2aa2",
+        "source": "push",
+        "created_at": "2026-11-07T15:21:12Z",
+        "finished_at": "2026-11-07T15:21:33Z",
+        "duration": 10
+      }
+    },
+    {
+      "label": "GitlabProject",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Project/1"
+      },
+      "set": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabProject",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Project/1"
+        }
+      },
+      "type": "HAS_PIPELINE",
+      "to": {
+        "label": "GitlabPipeline",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Ci::Pipeline/1"
+        }
+      }
+    }
+  ]
+}

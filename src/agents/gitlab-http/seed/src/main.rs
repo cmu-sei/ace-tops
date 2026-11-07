@@ -68,6 +68,28 @@ enum Command {
     Check(CheckArgs),
     /// Write GitLab's schema, by introspection, with the version it came from, to --out. A token on stdin (read_api is enough).
     Schema(SchemaArgs),
+    /// Ask each query of --queries once, a follow-up of an item the seed filled, and write each answer, the test GitLab's host
+    /// masked, to --out as `<query>-live.json`: the GitLab pair's real samples. A token on stdin (read_api is enough).
+    Answers(AnswersArgs),
+}
+
+#[derive(clap::Args)]
+struct AnswersArgs {
+    /// GitLab's own address.
+    #[arg(long)]
+    url: Url,
+    /// Where to reach it (a port-forward).
+    #[arg(long)]
+    connect: Option<SocketAddr>,
+    /// The CA its certificate chains to.
+    #[arg(long)]
+    ca: Option<PathBuf>,
+    /// The queries (src/agents/gitlab-http/queries).
+    #[arg(long)]
+    queries: PathBuf,
+    /// Where the samples go (src/agents/gitlab-http/process/examples/samples).
+    #[arg(long)]
+    out: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -141,7 +163,55 @@ async fn main() -> Result<()> {
         Command::Make(args) => make(args).await,
         Command::Check(args) => check(args).await,
         Command::Schema(args) => schema(args).await,
+        Command::Answers(args) => answers(args).await,
     }
+}
+
+async fn answers(args: AnswersArgs) -> Result<()> {
+    let mut token = String::new();
+    std::io::stdin()
+        .read_to_string(&mut token)
+        .context("reading the token from stdin")?;
+    let ca = args
+        .ca
+        .as_ref()
+        .map(std::fs::read)
+        .transpose()
+        .context("reading the CA")?;
+    let host = args
+        .url
+        .host_str()
+        .ok_or_else(|| anyhow!("{} has no host", args.url))?
+        .to_string();
+    let gitlab = Gitlab::new(
+        args.url,
+        token.trim().to_string(),
+        ca.as_deref(),
+        args.connect,
+    )?;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&args.queries)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<_>>()?;
+    files.retain(|p| p.extension().is_some_and(|x| x == "graphql"));
+    files.sort();
+    for file in files {
+        let name = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let variables = gitlab_seed::answers::variables_for(&name)
+            .ok_or_else(|| anyhow!("{name}: no variables known for it"))?;
+        let query = std::fs::read_to_string(&file)?;
+        let data = gitlab
+            .graphql(serde_json::json!({ "query": query, "variables": variables }))
+            .await?;
+        let answer = gitlab_seed::answers::mask(&serde_json::json!({ "data": data }), &host);
+        let out = args.out.join(format!("{name}-live.json"));
+        std::fs::write(&out, serde_json::to_string_pretty(&answer)? + "\n")?;
+        eprintln!("{name}: {}", out.display());
+    }
+    Ok(())
 }
 
 async fn schema(args: SchemaArgs) -> Result<()> {

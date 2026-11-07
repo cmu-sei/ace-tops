@@ -1,0 +1,102 @@
+{
+  "data": {
+    "users": {
+      "nodes": [
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:07Z",
+          "id": "gid://gitlab/User/13",
+          "name": "Seed User 12",
+          "state": "active",
+          "username": "seed-user-12",
+          "webUrl": "https://samples.example/seed-user-12"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:06Z",
+          "id": "gid://gitlab/User/12",
+          "name": "Seed User 11",
+          "state": "active",
+          "username": "seed-user-11",
+          "webUrl": "https://samples.example/seed-user-11"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:06Z",
+          "id": "gid://gitlab/User/11",
+          "name": "Seed User 10",
+          "state": "active",
+          "username": "seed-user-10",
+          "webUrl": "https://samples.example/seed-user-10"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:05Z",
+          "id": "gid://gitlab/User/10",
+          "name": "Seed User 09",
+          "state": "active",
+          "username": "seed-user-09",
+          "webUrl": "https://samples.example/seed-user-09"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:05Z",
+          "id": "gid://gitlab/User/9",
+          "name": "Seed User 08",
+          "state": "active",
+          "username": "seed-user-08",
+          "webUrl": "https://samples.example/seed-user-08"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:05Z",
+          "id": "gid://gitlab/User/8",
+          "name": "Seed User 07",
+          "state": "active",
+          "username": "seed-user-07",
+          "webUrl": "https://samples.example/seed-user-07"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:04Z",
+          "id": "gid://gitlab/User/7",
+          "name": "Seed User 06",
+          "state": "active",
+          "username": "seed-user-06",
+          "webUrl": "https://samples.example/seed-user-06"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:04Z",
+          "id": "gid://gitlab/User/6",
+          "name": "Seed User 05",
+          "state": "active",
+          "username": "seed-user-05",
+          "webUrl": "https://samples.example/seed-user-05"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:03Z",
+          "id": "gid://gitlab/User/5",
+          "name": "Seed User 04",
+          "state": "active",
+          "username": "seed-user-04",
+          "webUrl": "https://samples.example/seed-user-04"
+        },
+        {
+          "bot": false,
+          "createdAt": "2026-11-07T15:21:03Z",
+          "id": "gid://gitlab/User/4",
+          "name": "Seed User 03",
+          "state": "active",
+          "username": "seed-user-03",
+          "webUrl": "https://samples.example/seed-user-03"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0xMS0wNyAxNToyMTowMy41NjI2NTEwMDAgKzAwMDAiLCJpZCI6IjQifQ",
+        "hasNextPage": true
+      }
+    }
+  }
+}

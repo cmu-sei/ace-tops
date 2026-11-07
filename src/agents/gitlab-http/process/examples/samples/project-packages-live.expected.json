@@ -1,0 +1,46 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabPackage",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Packages::Generic::Package/1"
+      },
+      "set": {
+        "name": "seed-tools",
+        "version": "1.0.0",
+        "package_type": "GENERIC",
+        "status": "DEFAULT",
+        "created_at": "2026-11-07T15:44:43Z"
+      }
+    },
+    {
+      "label": "GitlabProject",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Project/3"
+      },
+      "set": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabProject",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Project/3"
+        }
+      },
+      "type": "HAS_PACKAGE",
+      "to": {
+        "label": "GitlabPackage",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Packages::Generic::Package/1"
+        }
+      }
+    }
+  ]
+}

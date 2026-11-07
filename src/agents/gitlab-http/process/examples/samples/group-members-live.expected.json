@@ -1,0 +1,140 @@
+{
+  "skipped": 0,
+  "nodes": [
+    {
+      "label": "GitlabGroup",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/Group/14"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/1"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/11"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/2"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/5"
+      },
+      "set": {}
+    },
+    {
+      "label": "GitlabUser",
+      "keys": {
+        "origin": "https://samples.example",
+        "id": "gid://gitlab/User/8"
+      },
+      "set": {}
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/14"
+        }
+      },
+      "type": "HAS_MEMBER",
+      "to": {
+        "label": "GitlabUser",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/User/1"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/14"
+        }
+      },
+      "type": "HAS_MEMBER",
+      "to": {
+        "label": "GitlabUser",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/User/11"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/14"
+        }
+      },
+      "type": "HAS_MEMBER",
+      "to": {
+        "label": "GitlabUser",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/User/2"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/14"
+        }
+      },
+      "type": "HAS_MEMBER",
+      "to": {
+        "label": "GitlabUser",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/User/5"
+        }
+      }
+    },
+    {
+      "from": {
+        "label": "GitlabGroup",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/Group/14"
+        }
+      },
+      "type": "HAS_MEMBER",
+      "to": {
+        "label": "GitlabUser",
+        "keys": {
+          "origin": "https://samples.example",
+          "id": "gid://gitlab/User/8"
+        }
+      }
+    }
+  ]
+}
