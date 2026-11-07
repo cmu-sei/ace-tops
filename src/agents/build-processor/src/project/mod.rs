@@ -691,4 +691,30 @@ mod tests {
         }
         assert!(written.contains("pkg:cargo/itoa@1.0.18"));
     }
+
+    /// A package is keyed by its purl: a component with none (an SBOM entry the generator could not name) is not
+    /// written, rather than merged with every other such entry into one `Package { purl: "" }`.
+    #[test]
+    fn a_component_without_a_purl_is_not_a_package() {
+        let mut unnamed = package("");
+        unnamed.name = "vendored-c-lib".into();
+        let ops = project(
+            ProvenanceEvent::SbomAnalyzed(SbomGraphFragment {
+                artifact_content_hash: "sha256:sbom".into(),
+                filename: "polar.cdx.json".into(),
+                root: Some(package("pkg:cargo/polar@1.0.0")),
+                components: vec![package("pkg:cargo/itoa@1.0.18"), unnamed],
+                edges: vec![],
+            }),
+            T0,
+        )
+        .unwrap();
+        let written = format!("{ops:?}");
+        assert!(!written.contains("vendored-c-lib"), "{written}");
+        assert!(
+            !written.contains(r#"String("")"#),
+            "an empty key was written: {written}"
+        );
+        assert!(written.contains("pkg:cargo/itoa@1.0.18"));
+    }
 }

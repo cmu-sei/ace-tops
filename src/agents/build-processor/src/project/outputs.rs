@@ -144,13 +144,27 @@ pub fn artifact_produced(p: ArtifactProducedPayload) -> Vec<GraphOp> {
 ///
 /// The raw Cypher must agree with `ArtifactNodeKey::Package`'s label and key
 /// (`Package {purl}`), since RawQuery bypasses the key's own Cypher.
-pub fn sbom_analyzed(fragment: SbomGraphFragment) -> Vec<GraphOp> {
+pub fn sbom_analyzed(mut fragment: SbomGraphFragment) -> Vec<GraphOp> {
     trace!(
         "SbomAnalyzed: {} with {} components, {} edges",
         fragment.filename,
         fragment.components.len(),
         fragment.edges.len()
     );
+
+    // A package is keyed by its purl: an entry the generator gave none is not written, rather than merged with every
+    // other such entry into one `Package { purl: "" }`.
+    let listed = fragment.components.len();
+    fragment.components.retain(|c| is_purl(&c.purl));
+    let unnamed_root = fragment.root.take_if(|root| !is_purl(&root.purl)).is_some();
+    if unnamed_root || fragment.components.len() < listed {
+        warn!(
+            "SBOM {}: {} components and {} root have no purl and are not written",
+            fragment.filename,
+            listed - fragment.components.len(),
+            if unnamed_root { "its" } else { "no" }
+        );
+    }
 
     let sbom = ArtifactNodeKey::Sbom {
         artifact_content_hash: fragment.artifact_content_hash.clone(),
