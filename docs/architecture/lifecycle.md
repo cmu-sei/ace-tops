@@ -116,7 +116,11 @@ GitLab pair would appear in both as under test. Until a lifecycle document exist
 1. *Decided* (the maintainer, 2026-11-07, "Two levels"): a kind has declared and released, whatever cluster it is on; a workload on a
    cluster has under test, deployed, retiring and retired, and enters under test only from a released kind. A kind can be released once and
    be under test on one cluster while deployed on another.
-2. Who signs a transition: always a person, or some (under test to deployed, after a test's measures hold) by a rule a person signed?
+2. *Decided* (the maintainer, 2026-11-07, "Both, by transition", then "Promotion by rule too"): a person decides, at the time, a workload's
+   move into under test and into retired (its certificates revoked `Decommissioned`, its secrets released). A rule a person signed may
+   move it the rest of the way: under test into deployed when the rule's measures hold (its invariants for a stated time, no attestation
+   finding, say), and back, deployed to under test or under test into retiring, when they break or attestation condemns it. A move by rule
+   names the rule and the evidence it met, so the record says why, and who signed the rule.
 3. Where the lifecycle document lives: polar-schedules (runtime, signed, per cluster) or the deployment repository (deploy-time, the
    pipeline's)?
 4. The derived documents: signed by whom, when no person signed that exact body?
