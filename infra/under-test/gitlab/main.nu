@@ -171,7 +171,11 @@ export def statefulset [context: record] {
                             { name: "GITLAB_ROOT_PASSWORD", valueFrom: { secretKeyRef: { name: "gitlab-root", key: "password" } } }
                         ]
                         ports: [{ containerPort: 443, name: "https" } { containerPort: $REGISTRY_PORT, name: "registry" }]
-                        readinessProbe: { httpGet: { path: "/-/readiness", port: 443, scheme: "HTTPS" }, initialDelaySeconds: 60, periodSeconds: 10, failureThreshold: 60 }
+                        # GitLab answers its health checks only from localhost (its monitoring allow-list): asked from inside the pod.
+                        readinessProbe: {
+                            exec: { command: ["/opt/gitlab/embedded/bin/curl" "--silent" "--fail" "--insecure" "--max-time" "5" "https://127.0.0.1/-/readiness"] }
+                            initialDelaySeconds: 60, periodSeconds: 10, timeoutSeconds: 6, failureThreshold: 60
+                        }
                         resources: { requests: { memory: "4Gi", cpu: "1" } }
                         volumeMounts: [
                             { name: "data", mountPath: "/var/opt/gitlab", subPath: "data" }

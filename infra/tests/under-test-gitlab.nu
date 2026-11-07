@@ -106,6 +106,11 @@ def main [] {
             assert equal ($gitlab.volumeMounts | where name == "gitlab-tls" | first) { name: "gitlab-tls", mountPath: "/etc/gitlab-tls", readOnly: true }
             assert (($gitlab.volumeMounts | where name == $token_name) | is-empty) "GitLab itself has no token"
             assert equal ($gitlab.env | where name == "GITLAB_ROOT_PASSWORD" | first | get valueFrom.secretKeyRef.name) "gitlab-root"
+            # GitLab answers its health checks only from localhost (its monitoring allow-list), so the probe asks from inside the
+            # pod: from the node it is a 404 for ever (2026-11-07 on u7c).
+            let probe = ($gitlab.readinessProbe.exec.command | str join " ")
+            assert ($probe | str contains "https://127.0.0.1/-/readiness") $probe
+            assert ($gitlab.readinessProbe.httpGet? == null)
             assert equal $sts.metadata.namespace "gitlab-test"
             assert equal ($sts.spec.volumeClaimTemplates.0.spec.storageClassName) "managed-csi"
             assert ("polar-ca" in ($pod.volumes | get name))
