@@ -341,8 +341,9 @@ fn workload() -> impl Strategy<Value = RecordedWorkload> {
         "[a-c]{1,2}",
         prop_oneof![Just(OwnerKind::Deployment), Just(OwnerKind::StatefulSet)],
         prop::collection::btree_map("[a-c]{1,2}", digest(), 1..4),
+        any::<bool>(),
     )
-        .prop_map(|(name, owner_kind, images)| RecordedWorkload {
+        .prop_map(|(name, owner_kind, images, under_test)| RecordedWorkload {
             identity: format!("{name}.polar.serviceaccount.cluster.local"),
             owner_kind,
             owner_name: name.clone(),
@@ -352,12 +353,13 @@ fn workload() -> impl Strategy<Value = RecordedWorkload> {
                 .into_iter()
                 .map(|(name, image)| RecordedContainer { name, image })
                 .collect(),
+            under_test,
         })
 }
 
 fn record() -> impl Strategy<Value = DeploymentRecord> {
     prop::collection::btree_map("[a-c]{1,2}", workload(), 0..5).prop_map(|named| DeploymentRecord {
-        schema: 1,
+        schema: 2,
         target: "t".into(),
         version: 1,
         workloads: named.into_values().collect(),
@@ -489,6 +491,7 @@ fn deployment(others: usize) -> (DeploymentRecord, Vec<HeldPodFacts>) {
                 name: "main".to_string(),
                 image: image(n),
             }],
+            under_test: false,
         })
         .collect();
     let pods = names
@@ -827,7 +830,7 @@ proptest! {
     /// Every crash among a pod's endings is said, whether or not the agent is believed, and nothing else is said of an ending.
     #[test]
     fn every_crash_is_said_and_nothing_else_of_an_ending(pods in observed(), believed: bool) {
-        let crashes = findings(&pods, believed).iter().filter(|r| is_crash(r)).count();
+        let crashes = findings(&pods, believed, None).iter().filter(|r| is_crash(r)).count();
         let mut expected: Vec<(String, String, i32, String)> = Vec::new();
         for pod in &pods {
             for e in &pod.terminations {
@@ -845,9 +848,9 @@ proptest! {
     /// While the agent is not believed, it says nothing it judged.
     #[test]
     fn what_it_judged_is_said_only_while_it_is_believed(pods in observed()) {
-        prop_assert!(findings(&pods, false).iter().all(is_crash));
+        prop_assert!(findings(&pods, false, None).iter().all(is_crash));
         let debugged = pods.iter().filter(|p| !p.facts.ephemeral.is_empty()).count();
-        let altered = findings(&pods, true).iter().filter(|r| !is_crash(r)).count();
+        let altered = findings(&pods, true, None).iter().filter(|r| !is_crash(r)).count();
         prop_assert_eq!(altered, debugged);
     }
 
@@ -856,7 +859,7 @@ proptest! {
     fn findings_do_not_depend_on_the_order_of_pods(pods in observed(), believed: bool) {
         let mut reversed = pods.clone();
         reversed.reverse();
-        prop_assert_eq!(findings(&pods, believed), findings(&reversed, believed));
+        prop_assert_eq!(findings(&pods, believed, None), findings(&reversed, believed, None));
     }
 
     /// Over any sequence: a thing is new once while it stands, an alteration is never reported before its second check running, and what stands after a
@@ -869,7 +872,7 @@ proptest! {
         let mut reported: Vec<Report> = Vec::new();
         let mut suspected: Vec<Report> = Vec::new();
         for (pods, checking) in rounds {
-            let now = findings(&pods, true);
+            let now = findings(&pods, true, None);
             let before: Vec<Report> = reporting.standing().to_vec();
             let new = if checking { reporting.check(&now) } else { reporting.changed(&now) };
             for report in &new {
@@ -888,12 +891,41 @@ proptest! {
     /// A report reads back whole, and is taken only from the agent.
     #[test]
     fn a_report_round_trips_and_only_the_agent_may_send_one(pods in observed(), other in "[a-z]{1,8}x") {
-        for report in findings(&pods, true) {
+        for report in findings(&pods, true, None) {
             let bytes = encode_report(&report);
             prop_assert_eq!(decode_report(&bytes).unwrap(), report.clone());
             prop_assert_eq!(accepted_report(&bytes, Some(AGENT_NAME), AGENT_NAME).unwrap(), report);
             prop_assert!(accepted_report(&bytes, Some(&other), AGENT_NAME).is_err());
             prop_assert!(accepted_report(&bytes, None, AGENT_NAME).is_err());
+        }
+    }
+
+    /// A record's marks change nothing found but the mark (docs/architecture/configurations-under-test.md, CT2), and a finding is under test exactly
+    /// when the record claims its pod, by namespace and service account and for one workload alone, for a workload it marks.
+    #[test]
+    fn a_finding_is_under_test_exactly_when_its_pods_workload_is_marked(
+        pods in observed(),
+        marks in prop::collection::vec(any::<bool>(), 6),
+        believed: bool,
+    ) {
+        let workloads = pods.iter().zip(&marks).map(|(pod, marked)| RecordedWorkload {
+            identity: format!("{}.polar.serviceaccount.cluster.local", pod.facts.service_account),
+            owner_kind: OwnerKind::Deployment,
+            owner_name: pod.name.clone(),
+            namespace: pod.namespace.clone(),
+            service_account: pod.facts.service_account.clone(),
+            containers: vec![],
+            under_test: *marked,
+        }).collect();
+        let record = DeploymentRecord { schema: 2, target: "t".into(), version: 1, workloads };
+        let marked = findings(&pods, believed, Some(&record));
+        let unmarked: Vec<Report> = marked.iter().cloned().map(|r| Report { under_test: false, ..r }).collect();
+        prop_assert_eq!(&unmarked, &findings(&pods, believed, None));
+        for report in &marked {
+            let pod = pods.iter().find(|p| p.uid == report.pod_uid).unwrap();
+            let sharing: Vec<&RecordedWorkload> = record.workloads.iter()
+                .filter(|w| w.service_account == pod.facts.service_account).collect();
+            prop_assert_eq!(report.under_test, sharing.len() == 1 && sharing[0].under_test);
         }
     }
 

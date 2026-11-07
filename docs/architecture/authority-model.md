@@ -358,7 +358,14 @@ Polar has two, and "the groups document" is only the second (read from the code,
 
 1. **A certificate's groups.** Deployment-time. A workload's scaffold implies them (`cassini-client`, `encryption`,
    `self-test`); the render puts them in the catalog, and the certificate carries them as `g:` names. Applying the
-   catalog is their sign-off; they change only with a redeploy.
+   catalog is their sign-off; they change only with a redeploy. One more the render adds, for what a workload is deployed
+   as, not built as: `under-test`, on every certificate of what a configuration under test makes (the catalog workloads it
+   enables, in the authority model and the floor; the servers it adds, in their floor entries;
+   `configurations-under-test.md`, CT2; `resolve.nu` `marks_of`, `main server-also`). It implies no topics (no `Rule` has
+   it, `polar-topics/src/lib.rs:134-146`), so it changes nothing at the broker's floor; it is there for Cedar policy to
+   keep what is under test from what production holds. A groups document that names such an identity replaces its
+   groups for Cedar, the mark among them, as it does any certificate group: the holder of `c:update-groups` is trusted
+   for that.
 2. **The groups document.** Runtime configuration: the credentials agent's `groups` section
    (`credentials-agent/consume/src/authority_sections.rs:50`): memberships (an identity to the groups it is in), and a
    hierarchy of groups and roles (a group may be in other groups, a role may hold roles, capabilities and permissions).

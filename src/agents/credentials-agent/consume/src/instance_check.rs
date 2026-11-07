@@ -121,18 +121,29 @@ pub async fn take_report(
         kind: kind.to_string(),
         finding: finding.clone(),
         timestamp: polar::time::now_millis(),
+        under_test: report.under_test,
     };
     match ractor::call!(ledger, |reply| LedgerMessage::TakeAttestationReport {
         event,
         reply,
     }) {
         Ok(Ok(true)) => {
-            error!(
-                namespace = report.namespace,
-                pod = report.pod,
-                pod_uid = report.pod_uid,
-                "the attestation agent reports of a pod, to be looked at: {finding}"
-            );
+            if report.under_test {
+                warn!(
+                    namespace = report.namespace,
+                    pod = report.pod,
+                    pod_uid = report.pod_uid,
+                    under_test = true,
+                    "the attestation agent reports of a pod under test, to be looked at: {finding}"
+                );
+            } else {
+                error!(
+                    namespace = report.namespace,
+                    pod = report.pod,
+                    pod_uid = report.pod_uid,
+                    "the attestation agent reports of a pod, to be looked at: {finding}"
+                );
+            }
             true
         }
         Ok(Ok(false)) => false,
@@ -166,6 +177,7 @@ mod tests {
                 finished_at: "2026-11-03T12:00:00Z".into(),
                 image_id: "registry/jira-observer@sha256:0".into(),
             },
+            under_test: false,
         }
     }
 

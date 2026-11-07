@@ -26,6 +26,7 @@
 //! published again each minute while it stands, since the credentials agent, which records it, restarts too; it keeps one of each.
 
 use crate::protocol::AGENT_NAME;
+use crate::record::DeploymentRecord;
 use crate::verdict::{NotGenuine, PodFacts, Verdict, judge};
 use rkyv::{Archive, Deserialize, Serialize};
 
@@ -107,6 +108,9 @@ pub struct Report {
     pub pod: String,
     pub pod_uid: String,
     pub finding: Finding,
+    /// The record claims the pod for a workload a configuration under test made (docs/architecture/configurations-under-test.md,
+    /// CT2): what is found of it is said apart.
+    pub under_test: bool,
 }
 
 impl Report {
@@ -116,17 +120,25 @@ impl Report {
 }
 
 /// What stands against `pods`, in the order of their UIDs. `believed` is whether the agent has proved itself: until then what it judges is not said, but
-/// a crash is, since that is what the platform saw and no judgement of the agent's.
-pub fn findings(pods: &[ObservedPod], believed: bool) -> Vec<Report> {
+/// a crash is, since that is what the platform saw and no judgement of the agent's. `record`, when it holds one, says which pods are under test.
+pub fn findings(
+    pods: &[ObservedPod],
+    believed: bool,
+    record: Option<&DeploymentRecord>,
+) -> Vec<Report> {
     let mut pods: Vec<&ObservedPod> = pods.iter().collect();
     pods.sort_by(|a, b| a.uid.cmp(&b.uid));
     let mut found = Vec::new();
     for pod in pods {
+        let under_test = record
+            .and_then(|r| r.claimed(&pod.namespace, &pod.facts.service_account))
+            .is_some_and(|w| w.under_test);
         let report = |finding| Report {
             namespace: pod.namespace.clone(),
             pod: pod.name.clone(),
             pod_uid: pod.uid.clone(),
             finding,
+            under_test,
         };
         // With no record this holds the pod to its owner alone, and says it cannot say of one that holds up. That needs no identity, so it is every pod's.
         if believed && let Verdict::NotGenuine(why) = judge(None, Some(&pod.facts)) {
@@ -295,7 +307,7 @@ mod tests {
     fn nothing_stands_against_a_genuine_pod_that_has_only_been_restarted() {
         let mut pod = genuine("a");
         pod.terminations = vec![ended(137, None), ended(0, None), ended(1, None)];
-        assert_eq!(findings(&[pod], true), vec![]);
+        assert_eq!(findings(&[pod], true, None), vec![]);
     }
 
     #[test]
@@ -303,14 +315,14 @@ mod tests {
         let mut pod = genuine("a");
         pod.facts.ephemeral = vec!["debugger".into()];
         pod.terminations = vec![ended(139, None)];
-        let found = findings(std::slice::from_ref(&pod), true);
+        let found = findings(std::slice::from_ref(&pod), true, None);
         assert_eq!(found.len(), 2);
         assert!(matches!(
             found[0].finding,
             Finding::Altered(NotGenuine::EphemeralContainer { .. })
         ));
         assert!(found[1].crashed());
-        let unbelieved = findings(&[pod], false);
+        let unbelieved = findings(&[pod], false, None);
         assert_eq!(unbelieved.len(), 1);
         assert!(unbelieved[0].crashed());
     }
@@ -319,7 +331,7 @@ mod tests {
     fn one_ending_shown_as_state_and_as_last_state_is_one_crash() {
         let mut pod = genuine("a");
         pod.terminations = vec![ended(139, None), ended(139, None)];
-        assert_eq!(findings(&[pod], true).len(), 1);
+        assert_eq!(findings(&[pod], true, None).len(), 1);
     }
 
     #[test]
@@ -328,7 +340,7 @@ mod tests {
         crashed.terminations = vec![ended(134, None)];
         let mut debugged = genuine("d");
         debugged.facts.ephemeral = vec!["debugger".into()];
-        let now = findings(&[crashed, debugged], true);
+        let now = findings(&[crashed, debugged], true, None);
 
         let mut reporting = Reporting::default();
         let at_once = reporting.changed(&now);
@@ -353,13 +365,54 @@ mod tests {
         orphan.facts.owner = None;
         let mut reporting = Reporting::default();
         assert_eq!(
-            reporting.changed(&findings(&[orphan.clone()], true)),
+            reporting.changed(&findings(&[orphan.clone()], true, None)),
             vec![]
         );
-        assert_eq!(reporting.check(&findings(&[orphan], true)), vec![]);
+        assert_eq!(reporting.check(&findings(&[orphan], true, None)), vec![]);
         // By the next check its owner has arrived.
-        assert_eq!(reporting.check(&findings(&[genuine("a")], true)), vec![]);
+        assert_eq!(
+            reporting.check(&findings(&[genuine("a")], true, None)),
+            vec![]
+        );
         assert!(reporting.standing().is_empty());
+    }
+
+    /// A record whose one workload runs as the service account `agent` in `polar`, marked under test or not.
+    fn record_of_agent(under_test: bool) -> DeploymentRecord {
+        DeploymentRecord::from_payload(&serde_json::json!({
+            "schema": 2, "target": "t", "version": 1,
+            "workloads": [{
+                "identity": "agent.polar.serviceaccount.cluster.local",
+                "owner_kind": "Deployment", "owner_name": "agent", "namespace": "polar",
+                "service_account": "agent", "under_test": under_test,
+                "containers": [{ "name": "agent", "image": "registry/agent@sha256:0" }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn what_is_found_of_a_pod_the_record_claims_for_a_workload_under_test_says_so() {
+        let mut pod = genuine("a");
+        pod.facts.ephemeral = vec!["debugger".into()];
+        pod.terminations = vec![ended(139, None)];
+        let pods = [pod];
+        let tested = findings(&pods, true, Some(&record_of_agent(true)));
+        assert_eq!(tested.len(), 2);
+        assert!(tested.iter().all(|r| r.under_test));
+        for not in [
+            findings(&pods, true, Some(&record_of_agent(false))),
+            findings(&pods, true, None),
+        ] {
+            assert!(not.iter().all(|r| !r.under_test));
+        }
+        // The mark survives the wire.
+        let bytes = encode_report(&tested[0]);
+        assert!(
+            accepted_report(&bytes, Some("agent"), "agent")
+                .unwrap()
+                .under_test
+        );
     }
 
     #[test]
@@ -371,6 +424,7 @@ mod tests {
                 pod
             }],
             true,
+            None,
         )
         .remove(0);
         let bytes = encode_report(&report);

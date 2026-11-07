@@ -456,6 +456,10 @@ pub enum CredentialsEvent {
         kind: String,
         finding: String,
         timestamp: i64,
+        /// The pod is one a configuration under test made (docs/architecture/configurations-under-test.md, CT2). Absent in what was
+        /// recorded before it was said, which was of no such pod.
+        #[serde(default)]
+        under_test: bool,
     },
 }
 
@@ -628,6 +632,40 @@ mod tests {
             certificate_pem: "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"
                 .to_string(),
         }
+    }
+
+    #[test]
+    fn an_attestation_report_written_before_configurations_under_test_reads_back_as_not_under_test()
+    {
+        // A line from a ledger as it was: no under_test. It must replay, and its hash is over these bytes, not a rewrite.
+        let old = r#"{"AttestationReported":{"namespace":"polar","pod":"p","pod_uid":"u","kind":"crashed","finding":"f","timestamp":1}}"#;
+        let event: CredentialsEvent = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            event,
+            CredentialsEvent::AttestationReported {
+                namespace: "polar".into(),
+                pod: "p".into(),
+                pod_uid: "u".into(),
+                kind: "crashed".into(),
+                finding: "f".into(),
+                timestamp: 1,
+                under_test: false,
+            }
+        );
+        let tested = CredentialsEvent::AttestationReported {
+            namespace: "gitlab-test".into(),
+            pod: "p".into(),
+            pod_uid: "u".into(),
+            kind: "crashed".into(),
+            finding: "f".into(),
+            timestamp: 1,
+            under_test: true,
+        };
+        let text = serde_json::to_string(&tested).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CredentialsEvent>(&text).unwrap(),
+            tested
+        );
     }
 
     #[test]

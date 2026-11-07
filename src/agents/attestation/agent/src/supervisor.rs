@@ -129,20 +129,36 @@ fn report(state: &mut AttestationState, regular_check: bool) {
     if !state.held.ready() {
         return;
     }
-    let now = findings(&state.held.observed(), state.proved.is_ok());
+    let now = findings(
+        &state.held.observed(),
+        state.proved.is_ok(),
+        state.record.as_ref(),
+    );
     let new = if regular_check {
         state.reporting.check(&now)
     } else {
         state.reporting.changed(&now)
     };
     for found in &new {
-        error!(
-            namespace = found.namespace,
-            pod = found.pod,
-            pod_uid = found.pod_uid,
-            "found of a pod, to be looked at: {:?}",
-            found.finding
-        );
+        // Under test: what a configuration under test made is said apart (docs/architecture/configurations-under-test.md, CT2).
+        if found.under_test {
+            warn!(
+                namespace = found.namespace,
+                pod = found.pod,
+                pod_uid = found.pod_uid,
+                under_test = true,
+                "found of a pod under test, to be looked at: {:?}",
+                found.finding
+            );
+        } else {
+            error!(
+                namespace = found.namespace,
+                pod = found.pod,
+                pod_uid = found.pod_uid,
+                "found of a pod, to be looked at: {:?}",
+                found.finding
+            );
+        }
     }
     let going: &[Report] = if regular_check {
         state.reporting.standing()
@@ -403,13 +419,24 @@ impl Actor for AttestationSupervisor {
                 let current = drift(record, &state.held.deployed(), &state.namespaces);
                 let changes = state.drift.observe(now_secs() as u64, &current);
                 for difference in &changes.lasting {
-                    error!(
-                        version = record.version,
-                        "what is deployed is not what the signed record says: {difference:?}"
-                    );
+                    if record.under_test(difference) {
+                        warn!(
+                            version = record.version,
+                            under_test = true,
+                            "what is deployed under test is not what the signed record says: {difference:?}"
+                        );
+                    } else {
+                        error!(
+                            version = record.version,
+                            "what is deployed is not what the signed record says: {difference:?}"
+                        );
+                    }
                 }
                 for difference in &changes.gone {
-                    info!("what is deployed is again what the signed record says: {difference:?}");
+                    info!(
+                        under_test = record.under_test(difference),
+                        "what is deployed is again what the signed record says: {difference:?}"
+                    );
                 }
             }
             AttestationMessage::Question {

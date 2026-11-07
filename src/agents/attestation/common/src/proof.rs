@@ -70,12 +70,7 @@ fn claimed_by<'a>(
     record: &'a DeploymentRecord,
     pod: &HeldPodFacts,
 ) -> Option<&'a RecordedWorkload> {
-    let mut named = record
-        .workloads
-        .iter()
-        .filter(|w| w.namespace == pod.namespace && w.service_account == pod.facts.service_account);
-    let workload = named.next()?;
-    named.next().is_none().then_some(workload)
+    record.claimed(&pod.namespace, &pod.facts.service_account)
 }
 
 fn facts_of(workload: &RecordedWorkload) -> WorkloadFacts {

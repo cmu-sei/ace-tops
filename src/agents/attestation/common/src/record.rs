@@ -32,8 +32,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The only shape of record this reads.
-const SCHEMA: u64 = 1;
+/// The shapes of record this reads: 1, and 2, which says of each workload whether a configuration under test made it
+/// (docs/architecture/configurations-under-test.md, CT2).
+const SCHEMAS: [u64; 2] = [1, 2];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +55,9 @@ pub struct RecordedWorkload {
     pub namespace: String,
     pub service_account: String,
     pub containers: Vec<RecordedContainer>,
+    /// A configuration under test made it: what is said of it is said apart. Schema 2's; in schema 1 none is.
+    #[serde(default)]
+    pub under_test: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -68,13 +72,35 @@ impl DeploymentRecord {
     pub fn from_payload(payload: &Value) -> Result<Self, String> {
         let record: DeploymentRecord = serde_json::from_value(payload.clone())
             .map_err(|e| format!("the record does not read: {e}"))?;
-        if record.schema != SCHEMA {
+        if !SCHEMAS.contains(&record.schema) {
             return Err(format!(
-                "a record of schema {}, and this reads {SCHEMA}",
+                "a record of schema {}, and this reads {SCHEMAS:?}",
                 record.schema
             ));
         }
+        if record.schema == 1 && record.workloads.iter().any(|w| w.under_test) {
+            return Err("a record of schema 1 marks nothing under test".to_string());
+        }
         Ok(record)
+    }
+
+    /// The workload the record says runs in `namespace` under `service_account`. Two workloads that share one say nothing about a
+    /// pod.
+    pub fn claimed(&self, namespace: &str, service_account: &str) -> Option<&RecordedWorkload> {
+        let mut named = self
+            .workloads
+            .iter()
+            .filter(|w| w.namespace == namespace && w.service_account == service_account);
+        let workload = named.next()?;
+        named.next().is_none().then_some(workload)
+    }
+
+    /// Whether the workload `difference` is about is one the record marks under test. One it does not name is not.
+    pub fn under_test(&self, difference: &Drift) -> bool {
+        let about = difference.workload();
+        self.workloads
+            .iter()
+            .any(|w| w.under_test && named(w.owner_kind, &w.namespace, &w.owner_name) == about)
     }
 
     /// What it says of the workload `identity` runs as. An identity two workloads share says nothing about either: a catalog workload
@@ -120,6 +146,19 @@ pub enum Drift {
         recorded: String,
         found: String,
     },
+}
+
+impl Drift {
+    /// The workload it is about, as `drift` names it.
+    pub fn workload(&self) -> &str {
+        match self {
+            Drift::NotInRecord { workload }
+            | Drift::NotDeployed { workload }
+            | Drift::ContainerNotInRecord { workload, .. }
+            | Drift::ContainerNotDeployed { workload, .. }
+            | Drift::AnotherImage { workload, .. } => workload,
+        }
+    }
 }
 
 fn named(kind: OwnerKind, namespace: &str, name: &str) -> String {
@@ -314,9 +353,54 @@ mod tests {
     }
 
     #[test]
+    fn a_schema_2_record_says_which_workloads_are_under_test_and_a_schema_1_says_none_is() {
+        let mut two = payload();
+        two["schema"] = json!(2);
+        two["workloads"][0]["under_test"] = json!(true);
+        let record = DeploymentRecord::from_payload(&two).unwrap();
+        assert!(record.workloads[0].under_test);
+        assert!(record.claimed("polar", "the-app").unwrap().under_test);
+        assert!(
+            !DeploymentRecord::from_payload(&payload())
+                .unwrap()
+                .workloads[0]
+                .under_test
+        );
+        // Schema 1 has no mark: one that carries it is not schema 1.
+        let mut one = payload();
+        one["workloads"][0]["under_test"] = json!(true);
+        assert!(DeploymentRecord::from_payload(&one).is_err());
+    }
+
+    #[test]
+    fn a_difference_says_whether_the_workload_it_is_about_is_under_test() {
+        let mut two = payload();
+        two["schema"] = json!(2);
+        two["workloads"][0]["under_test"] = json!(true);
+        let record = DeploymentRecord::from_payload(&two).unwrap();
+        let gone = Drift::NotDeployed {
+            workload: "Deployment polar/the-app".into(),
+        };
+        assert_eq!(
+            drift(&record, &[], &["polar".to_string()]),
+            BTreeSet::from([gone.clone()])
+        );
+        assert!(record.under_test(&gone));
+        // One the record does not name is not under test: nothing says it is.
+        assert!(!record.under_test(&Drift::NotInRecord {
+            workload: "Deployment polar/a-stranger".into(),
+        }));
+        assert!(
+            !DeploymentRecord::from_payload(&payload())
+                .unwrap()
+                .under_test(&gone)
+        );
+    }
+
+    #[test]
     fn a_record_of_another_shape_is_refused() {
         let mut other = payload();
-        other["schema"] = json!(2);
+        other["schema"] = json!(3);
         assert!(DeploymentRecord::from_payload(&other).is_err());
         let mut extra = payload();
         extra["surprise"] = json!(true);

@@ -120,7 +120,9 @@ def with_under_test [target: string, adds: record, body: closure] {
     let dir = ($INFRA | path join "under-test" $name)
     let inputs = ($INFRA | path join "targets" $target "cluster-inputs.nuon")
     mkdir $dir
-    { adds: $adds, layer: { files: [], wait_for: [] } } | to nuon | save --force ($dir | path join "under-test.nuon")
+    # Its layer holds what it enables, as a declaration's must (infra/under-test.nu, layer_problems).
+    let files = ($adds.workloads? | default {} | columns | each {|w| $"($w).yaml" })
+    { adds: $adds, layer: { files: $files, wait_for: [] } } | to nuon | save --force ($dir | path join "under-test.nuon")
     { cluster: null, workloads: {}, under_test: [$name] } | to nuon | save --force $inputs
     try {
         let out = (do $body)
@@ -521,6 +523,8 @@ def main [] {
                 with_under_test $t $adds {
                     assert equal (^nu $RESOLVER attest-also --target $t | from json) ["gitlab-test"]
                     assert equal (^nu $RESOLVER server-also --target $t | from json | get workload) ["system:serviceaccount:gitlab-test:gitlab"]
+                    # CT2: a server it adds is under test, and its certificate says so.
+                    assert equal (^nu $RESOLVER server-also --target $t | from json | get groups) [["under-test"]]
                 }
                 # Judged as the target's: a server in a namespace nothing attests.
                 with_under_test $t ($adds | reject cluster.attest_also) {
@@ -535,7 +539,14 @@ def main [] {
                 assert ("secret-harness-owner" not-in (^nu $RESOLVER names --target $t | from json))
                 with_under_test $t { workloads: { secret-harness-owner: { enabled: true } } } {
                     assert ("secret-harness-owner" in (^nu $RESOLVER names --target $t | from json))
+                    # CT2: the certificate of what it enables carries g:under-test, and no other workload's does.
+                    let model = (env_value (resolve_for $t credentials-agent) "CREDENTIALS_AGENT_AUTHORITY_MODEL" $t | from json)
+                    let marked = ($model.workloads | where {|w| "under-test" in ($w.groups? | default []) } | get workload)
+                    assert equal $marked ["secret-harness-owner"]
                 }
+                # Without one, none is.
+                let model = (env_value (resolve_for $t credentials-agent) "CREDENTIALS_AGENT_AUTHORITY_MODEL" $t | from json)
+                assert ($model.workloads | all {|w| "under-test" not-in ($w.groups? | default []) })
                 for refused in [
                     [{ workloads: { jira-observer: { env: [{ name: "JIRA_URL", value: "https://elsewhere.example" }] } } } "JIRA_URL"]
                     [{ workloads: { no-such-workload: { enabled: true } } } "no-such-workload"]
@@ -1525,8 +1536,10 @@ def main [] {
         "a configuration under test may have a workload trust the cluster's CA, and the target and the cluster's inputs may not": {
             let config = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             let ca = { name: "POLAR_EGRESS_CLUSTER_CA", value: "/etc/polar-ca/ca.pem" }
-            with_target $config {|t|
-                with_under_test $t { workloads: { jira-observer: { env: [$ca] } } } {
+            # A configuration under test configures what it enables, which the target leaves out (CT2).
+            let left_out = ($config | upsert workloads.jira-observer.enabled false)
+            with_target $left_out {|t|
+                with_under_test $t { workloads: { jira-observer: { enabled: true, env: [$ca] } } } {
                     # The egress section as an image built since the variable was added declares it (lib/src/egress.rs), whatever
                     # the test cluster's images are.
                     with_scaffold_variable "jira-observer" "egress" "POLAR_EGRESS_CLUSTER_CA" {
@@ -1535,7 +1548,7 @@ def main [] {
                         assert equal (env_value ($r.stdout | from json) "POLAR_EGRESS_CLUSTER_CA" $t) "/etc/polar-ca/ca.pem"
                     }
                 }
-                with_under_test $t { workloads: { jira-observer: { env: [($ca | update value "/etc/elsewhere/ca.pem")] } } } {
+                with_under_test $t { workloads: { jira-observer: { enabled: true, env: [($ca | update value "/etc/elsewhere/ca.pem")] } } } {
                     let r = (do { ^nu $RESOLVER json jira-observer --target $t } | complete)
                     assert ($r.exit_code != 0 and ($r.stderr | unwrapped | str contains "/etc/polar-ca/ca.pem")) $r.stderr
                 }

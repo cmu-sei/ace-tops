@@ -31,7 +31,8 @@ def target [] {
         cluster: { issuance: { floor_enforced: true }, registry_in_cluster: { node_port: 30500 } }
         workloads: {
             secret-harness: { enabled: false }
-            gitlab-observer: { env: [{ name: "POLAR_LOG", value: "info" }] }
+            cassini: {}
+            gitlab-observer: { enabled: false, env: [{ name: "POLAR_LOG", value: "info" }] }
         }
     }
 }
@@ -73,6 +74,7 @@ def main [] {
             assert equal $merged.workloads.gitlab-observer.enabled true
             assert equal ($merged.workloads.gitlab-observer.env | get name) ["POLAR_LOG" "POLAR_SOURCE_LIMIT"]
             assert equal $merged.workloads.secret-harness.enabled false
+            assert equal $merged.workloads.cassini {}
             # Two add up: each list keeps both.
             let other = { cluster: { attest_also: ["ab-test"] } }
             assert equal (with_adds (target) [(gitlab_adds) $other] | get cluster.attest_also) ["gitlab-test" "ab-test"]
@@ -84,7 +86,12 @@ def main [] {
                 [{ cluster: { registry_in_cluster: { node_port: 1 } } } "registry_in_cluster"]
                 [{ workloads: { secret-harness: { enabled: false } } } "enabled"]
                 [{ workloads: { gitlab-observer: { env: [{ name: "POLAR_LOG", value: "debug" }] } } } "POLAR_LOG"]
-                [{ workloads: { gitlab-observer: { needs: ["graph-write"] } } } "needs"]
+                [{ workloads: { gitlab-observer: { enabled: true, needs: ["graph-write"] } } } "needs"]
+                # What the target runs is not under test, so a configuration under test neither configures nor enables it.
+                [{ workloads: { cassini: { env: [{ name: "POLAR_SOURCE_LIMIT", value: "5" }] } } } "cassini"]
+                [{ workloads: { cassini: { enabled: true } } } "cassini"]
+                # What it configures, it enables.
+                [{ workloads: { gitlab-observer: { env: [{ name: "POLAR_SOURCE_LIMIT", value: "5" }] } } } "enabled"]
                 [{ elsewhere: {} } "elsewhere"]
             ] {
                 let problems = (adds_problems $case.0 (target))
@@ -101,6 +108,22 @@ def main [] {
             assert equal ($layered.apply_layers | last | get depends_on) ["agents"]
             assert equal $layered.apply_order ["namespaces.yaml" "agents.yaml" "gitlab-test.yaml"]
             assert equal ($layered.charts | last) "/r/infra/under-test/gitlab/main.nu"
+        }
+
+        # docs/architecture/configurations-under-test.md, CT2: what it makes, and nothing else, is under test.
+        "what a configuration under test makes is marked: the workloads it enables, the servers it adds, and its layer holds them": {
+            let declared = [
+                { name: "gitlab", chart: "/c", layer: { files: ["gitlab-test.yaml" "gitlab-observer.yaml" "gitlab-observer-resources.yaml"] }, adds: (gitlab_adds) }
+                { name: "other", chart: "/d", layer: { files: [] }, adds: { cluster: { attest_also: ["ab-test"] } } }
+            ]
+            let m = (marked $declared)
+            assert equal $m.workloads ["gitlab-observer"]
+            assert equal ($m.servers | get service_account) ["gitlab"]
+            assert equal (marked []) { workloads: [], servers: [] }
+            assert equal (layer_problems $declared) []
+            let outside = ($declared | update 0.layer.files ["gitlab-test.yaml"])
+            let problems = (layer_problems $outside)
+            assert (($problems | length) == 1 and ($problems.0 | str contains "gitlab-observer.yaml")) ($problems | to nuon)
         }
 
         "a cluster's inputs say which configurations under test it carries, and its signed record gives them back": {

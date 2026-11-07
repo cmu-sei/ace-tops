@@ -100,6 +100,18 @@ its signed record.
 - **CT2, the mark.** The render gives `g:under-test` to every workload of a configuration under test, in its certificate facts and
   any floor entry; the deployment record says which workloads are under test (schema 2), and the attestation agent reads both
   schemas and reports on them apart. Properties: a workload is marked exactly when a configuration under test makes it.
+  *Decided* (the maintainer, 2026-11-07): "Only what it makes": what its layer makes and the catalog workloads it enables that the
+  target leaves out, and nothing else, so a configuration under test configures only what it enables; and "A field on what it says":
+  the record and the published report carry `under_test`, on the same topics.
+  *Done (2026-11-07).* `under-test.nu`: `adds_problems` refuses a workload the target runs, and one named without `enabled: true`;
+  `marked` gives what is under test (the workloads enabled, the servers added); `layer_problems` holds each enabled workload's
+  `<name>.yaml` to its configuration's layer, checked as a cluster's are read, so the record marks it as its certificate is. The
+  resolver adds `under-test` to those workloads' groups in the authority model and the floor (`marks_of`), and to the floor entries of
+  the servers a configuration under test adds (`main server-also`; the target's own get none). The record and the agents: as
+  `runtime-attestation.md`, "What is under test, said apart", and `authority-model.md`, "Two kinds of groups", say. Properties
+  (`attestation/common/tests/props.rs`): a record's marks change nothing found but the mark, and a finding is under test exactly when
+  the record claims its pod for a marked workload; drift is unchanged by random marks. Tests: `tests/under-test.nu` (7),
+  `tests/deploy-repo.nu`, `tests/resolve.nu`, `record.rs`, `report.rs`, the ledger's replay of an entry from before.
 - **CT3, the test GitLab as the first.** `infra/under-test/gitlab/`: what `infra/gitlab-test.nu` applies, rendered as a chart; its
   outside images pinned as the others are; its settings (`attest_also`, `server_also`, the GitLab observer's trust of the cluster
   CA) moved out of `sandbox-local`; what needs the running GitLab (its root token, the runner's registration) a step `up.nu` runs

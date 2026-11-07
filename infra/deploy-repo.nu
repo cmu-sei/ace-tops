@@ -54,6 +54,7 @@ use forwards.nu [forward_live, stop, stop_stale]
 use tools.nu
 use layers.nu [layer_problems, to_apply]
 use cluster-inputs.nu
+use under-test.nu [LAYER_PREFIX]
 use seed.nu [GIT_HOST, GIT_PORT, git_config]
 use deploy-objects.nu [AUTH_SECRET, FLUX_NS, deployment_facts, next_record, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
 
@@ -586,7 +587,9 @@ def "main publish" [
         let result = (with-env { GNUPGHOME: $signing.home } {
             let tls = $push_tls
             run_ok (if $to_polar { $"cloning the deployment from Polar's git server \(is it running? if it cannot be brought back: nu infra/up.nu ($target) --bootstrap-again\)" } else { "cloning the deployment repository (is it running? nu infra/deploy-repo.nu ensure)" }) { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy }
-            let record = (record_text $pki $copy (deployment_facts ($files | where {|f| $f.path | str starts-with "layers/" } | get text)) $target)
+            let layered = ($files | where {|f| $f.path | str starts-with "layers/" })
+            let tested = {|f| $f.path | str starts-with $"layers/($LAYER_PREFIX)" }
+            let record = (record_text $pki $copy (deployment_facts ($layered | where {|f| not (do $tested $f) } | get text) ($layered | where {|f| do $tested $f } | get text)) $target)
             ls -a $copy | get name | where {|n| ($n | path basename) not-in [".git" "." ".."] } | each {|n| rm -rf $n } | ignore
             for f in ($files | append { path: $RECORD_FILE, text: $record }) {
                 let dest = ($copy | path join $f.path)

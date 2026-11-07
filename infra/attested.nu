@@ -75,8 +75,8 @@ export def server_also_problems [also: any, attested: list] {
 }
 
 # A target's other servers as the floor's entries, as Neo4j's is (render.nu, neo4j_floor_entries): vouched for by the
-# credentials agent, never signed on a token alone.
-export def floor_entries_also [also: list] {
+# credentials agent, never signed on a token alone, with `groups` in their certificates (`under-test` for a configuration under test's).
+export def floor_entries_also [also: list, groups: list<string> = []] {
     $also | each {|s|
         {
             workload: $"system:serviceaccount:($s.namespace):($s.service_account)"
@@ -85,7 +85,7 @@ export def floor_entries_also [also: list] {
             vouched_only: true
             publish: []
             subscribe: []
-            groups: []
+            groups: $groups
         }
     }
 }

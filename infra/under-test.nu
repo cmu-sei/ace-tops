@@ -76,7 +76,10 @@ export def declaration [infra_root: string, name: string] {
 
 # The declarations of what this cluster carries (its inputs for `target`).
 export def of_cluster [infra_root: string, target: string] {
-    under_test_of (read_inputs (path_of $infra_root $target)) | each {|n| declaration $infra_root $n }
+    let declared = (under_test_of (read_inputs (path_of $infra_root $target)) | each {|n| declaration $infra_root $n })
+    let problems = (layer_problems $declared)
+    if ($problems | is-not-empty) { error make --unspanned { msg: ($problems | str join "; ") } }
+    $declared
 }
 
 # The paths under `cluster` that `adds` sets.
@@ -102,14 +105,36 @@ export def adds_problems [adds: record, config: record, catalog_env: any = null]
         let own = ($config.workloads? | default {} | get -o $it.name | default {})
         let known = if $catalog_env == null { true } else { $it.name in ($catalog_env | columns) }
         let held = (($own.env? | default []) ++ (if $catalog_env == null { [] } else { $catalog_env | get -o $it.name | default [] | each {|n| { name: $n } } }) | get -o name | default [])
+        let left_out = (($own | describe | str starts-with "record") and ($own.enabled? | default true) == false)
         [
             (if not $known { $"workloads.($it.name): no workload of that name in the catalog" })
+            # What the target runs is not under test (CT2): a configuration under test enables what the target leaves out, and configures only that.
+            (if $known and not $left_out { $"workloads.($it.name): the target runs it, so a configuration under test neither enables nor configures it" })
             ...($it.w | columns | where {|k| $k not-in ["enabled" "env"] } | each {|k| $"workloads.($it.name).($k): a configuration under test enables a workload and adds to its env, nothing else" })
-            (if ($it.w.enabled? | default true) != true { $"workloads.($it.name).enabled: a configuration under test enables, and never leaves out what the target runs" })
+            (if ($it.w.enabled? | default null) != true { $"workloads.($it.name).enabled: a configuration under test says `enabled: true` of each workload it names, and never leaves out what the target runs" })
             ...($it.w.env? | default [] | where {|e| $e.name in $held } | each {|e| $"workloads.($it.name).env ($e.name): the target or the catalog already sets it, and a configuration under test only adds" })
         ] | compact
     } | flatten)
     $elsewhere ++ $cluster ++ $workloads
+}
+
+# What `declared` make, and so what is under test (docs/architecture/configurations-under-test.md, CT2): the catalog workloads they
+# enable, by name, and the servers they put on the floor. Their certificates carry `g:under-test`.
+export def marked [declared: list] {
+    {
+        workloads: ($declared | each {|d| $d.adds.workloads? | default {} | columns } | flatten | uniq | sort)
+        servers: ($declared | each {|d| $d.adds.cluster?.issuance?.server_also? | default [] } | flatten)
+    }
+}
+
+# Why a declaration's layer does not hold what it makes: each workload it enables is rendered into `<name>.yaml`, which is to be in
+# its layer, so the deployment record marks it under test as its certificate is.
+export def layer_problems [declared: list] {
+    $declared | each {|d|
+        $d.adds.workloads? | default {} | columns | where {|w| $"($w).yaml" not-in ($d.layer.files? | default []) } | each {|w|
+            $"under test ($d.name): it enables ($w), so its layer holds ($w).yaml"
+        }
+    } | flatten
 }
 
 # `config` with each of `adds_list` merged over it: lists extended, the rest added. Judged first (`adds_problems`).

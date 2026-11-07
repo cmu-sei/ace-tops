@@ -220,12 +220,15 @@ export def annotate_config_hashes [texts: record] {
 }
 
 # What the deployment's manifests say each workload is, for the attestation agent to compare what it sees with (docs/architecture/runtime-attestation.md, "What the images are checked against"). In one order, so the same render gives the same record.
-export def deployment_facts [texts: list<string>] {
-    $texts
-    | each {|t| documents $t }
+# `under_test` are the texts of the configurations under test's layers (docs/architecture/configurations-under-test.md, CT2): their
+# workloads are marked so, and the attestation agent reports on them apart.
+export def deployment_facts [texts: list<string>, under_test: list<string> = []] {
+    ($texts | each {|t| { text: $t, under_test: false } }) ++ ($under_test | each {|t| { text: $t, under_test: true } })
+    | each {|t| documents $t.text | each {|d| { d: $d, under_test: $t.under_test } } }
     | flatten
-    | where {|d| ($d.kind? | default "") in ["Deployment" "StatefulSet" "Job"] }
-    | each {|d|
+    | where {|it| ($it.d.kind? | default "") in ["Deployment" "StatefulSet" "Job"] }
+    | each {|it|
+        let d = $it.d
         let pod = $d.spec.template.spec
         let account = ($pod.serviceAccountName? | default "default")
         {
@@ -235,6 +238,7 @@ export def deployment_facts [texts: list<string>] {
             namespace: $d.metadata.namespace
             service_account: $account
             containers: (($pod.initContainers? | default []) ++ ($pod.containers? | default []) | each {|c| { name: $c.name, image: $c.image } } | sort-by name)
+            under_test: $it.under_test
         }
     }
     | sort-by identity owner_name
@@ -243,7 +247,8 @@ export def deployment_facts [texts: list<string>] {
 # The record to sign for `facts`, given the last one's payload, or null when that one still says it. The version moves only with the facts, so a publish of the same render changes nothing, and an agent can refuse an older record.
 export def next_record [previous: any, facts: list, target: string] {
     if $previous != null and ($previous.workloads? | default null) == $facts { return null }
-    { schema: 1, target: $target, version: (($previous.version? | default 0) + 1), workloads: $facts }
+    # Schema 2: each workload says whether it is under test.
+    { schema: 2, target: $target, version: (($previous.version? | default 0) + 1), workloads: $facts }
 }
 
 # What the published tree records about where it came from. Only facts that exist before the cluster does: nothing

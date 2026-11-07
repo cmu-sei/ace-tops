@@ -260,6 +260,12 @@ checks, with different jobs.
   of many (for review). The attestation agent compares every Deployment and StatefulSet with it each minute, and logs an ERROR for a difference that has lasted ten minutes, since a record and
   what Flux applies from the same commit do not arrive together. A pin changed behind Flux gets a certificate first and is caught here: "attested after the fact", as cert-issuer's entries are.
   Until the copy reaches Polar's git server there is no record, so every identity is answered `CannotSay`, and the first document attests what is running.
+- **What is under test, said apart** (2026-11-07, `configurations-under-test.md`, CT2). The record is schema 2: each workload says `under_test`, true for what a
+  configuration under test's layer holds (`deploy-objects.nu` `deployment_facts`, from the `layers/under-test-*` files). The agent reads schemas 1 and 2, and refuses a
+  schema 1 that marks anything (`attestation/common/src/record.rs`). A lasting difference about a workload under test is logged at WARN with `under_test`, the rest
+  at ERROR; a report on `attestation-reports` carries `under_test`, true when the record claims its pod, by namespace and service account and for one workload alone,
+  for a workload it marks (`report.rs` `findings`); the credentials agent records it in the ledger's `AttestationReported` (an entry recorded before reads as
+  not under test) and logs it at WARN. Verdicts are not marked: a pod under test is held to the record as any other.
 
 *The document.* A `polar-signing` document in a signing domain of its own, signed by the `pipeline` certificate (P-256 since 2026-11-02, so it can be), chaining to the deployment CA and not Polar's. The configuration agent
 is not trusted: the attestation agent verifies the document itself, and trusts the deployment CA for this section alone, so the deployment PKI gains no authority over anything else. The CA's

@@ -231,6 +231,11 @@ spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee
                 assert equal $store.owner_kind "StatefulSet"
                 assert equal $store.identity "a-store.polar-graph.serviceaccount.cluster.local"
                 assert equal ($facts | where owner_name == "a-job" | first).service_account "default" "no account named is Kubernetes' default"
+                # CT2: what a configuration under test's layers hold is under test, and nothing else.
+                assert ($facts | all {|f| $f.under_test == false })
+                let tested = (deployment_facts [$others] [$deployment])
+                assert equal ($tested | where under_test | get owner_name) ["the-app"]
+                assert equal ($tested | reject under_test) ($facts | reject under_test) "only the mark differs"
             }
         }
         {
@@ -238,7 +243,7 @@ spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee
             body: {
                 let facts = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:1" }] }]
                 let first = (next_record null $facts "t")
-                assert equal $first { schema: 1, target: "t", version: 1, workloads: $facts }
+                assert equal $first { schema: 2, target: "t", version: 1, workloads: $facts }
                 assert equal (next_record $first $facts "t") null "nothing to sign"
                 let changed = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:2" }] }]
                 assert equal (next_record $first $changed "t").version 2

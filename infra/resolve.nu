@@ -60,6 +60,9 @@ const CONFIG = ($INFRA | path join "config")
 
 const DEFAULT_TARGET = "sandbox-local"
 
+# The group every certificate of what a configuration under test makes carries (docs/architecture/configurations-under-test.md, CT2).
+const UNDER_TEST_GROUP = "under-test"
+
 # The start marker's file, in the health volume (docs/architecture/deployments.md, step 4).
 const START_MARKER_FILE = "started-by-polar-init"
 
@@ -329,8 +332,14 @@ def issuance_record [w: record, target: string, kinds: record] {
         kind: ($w.kind? | default "agent")
         config: ($w.config? | default "env")
         topics: $scaffold.topics?
-        groups: $scaffold.groups?
+        groups: (($scaffold.groups? | default []) ++ (marks_of $w.name $target))
     }
+}
+
+# The groups a workload's certificates carry for what it is deployed as, beside the ones its scaffold prints: `under-test` when a
+# configuration under test this cluster carries enables it (infra/under-test.nu, docs/architecture/configurations-under-test.md).
+def marks_of [name: string, target: string] {
+    if $name in (under-test marked (under-test of_cluster $INFRA $target)).workloads { [$UNDER_TEST_GROUP] } else { [] }
 }
 
 # The images a workload's pod runs, as the resolved spec names them: its own, and its init container's.
@@ -910,9 +919,9 @@ def floor_record [w: record, target: string, kinds: record, caps: record, vars: 
         issuer: $s.issuer
         bootstrap: $s.bootstrap
         certs: $certs
-        # The topics and groups its scaffold prints: floor_entries writes a bootstrap service's own.
+        # The topics and groups its scaffold prints, and what it is deployed as: floor_entries writes a bootstrap service's own.
         topics: ($scaffold.topics? | default [])
-        groups: ($scaffold.groups? | default [])
+        groups: (($scaffold.groups? | default []) ++ (marks_of $w.name $target))
     }
 }
 
@@ -1305,7 +1314,10 @@ def "main attest-also" [--target: string = $DEFAULT_TARGET] {
 
 # The floor's entries for the servers a target names beside Neo4j, as JSON: render.nu adds them as it adds Neo4j's.
 def "main server-also" [--target: string = $DEFAULT_TARGET] {
-    floor_entries_also (load_cluster $target | get -o issuance.server_also | default []) | to json --raw
+    let tested = (under-test marked (under-test of_cluster $INFRA $target)).servers
+    let all = (load_cluster $target | get -o issuance.server_also | default [])
+    # The target's own, then those a configuration under test adds, which are under test.
+    (floor_entries_also ($all | where {|s| $s not-in $tested })) ++ (floor_entries_also $tested [$UNDER_TEST_GROUP]) | to json --raw
 }
 
 def "main floor-enforced" [--target: string = $DEFAULT_TARGET] {
