@@ -717,7 +717,13 @@ Each step is taken in bites, each reported before the next.
   contract asked for it, detection first), which takes a second read, of the tag, on every observation; and a read that fails is made again
   on every observation. Every observation used to read the registry again, which on Docker Hub meets its pull limits now that hostless names the
   kubelet ran are read there; since 2026-11-07 an image read by its digest is kept (`ReadCache`, at most 1024 then all dropped, as the broker's
-  decision cache), so it is read once. The history that
+  decision cache), so it is read once. Checked live on u7c, 2026-11-07 (the GitLab configuration under test up, the
+  resolver at `a29d1d36`): the two Docker Hub images were read once each in two minutes while each container was discovered about four times,
+  and their edges are the kubelet's digests; coredns, whose kubelet gave a bare `sha256:` (an image the node had loaded), was logged "not
+  verified" where the old resolver had linked registry.k8s.io's tag as it then was, a digest the kubelet did not run. THAT EDGE IS STILL THERE: an
+  edge the old resolver made is never taken back, so a graph built before `1f809267` may hold `USES_IMAGE` edges to images a container did not
+  run; removing them (each `PodContainer` whose kubelet digest is not its edge's) is a migration step for after 3.0.0, not written. Polar's own
+  `localhost:30500` images still fail, as below ("The resolver cannot read images from the node's registry"). The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
