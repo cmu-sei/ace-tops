@@ -806,7 +806,13 @@ Each step is taken in bites, each reported before the next.
   would have been refused and dropped; his Neo4j test, `#[ignore]` and never run, would have shown it. Kept first-write-wins with
   `SET x.at = coalesce(x.at, $observed_at)`, a test now holds every projection to what the controller accepts, and the Neo4j test runs with the
   suite. Migration step, not written: graphs the old linker wrote hold built images' layers as `OCILayer` keyed by uncompressed diff ID, which the
-  projection now writes as `OCILayerDiffId`. The history that
+  projection now writes as `OCILayerDiffId`. P2 DONE 2026-11-07: a PolarAgent on the HTTP processor's shape, a catalog workload
+  (`provenance.nuon`, writers pool) that sandbox-local enables, a Deployment; the hand chart, its render arm and the linker topic gone; closes B3,
+  B4, B14 (a constraint for each of its sixteen labels), B16, B22, B23, N2, N3. Checked live on u7c: it ran 2/2 with no restart, made its
+  constraints, and wrote the resolver's two Docker Hub images as `OCIArtifact`s `HOSTED_BY` docker.io, each an index with 12 `HAS_MANIFEST`
+  platform manifests, which nothing wrote before. Migration step, not written: a cluster that ever applied the old chart keeps its
+  `build-processor` Job and ServiceAccount, to delete. P3 next: B11 (`published_by`), B12 and N1 (one event's writes as one transaction), then
+  the projection findings. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
