@@ -363,6 +363,31 @@ Each step is taken in bites, each reported before the next.
   - Not re-read by that session: bodies of up to 256 MiB read whole and copied before `is_admin`, with no limit on concurrent requests; and, lesser, a push-log line or
     event lost on a crash, a 500 after 120 s though refs moved, `access.rs` writing without fsync, quarantine directories leaking and reused across restarts, `run_git`
     without a timeout, and signing-check errors logged as refusals.
+- [ ] **Soft state's failure handling** (`soft-state-common`, `-observer`, `-processor`; handed over 2026-11-07 by the agentic-control-plane session, from two
+  blind failure-handling reviews; its write-up is that branch's `docs/architecture/polar-eden.md`, "Scored blind on soft state", local at `05c74ef7`; soft state
+  there is main's as of `fe2195a7`). Nothing fixed. "Checked" or "confirmed", traced in the code; "plausible", the trigger not seen. 1-6 both reviewers found.
+  - Checked, MEDIUM and HIGH once the Reaper reads it, confirmed on main 2026-11-07: the writer blames every workload for its own outage. `process/src/supervisor.rs`
+    ~251-263 asks each workload with `OfflineBehavior::Drop` and opens the round whatever happened; a Drop publish while offline returns `Ok(())`
+    (`lib/src/cassini.rs` ~341) and a full outbox drops one silently (~391-395); at close (`supervisor.rs` ~273-318, `classify.rs` ~84-87) every reachable workload
+    with no answer is written Unresponsive. A 90 s drop of the writer's own session makes two false transitions per workload in a 20-slot history, pushing out
+    real history. Direction: the writer knows whether its questions went out (Fail, not Drop, or no round while offline).
+  - Confirmed, MEDIUM: reads that time out still run. `observe/src/query.rs` uses ractor `rpc::call`, and the graph controller is serial
+    (`lib/src/graph/controller.rs` ~1294-1297), running every queued Query after its caller gave up: slow Max scans (`JiraIssue` `updated_ms`, no index) pile up, and
+    the 30 s health tick queues behind them.
+  - Confirmed, LOW-MEDIUM: timeouts inverted. The observer's graph timeout is 10 s (`observe/src/settings.rs` ~28-34), the asker's reply timeout 8 s
+    (`polar-agent-builder/src/state.rs` ~53-56): "did not answer in time" is never heard, the StateActor's Unavailable retry (bfede9ef) never runs, and each ask
+    leaves three scans running.
+  - Confirmed, LOW-MEDIUM: a forward clock step freezes transition times (`process/src/history.rs` ~72-75 stamps `max(at_ms, last.at_ms)`): after a step later
+    corrected, every transition carries the future time, persisted and reloaded at start (~53-59), disagreeing with `observed_at_ms`.
+  - Confirmed, LOW: `(:AgentHealth)` of a workload dropped from `agents` is never removed or aged (only expected workloads are written, `supervisor.rs` ~273-318;
+    nothing deletes); and a workload added or re-identified by an `agents` change while a round is open is recorded unresponsive (asked from expected at open,
+    ~247; classified by expected at close, ~280-286, ~492).
+  - Plausible, one reviewer each: a hung graph connection leaves the reader saying `graph_connected: true` (`observe/src/supervisor.rs` ~282-287 with
+    `controller.rs` ~1272-1297: a failed or hung Query sends no health signal and the Tick queues behind it; turns on neo4rs read and pool timeouts, unchecked);
+    the policy lookup has no timeout (`polar-agent-builder/src/authority.rs` ~395-406 `rpc::call(.., None)`, and `observe/src/supervisor.rs` ~349 spawns a task per
+    request without limit; `publish_reply` uses `OfflineBehavior::Queue`, ~148, so replies buffered offline go after every asker has given up); a failed read of
+    the runtime section is only logged (`observe/src/supervisor.rs` ~314, `process/src/supervisor.rs` ~444), and a replayed document of the same version is not
+    announced again (`polar-agent-builder/src/configuration.rs` ~545), so the section stays stale until a newer one or a restart.
 - [ ] **Key custody's failure handling** (`polar-custody`, `polar-custody-daemon`; handed over 2026-11-07 by the agentic-control-plane session, from a blind
   failure-handling review; its write-up is that branch's `docs/architecture/polar-eden.md`, "Scored blind on key custody", local at `eefd779c`; the custody code there is
   main's as of `fe2195a7`). The deadlock is fixed; the rest are not. "Checked" means that session traced it in the code; "plausible", that the trigger was not seen
