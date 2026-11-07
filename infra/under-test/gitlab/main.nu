@@ -118,9 +118,37 @@ export def service [] {
     }
 }
 
+# GitLab's SSH host keys, made by its embedded OpenSSL where there are none. On a FIPS kernel the image's own OpenSSH, which
+# GitLab's start script runs to make them, cannot start ("PRNG is not seeded"); the embedded OpenSSL can. Its OpenSSH is off
+# (`GITLAB_DISABLE_OPENSSH`), since the test reads GitLab over HTTPS alone.
+export def host_keys [image: string] {
+    let make = [
+        "set -e"
+        "o=/opt/gitlab/embedded/bin/openssl"
+        "for t in rsa ecdsa ed25519; do"
+        "  f=/etc/gitlab/ssh_host_${t}_key"
+        "  [ -f \"$f\" ] && continue"
+        "  case $t in"
+        "    rsa) $o genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out \"$f\" ;;"
+        "    ecdsa) $o genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out \"$f\" ;;"
+        "    ed25519) $o genpkey -algorithm ED25519 -out \"$f\" ;;"
+        "  esac"
+        "  chmod 0600 \"$f\""
+        "  $o pkey -in \"$f\" -pubout -out \"$f.pub\""
+        "done"
+    ] | str join "\n"
+    {
+        name: "gitlab-host-keys"
+        image: $image
+        command: ["sh" "-c" $make]
+        volumeMounts: [{ name: "data", mountPath: "/etc/gitlab", subPath: "config" }]
+    }
+}
+
 # GitLab: its only token is polar-init's; it reads its certificate and never writes it.
 export def statefulset [context: record] {
     let init = (polar_init $context)
+    let gitlab_image = (image $context.registry "gitlab-ce:19.5.3-ce.0")
     {
         apiVersion: "apps/v1", kind: "StatefulSet"
         metadata: { name: $NAME, namespace: $NAMESPACE }
@@ -133,12 +161,13 @@ export def statefulset [context: record] {
                 spec: {
                     serviceAccountName: $NAME
                     automountServiceAccountToken: false
-                    initContainers: [$init.container]
+                    initContainers: [$init.container (host_keys $gitlab_image)]
                     containers: [{
                         name: $NAME
-                        image: (image $context.registry "gitlab-ce:19.5.3-ce.0")
+                        image: $gitlab_image
                         env: [
                             { name: "GITLAB_OMNIBUS_CONFIG", value: (omnibus_config) }
+                            { name: "GITLAB_DISABLE_OPENSSH", value: "true" }
                             { name: "GITLAB_ROOT_PASSWORD", valueFrom: { secretKeyRef: { name: "gitlab-root", key: "password" } } }
                         ]
                         ports: [{ containerPort: 443, name: "https" } { containerPort: $REGISTRY_PORT, name: "registry" }]

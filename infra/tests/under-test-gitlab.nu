@@ -111,6 +111,26 @@ def main [] {
             assert ("polar-ca" in ($pod.volumes | get name))
         }
 
+        # On a FIPS kernel the image's own OpenSSH cannot start ("PRNG is not seeded", 2026-11-07 on u7c), and GitLab's start
+        # script runs its ssh-keygen when a host key is missing: they are made first with GitLab's embedded OpenSSL, and its
+        # OpenSSH is off, since the test reads GitLab over HTTPS alone.
+        "GitLab's SSH host keys are made by its embedded OpenSSL before it starts, and its OpenSSH is off": {
+            let pod = (statefulset (context)).spec.template.spec
+            assert equal ($pod.initContainers | get name) ["polar-init" "gitlab-host-keys"]
+            let keys = ($pod.initContainers | last)
+            assert equal $keys.image $"($REG)/gitlab-ce:19.5.3-ce.0"
+            let script = ($keys.command | last)
+            assert ($script | str contains "o=/opt/gitlab/embedded/bin/openssl")
+            assert ($script | str contains "$o genpkey -algorithm ED25519")
+            assert (not ($script | str contains "ssh-keygen"))
+            # The three the start script looks for, where it looks: /etc/gitlab/ssh_host_<type>_key.
+            assert ($script | str contains "for t in rsa ecdsa ed25519; do")
+            assert ($script | str contains "f=/etc/gitlab/ssh_host_${t}_key")
+            assert equal ($keys.volumeMounts | where mountPath == "/etc/gitlab" | first | get subPath) "config"
+            let gitlab = ($pod.containers | first)
+            assert equal ($gitlab.env | where name == "GITLAB_DISABLE_OPENSSH" | first | get value) "true"
+        }
+
         "the runner reaches GitLab by the cluster's CA, runs jobs on the declared images, and may act only in its own namespace": {
             let c = (runner_config $REG)
             assert ($c | str contains "url = \"https://gitlab.gitlab-test.svc.cluster.local\"")
