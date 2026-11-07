@@ -451,18 +451,21 @@ def main [] {
         }
 
         "the attestation agent gets a read-only Role in each namespace Polar attests, and no ClusterRole": {
-            let resources = (^nu $RESOLVER resources attestation-agent | from json)
-            assert equal $resources.cluster_roles []
-            let namespaces = ($resources.namespaced_roles | get namespace | sort)
-            # Polar's own: sandbox-local attests no other (a configuration under test may add one, infra/under-test.nu).
-            assert equal $namespaces ["polar" "polar-auth" "polar-graph"]
-            for role in $resources.namespaced_roles {
-                let verbs = ($role.rules | get verbs | flatten | uniq | sort)
-                assert equal $verbs ["get" "list" "watch"] $role.namespace
-                let kinds = ($role.rules | get resources | flatten | sort)
-                assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
+            # Polar's own: sandbox-local as committed attests no other (a copy, so this machine's cluster-inputs.nuon, which
+            # may carry a configuration under test that adds one, infra/under-test.nu, is not read).
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                let resources = (^nu $RESOLVER resources attestation-agent --target $t | from json)
+                assert equal $resources.cluster_roles []
+                let namespaces = ($resources.namespaced_roles | get namespace | sort)
+                assert equal $namespaces ["polar" "polar-auth" "polar-graph"]
+                for role in $resources.namespaced_roles {
+                    let verbs = ($role.rules | get verbs | flatten | uniq | sort)
+                    assert equal $verbs ["get" "list" "watch"] $role.namespace
+                    let kinds = ($role.rules | get resources | flatten | sort)
+                    assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
+                }
+                assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-auth" "polar-graph"]
             }
-            assert equal (env_value (resolve "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" | split row "," | sort) ["polar" "polar-auth" "polar-graph"]
         }
 
         # docs/architecture/http-observers.md, "GitLab": a namespace that is not Polar's, whose pods Polar's CA issues to, is one
