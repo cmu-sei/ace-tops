@@ -241,6 +241,24 @@ impl Gitlab {
         Ok(true)
     }
 
+    /// A GraphQL request POSTed to GitLab's endpoint, and the `data` of its answer; an answer with errors is an error.
+    pub async fn graphql(&self, body: Value) -> Result<Value> {
+        match self.call(Method::POST, "/api/graphql", Some(&body)).await? {
+            (s, answer)
+                if s.is_success()
+                    && answer
+                        .get("errors")
+                        .is_none_or(|e| e.as_array().is_some_and(|a| a.is_empty())) =>
+            {
+                Ok(answer["data"].clone())
+            }
+            (s, answer) => Err(anyhow!(
+                "POST /api/graphql: {s}: {}",
+                answer.get("errors").cloned().unwrap_or(Value::Null)
+            )),
+        }
+    }
+
     /// Whether the project has the branch: a mirror's history is pushed only when it has none.
     pub async fn has_branch(&self, project: u64, branch: &str) -> Result<bool> {
         Ok(self

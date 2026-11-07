@@ -125,6 +125,7 @@ clokwerk = "0.4.0"
 cyclonedx-bom = "0.8.0"                                 # used in provenance
 cynic = "3.12.0"                                        # used in gitlab, jira?
 apollo-compiler = "1.33"                                 # holds a GraphQL kind's queries and samples to its service's schema (polar-http-testkit)
+cynic-introspection = "3.12"                             # gitlab-seed schema: GitLab's schema from the test GitLab (G4d)
 cynic-parser = "0.11"                                   # judges a GraphQL source's query (polar-http-observer)
 futures = "0.3.32"                                       # used in kube-observer
 futures-lite = "2.6.1"

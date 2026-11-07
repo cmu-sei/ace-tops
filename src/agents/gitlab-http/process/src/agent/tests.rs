@@ -55,7 +55,7 @@ fn here() -> PathBuf {
 fn gitlab() -> &'static GraphQlSchema {
     static SCHEMA: OnceLock<GraphQlSchema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        GraphQlSchema::read(&here().join("../../gitlab/schema/src/gitlab.graphql")).unwrap()
+        GraphQlSchema::read(&here().join("../schema/gitlab.graphql")).unwrap()
     })
 }
 

@@ -30,6 +30,7 @@ polar-scudo.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 clap.workspace = true
+cynic-introspection.workspace = true
 hex.workspace = true
 reqwest.workspace = true
 serde.workspace = true

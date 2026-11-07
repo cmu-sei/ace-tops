@@ -710,7 +710,12 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   through a forward of its own with the administrator's client certificate (Neo4j's asks for one) and the password on standard input, and fails when
   anything expected is missing. Tests: what is missing is exactly what the graph lacks (a property), what is there besides is said and no failure, Neo4j's
   rows, the client certificate (the workspace's reqwest builds native TLS beside rustls, so a PEM identity needs `use_rustls_tls`). Live: 68 of 68 nodes,
-  46 of 46 edges, root besides. Still to do: the schema refreshed from this GitLab, real answers kept as masked samples, `check --ask`.
+  46 of 46 edges, root besides.
+  The schema refreshed (2026-11-07): `gitlab-seed schema` asks the test GitLab by introspection (`cynic-introspection`, the one dependency this adds) and
+  writes the SDL with the license banner and the version it came from, GitLab 19.5.3 (0d4c9a9a2fa); `infra/under-test/gitlab/schema.nu` runs it with the
+  observer's read_api token. It goes to `src/agents/gitlab-http/schema/gitlab.graphql`, which the pair's tests and the kit's hold queries and samples to:
+  the older pair's crates generate their code from `gitlab/schema/src/gitlab.graphql` with cynic and do not build against the new one, so they keep theirs
+  until G5 takes them away. Every query and sample holds to 19.5.3's schema. Still to do: real answers kept as masked samples, `check --ask`.
 
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
 server certificate as Neo4j's does: a `polar-init` init container presents a projected ServiceAccount token to the credentials agent

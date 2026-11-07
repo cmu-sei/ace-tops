@@ -30,3 +30,4 @@ pub mod expected;
 pub mod gitlab;
 pub mod oci;
 pub mod registry;
+pub mod schema;

@@ -66,6 +66,24 @@ enum Command {
     /// Hold the graph to what `make` printed: every node and edge it expects, by name. Neo4j's password on stdin; fails when
     /// anything expected is missing, and says what is there besides.
     Check(CheckArgs),
+    /// Write GitLab's schema, by introspection, with the version it came from, to --out. A token on stdin (read_api is enough).
+    Schema(SchemaArgs),
+}
+
+#[derive(clap::Args)]
+struct SchemaArgs {
+    /// GitLab's own address.
+    #[arg(long)]
+    url: Url,
+    /// Where to reach it (a port-forward).
+    #[arg(long)]
+    connect: Option<SocketAddr>,
+    /// The CA its certificate chains to.
+    #[arg(long)]
+    ca: Option<PathBuf>,
+    /// The file to write (src/agents/gitlab-http/schema/gitlab.graphql).
+    #[arg(long)]
+    out: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -122,7 +140,54 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Make(args) => make(args).await,
         Command::Check(args) => check(args).await,
+        Command::Schema(args) => schema(args).await,
     }
+}
+
+async fn schema(args: SchemaArgs) -> Result<()> {
+    let mut token = String::new();
+    std::io::stdin()
+        .read_to_string(&mut token)
+        .context("reading the token from stdin")?;
+    let ca = args
+        .ca
+        .as_ref()
+        .map(std::fs::read)
+        .transpose()
+        .context("reading the CA")?;
+    let gitlab = Gitlab::new(
+        args.url,
+        token.trim().to_string(),
+        ca.as_deref(),
+        args.connect,
+    )?;
+    let metadata = gitlab
+        .graphql(serde_json::json!({ "query": "{ metadata { version revision } }" }))
+        .await?;
+    let version = metadata["metadata"]["version"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let revision = metadata["metadata"]["revision"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let sdl = gitlab_seed::schema::sdl_of(
+        gitlab
+            .graphql(gitlab_seed::schema::introspection_body())
+            .await?,
+    )?;
+    std::fs::write(
+        &args.out,
+        gitlab_seed::schema::schema_file(&version, &revision, &sdl),
+    )
+    .context("writing the schema")?;
+    eprintln!(
+        "GitLab {version} ({revision}): its schema, {} lines, in {}",
+        sdl.lines().count(),
+        args.out.display()
+    );
+    Ok(())
 }
 
 async fn check(args: CheckArgs) -> Result<()> {
