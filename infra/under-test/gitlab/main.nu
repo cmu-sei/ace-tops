@@ -37,7 +37,7 @@ const INFRA = (path self | path dirname | path dirname | path dirname)
 export const NAMESPACE = "gitlab-test"
 export const NAME = "gitlab"
 const RUNNER = "gitlab-runner"
-const REGISTRY_PORT = 5050
+export const REGISTRY_PORT = 5050
 const TLS_DIR = "/etc/gitlab-tls"
 const CA_DIR = "/etc/polar-ca"
 # The runner's token, from the Secret the ready script makes, and where the runner reads it: never on a command line.

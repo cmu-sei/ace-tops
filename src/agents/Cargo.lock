@@ -3182,12 +3182,15 @@ name = "gitlab-seed"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
+ "hex",
  "polar-scudo",
  "proptest",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "url",
  "wiremock",

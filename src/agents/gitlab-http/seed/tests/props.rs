@@ -51,6 +51,11 @@ proptest! {
         let d = dataset(&size);
         prop_assert_eq!(d.users.len(), size.users);
         prop_assert_eq!(d.projects.len(), size.projects);
+        // The image and the package are in projects it makes, and the mirror is a project of its own, in a group it makes.
+        prop_assert!(d.projects.iter().any(|p| p.full_path == d.image.project));
+        prop_assert!(d.projects.iter().any(|p| p.full_path == d.package.project));
+        prop_assert!(!d.projects.iter().any(|p| p.full_path == d.mirror.full_path));
+        prop_assert!(!d.mirror.readme && d.mirror.ci.is_none());
         prop_assert_eq!(d.projects.iter().filter(|p| p.ci.is_some()).count(), size.ci_projects);
         prop_assert_eq!(d.memberships.len(), size.users);
         for u in &d.users {
@@ -76,6 +81,8 @@ proptest! {
                 "HAS_PIPELINE" => ("GitlabProject", "GitlabPipeline"),
                 "HAS_JOB" => ("GitlabPipeline", "GitlabJob"),
                 "EXECUTED_BY" => ("GitlabJob", "GitlabRunner"),
+                "HAS_CONTAINER_REPOSITORY" => ("GitlabProject", "GitlabContainerRepository"),
+                "HAS_PACKAGE" => ("GitlabProject", "GitlabPackage"),
                 other => { prop_assert!(false, "an edge the mapping does not draw: {}", other); unreachable!() }
             };
             prop_assert!(e.nodes[from].contains(&edge.from), "{:?}", edge);
@@ -95,6 +102,20 @@ fn the_default_dataset_is_the_one_planned() {
         (d.users.len(), d.groups.len(), d.projects.len()),
         (12, 3, 30)
     );
+    assert_eq!(d.mirror.full_path, "polar-seed/polar");
+    assert_eq!(d.image.tags, ["1.0", "latest"]);
+    assert_eq!(
+        (
+            d.package.name.as_str(),
+            d.package.version.as_str(),
+            d.package.files.len()
+        ),
+        ("seed-tools", "1.0.0", 2)
+    );
+    let e = gitlab_seed::expected::expected(&d, "https://gitlab.example", "polar-test");
+    assert_eq!(e.nodes["GitlabProject"].len(), 31, "thirty and the mirror");
+    assert!(e.nodes["GitlabContainerRepository"].contains(&d.image.project));
+    assert!(e.nodes["GitlabPackage"].contains("seed-tools@1.0.0"));
     assert_eq!(d.projects.iter().filter(|p| p.ci.is_some()).count(), 6);
     assert_eq!(
         d.groups

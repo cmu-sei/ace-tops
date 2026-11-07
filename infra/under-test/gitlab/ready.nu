@@ -30,7 +30,7 @@
 
 use ../../secrets-lib.nu [random_token, secret_exists]
 use ../../tools.nu
-use main.nu [NAMESPACE, NAME, RUNNER_TOKEN_SECRET, names]
+use main.nu [NAMESPACE, NAME, RUNNER_TOKEN_SECRET, REGISTRY_PORT, names]
 
 # Root's token, which the seed tool and the observer's escrow read.
 export const ROOT_TOKEN_SECRET = "gitlab-root-token"
@@ -94,13 +94,13 @@ def main [target_dir: string, repo_root: string] {
         error make --unspanned { msg: $e.msg }
     }
     exec_in null "rm" "-rf" $SCRATCH | ignore
-    seed
+    seed $repo_root
 }
 
-# A local port forwarded to GitLab's Service, for as long as `body` runs; stopped by its own PID however it ends.
-def through_forward [body: closure] {
+# A local port forwarded to `remote` on GitLab's Service, for as long as `body` runs; stopped by its own PID however it ends.
+def through_forward [remote: int, body: closure] {
     let log = (mktemp)
-    let pid = (^bash -c $"kubectl -n ($NAMESPACE) port-forward svc/($NAME) :443 > ($log) 2>&1 & echo $!" | str trim | into int)
+    let pid = (^bash -c $"kubectl -n ($NAMESPACE) port-forward svc/($NAME) :($remote) > ($log) 2>&1 & echo $!" | str trim | into int)
     let stop = {|| if $pid > 1 { ^kill $pid | complete | ignore }; rm -f $log }
     let port = (try {
         mut found: any = null
@@ -118,15 +118,21 @@ def through_forward [body: closure] {
 }
 
 # The seed's dataset made in GitLab, what is missing of it, and what the GitLab pair's graph should then hold kept in a ConfigMap: run from
-# this machine through a forward, checking GitLab's certificate by the cluster's CA under GitLab's own name, root's token on stdin.
-def seed [] {
+# this machine through forwards to GitLab and its registry, checking their certificate by the cluster's CA under GitLab's own name, root's
+# token on stdin; the mirror holds this checkout's `main` (`repo_root`).
+def seed [repo_root: string] {
     let ca = (mktemp)
     ^kubectl -n $NAMESPACE get configmap polar-ca -o jsonpath='{.data.ca\.pem}' | save --force $ca
     let token = (^kubectl -n $NAMESPACE get secret $ROOT_TOKEN_SECRET -o jsonpath='{.data.token}' | decode base64 | decode)
     let tool = (tools command "gitlab-seed")
     let r = (try {
-        through_forward {|port|
-            $token | do { ^($tool | first) ...($tool | skip 1) --url $"https://(names | first)" --connect $"127.0.0.1:($port)" --ca $ca } | complete
+        through_forward 443 {|port|
+            through_forward $REGISTRY_PORT {|registry|
+                $token | do {
+                    (^($tool | first) ...($tool | skip 1) --url $"https://(names | first)" --connect $"127.0.0.1:($port)" --ca $ca
+                        --registry-url $"https://(names | first):($REGISTRY_PORT)" --registry-connect $"127.0.0.1:($registry)" --repo $repo_root)
+                } | complete
+            }
         }
     } catch {|e| rm -f $ca; error make --unspanned { msg: $e.msg } })
     rm -f $ca

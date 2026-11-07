@@ -674,6 +674,15 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   (`kernel.keys.maxkeys`), no leak but too many containers for the default; u7s is stopped (the maintainer, 2026-11-07), and a cluster that runs this much
   beside another needs the quota raised.
 - **G4b2, the rest of the dataset.** An image pushed to a project's registry over the registry API, a generic package with files, and a mirror of Polar's `main`.
+  *Done (2026-11-07).* `oci.rs` builds the smallest image (one uncompressed tar layer, no times or owners, so the same digests every run); `registry.rs`
+  gets a token for the repository from GitLab's `/jwt/auth` as root with root's token, uploads each blob the registry lacks, and puts the manifest under
+  `1.0` and `latest`; `ensure_package` puts `seed-tools` 1.0.0's two files when no such version is there; the mirror, `polar-seed/polar`, is made with no
+  README and, while it has no `main`, given this checkout's by `git push` reaching GitLab where the seed does, trusting the cluster's CA alone, the token
+  in a header from its environment, never on its command line. The ready script forwards the registry too (5050) and passes the checkout. Expected beside
+  the rest: the mirror among 31 projects, the repository by its project's path with `HAS_CONTAINER_REPOSITORY`, the package as `seed-tools@1.0.0` with
+  `HAS_PACKAGE`. Tests: the tar and the image (`tests/oci.rs`), the push against a stand-in registry and GitLab, the package put once, the mirror made
+  empty (`tests/client.rs`, 10), and the properties. Live on u7c: project-02's repository has two tags, `seed-tools` 1.0.0 is a generic package, and the
+  mirror's `main` is this checkout's head.
 - **G4c, the pair into Polar.** Packaging and catalog entries; `sandbox-local` leaves the pair out, and the GitLab configuration under test enables it and gives
   the observer its trust of the cluster's CA (the maintainer's "Only what it makes" and "The CT may add it"), so the pair runs under test, marked.
 - **G4d, live.** As planned above, the graph held to `gitlab-seed-expected`.

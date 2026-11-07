@@ -23,7 +23,7 @@
 
 //! What the GitLab pair's graph should hold once it has read the dataset (docs/architecture/http-observers.md, G3's labels and edges), by
 //! the names people use: a user by username, a group or project by full path, the runner by its description, a project's pipeline as
-//! `<project>@main`, a job as `<project>/<job>`. GitLab's own ids are not known before it makes things, and are not what anyone checks
+//! `<project>@main`, a job as `<project>/<job>`, a registry's repository by its project's path, a package as `<name>@<version>`. GitLab's own ids are not known before it makes things, and are not what anyone checks
 //! by. It says what is there at least: GitLab has users of its own (root, its bots), and a re-run makes nothing new.
 
 use crate::dataset::Dataset;
@@ -92,6 +92,17 @@ pub fn expected(d: &Dataset, origin: &str, runner: &str) -> Expected {
             edge("EXECUTED_BY", &name, runner);
         }
     }
+    add("GitlabProject", d.mirror.full_path.clone());
+    // A project's registry's repository is named by the project's path; a package by its name and version.
+    add("GitlabContainerRepository", d.image.project.clone());
+    edge(
+        "HAS_CONTAINER_REPOSITORY",
+        &d.image.project,
+        &d.image.project,
+    );
+    let package = format!("{}@{}", d.package.name, d.package.version);
+    add("GitlabPackage", package.clone());
+    edge("HAS_PACKAGE", &d.package.project, &package);
     Expected {
         origin: origin.to_string(),
         nodes,

@@ -24,7 +24,7 @@
 //! GitLab's REST API, as much as the seed needs: each `ensure_` finds a thing by its name and makes it only if it is not there, so the
 //! seed is safe to run again. The token is sent as `PRIVATE-TOKEN` and is never in an error.
 
-use crate::dataset::{Group, Project, User};
+use crate::dataset::{Group, Package, Project, User};
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Method, StatusCode};
 use serde::Deserialize;
@@ -208,7 +208,7 @@ impl Gitlab {
         let made: Id = self
             .make("/api/v4/projects", json!({
                 "name": p.path, "path": p.path, "namespace_id": namespace, "visibility": "private",
-                "initialize_with_readme": true, "default_branch": "main",
+                "initialize_with_readme": p.readme, "default_branch": "main",
             }))
             .await?;
         Ok(made.id)
@@ -239,6 +239,62 @@ impl Gitlab {
         )
         .await?;
         Ok(true)
+    }
+
+    /// Whether the project has the branch: a mirror's history is pushed only when it has none.
+    pub async fn has_branch(&self, project: u64, branch: &str) -> Result<bool> {
+        Ok(self
+            .find::<Value>(&format!(
+                "/api/v4/projects/{project}/repository/branches/{}",
+                segment(branch)
+            ))
+            .await?
+            .is_some())
+    }
+
+    /// A generic package, put file by file if no version of that name is there: true when it was put.
+    pub async fn ensure_package(&self, project: u64, p: &Package) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Found {
+            version: String,
+        }
+        let list = format!(
+            "/api/v4/projects/{project}/packages?package_name={}&package_type=generic",
+            segment(&p.name)
+        );
+        let found: Vec<Found> = self.find(&list).await?.unwrap_or_default();
+        if found.iter().any(|f| f.version == p.version) {
+            return Ok(false);
+        }
+        for (file, content) in &p.files {
+            let at = format!(
+                "/api/v4/projects/{project}/packages/generic/{}/{}/{}",
+                segment(&p.name),
+                segment(&p.version),
+                segment(file)
+            );
+            match self.put(&at, content.as_bytes().to_vec()).await? {
+                s if s.is_success() => {}
+                s => return Err(anyhow!("PUT {at}: {s}")),
+            }
+        }
+        Ok(true)
+    }
+
+    async fn put(&self, path: &str, body: Vec<u8>) -> Result<StatusCode> {
+        let url = self
+            .base
+            .join(path)
+            .with_context(|| format!("{path} is not a path"))?;
+        let response = self
+            .http
+            .put(url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("PUT {path}: {}", e.without_url()))?;
+        Ok(response.status())
     }
 
     /// Runs a pipeline's failed jobs again.

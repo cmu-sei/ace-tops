@@ -82,6 +82,27 @@ pub struct Project {
     pub namespace: String,
     pub full_path: String,
     pub ci: Option<Ci>,
+    /// Made with a README on `main`; a mirror is made empty, so its history can be pushed whole.
+    pub readme: bool,
+}
+
+/// An image pushed to a project's registry, under each of its tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    /// The project's full path, which is its registry's repository.
+    pub project: String,
+    pub tags: Vec<String>,
+    /// Its one layer's files.
+    pub files: Vec<(String, String)>,
+}
+
+/// A generic package with files, in a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Package {
+    pub project: String,
+    pub name: String,
+    pub version: String,
+    pub files: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +111,10 @@ pub struct Dataset {
     pub groups: Vec<Group>,
     pub memberships: Vec<Membership>,
     pub projects: Vec<Project>,
+    pub image: Image,
+    pub package: Package,
+    /// A project that holds a mirror of Polar's `main`.
+    pub mirror: Project,
 }
 
 /// The group every other is in, and its nesting.
@@ -99,6 +124,7 @@ const LEVELS: [u8; 3] = [30, 40, 20];
 /// The CI's jobs: one stage each, in order.
 const JOBS: [&str; 2] = ["build", "test"];
 
+/// `size.projects` is at least one: the image and the package are in projects of its own.
 pub fn dataset(size: &Size) -> Dataset {
     let mut groups = vec![Group {
         path: TOP.into(),
@@ -140,18 +166,45 @@ pub fn dataset(size: &Size) -> Dataset {
                 full_path: format!("{namespace}/{path}"),
                 path,
                 namespace,
+                readme: true,
                 ci: (i <= size.ci_projects).then(|| Ci {
                     jobs: JOBS.iter().map(|j| j.to_string()).collect(),
                     artifact: i == 1,
                 }),
             }
         })
-        .collect();
+        .collect::<Vec<Project>>();
+    // The image and the package in the second and third projects, or the first when there are fewer.
+    let at = |i: usize| projects[i.min(projects.len() - 1)].full_path.clone();
+    let image = Image {
+        project: at(1),
+        tags: vec!["1.0".into(), "latest".into()],
+        files: vec![("seed.txt".into(), "an image the seed pushed\n".into())],
+    };
+    let package = Package {
+        project: at(2),
+        name: "seed-tools".into(),
+        version: "1.0.0".into(),
+        files: vec![
+            ("README.txt".into(), "a package the seed put\n".into()),
+            ("tools.txt".into(), "seed tools\n".into()),
+        ],
+    };
+    let mirror = Project {
+        path: "polar".into(),
+        namespace: TOP.into(),
+        full_path: format!("{TOP}/polar"),
+        ci: None,
+        readme: false,
+    };
     Dataset {
         users,
         groups,
         memberships,
         projects,
+        image,
+        package,
+        mirror,
     }
 }
 

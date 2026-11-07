@@ -31,10 +31,13 @@
 static GLOBAL: polar_scudo::Scudo = polar_scudo::Scudo;
 
 use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine as _;
 use clap::Parser;
-use gitlab_seed::dataset::{Size, dataset};
+use gitlab_seed::dataset::{Dataset, Size, dataset};
 use gitlab_seed::expected::expected;
 use gitlab_seed::gitlab::{Gitlab, finished};
+use gitlab_seed::oci::image;
+use gitlab_seed::registry::Registry;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -65,6 +68,15 @@ struct Args {
     /// How long the CI may take to finish.
     #[arg(long, default_value_t = 900)]
     wait_secs: u64,
+    /// GitLab's container registry's own address.
+    #[arg(long)]
+    registry_url: Url,
+    /// Where to reach the registry (a port-forward).
+    #[arg(long)]
+    registry_connect: Option<SocketAddr>,
+    /// The repository whose `main` the mirror holds (this checkout of Polar).
+    #[arg(long)]
+    repo: PathBuf,
 }
 
 #[tokio::main]
@@ -84,7 +96,16 @@ async fn main() -> Result<()> {
         .map(std::fs::read)
         .transpose()
         .context("reading the CA")?;
-    let gitlab = Gitlab::new(args.url.clone(), token, ca.as_deref(), args.connect)?;
+    let gitlab = Gitlab::new(args.url.clone(), token.clone(), ca.as_deref(), args.connect)?;
+    let registry = Registry::new(
+        args.registry_url.clone(),
+        args.url.clone(),
+        token.clone(),
+        ca.as_deref(),
+        args.registry_connect,
+        args.connect,
+    )?;
+
     let d = dataset(&Size::default());
 
     let mut users = BTreeMap::new();
@@ -111,8 +132,26 @@ async fn main() -> Result<()> {
             with_ci.push((p.full_path.clone(), id));
         }
     }
+    let ids: BTreeMap<String, u64> = with_ids(&gitlab, &d, &groups).await?;
+    let img = image(
+        &d.image
+            .files
+            .iter()
+            .map(|(name, content)| (name.as_str(), content.as_bytes()))
+            .collect::<Vec<_>>(),
+    );
+    registry.push(&d.image.project, &img, &d.image.tags).await?;
+    gitlab
+        .ensure_package(ids[&d.package.project], &d.package)
+        .await?;
+    let mirror = gitlab
+        .ensure_project(&d.mirror, groups[&d.mirror.namespace])
+        .await?;
+    if !gitlab.has_branch(mirror, "main").await? {
+        push_mirror(&args, &token, ca.is_some(), &d.mirror.full_path)?;
+    }
     eprintln!(
-        "made what was missing: {} users, {} groups, {} projects",
+        "made what was missing: {} users, {} groups, {} projects, an image, a package and a mirror",
         d.users.len(),
         d.groups.len(),
         d.projects.len()
@@ -153,5 +192,75 @@ async fn main() -> Result<()> {
         "{}",
         serde_json::to_string_pretty(&expected(&d, &origin, &args.runner))?
     );
+    Ok(())
+}
+
+/// The projects' ids by full path (each found, made already).
+async fn with_ids(
+    gitlab: &Gitlab,
+    d: &Dataset,
+    groups: &BTreeMap<String, u64>,
+) -> Result<BTreeMap<String, u64>> {
+    let mut ids = BTreeMap::new();
+    for p in &d.projects {
+        ids.insert(
+            p.full_path.clone(),
+            gitlab.ensure_project(p, groups[&p.namespace]).await?,
+        );
+    }
+    Ok(ids)
+}
+
+/// This checkout's `main` pushed to the mirror, whole. git reaches GitLab where the seed does (`--connect`), trusting `--ca` alone,
+/// and is given the token in a header from its environment, never on its command line.
+fn push_mirror(args: &Args, token: &str, with_ca: bool, project: &str) -> Result<()> {
+    let host = args
+        .url
+        .host_str()
+        .ok_or_else(|| anyhow!("{} has no host", args.url))?;
+    let mut target = args.url.clone();
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(&args.repo);
+    if let Some(addr) = args.connect {
+        target
+            .set_port(Some(addr.port()))
+            .map_err(|_| anyhow!("{} cannot take a port", args.url))?;
+        command.arg("-c").arg(format!(
+            "http.curloptResolve={host}:{}:{}",
+            addr.port(),
+            addr.ip()
+        ));
+    }
+    if with_ca && let Some(ca) = &args.ca {
+        command
+            .arg("-c")
+            .arg(format!("http.sslCAInfo={}", ca.display()));
+    }
+    target.set_path(&format!("/{project}.git"));
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("root:{token}"));
+    let pushed = command
+        .args(["push", "--quiet", target.as_str(), "main:refs/heads/main"])
+        // The trust above is the only trust: none from the environment.
+        .env_remove("GIT_SSL_CAINFO")
+        .env_remove("SSL_CERT_FILE")
+        .env_remove("NIX_SSL_CERT_FILE")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+        .env(
+            "GIT_CONFIG_VALUE_0",
+            format!("Authorization: Basic {basic}"),
+        )
+        .output()
+        .context("running git")?;
+    if !pushed.status.success() {
+        bail!(
+            "pushing main to {project}: {}",
+            String::from_utf8_lossy(&pushed.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+        );
+    }
     Ok(())
 }

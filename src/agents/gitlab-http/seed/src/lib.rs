@@ -27,3 +27,5 @@
 pub mod dataset;
 pub mod expected;
 pub mod gitlab;
+pub mod oci;
+pub mod registry;
