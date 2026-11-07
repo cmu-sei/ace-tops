@@ -685,6 +685,16 @@ G4 as built on configurations under test (2026-11-07). G4a is CT3: the test GitL
   mirror's `main` is this checkout's head.
 - **G4c, the pair into Polar.** Packaging and catalog entries; `sandbox-local` leaves the pair out, and the GitLab configuration under test enables it and gives
   the observer its trust of the cluster's CA (the maintainer's "Only what it makes" and "The CT may add it"), so the pair runs under test, marked.
+  *Done (2026-11-07).* `gitlab-http/package.nix` and its containers, as OpenAPI's; `workspace.nix` `gitlabHttpAgent`; images `gitlab-http-observer` and
+  `gitlab-http-processor` (`images.nuon`, `flake.nix`), named for the crates while the older pair holds `gitlab-observer` (G5 renames them; the rule
+  that what is replaced stays until the change is tested); catalog entries in `config/workloads/gitlab.nuon`, nothing more there, since topics, graph
+  labels, graph-write, the credentials section with its escrow and the egress section come from the scaffolds; `sandbox-local` sets both `enabled:
+  false`; the GitLab configuration under test enables both, gives the observer `POLAR_EGRESS_CLUSTER_CA`, and its layer holds their four manifests.
+  Live on u7c (images built, `up.nu --dev --under-test gitlab`): both Running and ready; the observer says no sources are signed so nothing is read,
+  the processor holds a standing configuration problem, no projection signed; both certificates carry `g:under-test`, the observer's with
+  `p:pub:polar.gitlab.observations` and `g:encryption`, the processor's with `p:sub:`. Found: a `--dev` run that rebuilds polar-init changes GitLab's
+  pinned template, so GitLab restarts after Flux calls the layer ready and the seed met it booting (a 502); the ready script now waits for its
+  rollout. Tests: `under-test-gitlab.nu` (10), `catalog-topics.nu` with the pair in the catalog.
 - **G4d, live.** As planned above, the graph held to `gitlab-seed-expected`.
 
 The test GitLab's TLS, decided (the maintainer, 2026-11-06: "Handle it the same way neo4j's service is handled", then "A per-workload setting"). Its pod gets its
