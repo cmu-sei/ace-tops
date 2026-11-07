@@ -156,8 +156,17 @@ async fn neo4j_is_asked_as_neo4j_with_the_password_it_is_given() {
 fn a_client_certificate_is_taken_as_neo4j_asks_for_one() {
     // Polar's Neo4j asks for a client certificate: an administrator's, a PEM of the certificate and its key.
     let key = rcgen::KeyPair::generate().unwrap();
-    let cert = rcgen::CertificateParams::new(vec!["djshepard".to_string()]).unwrap().self_signed(&key).unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["djshepard".to_string()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
     let pem = format!("{}{}", cert.pem(), key.serialize_pem());
-    Neo4j::new(ORIGIN.parse().unwrap(), "pass".into(), Some(cert.pem().as_bytes()), Some(pem.as_bytes()), None)
-        .expect("a client built with the certificate");
+    Neo4j::new(
+        ORIGIN.parse().unwrap(),
+        "pass".into(),
+        Some(cert.pem().as_bytes()),
+        Some(pem.as_bytes()),
+        None,
+    )
+    .expect("a client built with the certificate");
 }
