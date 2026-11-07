@@ -361,12 +361,14 @@ Each step is taken in bites, each reported before the next.
     without a timeout, and signing-check errors logged as refusals.
 - [ ] **Key custody's failure handling** (`polar-custody`, `polar-custody-daemon`; handed over 2026-11-07 by the agentic-control-plane session, from a blind
   failure-handling review; its write-up is that branch's `docs/architecture/polar-eden.md`, "Scored blind on key custody", local at `eefd779c`; the custody code there is
-  main's as of `fe2195a7`). Nothing fixed. "Checked" means that session traced it in the code; "plausible", that the trigger was not seen to happen.
-  - Checked, the most serious, and confirmed on main 2026-11-07: the custodian deadlocks on its own lock. `daemon/src/bootstrap.rs` ~220-227 matches on
+  main's as of `fe2195a7`). The deadlock is fixed; the rest are not. "Checked" means that session traced it in the code; "plausible", that the trigger was not seen
+  to happen.
+  - *Fixed 2026-11-07*, checked, the most serious, and confirmed on main: the custodian deadlocked on its own lock. `daemon/src/bootstrap.rs` ~220-227 matches on
     `write(custody).workload_csr(..)` (and `escrow_csr()`), so the write guard, a temporary in the scrutinee, lives through the arms, and the `Err` arm's `fail()` (~178)
     takes `write(custody)` again: std's `RwLock` is not reentrant, the thread hangs holding it, every socket request and `end_once_failed` block, no failure is recorded
     and the pod stays in Init. Triggers: a plan server name `csr_for_key` refuses (empty, a wildcard, not IA5; `Custody::bootstrap` checks only permissions), a failed
-    random source, Revoked or Sealed. Fix: bind the result before matching. No test drives a refusal out of `workload_csr` or `escrow_csr`.
+    random source, Revoked or Sealed. Fixed by making each CSR before matching on it; `bootstrap.rs`'s tests drive a refusal out of `workload_csr` (a name no
+    certificate can carry, and a revoked custody) and `escrow_csr` (revoked), each under a deadline, and failed by timing out before the fix.
   - Checked: every broker refusal is ignored (`watch.rs` ~460 `WatcherMessage::Event(_) => {}`; the Subscribe casts ~424 are `let _ =`). A refused reply topic leaves
     `ready_to_ask` (~290) false, so the bootstrap never asks and never fails and polar-init gets NotReady until its deadline; a refused authority topic leaves the daemon
     signing without hearing its own revocation, unlogged.

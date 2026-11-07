@@ -214,18 +214,26 @@ impl Bootstrap {
             info!("the custodian has fetched everything it was asked to");
             return Progress::Done;
         };
-        // A key is made once for each request: one asked again is asked with the CSR it was asked with first.
+        // A key is made once for each request: one asked again is asked with the CSR it was asked with first. Each CSR
+        // is made, and the custody let go, before it is looked at: a guard in the match would live through the arms,
+        // and `fail` takes the custody again, which no thread can while it holds it.
         let step = match step {
             Step::Certificate(slot, names, None) => {
-                match write(custody).workload_csr(slot, names.clone()) {
+                let made = write(custody).workload_csr(slot, names.clone());
+                match made {
                     Ok(csr) => Step::Certificate(slot, names, Some(csr)),
                     Err(refusal) => return self.fail(custody, format!("{slot:?}: {refusal}")),
                 }
             }
-            Step::IssueEscrow(None) => match write(custody).escrow_csr() {
-                Ok(csr) => Step::IssueEscrow(Some(csr)),
-                Err(refusal) => return self.fail(custody, format!("the escrow key: {refusal}")),
-            },
+            Step::IssueEscrow(None) => {
+                let made = write(custody).escrow_csr();
+                match made {
+                    Ok(csr) => Step::IssueEscrow(Some(csr)),
+                    Err(refusal) => {
+                        return self.fail(custody, format!("the escrow key: {refusal}"));
+                    }
+                }
+            }
             step => step,
         };
         let correlation_id = uuid::Uuid::new_v4().to_string();
@@ -613,6 +621,75 @@ mod tests {
             ca_chain_pem: String::new(),
             escrow_public_key_pem: String::new(),
         }
+    }
+
+    /// `f` on a thread of its own, or a panic if it has not returned in ten seconds: a custodian that waits on its
+    /// own lock never returns, and the thread is left behind.
+    fn within_deadline<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("it returned: a custodian refused a CSR does not wait on its own lock")
+    }
+
+    /// Every slot's certificate revoked, as the credentials agent's revocation does it (`Custody::revoke`).
+    fn revoked(custody: &RwLock<Custody>) {
+        let serial = read(custody).serial(Slot::Custodian).unwrap();
+        assert!(!write(custody).revoke(&[serial]).is_empty());
+    }
+
+    #[test]
+    fn a_workload_csr_the_custody_refuses_fails_the_bootstrap_and_says_why() {
+        // A server name no certificate can carry, and a revoked custody: each refuses the CSR.
+        for revoke in [false, true] {
+            let custody = custody_planned(false, Some(vec!["*.not a name".to_string()]), false);
+            if revoke {
+                revoked(&custody);
+            }
+            let plan = read(&custody).plan().unwrap();
+            let mut bootstrap = Bootstrap::new(&plan);
+            let (progress, custody) = within_deadline(move || {
+                let progress = bootstrap.next(&custody, None, Instant::now());
+                (progress, custody)
+            });
+            let Progress::Failed(why) = progress else {
+                panic!("revoked {revoke}: expected a failure, got {progress:?}")
+            };
+            assert!(why.contains("Server"), "{why}");
+            assert_eq!(read(&custody).failure(), Some(why));
+        }
+    }
+
+    #[test]
+    fn an_escrow_csr_the_custody_refuses_fails_the_bootstrap_and_says_why() {
+        let custody = custody_planned(false, None, true);
+        let plan = read(&custody).plan().unwrap();
+        let mut bootstrap = Bootstrap::new(&plan);
+        let now = Instant::now();
+        let asked = sent(bootstrap.next(&custody, None, now));
+        let envelope = request::<RetrieveAgentEscrowKeypairRequest>(&asked);
+        revoked(&custody);
+        let not_found = reply(
+            &envelope.correlation_id,
+            RetrieveAgentEscrowKeypairReply::NotFound,
+        );
+        let (progress, custody) = within_deadline(move || {
+            let progress = bootstrap.on_reply(
+                CREDENTIALS_RETRIEVE_AGENT_ESCROW_KEYPAIR_REPLIES_TOPIC,
+                &not_found,
+                &custody,
+                None,
+                now,
+            );
+            (progress, custody)
+        });
+        let Progress::Failed(why) = progress else {
+            panic!("expected a failure, got {progress:?}")
+        };
+        assert!(why.contains("the escrow key"), "{why}");
+        assert_eq!(read(&custody).failure(), Some(why));
     }
 
     #[test]
