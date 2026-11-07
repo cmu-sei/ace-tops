@@ -121,8 +121,9 @@ GitLab pair would appear in both as under test. Until a lifecycle document exist
    move it the rest of the way: under test into deployed when the rule's measures hold (its invariants for a stated time, no attestation
    finding, say), and back, deployed to under test or under test into retiring, when they break or attestation condemns it. A move by rule
    names the rule and the evidence it met, so the record says why, and who signed the rule.
-3. Where the lifecycle document lives: polar-schedules (runtime, signed, per cluster) or the deployment repository (deploy-time, the
-   pipeline's)?
+3. *Decided* (the maintainer, 2026-11-07, "polar-schedules"): the lifecycle document is signed runtime configuration in polar-schedules,
+   as every other control fact, changed without a re-render ("control travels signed, at run time"); the agents read it through the
+   scheduler as they read their sections, a move takes effect when its signed version arrives, and the deployment is rendered from it.
 4. The derived documents: signed by whom, when no person signed that exact body?
 5. The order of work: lifecycle first, then the catalog's split, then the controller on top; or the controller's proposal merged and
    reshaped around phases from the start.
