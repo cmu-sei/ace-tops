@@ -677,7 +677,11 @@ Each step is taken in bites, each reported before the next.
 
 ## The agent builder and its migration
 
-- [ ] MERGE UPSTREAM (github.com/cmu-sei/Polar) BEFORE MIGRATING THE BUILD PROCESSOR (confirmed 2026-11-02: the OpenAPI and GitLab agents first, then the merge, then build-processor and the orchestrator; the maintainer, 2026-10-31:
+- [ ] MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
+  the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
+  upstream code, his restructure of it around cyclops (`312d5dec`) and the build orchestrator included; whether the merge comes before or after the migration
+  is the maintainer's to decide then, not settled. An input to it: the build-processor failure findings above were read on the linker and projection that
+  `312d5dec` deletes, so fixing them in the old code first is wasted either way. (Was: confirmed 2026-11-02: the OpenAPI and GitLab agents first, then the merge, then build-processor and the orchestrator; the maintainer, 2026-10-31:
   Vaughn may have been working there). Read 2026-10-31 (fetch only): the merge base is `9aea62f6` (2026-08-07); ours has
   1058 commits since, `origin/main` 14 (Vaughn, to 2026-10-17, 161 files, +22.7k/-5.9k): the build orchestrator (56
   files; Blitz's per-run identity request is about its builds), the build processor restructured around cyclops
