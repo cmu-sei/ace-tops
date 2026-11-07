@@ -641,6 +641,21 @@ deployment's: projects page by page with the token, and projects following each 
 - Not read yet: registry tags, package files and job artifacts, each a list nested in a nested item (a follow-up of a follow-up); the license (Enterprise only); and
   the older `OBSERVED_*` edges from the instance, which every node's `origin` key already says.
 
+G4, planned (the maintainer's choices, 2026-11-06: "Omnibus container", "In sandbox-local", "A small tool over introspection"):
+- **G4a, a test GitLab in u7c**, outside Polar's catalog, since it is the service observed and not part of Polar: `infra/test/gitlab.nu` (`up`, `down`), namespace
+  `gitlab-test`, the Omnibus `gitlab/gitlab-ce` image pinned by digest and copied into the in-cluster registry with `skopeo`, as `images.nu` copies outside images, a
+  StatefulSet with a volume, its registry and packages on, TLS from a test CA the script makes and the target's egress CA trusts, and a GitLab Runner with the
+  Kubernetes executor, registered through GitLab's API.
+- **G4b, the seed tool**, `gitlab-seed`, a static Rust CLI: through GitLab's API, about a dozen users, three groups nested with members, about thirty projects, CI
+  files the runner runs (pipelines, jobs, an artifact), an image pushed to a project's registry over the registry API, a generic package, and a mirror of Polar's
+  `main`; safe to run again; it checks what it built and writes the nodes and edges the graph should then hold, by label and type.
+- **G4c, the pair into Polar**: Nix packaging and images, catalog entries, the state agent's schema, enabled in `sandbox-local`; with no sources signed the observer
+  reads nothing and the processor holds.
+- **G4d, live**: a `read_api` token the seed makes, sealed into gitlab-observer's `credentials`; its sources and the mapping signed, `polar-sign` validating a
+  GraphQL source against the schema when it signs one; the pair reads the test GitLab and the graph is held to what the seed wrote; the schema refreshed from that
+  instance by a small tool over introspection (`cynic-introspection`), its GitLab version in the file's header; real answers kept as masked samples; `check --ask`,
+  where `credentialed-reads-reviewed` first holds of real sources.
+
 ## Open
 
 - **What it did touch.** What a workload could reach is answerable: the catalog, and each signed version of its sections, in git history. What it did reach is one log line per
