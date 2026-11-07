@@ -942,6 +942,8 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "testcontainers",
+ "testcontainers-modules",
  "tokio",
  "tracing",
 ]

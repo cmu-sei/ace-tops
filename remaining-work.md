@@ -795,7 +795,18 @@ Each step is taken in bites, each reported before the next.
   and recorded as `triggered_by` with the broker-stamped `published_by` dropped, `std::process::exit(1)` on an essential child's failure
   ("the operator starts a new pod"; main's rule is the HealthCheckActor's verdict), the escrowed git credential written in plaintext into a
   per-build Secret, a clone image defaulting to an unbuilt `:latest`, a shared `client-tls` fallback, registry push not built (placeholder
-  credentials), the retention sweep a bare `tokio::spawn`. Only the pipeline log reaches the store; nothing is pushed. The history that
+  credentials), the retention sweep a bare `tokio::spawn`. Only the pipeline log reaches the store; nothing is pushed. Plan (the maintainer, 2026-11-07,
+  "Build-processor first"): P1 his projection onto main's build-processor; P2 onto the builder and into the catalog as a Deployment (the transport,
+  Job, exit 0, drains, refusals, render-time settings, graph password, N2, and the legacy `polar.provenance.linker` topic, which nothing has
+  published to since G5a removed the old GitLab consumer; `topics.md` still names it); P3 the remaining projection findings, one a commit, tests
+  first; then the orchestrator's design conversation before any of it is ported. P1 DONE 2026-11-07: taken from `de642e6a` and the
+  `OCILayerDiffId`/`HAS_DIFF_ID` part of `04badb51`; not taken, his analysis events (`PackageAnalysisStarted`, `AnalysisFindingReported`, no
+  producer on either branch) and `PackageRef::archive_sha256` (a wire change with no producer). His findings projection wrote `ON CREATE SET`,
+  which the graph controller's raw-write guard refuses (`validate_raw_op_text`, MATCH/MERGE/SET/UNWIND only, there since v3.0.0), so every finding
+  would have been refused and dropped; his Neo4j test, `#[ignore]` and never run, would have shown it. Kept first-write-wins with
+  `SET x.at = coalesce(x.at, $observed_at)`, a test now holds every projection to what the controller accepts, and the Neo4j test runs with the
+  suite. Migration step, not written: graphs the old linker wrote hold built images' layers as `OCILayer` keyed by uncompressed diff ID, which the
+  projection now writes as `OCILayerDiffId`. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
