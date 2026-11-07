@@ -68,11 +68,12 @@ def exec_in [stdin: any, ...args: string] {
     $r.stdout
 }
 
-# Runs `ruby` with `gitlab-rails runner`, after writing `files` (path -> content) beside it, all on stdin.
+# Runs `ruby` with `gitlab-rails runner`, after writing `files` (path -> content) beside it, all on stdin. Rails runs as the `git`
+# user, so the scratch directory and what is in it are git's, and no one else's.
 def rails [ruby: string, files: record = {}] {
-    exec_in null "mkdir" "-p" "-m" "700" $SCRATCH | ignore
-    for f in ($files | transpose path content) { exec_in $f.content "sh" "-c" $"umask 077 && cat > ($f.path)" | ignore }
-    exec_in $ruby "sh" "-c" $"umask 077 && cat > ($SCRATCH)/run.rb" | ignore
+    exec_in null "install" "-d" "-o" "git" "-g" "git" "-m" "700" $SCRATCH | ignore
+    let written = ($files | transpose path content | append { path: $"($SCRATCH)/run.rb", content: $ruby })
+    for f in $written { exec_in $f.content "sh" "-c" $"umask 077 && cat > ($f.path) && chown git:git ($f.path)" | ignore }
     exec_in null "gitlab-rails" "runner" $"($SCRATCH)/run.rb" | ignore
 }
 
@@ -84,6 +85,15 @@ def secret_of [name: string, key: string, value: string] {
 }
 
 def main [target_dir: string, repo_root: string] {
+    # What it wrote into the pod goes however this ends: a token is never left behind.
+    try { made } catch {|e|
+        try { exec_in null "rm" "-rf" $SCRATCH | ignore }
+        error make --unspanned { msg: $e.msg }
+    }
+    exec_in null "rm" "-rf" $SCRATCH | ignore
+}
+
+def made [] {
     if (secret_exists $ROOT_TOKEN_SECRET $NAMESPACE) {
         print $"  root's token: secret/($ROOT_TOKEN_SECRET) is there"
     } else {
@@ -103,5 +113,4 @@ def main [target_dir: string, repo_root: string] {
         secret_of $RUNNER_TOKEN_SECRET "token" $token
         print $"  the runner: registered, its token in secret/($RUNNER_TOKEN_SECRET)"
     }
-    exec_in null "rm" "-rf" $SCRATCH | ignore
 }
