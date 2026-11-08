@@ -617,7 +617,15 @@ I write Rust code"):
     `polar-builds` and `build-runner`, and given one Role there with exactly `job-run`'s rules; its pool; its issuer; the
     budget it declares) against scaffolds built from this tree, with facts, rules, topics, the catalog topic cross-check,
     images, layers, egress, agent pods, deploy objects, the deployment repository, graph and document; the image built
-    with Nix.
+    with Nix. Live on u7c, 2026-11-08 (6f1a6b65, `up.nu sandbox-local --dev`, to its browser step): the orchestrator's pod
+    ran on `core`, both containers ready, no restart; it registered with Cassini and subscribed to its topics, said
+    `namespace=polar-builds template=build-runner cap=1`, and its adoption's list of Jobs went through the handler
+    (`build.jobs.list`, allowed). On the node, its reader is a child of one thread with `NoNewPrivs: 1` and `Seccomp: 1`
+    (strict mode): the open question of O2d2a answered as far as u7c goes, since the container has no seccomp profile at
+    all. The agent's own process shows `Seccomp: 0` and `NoNewPrivs: 0`, the Polar-wide gap recorded below ("Polar's
+    identity containers and `restricted`"): its containers set neither `allowPrivilegeEscalation: false` nor a seccomp
+    profile, so strict mode under `RuntimeDefault` is still to be seen, when the profiles of the runtime attestation work
+    come. O2e4 DONE; O2e DONE.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
