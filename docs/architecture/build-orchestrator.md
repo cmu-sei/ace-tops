@@ -627,7 +627,42 @@ I write Rust code"):
     profile, so strict mode under `RuntimeDefault` is still to be seen, when the profiles of the runtime attestation work
     come. O2e4 DONE; O2e DONE.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
-  have yet); the fetch image (O2a3a) checks and unpacks it.
+  have yet); the fetch image (O2a3a) checks and unpacks it. Planned 2026-11-08, in four. Found first, on u7c's registry
+  (`registry:2.8.3`): it does not take a blob in one POST (`?digest=` with the body answers 202 and opens an upload session), so a
+  push is a POST then a PUT, and the HTTP handler has GET and POST alone. O3a the registry write: the handler gains PUT and HEAD;
+  the orchestrator declares `registry.blob.push` at the host its configuration names (`Location::Configured`), no credential; a
+  push is the blob (HEAD first, so an unchanged commit is not sent again) and a small OCI manifest pointing at it, tagged by
+  commit in `build-sources` (the maintainer, 2026-11-08, "Blob plus a manifest": safe from the registry's garbage collection,
+  found by commit, and the shape O4's log blobs and Polar's housekeeping follow, as `evidence-storage` keeps bodies); tested
+  against a stand-in that behaves as distribution does. O3b the archive: a pure function from a commit's tree to a gzipped tar,
+  deterministic (tree order, fixed times and owner, git's modes, a gzip header with no time), so a commit is always one digest;
+  property tests that a tree is the same bytes from any clone, that the fetch's own `unpack` gives the tree back, and that a tree
+  past the bound is refused. O3c the source step: `GitSource` for `NotYet`, fetching with `git.fetch` (the credential the mapping
+  names, bound to its host) or `git.fetch-public`, as the git observer does; the escrowed `credentials` section (the builder's
+  shared shape) and `Encryption` with it; one fetch per repository at a time, its clone shared; the cache the `working-checkout`
+  capability's; the registry's address as a pod reaches it (a Static setting from the catalog, through a new placeholder, not the
+  nodes' `localhost:30500`) and the archive's bound (Dynamic); the template told the registry is plain http (the open "fetch's
+  registry", below). O3d live on u7c: a public test repository's commit archived, pushed and fetched by a build pod. Decided by
+  standing rules, for review: the in-cluster registry takes pushes from any pod without a login, and the orchestrator is its first
+  in-cluster writer; a source's integrity rests on its digest, which the fetch checks before it unpacks, so this is recorded rather
+  than the registry given a login now; and an archive is held in memory to its bound, since the handler takes a body whole. For the
+  watched build after O3: an archive carries no `.git`, and `scripts/pipeline/core/cargo.nu` asks `git rev-parse --show-toplevel`.
+  O3a DONE 2026-11-08: the HTTP handler's requests gain `put` and `head` (`polar_agent_builder::protocol::http::Request`); the
+  orchestrator declares `registry.source.push` (`push::PUSH`) at `POLAR_ORCHESTRATOR_REGISTRY`, a Static setting the catalog
+  gives it as `{pod-registry}`, which resolve makes the registry in the cluster as a pod reaches it
+  (`http://registry.polar-registry.svc.<domain>:5000`, `cluster-registry.nu`, `pod_registry`; a target with no registry in the
+  cluster has none, and naming it there is an error). A push (`push::push`) asks whether the archive is there (HEAD), opens an
+  upload (POST) and ends it at the path the registry names (PUT with the digest), whatever host `Location` names, the request going
+  to the configured one; then OCI's empty config the same way; then the manifest (`push::manifest`: one layer, the archive,
+  `application/vnd.polar.build-source.v1.tar+gzip`, artifact type `application/vnd.polar.build-source.v1`) by the commit's tag,
+  blobs before manifest so a manifest never names what is not there. Being an HTTP agent now, the orchestrator declares the egress
+  section the builder gives one; the registry is a Service, which `.svc` keeps off any proxy (`egress.nu`, `no_proxy_of`).
+  Tested: a PUT with its body and a HEAD with none reach the configured host (the handler); against a stand-in registry that
+  behaves as distribution's did on u7c (a POST only opens an upload; the upload goes on at a `Location` on another host; a PUT
+  whose body is not its digest refused; manifests by tag), a source is its blob and a manifest by its commit naming exactly it,
+  every request to the configured host and allowed, an unchanged source sends no blob again, a refused blob leaves no manifest,
+  and a tag a registry refuses sends nothing; a property that any archive's manifest and the reference a pod is given name it
+  by exactly its digest and size; the address a pod reaches the registry by, and that the orchestrator is told it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

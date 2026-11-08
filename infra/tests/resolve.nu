@@ -225,7 +225,8 @@ def target_file [target: string, file: string, content: string] {
     $content | save --force $p
 }
 
-const EGRESS_AGENTS = ["git-repo-observer" "jira-observer" "oci-registry-resolver" "openapi-observer"]
+# The build orchestrator pushes a build's source to the registry in the cluster over HTTP (O3a), which `.svc` keeps off the proxy.
+const EGRESS_AGENTS = ["build-orchestrator" "git-repo-observer" "jira-observer" "oci-registry-resolver" "openapi-observer"]
 
 # The tests that run `resolve.nu check`: its agent checks run each agent's image on the cluster (`agent_checks`), so
 # they run only on a cluster named for the tests (infra/test-cluster.nu), and are skipped otherwise.
@@ -480,6 +481,7 @@ def main [] {
                 let r = (resolve_for $t "build-orchestrator")
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_NAMESPACE" $t) "polar-builds"
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_TEMPLATE" $t) "build-runner"
+                assert equal (env_value $r "POLAR_ORCHESTRATOR_REGISTRY" $t) "http://registry.polar-registry.svc.cluster.local:5000"
                 let resources = (^nu $RESOLVER resources build-orchestrator --target $t | from json)
                 assert equal $resources.cluster_roles []
                 assert equal ($resources.namespaced_roles | get namespace) ["polar-builds"]

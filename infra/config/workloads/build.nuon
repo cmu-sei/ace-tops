@@ -54,6 +54,8 @@
     env: [
       { name: "POLAR_ORCHESTRATOR_NAMESPACE", value: "{namespaces.builds}" }
       { name: "POLAR_ORCHESTRATOR_TEMPLATE", value: "build-runner" }
+      # Where a build's source is pushed and its pod fetches it from (O3): the registry in the cluster, as a pod reaches it.
+      { name: "POLAR_ORCHESTRATOR_REGISTRY", value: "{pod-registry}" }
     ]
   }
 ]

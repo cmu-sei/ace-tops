@@ -50,6 +50,7 @@ const INFRA = (path self | path dirname)
 
 use cluster-inputs.nu [env_for, env_merged, handed_off_of, path_of, read_inputs, topology_of]
 use registry.nu [node_registry, push_registry]
+use cluster-registry.nu [pod_registry]
 use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
@@ -144,7 +145,7 @@ def all_workloads [target: string] {
 def service_vars [services: record, cluster: record] {
     $services
     | transpose name s
-    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _namespace_names: $cluster.namespaces, _attested: (attested_namespaces $cluster | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
+    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _namespace_names: $cluster.namespaces, _pod_registry: (pod_registry $cluster), _attested: (attested_namespaces $cluster | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
         let ns = ($cluster.namespaces | get $it.s.namespace)
         let dns = $"($it.s.dns_name).($ns).svc.($cluster.domain)"
         let addr = $"($dns):($it.s.port)"
@@ -154,7 +155,8 @@ def service_vars [services: record, cluster: record] {
     }
 }
 
-# Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from), {namespaces.<key>} (the
+# Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from), {pod-registry} (the registry in
+# the cluster as a pod reaches it, infra/cluster-registry.nu; an error where the target has none), {namespaces.<key>} (the
 # cluster's name for the namespace of that key, as a catalog entry names one: the build orchestrator's build namespace)
 # and {<service>.dns|port|addr}. A placeholder left over is an error: it means a capability names a service that
 # services.nuon does not have, or a namespace the cluster does not.
@@ -163,10 +165,13 @@ def subst [text: string, vars: record, who: string] {
     if ($named =~ '\{namespaces\.[A-Za-z0-9-]+\}') {
         error make { msg: $"($who): '($text)' names a namespace the cluster does not have" }
     }
-    let start = ($named | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
+    if ($named | str contains "{pod-registry}") and ($vars._pod_registry? | default null) == null {
+        error make { msg: $"($who): '($text)' names the registry in the cluster, and the target keeps none" }
+    }
+    let start = ($named | str replace --all "{pod-registry}" ($vars._pod_registry? | default "") | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
     let out = (
         $vars
-        | reject -o _registry _namespaces _namespace_names _attested _deployment_source _handed_off
+        | reject -o _registry _namespaces _namespace_names _pod_registry _attested _deployment_source _handed_off
         | transpose name v
         | reduce --fold $start {|it, acc|
             $acc

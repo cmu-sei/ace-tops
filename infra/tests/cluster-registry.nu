@@ -25,7 +25,7 @@
 # come from. The pure parts only; `up.nu` applies it.
 
 use std/assert
-use ../cluster-registry.nu [manifests, settings_of, storage_images, NAMESPACE, REGISTRY_IMAGE, UPSTREAM_STORAGE_IMAGES]
+use ../cluster-registry.nu [manifests, pod_registry, settings_of, storage_images, NAMESPACE, REGISTRY_IMAGE, UPSTREAM_STORAGE_IMAGES]
 
 const INFRA = (path self | path dirname | path dirname)
 
@@ -43,6 +43,16 @@ def main [] {
                     let msg = (try { settings_of (cluster { node_port: $bad }); "accepted" } catch {|e| $e.msg })
                     assert ($msg | str contains "between 30000 and 32767") $"($bad): ($msg)"
                 }
+            }
+        }
+        {
+            # docs/architecture/build-orchestrator.md, O3: the build orchestrator pushes a build's source there, and the build's pod
+            # fetches it, each from inside the cluster, where the nodes' localhost:N is no address.
+            name: "a pod reaches the registry in the cluster by its Service, over http; a target with none has none"
+            body: {
+                assert equal (pod_registry (cluster { node_port: 30500 } | insert domain "cluster.local")) "http://registry.polar-registry.svc.cluster.local:5000"
+                assert equal (pod_registry (cluster { node_port: 30500 } | insert domain "example.internal")) "http://registry.polar-registry.svc.example.internal:5000"
+                assert equal (pod_registry (cluster null | insert domain "cluster.local")) null
             }
         }
         {

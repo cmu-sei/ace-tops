@@ -37,6 +37,10 @@ fn config(pairs: &[(&str, &str)]) -> Config {
     for (k, v) in [
         ("POLAR_ORCHESTRATOR_NAMESPACE", "polar-builds"),
         ("POLAR_ORCHESTRATOR_TEMPLATE", "build-runner"),
+        (
+            "POLAR_ORCHESTRATOR_REGISTRY",
+            "http://registry.polar-registry.svc.cluster.local:5000",
+        ),
     ]
     .iter()
     .chain(pairs)

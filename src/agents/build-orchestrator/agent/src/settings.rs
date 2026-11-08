@@ -49,6 +49,15 @@ pub static TEMPLATE: Required<String> = Required::text(
     "the PodTemplate a build's Job is made from: the build workload's name",
 );
 
+/// The registry's variable, by name: the operation that pushes there is declared at its host (`push::PUSH`).
+pub const REGISTRY_VAR: &str = "POLAR_ORCHESTRATOR_REGISTRY";
+
+pub static REGISTRY: Required<String> = Required::text(
+    REGISTRY_VAR,
+    "the registry a build's source is pushed to and its pod fetches it from, as a pod reaches it: http:// or https://, a \
+     host and a port, and nothing more",
+);
+
 pub static CONCURRENT_BUILDS: Defaulted<usize> = Defaulted::number(
     "POLAR_ORCHESTRATOR_CONCURRENT_BUILDS",
     "how many builds run at once; one over it waits its turn. At least 1",
@@ -166,7 +175,7 @@ pub static DEFAULT_COMMAND: Defaulted<Vec<String>> = Defaulted::list(
 .dynamic();
 
 /// The deployment's facts.
-pub static DEPLOYMENT: &[&dyn Described] = &[&NAMESPACE, &TEMPLATE];
+pub static DEPLOYMENT: &[&dyn Described] = &[&NAMESPACE, &TEMPLATE, &REGISTRY];
 
 /// The run-time settings, followed as one group: an update that changes several is one change.
 pub static TUNING: &[&dyn Described] = &[
@@ -191,6 +200,7 @@ pub static TUNING: &[&dyn Described] = &[
 static VARIABLES: &[&dyn Described] = &[
     &NAMESPACE,
     &TEMPLATE,
+    &REGISTRY,
     &CONCURRENT_BUILDS,
     &CPU_LIMIT,
     &MEMORY_LIMIT,
@@ -227,6 +237,8 @@ pub static SECTION: Section = Section {
 pub struct Deployment {
     pub namespace: String,
     pub template: String,
+    /// The registry's address, `http(s)://host:port`.
+    pub registry: String,
 }
 
 /// The run-time settings in force.
@@ -245,6 +257,7 @@ pub fn deployment(config: &Config) -> Result<Deployment, String> {
     Ok(Deployment {
         namespace: config.read(&NAMESPACE).map_err(|e| e.to_string())?,
         template: config.read(&TEMPLATE).map_err(|e| e.to_string())?,
+        registry: config.read(&REGISTRY).map_err(|e| e.to_string())?,
     })
 }
 
@@ -346,8 +359,34 @@ pub fn milli(quantity: &str) -> Option<u128> {
         .checked_add(fraction.checked_mul(per)? / scale)
 }
 
+/// Why `address` is not a registry's as this setting takes one: `http://` or `https://`, a host and an optional port, and
+/// no login, path, query or fragment.
+pub fn registry_problem(address: &str) -> Option<&'static str> {
+    let Some(rest) = address
+        .strip_prefix("http://")
+        .or_else(|| address.strip_prefix("https://"))
+    else {
+        return Some("must begin http:// or https://");
+    };
+    let (host, port) = rest.rsplit_once(':').unwrap_or((rest, ""));
+    let host_ok = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let port_ok = rest
+        .contains(':')
+        .then_some(port)
+        .is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()));
+    (!host_ok || !port_ok).then_some("must be a host and an optional port, and nothing more")
+}
+
 fn relations(env: &dyn Env) -> Vec<String> {
     let mut problems = Vec::new();
+    if let Ok(address) = REGISTRY.read(env)
+        && let Some(why) = registry_problem(&address)
+    {
+        problems.push(format!("{} {why}", REGISTRY.name()));
+    }
     let quantities = [
         &CPU_LIMIT,
         &MEMORY_LIMIT,
@@ -421,6 +460,10 @@ mod tests {
         let mut env: HashMap<String, String> = [
             ("POLAR_ORCHESTRATOR_NAMESPACE", "polar-builds"),
             ("POLAR_ORCHESTRATOR_TEMPLATE", "build-runner"),
+            (
+                "POLAR_ORCHESTRATOR_REGISTRY",
+                "http://registry.polar-registry.svc.cluster.local:5000",
+            ),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -476,7 +519,8 @@ mod tests {
             deployment(&config).unwrap(),
             Deployment {
                 namespace: "polar-builds".into(),
-                template: "build-runner".into()
+                template: "build-runner".into(),
+                registry: "http://registry.polar-registry.svc.cluster.local:5000".into(),
             }
         );
     }
@@ -500,6 +544,32 @@ mod tests {
     #[test]
     fn each_bad_setting_is_named() {
         for (name, value, expected) in [
+            (
+                "POLAR_ORCHESTRATOR_REGISTRY",
+                "registry:5000",
+                "must begin http",
+            ),
+            (
+                "POLAR_ORCHESTRATOR_REGISTRY",
+                "ftp://registry:5000",
+                "must begin http",
+            ),
+            (
+                "POLAR_ORCHESTRATOR_REGISTRY",
+                "http://u:p@registry:5000",
+                "nothing more",
+            ),
+            (
+                "POLAR_ORCHESTRATOR_REGISTRY",
+                "http://registry:5000/v2",
+                "nothing more",
+            ),
+            (
+                "POLAR_ORCHESTRATOR_REGISTRY",
+                "http://registry:",
+                "nothing more",
+            ),
+            ("POLAR_ORCHESTRATOR_REGISTRY", "http://", "nothing more"),
             (
                 "POLAR_ORCHESTRATOR_CPU_LIMIT",
                 "two",

@@ -34,6 +34,7 @@ pub mod lines;
 pub mod mappings;
 pub mod observed;
 pub mod publish;
+pub mod push;
 pub mod reader;
 pub mod registry;
 pub mod settings;

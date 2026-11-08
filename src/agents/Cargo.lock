@@ -963,9 +963,11 @@ dependencies = [
  "ractor",
  "rkyv",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

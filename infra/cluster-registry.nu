@@ -77,6 +77,14 @@ export def settings_of [cluster: record] {
     }
 }
 
+# The registry in the cluster as a pod reaches it, by its Service, over http, or null for a target with none: where the build
+# orchestrator pushes a build's source and the build's pod fetches it (docs/architecture/build-orchestrator.md, O3). The nodes'
+# `localhost:N` is no address inside a pod. Pure.
+export def pod_registry [cluster: record] {
+    if ($cluster.registry_in_cluster? | default null) == null { return null }
+    $"http://($NAME).($NAMESPACE).svc.($cluster.domain):5000"
+}
+
 export def manifests [s: record] {
     let labels = { app: $NAME }
     [

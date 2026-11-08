@@ -25,12 +25,26 @@
 
 use crate::AGENT_NAME;
 use crate::supervisor::{OrchestratorSupervisor, SHUTDOWN_BUDGET};
+use orchestrator_backend_k8s::backend;
 use polar::topics::{GIT_REPOSITORY_EVENTS, PROVENANCE_EVENTS, PROVENANCE_EXECUTIONS};
 use polar_agent_builder::protocol::OperationDecl;
 use polar_agent_builder::worker::WorkerDecl;
 use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use ractor::Actor;
 use std::time::Duration;
+
+/// What it asks of the outside: the backend's Kubernetes operations, and the push of a build's source to the registry.
+pub const OPERATIONS: &[OperationDecl] = &[
+    backend::GET_POD_TEMPLATE,
+    backend::CREATE_JOB,
+    backend::GET_JOB,
+    backend::DELETE_JOB,
+    backend::LIST_JOBS,
+    backend::LIST_EVENTS,
+    backend::LIST_PODS,
+    backend::READ_LOG,
+    crate::push::PUSH,
+];
 
 pub struct BuildOrchestrator;
 
@@ -42,7 +56,7 @@ impl PolarAgent for BuildOrchestrator {
     // Its Kubernetes calls are its operations; `job-run` is computed from their writes.
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    const OPERATIONS: &'static [OperationDecl] = orchestrator_backend_k8s::backend::OPERATIONS;
+    const OPERATIONS: &'static [OperationDecl] = OPERATIONS;
     const WORKERS: &'static [WorkerDecl] = &[crate::reader::DECL];
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -98,18 +112,31 @@ mod tests {
     #[test]
     fn it_runs_jobs_and_reads_with_a_worker() {
         let scaffold = polar_agent_builder::agent::scaffold_document::<BuildOrchestrator>();
+        let kubernetes: Vec<_> = scaffold
+            .operations
+            .iter()
+            .filter(|o| o.protocol == "kubernetes")
+            .collect();
         assert!(
-            scaffold
-                .operations
-                .iter()
-                .all(|o| o.protocol == "kubernetes" && o.location == "cluster"),
-            "{:?}",
-            scaffold.operations
+            kubernetes.iter().all(|o| o.location == "cluster"),
+            "{kubernetes:?}"
         );
         assert_eq!(
-            scaffold.operations.len(),
-            orchestrator_backend_k8s::backend::OPERATIONS.len()
+            kubernetes.len(),
+            backend::OPERATIONS.len(),
+            "every operation of the backend's, and no other"
         );
+        for decl in backend::OPERATIONS {
+            assert!(OPERATIONS.contains(decl), "{}", decl.name);
+        }
+        // And the one push, to the registry its configuration names, with nothing to present.
+        let http: Vec<_> = scaffold
+            .operations
+            .iter()
+            .filter(|o| o.protocol == "http")
+            .collect();
+        assert_eq!(http.len(), 1, "{http:?}");
+        assert_eq!(http[0].name, "registry.source.push");
         // Computed from its writes, and nothing more: no read of the whole cluster.
         assert_eq!(scaffold.requires, ["cassini", "job-run"]);
     }

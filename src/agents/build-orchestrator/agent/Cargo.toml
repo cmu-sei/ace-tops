@@ -40,6 +40,7 @@ polar-scudo.workspace = true
 ractor.workspace = true
 rkyv.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
@@ -47,6 +48,9 @@ uuid.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 proptest.workspace = true
+# The real HTTP protocol, over a stand-in registry (polar_agent_builder::protocol::testing).
+polar-agent-builder = { workspace = true, features = ["testing"] }
+wiremock.workspace = true
 
 [[bin]]
 name = "build-orchestrator"

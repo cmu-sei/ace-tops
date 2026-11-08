@@ -27,7 +27,9 @@
 use build_orchestrator::admission::{Admission, Admitted};
 use build_orchestrator::lines::{Line, Lines};
 use build_orchestrator::mappings::{Mapping, parse};
+use build_orchestrator::push::{ARCHIVE_TYPE, digest_of, manifest, reference};
 use build_orchestrator::settings::{SECTION, milli, narrowed};
+use orchestrator_core::types::SourceArchive;
 use orchestrator_core::types::{BuildRequest, Privileges, SourceRef};
 use orchestrator_report::Bounds;
 use polar::graph::nodes::git::RepoId;
@@ -177,6 +179,10 @@ fn config(pairs: &[(&str, String)]) -> Config {
             "POLAR_ORCHESTRATOR_TEMPLATE".to_string(),
             "build-runner".to_string(),
         ),
+        (
+            "POLAR_ORCHESTRATOR_REGISTRY".to_string(),
+            "http://registry.polar-registry.svc.cluster.local:5000".to_string(),
+        ),
     ]);
     for (k, v) in pairs {
         env.insert(k.to_string(), v.clone());
@@ -277,6 +283,30 @@ fn log_line() -> impl Strategy<Value = Vec<u8>> {
 }
 
 proptest! {
+    /// Any archive's manifest names it by its digest and size, as its one layer, and nothing else; and the reference a
+    /// build's pod is given reads back as an archive pinned by that digest, at the registry's host.
+    #[test]
+    fn a_sources_manifest_and_reference_name_its_archive_exactly(
+        archive in proptest::collection::vec(any::<u8>(), 0..256),
+        host in "[a-z][a-z0-9-]{0,12}(\\.[a-z][a-z0-9-]{0,12}){0,3}",
+        port in 1u16..,
+        https in any::<bool>(),
+    ) {
+        let digest = digest_of(&archive);
+        prop_assert_eq!(digest.len(), "sha256:".len() + 64);
+        let parsed: Value = serde_json::from_slice(&manifest(&digest, archive.len())).unwrap();
+        let layers = parsed["layers"].as_array().unwrap();
+        prop_assert_eq!(layers.len(), 1);
+        prop_assert_eq!(&layers[0]["digest"], &Value::from(digest.clone()));
+        prop_assert_eq!(&layers[0]["size"], &Value::from(archive.len()));
+        prop_assert_eq!(&layers[0]["mediaType"], &Value::from(ARCHIVE_TYPE));
+        let scheme = if https { "https" } else { "http" };
+        let named = reference(&format!("{scheme}://{host}:{port}"), &digest);
+        prop_assert!(named.starts_with(&format!("{host}:{port}/build-sources@")), "{}", named);
+        let pinned = SourceArchive::new(named).unwrap();
+        prop_assert_eq!(pinned.sha256(), &digest["sha256:".len()..]);
+    }
+
     /// Whatever a log holds and wherever its pieces split it, the lines found are its report lines, in order: each what
     /// follows the prefix when it is within the bound, and only its length when it is not.
     #[test]

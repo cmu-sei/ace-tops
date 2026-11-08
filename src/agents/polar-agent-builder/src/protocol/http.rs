@@ -106,6 +106,19 @@ impl Request {
         }
     }
 
+    /// A PUT of `path` under the configured address: the end of a registry's blob upload, a manifest.
+    pub fn put(path: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            body: Some(body),
+            ..Self::of(Method::PUT, At::Path(path.into()))
+        }
+    }
+
+    /// A HEAD of `path` under the configured address: whether a registry has a blob, without bringing it.
+    pub fn head(path: impl Into<String>) -> Self {
+        Self::of(Method::HEAD, At::Path(path.into()))
+    }
+
     /// The request is at a container registry, which authenticates in a way of its own, and `scope` is what a token for it
     /// must allow (`repository:<name>:pull`): it goes with nothing at first, and only a challenge brings anything. A token
     /// is presented to the registry as it is. A login goes to the registry if it asks for Basic; if it names an auth host, the
@@ -1062,6 +1075,53 @@ mod tests {
             "application/json"
         );
         assert!(received[1].body.is_empty());
+    }
+
+    /// A registry's blob upload is a POST that opens it and a PUT that ends it, and whether a blob is there a HEAD
+    /// (docs/architecture/build-orchestrator.md, O3a): a PUT goes with its body, a HEAD with none, each to the configured host.
+    #[tokio::test]
+    async fn a_put_goes_with_its_body_and_a_head_with_none() {
+        let f = fixture(SecretKind::Token).await;
+        Mock::given(method("PUT"))
+            .and(path("/v2/r/blobs/uploads/u1"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&f.server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/v2/r/blobs/sha256:00"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&f.server)
+            .await;
+        let put = f
+            .site
+            .handle
+            .ask(ConfiguredRead(
+                Request::put("/v2/r/blobs/uploads/u1?digest=sha256:00", b"blob".to_vec())
+                    .header("content-type", "application/octet-stream"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put.status, StatusCode::CREATED);
+        let head = f
+            .site
+            .handle
+            .ask(ConfiguredRead(Request::head("/v2/r/blobs/sha256:00")))
+            .await
+            .unwrap();
+        assert_eq!(head.status, StatusCode::NOT_FOUND);
+        let received = f.server.received_requests().await.unwrap();
+        assert_eq!(
+            (
+                received[0].method.as_str(),
+                received[0].url.query(),
+                received[0].body.as_slice()
+            ),
+            ("PUT", Some("digest=sha256:00"), b"blob".as_slice())
+        );
+        assert_eq!(
+            (received[1].method.as_str(), received[1].body.is_empty()),
+            ("HEAD", true)
+        );
     }
 
     /// `Retry-After` on a 429 or a 503 keeps the host from being called, and on anything else means nothing.
