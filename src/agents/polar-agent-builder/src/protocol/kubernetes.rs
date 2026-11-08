@@ -32,7 +32,8 @@
 //! as an API server closes a watch every few minutes as a matter of course.
 
 use super::{
-    CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target, http,
+    Access, CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
+    Verb, http,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -85,7 +86,19 @@ pub struct Watch {
     namespace: Option<String>,
 }
 
+impl Resource {
+    /// What `verb` on it is, as an operation declares it and RBAC names it.
+    pub const fn access(&self, verb: Verb) -> Access {
+        Access::new(verb, self.group, self.plural)
+    }
+}
+
 impl Watch {
+    /// What it does: watch its kind.
+    pub fn access(&self) -> Access {
+        self.resource.access(Verb::Watch)
+    }
+
     pub fn cluster_wide(resource: Resource) -> Self {
         Self {
             resource,
@@ -196,10 +209,13 @@ impl Protocol for Kubernetes {
         Self::target(&Watch::cluster_wide(NOTHING), Some(base)).map(|target| target.host)
     }
 
-    fn target(_: &Watch, base: Option<&str>) -> Result<Target, String> {
+    fn target(request: &Watch, base: Option<&str>) -> Result<Target, String> {
         let base = base.ok_or("the Kubernetes protocol was not given the API's address")?;
         let url = Url::parse(base).map_err(|_| "the API's address cannot be read".to_string())?;
-        http::target_of(&url)
+        Ok(Target {
+            access: Some(request.access()),
+            ..http::target_of(&url)?
+        })
     }
 
     async fn credential(
@@ -280,7 +296,13 @@ mod tests {
         name: "a.watch",
         doc: "",
         protocol: ProtocolKind::KUBERNETES,
-        location: Location::Cluster,
+        location: Location::Cluster {
+            access: &[
+                POD.access(Verb::Watch),
+                NAMESPACE.access(Verb::Watch),
+                CUSTOM.access(Verb::Watch),
+            ],
+        },
     };
     const DECLARED: [OperationDecl; 1] = [WATCHING];
 
@@ -454,6 +476,35 @@ mod tests {
         assert!(api.presented().await.is_empty());
     }
 
+    /// A watch of a kind its operation does not declare is refused before anything is sent: a declaration binds what
+    /// the operation may do.
+    #[tokio::test]
+    async fn a_watch_of_a_kind_not_declared_is_refused_and_nothing_is_sent() {
+        const SECRET: Resource = Resource::of::<k8s_openapi::api::core::v1::Secret>();
+        let api = KubeApi::start().await;
+        let site = kubernetes_handle(&DECLARED, &api).await;
+        let said = said(&site, Watch::cluster_wide(SECRET), 1).await;
+        assert_eq!(said[0], Err(Failure::Denied(Denial::AccessUndeclared)));
+        assert!(api.presented().await.is_empty());
+    }
+
+    #[test]
+    fn a_watchs_target_says_what_it_does() {
+        let target = Kubernetes::target(
+            &Watch::in_namespace(CUSTOM, "flux"),
+            Some("https://10.96.0.1/"),
+        )
+        .unwrap();
+        assert_eq!(
+            target.access,
+            Some(Access::new(
+                Verb::Watch,
+                "source.toolkit.fluxcd.io",
+                "ocirepositories"
+            ))
+        );
+    }
+
     #[tokio::test]
     async fn the_api_refusing_or_not_serving_a_kind_is_configuration_and_ends_the_watch() {
         for status in [403, 404] {
@@ -493,7 +544,9 @@ mod tests {
             name: "a.fussy.watch",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
-            location: Location::Cluster,
+            location: Location::Cluster {
+                access: &[NAMESPACE.access(Verb::Watch)],
+            },
         };
         static FUSSY_DECLARED: [OperationDecl; 1] = [FUSSY];
         impl Operation for Fussy {

@@ -63,7 +63,10 @@ Asked, the maintainer, 2026-11-07:
 5a. **Its Kubernetes calls go through the builder's Kubernetes protocol handler** (the maintainer, 2026-11-07, "Through the protocol
    handler"): creating, deleting and listing Jobs, reading their events and a pod's log are operations of that protocol, each declared,
    judged and recorded, as every outbound call is (`protocol-handlers.md`). His backend made them with its own `kube::Client`. The
-   handler only watched; the request operations are added (O1c).
+   handler only watched; the request operations are added (O1c). And a cluster operation's declaration binds what it may do (the
+   maintainer, "Yes, judged"): each declares its access (a verb on a group's resource), the judge denies a request whose access is not
+   declared, and the builder computes the `job-run` capability from the declared writes, so a list cannot delete and the capability
+   cannot drift from the code.
 
 Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 

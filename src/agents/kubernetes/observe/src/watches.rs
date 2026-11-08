@@ -39,8 +39,8 @@ use polar::cassini::TcpClient;
 use polar_agent_builder::ConfigurationHandle;
 use polar_agent_builder::protocol::kubernetes::{self, Kubernetes, Resource};
 use polar_agent_builder::protocol::{
-    Delivery, Failure, Location, Operation, OperationDecl, ProtocolHandle, ProtocolKind,
-    ReadFailure, Streaming,
+    Access, Delivery, Failure, Location, Operation, OperationDecl, ProtocolHandle, ProtocolKind,
+    ReadFailure, Streaming, Verb,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
 use serde_json::{Value, to_vec};
@@ -54,8 +54,19 @@ pub const WATCH: OperationDecl = OperationDecl {
     name: "kube.watch",
     doc: "every change to the cluster's namespaces, their workloads and pods, and Flux's sources and kustomizations",
     protocol: ProtocolKind::KUBERNETES,
-    location: Location::Cluster,
+    location: Location::Cluster { access: &WATCHED },
 };
+
+/// What it may do: watch each kind it watches, and nothing else.
+const WATCHED: [Access; 7] = [
+    Kind::Namespace.resource().access(Verb::Watch),
+    Kind::OciRepository.resource().access(Verb::Watch),
+    Kind::Kustomization.resource().access(Verb::Watch),
+    Kind::Deployment.resource().access(Verb::Watch),
+    Kind::ReplicaSet.resource().access(Verb::Watch),
+    Kind::Pod.resource().access(Verb::Watch),
+    Kind::Job.resource().access(Verb::Watch),
+];
 
 /// A kind it watches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -469,6 +480,18 @@ impl Actor for ClusterWatcher {
 mod tests {
     use super::*;
     use kube::Resource as _;
+
+    /// Every kind it watches is one its operation declares, so no watch it starts is refused for want of it.
+    #[test]
+    fn every_kind_it_watches_is_declared() {
+        for kind in CLUSTER_WIDE.iter().chain(&IN_EACH_NAMESPACE) {
+            assert!(
+                WATCHED.contains(&kind.resource().access(Verb::Watch)),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(WATCHED.len(), CLUSTER_WIDE.len() + IN_EACH_NAMESPACE.len());
+    }
     use kube_common::flux::kustomization::Kustomization;
     use kube_common::flux::oci_repositories::OciRepository;
     use polar_agent_builder::protocol::testing::{KubeApi, Site, kubernetes_handle};

@@ -308,6 +308,7 @@ pub(super) fn target_of(url: &Url) -> Result<Target, String> {
     Ok(Target {
         host: host.to_ascii_lowercase(),
         encrypted: url.scheme() == "https",
+        access: None,
     })
 }
 

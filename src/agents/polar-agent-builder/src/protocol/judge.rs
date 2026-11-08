@@ -122,8 +122,68 @@ pub enum Location {
     Arbitrary,
     /// To the Kubernetes API of the cluster the pod runs in, where Kubernetes tells every pod it is. It goes with the pod's
     /// service account token, which no signed section holds and the protocol's client reads for itself: the capability
-    /// declares it, and Kubernetes is the trust base.
-    Cluster,
+    /// declares it, and Kubernetes is the trust base. It may do what `access` says and nothing else (the maintainer,
+    /// 2026-11-07: a cluster operation's declaration binds what it may do), so a watch cannot delete, and what it may do
+    /// is what the capability is computed from.
+    Cluster { access: &'static [Access] },
+}
+
+/// What a request does to the Kubernetes API, as RBAC names it: a verb on a group's resource (`""` for the core group;
+/// a subresource such as `pods/log` by its path). Plain data, so that naming it links nothing of Kubernetes in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Access {
+    pub verb: Verb,
+    pub group: &'static str,
+    pub resource: &'static str,
+}
+
+/// A verb of the Kubernetes API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Verb {
+    Get,
+    List,
+    Watch,
+    Create,
+    Delete,
+}
+
+impl Verb {
+    /// As RBAC writes it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Verb::Get => "get",
+            Verb::List => "list",
+            Verb::Watch => "watch",
+            Verb::Create => "create",
+            Verb::Delete => "delete",
+        }
+    }
+
+    /// Whether it changes what is in the cluster.
+    pub const fn writes(self) -> bool {
+        matches!(self, Verb::Create | Verb::Delete)
+    }
+}
+
+impl Access {
+    pub const fn new(verb: Verb, group: &'static str, resource: &'static str) -> Self {
+        Self {
+            verb,
+            group,
+            resource,
+        }
+    }
+}
+
+impl std::fmt::Display for Access {
+    /// `watch pods`, `create batch/jobs`: the verb, then the group's resource.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.group.is_empty() {
+            write!(f, "{} {}", self.verb.as_str(), self.resource)
+        } else {
+            write!(f, "{} {}/{}", self.verb.as_str(), self.group, self.resource)
+        }
+    }
 }
 
 /// An operation as the agent declares it (`PolarAgent::OPERATIONS`): what the scaffold prints and the catalog carries, so
@@ -138,12 +198,14 @@ pub struct OperationDecl {
     pub location: Location,
 }
 
-/// Where a request would go, as its protocol reads it from the request.
+/// Where a request would go, and what it would do, as its protocol reads it from the request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub host: String,
     /// Whether the connection is encrypted: a credential goes over no other.
     pub encrypted: bool,
+    /// What a request to the Kubernetes API does; `None` for any other protocol.
+    pub access: Option<Access>,
 }
 
 /// Why a request is not allowed.
@@ -161,6 +223,8 @@ pub enum Denial {
     NoCredentialNamed,
     #[error("no credential is bound to this host")]
     NoCredentialBound,
+    #[error("the operation does not declare what the request would do to the cluster")]
+    AccessUndeclared,
 }
 
 /// What [`judge`] decides.
@@ -202,9 +266,12 @@ pub fn judge(
         Location::Bound { credential } => Some(credential),
         Location::Arbitrary => None,
         // It names nothing for the CryptoActor to give, and the token goes with it all the same.
-        Location::Cluster => {
+        Location::Cluster { access } => {
             if !target.encrypted {
                 return Verdict::Deny(Denial::NotEncrypted);
+            }
+            if !target.access.is_some_and(|wanted| access.contains(&wanted)) {
+                return Verdict::Deny(Denial::AccessUndeclared);
             }
             None
         }
@@ -245,6 +312,17 @@ mod tests {
         Target {
             host: host.to_string(),
             encrypted,
+            access: None,
+        }
+    }
+
+    const WATCH_PODS: Access = Access::new(Verb::Watch, "", "pods");
+    const CREATE_JOBS: Access = Access::new(Verb::Create, "batch", "jobs");
+
+    fn to_the_cluster(encrypted: bool, access: Option<Access>) -> Target {
+        Target {
+            access,
+            ..target("10.96.0.1", encrypted)
         }
     }
 
@@ -399,12 +477,14 @@ mod tests {
 
     #[test]
     fn a_request_to_the_cluster_names_no_credential_and_goes_only_encrypted() {
-        const CLUSTER: OperationDecl = declared(Location::Cluster);
+        const CLUSTER: OperationDecl = declared(Location::Cluster {
+            access: &[WATCH_PODS],
+        });
         assert_eq!(
             judge(
                 &CLUSTER,
                 &[CLUSTER],
-                &target("10.96.0.1", true),
+                &to_the_cluster(true, Some(WATCH_PODS)),
                 None,
                 Some("site")
             ),
@@ -414,12 +494,42 @@ mod tests {
             judge(
                 &CLUSTER,
                 &[CLUSTER],
-                &target("10.96.0.1", false),
+                &to_the_cluster(false, Some(WATCH_PODS)),
                 None,
                 None
             ),
             Verdict::Deny(Denial::NotEncrypted)
         );
+    }
+
+    /// A cluster request may do what its operation declares and nothing else: a watch of pods cannot list them, let
+    /// alone create a Job, and a request that says nothing of what it does is not allowed.
+    #[test]
+    fn a_cluster_request_may_do_only_what_its_operation_declares() {
+        const WATCHING: OperationDecl = declared(Location::Cluster {
+            access: &[WATCH_PODS],
+        });
+        for wanted in [
+            Some(Access::new(Verb::List, "", "pods")),
+            Some(Access::new(Verb::Watch, "", "secrets")),
+            Some(Access::new(Verb::Watch, "apps", "pods")),
+            Some(CREATE_JOBS),
+            None,
+        ] {
+            assert_eq!(
+                judge(
+                    &WATCHING,
+                    &[WATCHING],
+                    &to_the_cluster(true, wanted),
+                    None,
+                    None
+                ),
+                Verdict::Deny(Denial::AccessUndeclared),
+                "{wanted:?}"
+            );
+        }
+        assert_eq!(CREATE_JOBS.to_string(), "create batch/jobs");
+        assert_eq!(WATCH_PODS.to_string(), "watch pods");
     }
 
     fn credential() -> impl Strategy<Value = Credential> {
@@ -438,8 +548,37 @@ mod tests {
             }),
             credential().prop_map(|credential| Location::Bound { credential }),
             Just(Location::Arbitrary),
-            Just(Location::Cluster),
+            Just(Location::Cluster {
+                access: &[WATCH_PODS]
+            }),
         ]
+    }
+
+    /// The accesses a declaration and a request draw from.
+    const UNIVERSE: [Access; 6] = [
+        WATCH_PODS,
+        Access::new(Verb::List, "", "pods"),
+        Access::new(Verb::Get, "", "pods/log"),
+        CREATE_JOBS,
+        Access::new(Verb::Delete, "batch", "jobs"),
+        Access::new(Verb::List, "", "events"),
+    ];
+
+    /// Every declaration a subset of the universe can be, as static slices, since a declaration is static.
+    fn declarations() -> &'static [Vec<Access>] {
+        static ALL: std::sync::OnceLock<Vec<Vec<Access>>> = std::sync::OnceLock::new();
+        ALL.get_or_init(|| {
+            (0u32..1 << UNIVERSE.len())
+                .map(|mask| {
+                    UNIVERSE
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| mask & (1 << i) != 0)
+                        .map(|(_, a)| *a)
+                        .collect()
+                })
+                .collect()
+        })
     }
 
     fn host() -> impl Strategy<Value = String> {
@@ -494,9 +633,9 @@ mod tests {
                 let declares = match location {
                     Location::Configured { credential, .. } => credential,
                     Location::Bound { credential } => Some(credential),
-                    Location::Arbitrary | Location::Cluster => None,
+                    Location::Arbitrary | Location::Cluster { .. } => None,
                 };
-                if location == Location::Cluster {
+                if let Location::Cluster { .. } = location {
                     prop_assert!(encrypted);
                 }
                 match (declares, credential) {
@@ -524,6 +663,27 @@ mod tests {
         fn a_bound_operation_that_names_its_credential_is_left_to_the_binding(host in host()) {
             const NAMED: OperationDecl = declared(Location::Bound { credential: Credential::Named("site") });
             prop_assert_eq!(judge(&NAMED, &[NAMED], &target(&host, true), None, None), allowed(Some("site")));
+        }
+
+        /// A cluster request is allowed when, and only when, it goes encrypted and does what its operation declares.
+        #[test]
+        fn a_cluster_request_is_allowed_exactly_when_encrypted_and_declared(
+            declaration in 0usize..64,
+            wanted in proptest::option::of(proptest::sample::select(UNIVERSE.to_vec())),
+            encrypted in any::<bool>(),
+            chosen in proptest::option::of("[a-z]{1,8}"),
+        ) {
+            let access: &'static [Access] = &declarations()[declaration];
+            let operation = declared(Location::Cluster { access });
+            let verdict = judge(&operation, &[operation], &to_the_cluster(encrypted, wanted), None, chosen.as_deref());
+            let expected = if !encrypted {
+                Verdict::Deny(Denial::NotEncrypted)
+            } else if wanted.is_some_and(|w| access.contains(&w)) {
+                allowed(None)
+            } else {
+                Verdict::Deny(Denial::AccessUndeclared)
+            };
+            prop_assert_eq!(verdict, expected);
         }
     }
 }

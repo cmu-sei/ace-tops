@@ -178,7 +178,11 @@ mod tests {
             if let Ok(host) = https_host(&url) {
                 prop_assert_eq!(
                     handler_reads(&url),
-                    Ok(Target { host, encrypted: true })
+                    Ok(Target {
+                        host,
+                        encrypted: true,
+                        access: None
+                    })
                 );
             }
         }

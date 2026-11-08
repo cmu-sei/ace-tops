@@ -31,7 +31,7 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use polar_agent_builder::protocol::kubernetes::{self, Kubernetes, Resource};
 use polar_agent_builder::protocol::{
-    Location, Operation, OperationDecl, ProtocolKind, ReadFailure,
+    Access, Location, Operation, OperationDecl, ProtocolKind, ReadFailure, Verb,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -41,7 +41,18 @@ pub const WATCH: OperationDecl = OperationDecl {
     name: "attestation.watch",
     doc: "the pods of Polar's namespaces and what owns them",
     protocol: ProtocolKind::KUBERNETES,
-    location: Location::Cluster,
+    location: Location::Cluster { access: &WATCHED },
+};
+
+/// What it may do: watch each kind it holds, and nothing else.
+const WATCHED: [Access; Kind::ALL.len()] = {
+    let mut watched = [resource_of(Kind::ALL[0]).access(Verb::Watch); Kind::ALL.len()];
+    let mut i = 0;
+    while i < Kind::ALL.len() {
+        watched[i] = resource_of(Kind::ALL[i]).access(Verb::Watch);
+        i += 1;
+    }
+    watched
 };
 
 /// A watch, as a request of the handler's.
@@ -102,6 +113,16 @@ impl Operation for Watching {
 mod tests {
     use super::*;
     use crate::holdings::Holdings;
+
+    /// Every kind it holds is one its operation declares, and nothing more.
+    #[test]
+    fn every_kind_it_holds_is_declared_and_nothing_more() {
+        let declared: Vec<Access> = Kind::ALL
+            .iter()
+            .map(|k| resource_of(*k).access(Verb::Watch))
+            .collect();
+        assert_eq!(WATCHED.to_vec(), declared);
+    }
     use polar_agent_builder::protocol::Delivery;
     use polar_agent_builder::protocol::testing::{KubeApi, kubernetes_handle};
     use proptest::prelude::*;

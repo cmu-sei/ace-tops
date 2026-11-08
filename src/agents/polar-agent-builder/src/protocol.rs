@@ -38,7 +38,7 @@ pub mod kubernetes;
 pub mod testing;
 pub use credentials::CredentialsApplied;
 pub use judge::{
-    Credential, Denial, Location, OperationDecl, ProtocolKind, Target, Verdict, judge,
+    Access, Credential, Denial, Location, OperationDecl, ProtocolKind, Target, Verb, Verdict, judge,
 };
 
 use crate::configuration::ConfigurationHandle;
@@ -459,7 +459,7 @@ async fn admit<P: Protocol>(
         }
     };
     let presented = match asked.decl.location {
-        Location::Cluster => Some(SERVICE_ACCOUNT.to_string()),
+        Location::Cluster { .. } => Some(SERVICE_ACCOUNT.to_string()),
         _ => name.clone(),
     };
     record(presented, "allowed".to_string());
@@ -501,7 +501,7 @@ async fn run<O: Operation>(shared: Arc<Shared>, operation: O, send: Deliver<O::O
             Some(base) => Some(base),
             None => return refuse_early(Failure::Denied(Denial::NotConfigured)).await,
         },
-        Location::Cluster => protocol.own_location(),
+        Location::Cluster { .. } => protocol.own_location(),
         Location::Bound { .. } | Location::Arbitrary => None,
     };
     let configured_host = match base.as_deref().map(O::Protocol::configured_host) {
@@ -1038,9 +1038,14 @@ pub(crate) fn problems(
                 credential
             }
             Location::Bound { credential } => Some(credential),
-            Location::Arbitrary | Location::Cluster => None,
+            Location::Arbitrary | Location::Cluster { .. } => None,
         };
-        let to_the_cluster = operation.location == Location::Cluster;
+        let to_the_cluster = matches!(operation.location, Location::Cluster { .. });
+        if let Location::Cluster { access: &[] } = operation.location {
+            problems.push(format!(
+                "operation `{name}` goes to the cluster and declares nothing it may do there"
+            ));
+        }
         if to_the_cluster != operation.protocol.to_the_cluster() {
             problems.push(format!(
                 "operation `{name}`: the Kubernetes protocol goes to the cluster and nothing else does"
@@ -1082,6 +1087,9 @@ pub struct OperationEntry {
     pub protocol: String,
     /// `configured`, `bound`, `arbitrary` or `cluster`.
     pub location: String,
+    /// What a cluster operation may do there, as RBAC names it: `watch pods`, `create batch/jobs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub access: Vec<String>,
     /// The variable a configured operation goes to the host of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable: Option<String>,
@@ -1100,13 +1108,18 @@ impl From<&OperationDecl> for OperationEntry {
             } => ("configured", Some(variable.to_string()), credential),
             Location::Bound { credential } => ("bound", None, Some(credential)),
             Location::Arbitrary => ("arbitrary", None, None),
-            Location::Cluster => ("cluster", None, None),
+            Location::Cluster { .. } => ("cluster", None, None),
+        };
+        let access = match operation.location {
+            Location::Cluster { access } => access.iter().map(ToString::to_string).collect(),
+            _ => Vec::new(),
         };
         Self {
             name: operation.name.to_string(),
             doc: operation.doc.to_string(),
             protocol: operation.protocol.as_str().to_string(),
             location: location.to_string(),
+            access,
             variable,
             credential: credential.map(|credential| match credential {
                 Credential::Named(name) => name.to_string(),
@@ -1124,6 +1137,12 @@ pub(crate) mod tests {
     use polar_crypto::Zeroizing;
     use proptest::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const WATCH_PODS: &[Access] = &[Access::new(Verb::Watch, "", "pods")];
+    const WATCH_PODS_AND_CREATE_JOBS: &[Access] = &[
+        Access::new(Verb::Watch, "", "pods"),
+        Access::new(Verb::Create, "batch", "jobs"),
+    ];
 
     // -- a protocol with nothing real in it ---------------------------------------------------------------------------
 
@@ -1188,6 +1207,7 @@ pub(crate) mod tests {
             Ok(Target {
                 host,
                 encrypted: request.encrypted,
+                access: None,
             })
         }
         async fn credential(
@@ -2311,7 +2331,7 @@ pub(crate) mod tests {
             name: "watches",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
-            location: Location::Cluster,
+            location: Location::Cluster { access: WATCH_PODS },
         }];
         for enough in [crate::Capability::KubeApiRead, crate::Capability::PodRead] {
             assert!(problems("a", &watches, None, &[], true, &[enough]).is_empty());
@@ -2319,7 +2339,24 @@ pub(crate) mod tests {
         let all = problems("a", &watches, None, &[], true, &[]).join(" | ");
         assert!(all.contains("reads the Kubernetes API"), "{all}");
 
-        let nowhere = [decl("elsewhere", Location::Cluster)];
+        let says_nothing = [OperationDecl {
+            name: "says-nothing",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster { access: &[] },
+        }];
+        let all = problems(
+            "a",
+            &says_nothing,
+            None,
+            &[],
+            true,
+            &[crate::Capability::PodRead],
+        )
+        .join(" | ");
+        assert!(all.contains("declares nothing it may do"), "{all}");
+
+        let nowhere = [decl("elsewhere", Location::Cluster { access: WATCH_PODS })];
         let all = problems(
             "a",
             &nowhere,
@@ -2352,8 +2389,14 @@ pub(crate) mod tests {
         let entry = OperationEntry::from(&Anywhere::DECL);
         assert_eq!(entry.location, "arbitrary");
         assert_eq!(entry.credential, None);
-        let entry = OperationEntry::from(&decl("watches", Location::Cluster));
+        let entry = OperationEntry::from(&decl(
+            "watches",
+            Location::Cluster {
+                access: WATCH_PODS_AND_CREATE_JOBS,
+            },
+        ));
         assert_eq!(entry.location, "cluster");
+        assert_eq!(entry.access, ["watch pods", "create batch/jobs"]);
         assert_eq!(entry.credential, None);
         assert_eq!(entry.variable, None);
     }

@@ -473,14 +473,16 @@ mod tests {
             target_of("https://GitHub.com:8443/o/r.git"),
             Ok(Target {
                 host: "github.com".to_string(),
-                encrypted: true
+                encrypted: true,
+                access: None,
             })
         );
         assert_eq!(
             target_of("http://git.example.org/o/r.git"),
             Ok(Target {
                 host: "git.example.org".to_string(),
-                encrypted: false
+                encrypted: false,
+                access: None,
             })
         );
     }
