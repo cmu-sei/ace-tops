@@ -1,0 +1,1 @@
+{"type": "package_status_found", "kind": "unmaintained", "identifier": "RUSTSEC-2026-0002", "package_name": "x", "package_version": "0.1.0", "scanner": "cargo-deny"}

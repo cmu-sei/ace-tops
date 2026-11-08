@@ -1,0 +1,1 @@
+{"type": "container_image_created", "image_name": "i", "tarball_hash": "t", "config_digest": "c", "layers": [{"order": 0, "diff_id": "sha256:01", "tar_path": "l/0"}], "repo_tags": ["r:1", "😀é"]}

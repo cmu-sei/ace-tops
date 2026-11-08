@@ -356,9 +356,24 @@ no precondition on either public function, so that it holds for the unverified c
   overflows; the tape never past its limit nor past what a `u32` counts, and its limit unchanged; every key's and text's span inside
   the line, every container's end inside the tape.
 
-Not proved, and held by property tests instead (`tests/props.rs`): that the gate's UTF-8 agrees with `std::str::from_utf8` (a
-differential test of the two definitions on the build that runs); that any value of the grammar, written as JSON writes it,
-parses to one token for each value and key; that anything after a report is refused.
+- `check` (O2d1b): terminates, never panics or overflows, and reads nothing outside the line or the tape, whatever tape it is given
+  (the parser's, or one made otherwise: every index and span is checked before it is used); its recursion, into a report's
+  packages, edges and layers, decreases with each schema's rank. What it accepts: a kind a build may report, named by `type`
+  (stage started or completed, a security advisory, a package's status, an artifact, an SBOM, a binary linked, an image
+  created; never a build's own execution, which is the orchestrator's to say), and for it every field of Polar's event types,
+  typed, at most once, and present where the type says so (an `Option` may be `null` or absent, a serde default absent); an
+  unknown field refused, and `build_id` read and never believed. Whether a field is required is said once (`required`).
+
+Not proved, and held by property tests instead (`tests/props.rs`, `tests/reports.rs`): that the gate's UTF-8 agrees with
+`std::str::from_utf8` (a differential test of the two definitions on the build that runs); that any value of the grammar, written
+as JSON writes it, parses to one token for each value and key; that anything after a report is refused; that any report of any
+kind, with any text in its fields, written as the pipeline writes it, reads back as itself (`Report::read`, the decoding, which
+allocates and so runs outside the worker); that one renamed among the fields a kind must have is refused.
+
+Fuzzed (`build-orchestrator/report/fuzz`, its own workspace, `cargo fuzz run read`, with nixpkgs' `cargo-fuzz` and `clang`): any
+bytes through the gate, the parser, the check and the decoding, none panicking, and whatever reads as a report reading back as
+itself once written out again. First run, 2026-11-08: 14.5 million inputs in ten minutes, no failure; its corpus reached deep only
+the three kinds it was seeded with, so it is now seeded with one of each kind (`fuzz/seeds`, each read by a test).
 
 What Verus asked of the code, the maintainer's question ("I've long-wondered if I could deal with the constraints it places on how
 I write Rust code"):
@@ -427,8 +442,9 @@ I write Rust code"):
   - **O2d** the report reader ("How a report is read", above): O2d1 the byte gate, the `Report` type and Polar's own parser, with
     property tests, fuzzing and Verus proofs (its flake first, on the maintainer's GitHub). O2d1a DONE 2026-11-08: Verus packaged
     (`github.com/daveman1010221/nix-verus`, in the dev shell; `just verify`), and the gate and the parser proved, 35 obligations
-    (`build-orchestrator/report`, below); left for O2d1, the report grammar's check, decoding a checked line, fuzzing and
-    JSONTestSuite. O2d2 the pre-forked worker in seccomp
+    (`build-orchestrator/report`, below). O2d1b DONE 2026-11-08: the report grammar's check proved too (58 obligations in all),
+    decoding a checked line into owned values (not proved; property tests and fuzzing), and a fuzz target through all four
+    steps. Left: JSONTestSuite, with the maintainer's leave. O2d2 the pre-forked worker in seccomp
     strict mode, a builder facility, and
     its validated hand-back; O2d3 the meaning checks and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as

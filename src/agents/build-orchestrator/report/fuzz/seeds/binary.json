@@ -1,0 +1,1 @@
+{"type": "binary_linked", "binary_content_hash": "sha256:03", "binary_name": "cassini", "root_purl": "pkg:cargo/cassini@0.1.0", "sbom_content_hash": "sha256:04", "binding_digest": "sha256:05"}

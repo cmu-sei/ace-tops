@@ -1,0 +1,47 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact
+# permission@sei.cmu.edu for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+
+# Coverage-guided fuzzing of the report reader (docs/architecture/build-orchestrator.md, "How a report is read"): its own
+# workspace, so that libfuzzer-sys is no dependency of Polar's. `cargo fuzz run read -- -max_total_time=600`, with cargo-fuzz
+# (nixpkgs) on the workspace's nightly.
+[package]
+name = "orchestrator-report-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+orchestrator-report = { path = ".." }
+
+[[bin]]
+name = "read"
+path = "fuzz_targets/read.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

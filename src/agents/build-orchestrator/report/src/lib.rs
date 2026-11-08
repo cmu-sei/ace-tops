@@ -33,14 +33,21 @@
 //! 2. [`parse()`], Polar's own parser for one grammar much smaller than JSON's (objects, lists, strings, non-negative
 //!    integers and `null`; no float, no boolean, no duplicate key), onto a [`Tape`] of tokens allocated once, at its
 //!    bound: a line that needs more is refused.
+//! 3. [`check()`], the tape against the grammar of a report: a [`Kind`] a build may report, by its `type`, and for it every
+//!    field named, typed and where it must be, an unknown field refused. A build's own execution (started, completed,
+//!    failed, cancelled) is no kind of report: that is the orchestrator's to say.
 //!
-//! Both are proved with Verus, for every input, on the code that runs (`cargo verus verify -p orchestrator-report`, in the
-//! dev shell; build-orchestrator.md, "Proved with Verus"): they terminate, never panic, index out of bounds or overflow;
-//! the gate passes a line only within its length, free of control characters, and UTF-8 as `vstd::utf8::valid_utf8`
-//! defines it; the parser keeps the tape within its limit and every span inside the line, whatever the line and the
-//! bounds. Neither has a precondition: what they need they check, so the proofs hold for any caller, the unverified ones
-//! included. Neither allocates past what the tape was given, so they can run where nothing may ask for memory (the
-//! locked-down worker, O2d2).
+//! All three are proved with Verus, for every input, on the code that runs (`cargo verus verify -p orchestrator-report`, or
+//! `just verify`, in the dev shell; build-orchestrator.md, "Proved with Verus"): they terminate, never panic, index out of
+//! bounds or overflow; the gate passes a line only within its length, free of control characters, and UTF-8 as
+//! `vstd::utf8::valid_utf8` defines it; the parser keeps the tape within its limit and every span inside the line,
+//! whatever the line and the bounds; the check reads nothing outside the line or the tape, whatever tape it is given. None
+//! has a precondition: what it needs it checks, so the proofs hold for any caller, the unverified ones included. None
+//! allocates past what the tape was given, so they can run where nothing may ask for memory (the locked-down worker, O2d2).
+//!
+//! Then [`Report::read`] decodes a checked line into owned values, its escapes undone: the one step that allocates, and
+//! the one not proved. It runs outside the worker, refuses any tape it cannot read, and is held by property tests (every
+//! report reads back as itself) and by fuzzing (`fuzz/`: any bytes, through all four steps).
 //!
 //! The proofs, specifications and ghost variables are Verus's and are erased from a plain build: `vstd` is the crate's
 //! one dependency, and a plain `cargo build` compiles what the proofs are about and nothing more.
@@ -49,9 +56,16 @@
 #![allow(clippy::manual_range_contains)]
 
 mod gate;
+mod grammar;
+mod report;
 mod tape;
 
 pub use gate::{Bounds, KEYS, NUMBER_DIGITS, Refusal, gate};
+pub use grammar::{Kind, check};
+pub use report::{
+    ContainerImageCreated, DependencyEdge, Layer, PackageRef, PackageStatusFound, Report,
+    SbomAnalyzed, SecurityAdvisoryFound, StageOutcome,
+};
 pub use tape::{Tape, Token, parse};
 
 /// What starts a report line in a build's output; any other line is the build's own output.
@@ -95,6 +109,12 @@ impl std::fmt::Display for Refusal {
             Refusal::DuplicateKey => "an object has a key twice",
             Refusal::NotAValue => "a value the grammar does not have",
             Refusal::Trailing => "something follows the report",
+            Refusal::NotAnObject => "the report is not an object",
+            Refusal::UnknownKind => "the report is of no kind a build may report",
+            Refusal::UnknownKey => "the report has a field its kind does not",
+            Refusal::MissingKey => "the report lacks a field its kind must have",
+            Refusal::WrongType => "a field's value is not of its type",
+            Refusal::UnknownWord => "a field's word is not one of its",
         })
     }
 }

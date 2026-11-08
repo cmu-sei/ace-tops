@@ -1,0 +1,1 @@
+{"type": "security_advisory_found", "build_id": "b", "severity": "high", "identifier": "RUSTSEC-2026-0001", "in_artifact": "sha256:00", "kind": "vulnerability", "scanner": "cargo-audit", "affected_package": null, "cve_id": "CVE-2026-1", "ghsa_id": null, "fix_version": ">=1.2", "unaffected_constraint": null, "advisory_url": "https://rustsec.org/advisories/RUSTSEC-2026-0001"}

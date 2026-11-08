@@ -61,6 +61,12 @@ pub enum Refusal {
     DuplicateKey,
     NotAValue,
     Trailing,
+    NotAnObject,
+    UnknownKind,
+    UnknownKey,
+    MissingKey,
+    WrongType,
+    UnknownWord,
 }
 
 /// The most digits a number may have: a `u64` has at most 20.
