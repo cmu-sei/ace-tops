@@ -60,6 +60,11 @@ Asked, the maintainer, 2026-11-07:
    default seccomp profile, writing only its workspace; a mapping may name what more its pipeline needs, so an exception is signed and
    on the record. ("Hardened, a mapping may opt out".)
 
+5a. **Its Kubernetes calls go through the builder's Kubernetes protocol handler** (the maintainer, 2026-11-07, "Through the protocol
+   handler"): creating, deleting and listing Jobs, reading their events and a pod's log are operations of that protocol, each declared,
+   judged and recorded, as every outbound call is (`protocol-handlers.md`). His backend made them with its own `kube::Client`. The
+   handler only watched; the request operations are added (O1c).
+
 Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 
 5. Deployment facts (the build namespace, the clone image, by digest) come from the catalog, and run-time settings (the concurrency cap,
@@ -72,7 +77,8 @@ Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 ## Plan, in bites
 
 - **O1** the core and Kubernetes crates (types, backend, the Job spec), with decisions 1 and 4 in the Job and no Secret path; tests first
-  for what changes.
+  for what changes. O1a (the core types) and O1b (the Job spec) DONE 2026-11-07.
+- **O1c** the Kubernetes protocol's request operations in `polar-agent-builder` (O1c1), then the backend over them (O1c2).
 - **O2** the agent on the builder and in the catalog: 5, 6 and 7.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet), the clone image that checks and unpacks it.
