@@ -753,6 +753,22 @@ I write Rust code"):
     spoilings is refused, saying where and never what (an unknown key, another registry, a git source with no commit or a commit
     that is not one, plain http, a login in the address, a name that leaves its directory, an escape, a `[metadata]` table, a
     carriage return, a list item not quoted, a list not closed); a crate with no sha256 refused; a lock past its bound unread.
+  - *D2 in two*: D2a the crates; D2b the git dependencies, which locks a build reads, and the step wired in after the source.
+    *D2a DONE 2026-11-08* (`deps.rs`): a build's crates in the registry in the cluster by the digests their lock pins. Each is
+    asked of `build-dependencies` first (HEAD, which now says how large what it holds is: `push::held`), and only one it does
+    not hold is downloaded, by name and version (`/crates/<name>/<name>-<version>.crate`), through `crates.download`, a declared
+    HTTP operation at `POLAR_ORCHESTRATOR_CRATES` (a Static setting, `https://static.crates.io` unless the catalog names a
+    mirror), with no credential; checked against the lock's sha256 and pushed, eight at a time. Then the index (each crate by
+    name, version and sha256, each git dependency by its source, commit, packages and archive's digest; canonical, the same
+    dependencies the same bytes in any order) and a manifest by the commit naming the index, every crate and every git
+    dependency by digest and size, so the registry keeps them. Past `POLAR_ORCHESTRATOR_MAX_DEPENDENCY_BYTES` (Dynamic, 1 GiB)
+    in all, the build's dependencies are refused. The push serves any repository now (`push::blob`, `push::put_manifest`).
+    Tested through the real HTTP handler against a stand-in crates host and the stand-in registry (which now serves any
+    repository, its manifests kept by repository and tag, and says a blob's length to a HEAD, as distribution does): crates
+    downloaded, checked and kept by their lock digests, with the index and the manifest; a crate the registry holds not
+    downloaded again; a crate that is not what the lock pins refused, naming it, nothing kept; a crate the host lacks named; a
+    bound passed refused with no manifest; and a property that the index and manifest are the same bytes in any order and
+    name the index, every crate and the git dependency once each.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

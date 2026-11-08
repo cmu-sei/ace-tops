@@ -47,6 +47,7 @@ pub const OPERATIONS: &[OperationDecl] = &[
     crate::push::PUSH,
     crate::source::FETCH,
     crate::source::FETCH_PUBLIC,
+    crate::deps::DOWNLOAD,
 ];
 
 pub struct BuildOrchestrator;
@@ -140,8 +141,10 @@ mod tests {
             .iter()
             .filter(|o| o.protocol == "http")
             .collect();
-        assert_eq!(http.len(), 1, "{http:?}");
-        assert_eq!(http[0].name, "registry.source.push");
+        // The push to the registry, and the download of a build's crates, each to the host its configuration names.
+        let mut http: Vec<&str> = http.iter().map(|o| o.name.as_str()).collect();
+        http.sort();
+        assert_eq!(http, ["crates.download", "registry.source.push"]);
         // Its two fetches, as the git observer's: with the credential a mapping names, or with none.
         let mut git: Vec<_> = scaffold
             .operations

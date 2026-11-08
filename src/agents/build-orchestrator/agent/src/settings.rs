@@ -64,6 +64,23 @@ pub static CLONES: Required<String> = Required::text(
      written by nothing else",
 );
 
+/// Where crates are downloaded from, by name: the operation that downloads them is declared at its host (`deps::DOWNLOAD`).
+pub const CRATES_VAR: &str = "POLAR_ORCHESTRATOR_CRATES";
+
+pub static CRATES: Defaulted<String> = Defaulted::text(
+    CRATES_VAR,
+    "where a build's crates are downloaded from, by the sha256 its lock pins: crates.io's own, or a mirror serving \
+     /crates/<name>/<name>-<version>.crate as it does. http:// or https://, a host and a port, and nothing more",
+    "https://static.crates.io",
+);
+
+pub static MAX_DEPENDENCY_BYTES: Defaulted<u64> = Defaulted::number(
+    "POLAR_ORCHESTRATOR_MAX_DEPENDENCY_BYTES",
+    "the most a build's dependencies may come to, in bytes, all together; past it the build fails at its source. At least 1",
+    "1073741824",
+)
+.dynamic();
+
 pub static MAX_SOURCE_BYTES: Defaulted<usize> = Defaulted::number(
     "POLAR_ORCHESTRATOR_MAX_SOURCE_BYTES",
     "the largest a build's source archive may be, gzipped, in bytes; past it the build fails at its source. At least 1",
@@ -188,11 +205,12 @@ pub static DEFAULT_COMMAND: Defaulted<Vec<String>> = Defaulted::list(
 .dynamic();
 
 /// The deployment's facts.
-pub static DEPLOYMENT: &[&dyn Described] = &[&NAMESPACE, &TEMPLATE, &REGISTRY, &CLONES];
+pub static DEPLOYMENT: &[&dyn Described] = &[&NAMESPACE, &TEMPLATE, &REGISTRY, &CLONES, &CRATES];
 
 /// The run-time settings, followed as one group: an update that changes several is one change.
 pub static TUNING: &[&dyn Described] = &[
     &MAX_SOURCE_BYTES,
+    &MAX_DEPENDENCY_BYTES,
     &CONCURRENT_BUILDS,
     &CPU_LIMIT,
     &MEMORY_LIMIT,
@@ -216,7 +234,9 @@ static VARIABLES: &[&dyn Described] = &[
     &TEMPLATE,
     &REGISTRY,
     &CLONES,
+    &CRATES,
     &MAX_SOURCE_BYTES,
+    &MAX_DEPENDENCY_BYTES,
     &CONCURRENT_BUILDS,
     &CPU_LIMIT,
     &MEMORY_LIMIT,
@@ -257,6 +277,8 @@ pub struct Deployment {
     pub registry: String,
     /// Where the repositories' clones are kept.
     pub clones: String,
+    /// Where crates are downloaded from, `http(s)://host:port`.
+    pub crates: String,
 }
 
 /// The run-time settings in force.
@@ -264,6 +286,8 @@ pub struct Deployment {
 pub struct Tuning {
     /// The largest a build's source archive may be, in bytes.
     pub max_source: usize,
+    /// The most its dependencies may come to, in bytes.
+    pub max_dependencies: u64,
     pub concurrent_builds: usize,
     pub resources: PipelineResources,
     pub workspace_limit: String,
@@ -279,6 +303,7 @@ pub fn deployment(config: &Config) -> Result<Deployment, String> {
         template: config.read(&TEMPLATE).map_err(|e| e.to_string())?,
         registry: config.read(&REGISTRY).map_err(|e| e.to_string())?,
         clones: config.read(&CLONES).map_err(|e| e.to_string())?,
+        crates: config.read(&CRATES).map_err(|e| e.to_string())?,
     })
 }
 
@@ -286,6 +311,7 @@ pub fn tuning(config: &Config) -> Result<Tuning, String> {
     let read = |e: polar_env::ConfigError| e.to_string();
     Ok(Tuning {
         max_source: config.read(&MAX_SOURCE_BYTES).map_err(read)?,
+        max_dependencies: config.read(&MAX_DEPENDENCY_BYTES).map_err(read)?,
         concurrent_builds: config.read(&CONCURRENT_BUILDS).map_err(read)?,
         resources: PipelineResources {
             cpu_limit: config.read(&CPU_LIMIT).map_err(read)?,
@@ -408,6 +434,17 @@ fn relations(env: &dyn Env) -> Vec<String> {
         && let Some(why) = registry_problem(&address)
     {
         problems.push(format!("{} {why}", REGISTRY.name()));
+    }
+    if let Ok(address) = CRATES.read(env)
+        && let Some(why) = registry_problem(&address)
+    {
+        problems.push(format!("{} {why}", CRATES.name()));
+    }
+    if MAX_DEPENDENCY_BYTES.read(env) == Ok(0) {
+        problems.push(format!(
+            "{} must be at least 1",
+            MAX_DEPENDENCY_BYTES.name()
+        ));
     }
     let quantities = [
         &CPU_LIMIT,
@@ -538,6 +575,7 @@ mod tests {
         let tuning = tuning(&config).unwrap();
         assert_eq!(tuning.concurrent_builds, 1);
         assert_eq!(tuning.max_source, 256 * 1024 * 1024);
+        assert_eq!(tuning.max_dependencies, 1 << 30);
         assert_eq!(tuning.resources, PipelineResources::default());
         assert_eq!(tuning.retention, Retention::default());
         assert_eq!(tuning.relay, RelayBounds::default());
@@ -550,6 +588,7 @@ mod tests {
                 template: "build-runner".into(),
                 registry: "http://registry.polar-registry.svc.cluster.local:5000".into(),
                 clones: "/var/lib/build-orchestrator/clones".into(),
+                crates: "https://static.crates.io".into(),
             }
         );
     }
@@ -632,6 +671,17 @@ mod tests {
             ("POLAR_ORCHESTRATOR_KEEP_FAILED_SECS", "0", "at least 60"),
             ("POLAR_ORCHESTRATOR_CONCURRENT_BUILDS", "0", "at least 1"),
             ("POLAR_ORCHESTRATOR_MAX_SOURCE_BYTES", "0", "at least 1"),
+            ("POLAR_ORCHESTRATOR_MAX_DEPENDENCY_BYTES", "0", "at least 1"),
+            (
+                "POLAR_ORCHESTRATOR_CRATES",
+                "static.crates.io",
+                "must begin http",
+            ),
+            (
+                "POLAR_ORCHESTRATOR_CRATES",
+                "https://static.crates.io/crates",
+                "nothing more",
+            ),
             ("POLAR_ORCHESTRATOR_MAX_REPORTS", "0", "at least 1"),
             ("POLAR_ORCHESTRATOR_MAX_REPORT_BYTES", "0", "at least 1"),
             ("POLAR_ORCHESTRATOR_REPORT_LINE_BYTES", "0", "at least 1"),

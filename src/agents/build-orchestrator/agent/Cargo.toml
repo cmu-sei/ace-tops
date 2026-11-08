@@ -30,6 +30,7 @@ cassini-client.workspace = true
 cassini-types.workspace = true
 chrono.workspace = true
 flate2.workspace = true
+futures.workspace = true
 # To read the clone the git handler brought up to date, and nothing more: clippy.toml forbids the rest.
 git2.workspace = true
 git-agent-common.workspace = true

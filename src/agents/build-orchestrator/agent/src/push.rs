@@ -40,8 +40,8 @@ use sha2::{Digest, Sha256};
 /// Pushes to the registry in the cluster, and only there.
 pub const PUSH: OperationDecl = OperationDecl {
     name: "registry.source.push",
-    doc: "pushes a build's source archive, and a manifest pointing at it, to the registry the orchestrator's \
-          configuration names",
+    doc: "pushes a build's source archive and its dependencies, and manifests pointing at them, to the registry the \
+          orchestrator's configuration names",
     protocol: ProtocolKind::HTTP,
     location: Location::Configured {
         variable: REGISTRY_VAR,
@@ -55,10 +55,10 @@ pub const REPOSITORY: &str = "build-sources";
 pub const ARTIFACT_TYPE: &str = "application/vnd.polar.build-source.v1";
 /// What its one layer is: the archive the build's pod unpacks.
 pub const ARCHIVE_TYPE: &str = "application/vnd.polar.build-source.v1.tar+gzip";
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+pub(crate) const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 /// OCI's empty descriptor: an artifact's config when it has none to say.
-const EMPTY_TYPE: &str = "application/vnd.oci.empty.v1+json";
-const EMPTY: &[u8] = b"{}";
+pub(crate) const EMPTY_TYPE: &str = "application/vnd.oci.empty.v1+json";
+pub(crate) const EMPTY: &[u8] = b"{}";
 
 /// `sha256:` and the lower-case hex of `bytes`' digest.
 pub fn digest_of(bytes: &[u8]) -> String {
@@ -107,10 +107,11 @@ fn path_of(location: &str) -> Option<String> {
     Some(rest[at..].to_string())
 }
 
-/// What a registry answered: its status and where an upload goes on.
+/// What a registry answered: its status, where an upload goes on, and how large what it holds is.
 struct Answered {
     status: StatusCode,
     location: Option<String>,
+    length: Option<u64>,
 }
 
 struct Call(Request);
@@ -130,6 +131,11 @@ impl Operation for Call {
                 .get("location")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string),
+            length: reply
+                .headers
+                .get("content-length")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse().ok()),
         })
     }
 }
@@ -141,21 +147,41 @@ async fn ask(protocols: &ProtocolHandle, request: Request, step: &str) -> Result
         .map_err(|failure: Failure| format!("{step}: {failure}"))
 }
 
-/// `bytes` as a blob of `build-sources`, unless it is there already.
-async fn blob(protocols: &ProtocolHandle, bytes: &[u8], what: &str) -> Result<(), String> {
-    let digest = digest_of(bytes);
+/// How large the blob `digest` of `repository` is, if the registry holds it.
+pub async fn held(
+    protocols: &ProtocolHandle,
+    repository: &str,
+    digest: &str,
+    what: &str,
+) -> Result<Option<u64>, String> {
     let there = ask(
         protocols,
-        Request::head(format!("/v2/{REPOSITORY}/blobs/{digest}")),
+        Request::head(format!("/v2/{repository}/blobs/{digest}")),
         &format!("asking whether the {what} is there"),
     )
     .await?;
-    if there.status == StatusCode::OK {
+    if there.status != StatusCode::OK {
+        return Ok(None);
+    }
+    Ok(Some(there.length.ok_or_else(|| {
+        format!("asking whether the {what} is there: the registry said not how large it is")
+    })?))
+}
+
+/// `bytes` as a blob of `repository`, unless it is there already.
+pub async fn blob(
+    protocols: &ProtocolHandle,
+    repository: &str,
+    bytes: &[u8],
+    what: &str,
+) -> Result<(), String> {
+    let digest = digest_of(bytes);
+    if held(protocols, repository, &digest, what).await?.is_some() {
         return Ok(());
     }
     let opened = ask(
         protocols,
-        Request::post(format!("/v2/{REPOSITORY}/blobs/uploads/"), Vec::new()),
+        Request::post(format!("/v2/{repository}/blobs/uploads/"), Vec::new()),
         &format!("opening the {what}'s upload"),
     )
     .await?;
@@ -193,16 +219,24 @@ pub async fn push(protocols: &ProtocolHandle, tag: &str, archive: &[u8]) -> Resu
     if !is_tag(tag) {
         return Err("the tag is not one a registry takes".into());
     }
-    blob(protocols, archive, "archive").await?;
-    blob(protocols, EMPTY, "empty config").await?;
+    blob(protocols, REPOSITORY, archive, "archive").await?;
+    blob(protocols, REPOSITORY, EMPTY, "empty config").await?;
     let digest = digest_of(archive);
+    put_manifest(protocols, REPOSITORY, tag, manifest(&digest, archive.len())).await?;
+    Ok(digest)
+}
+
+/// `body`, an OCI image manifest, as `repository`'s `tag`.
+pub async fn put_manifest(
+    protocols: &ProtocolHandle,
+    repository: &str,
+    tag: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
     let put = ask(
         protocols,
-        Request::put(
-            format!("/v2/{REPOSITORY}/manifests/{tag}"),
-            manifest(&digest, archive.len()),
-        )
-        .header("content-type", MANIFEST_TYPE),
+        Request::put(format!("/v2/{repository}/manifests/{tag}"), body)
+            .header("content-type", MANIFEST_TYPE),
         "sending the manifest",
     )
     .await?;
@@ -212,7 +246,7 @@ pub async fn push(protocols: &ProtocolHandle, tag: &str, archive: &[u8]) -> Resu
             put.status
         ));
     }
-    Ok(digest)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -66,7 +66,7 @@ async fn a_source_is_its_blob_and_a_manifest_tagged_by_its_commit() {
     );
     let (kind, body) = held
         .manifests
-        .get(&commit())
+        .get(&format!("build-sources:{}", commit()))
         .expect("a manifest by the commit");
     assert_eq!(kind, "application/vnd.oci.image.manifest.v1+json");
     let manifest: Value = serde_json::from_slice(body).unwrap();

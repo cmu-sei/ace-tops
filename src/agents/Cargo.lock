@@ -953,6 +953,7 @@ dependencies = [
  "cassini-types",
  "chrono",
  "flate2",
+ "futures",
  "git-agent-common",
  "git2",
  "orchestrator-backend-k8s",

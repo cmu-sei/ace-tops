@@ -133,7 +133,8 @@ async fn a_commit_is_fetched_archived_and_pushed_and_the_build_given_it_by_diges
     let held = rig.registry.0.lock().unwrap();
     assert_eq!(held.blobs.get(&digest), Some(&expected));
     assert!(
-        held.manifests.contains_key(&rig.commit),
+        held.manifests
+            .contains_key(&format!("build-sources:{}", rig.commit)),
         "the manifest, by the commit"
     );
     // The registry is plain http, and the fetch is told so.
