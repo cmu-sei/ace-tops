@@ -160,6 +160,8 @@ def pod_spec_of [d: record] {
         "Pod" => ($d | get -o spec)
         "CronJob" => ($d | get -o spec.jobTemplate.spec.template.spec)
         "Job" | "Deployment" | "StatefulSet" | "DaemonSet" | "ReplicaSet" => ($d | get -o spec.template.spec)
+        # A pod setup something of Polar's makes pods from: the build workload's (docs/architecture/build-orchestrator.md, 5b).
+        "PodTemplate" => ($d | get -o template.spec)
         _ => null
     }
 }

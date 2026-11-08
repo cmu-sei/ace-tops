@@ -102,6 +102,19 @@
     needs: ["tracing", "pinned-ca"]
   }
 
+  # A pod setup something of Polar's makes pods from, not a workload Polar runs itself: the build workload, a PodTemplate in
+  # the build namespace that the build orchestrator reads and makes each build's Job from (docs/architecture/build-orchestrator.md,
+  # 5b and 5c; schema/pod-template.dhall). Its pods are instances of its one identity, each issued its own certificate by the
+  # credentials agent (decision 3), so it is many and on the credentials agent. No Polar binary of its own runs in them: it has
+  # no scaffold, no document, no health and no probe, its configuration is its environment, and its topics are its entry's
+  # (decision 7b). The agent's probe, health and shutdown fields it inherits are not rendered.
+  template: {
+    extends: "agent"
+    instances: "many"
+    issuer: "credentials-agent"
+    config: "env"
+  }
+
   # The certificate authority's front, cert-issuer, alone (docs/architecture/cert-issuer-isolation.md, step 1c). Its own
   # template, schema/ca.dhall: it is the issuer, so its pod has no polar-init; the kind's projected token is mounted in
   # its own container, on which it signs itself its client certificate through its own floor; the Kubernetes API token

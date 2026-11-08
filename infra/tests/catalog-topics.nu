@@ -72,7 +72,11 @@ def main [] {
     # One at a time: two builds of one crate with different features would share its binary.
     let scaffolds = ($agents | each {|w| { w: $w, scaffold: (scaffold_of $w $served_list) } })
     let graphs = ($scaffolds | each {|x| { workload: $x.w.name, graph: ($x.scaffold.graph? | default []) } })
-    let sets = ($scaffolds | each {|x| { workload: $x.w.name, topics: ($x.scaffold.topics? | default []) } })
+    # A template (the build workload) runs no Polar binary of its own to ask: its topics are its entry's, as the resolver
+    # reads them (resolve.nu, template_scaffold; docs/architecture/build-orchestrator.md, 7b).
+    let templates = (catalog | where {|w| ($w.kind? | default "agent") == "template" }
+        | each {|w| { workload: $w.name, topics: ($w.topics? | default [] | each {|t| { from: "declared" } | merge $t }) } })
+    let sets = ($scaffolds | each {|x| { workload: $x.w.name, topics: ($x.scaffold.topics? | default []) } }) ++ $templates
 
     let tests = [
         {

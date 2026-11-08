@@ -156,6 +156,8 @@ def main [] {
                 "oci-registry-resolver.yaml"
                 "build-processor-resources.yaml"
                 "build-processor.yaml"
+                # The build workload's pod setup, a PodTemplate in polar-builds (docs/architecture/build-orchestrator.md, 5b).
+                "build-runner.yaml"
                 "attestation-agent-resources.yaml"
                 "attestation-agent.yaml"
                 # The load harness's accounts and configuration only: infra/load-harness.nu makes its Jobs per run.

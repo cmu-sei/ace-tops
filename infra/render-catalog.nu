@@ -45,8 +45,10 @@ use cache.nu [cached_text, content_key, dir_digest]
 
 # Which template renders which workload kind. A kind with no entry here is a
 # custom chart, not a catalog workload. `ca` is cert-issuer's alone: it is the
-# issuer, so its pod has no polar-init (schema/ca.dhall).
-const TEMPLATES = { agent: "agent", service: "agent", run: "agent", ca: "ca" }
+# issuer, so its pod has no polar-init (schema/ca.dhall). `template` is a pod
+# setup something of Polar's makes pods from, a PodTemplate: the build workload's
+# (schema/pod-template.dhall).
+const TEMPLATES = { agent: "agent", service: "agent", run: "agent", ca: "ca", template: "pod-template" }
 
 def fail [msg: string] {
     print -e $"  ERROR: ($msg)"

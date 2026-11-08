@@ -1,0 +1,51 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+# for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+# infra/config/workloads/build.nuon
+#
+# The build workload (docs/architecture/build-orchestrator.md): the pod setup the build orchestrator makes each build's Job
+# from, a PodTemplate in the build namespace. Each build pod fetches its source from Polar's registry by digest (build-fetch),
+# then runs the repository's pipeline image, which its signed mapping pins, in place of the template's; it publishes what the
+# build did, as its own instance of this workload.
+[
+  {
+    name: "build-runner"
+    kind: "template"
+    # The image its containers run until a build replaces the pipeline's (decision 5c).
+    image: "build-fetch"
+    # By its key in the cluster's namespaces: `builds`, which sandbox-local names polar-builds.
+    namespace: "builds"
+    # Where the fetch unpacks the source and the pipeline builds: orchestrator_core::WORKSPACE_PATH.
+    workspace: "/workspace"
+    # What its pods publish, in place of a scaffold's topics: what a build did, for build-processor
+    # (scripts/pipeline/core/events.nu).
+    topics: [
+      {
+        name: "polar.provenance.events"
+        access: "publish"
+        purpose: "what a build ran and produced, reported by the build itself"
+        unprompted: "a build reports as it runs: what it started, produced and found, and how it ended"
+      }
+    ]
+    # Builds run foreign code: the low-trust side, with the observers (docs/architecture/placement.md).
+    pool: "observers"
+  }
+]

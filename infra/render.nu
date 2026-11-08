@@ -326,9 +326,10 @@ def check_and_emit_service_accounts [output_dir: string] {
 
     let workloads = (
         $docs
-        | where {|d| ($d.kind? | default "") in ["Job" "Deployment" "StatefulSet" "DaemonSet"] }
+        | where {|d| ($d.kind? | default "") in ["Job" "Deployment" "StatefulSet" "DaemonSet" "PodTemplate"] }
         | each {|d|
-            let pod = $d.spec.template.spec
+            # A PodTemplate's pods (the build workload's, docs/architecture/build-orchestrator.md, 5b) run under its account too.
+            let pod = (if $d.kind == "PodTemplate" { $d.template.spec } else { $d.spec.template.spec })
             {
                 kind: $d.kind
                 name: $d.metadata.name

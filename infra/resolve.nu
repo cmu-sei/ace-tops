@@ -225,6 +225,7 @@ const DOCUMENT_VOLUME = "polar-config"
 # function. The directory is filled by asking each agent's image on the cluster (`collect-scaffolds`, which up.nu runs
 # before it renders; infra/agent-pods.nu), or holds stubs, for a test that must not ask the agents.
 def scaffold_of [name: string, spec: record] {
+    if ($spec.kind? | default "agent") == "template" { return (template_scaffold $name $spec) }
     let dir = ($env.POLAR_SCAFFOLD_DIR? | default "")
     if ($dir | is-empty) {
         error make { msg: $"($name): POLAR_SCAFFOLD_DIR is not set. The agents' scaffolds come from their images on the cluster: nu infra/resolve.nu collect-scaffolds <dir> --target <target>, then set POLAR_SCAFFOLD_DIR=<dir>" }
@@ -234,6 +235,21 @@ def scaffold_of [name: string, spec: record] {
         error make { msg: $"($name): no scaffold at ($file)" }
     }
     open $file
+}
+
+# What a template says about itself in place of a scaffold (docs/architecture/build-orchestrator.md, 7b): no Polar binary of
+# its own runs in its pods to print one, so its topics are its catalog entry's, written as an agent's scaffold writes them,
+# and it requires, drains, owns and reads nothing of its own.
+def template_scaffold [name: string, entry: record] {
+    {
+        agent: { name: $name, role: "template" }
+        requires: []
+        shutdown_budget_minimum_secs: 0
+        topics: ($entry.topics? | default [] | each {|t| { from: "declared" } | merge $t })
+        groups: []
+        graph: []
+        sections: []
+    }
 }
 
 # The scaffold directory a command reads, collecting one for `target` when none is set. Returns { dir, made }, where
@@ -302,11 +318,15 @@ def spec_of [name: string, target: string, kinds: record] {
         error make { msg: $"($name): unknown kind '($entry.kind)'" }
     }
     let kind = (kind_of $kinds $entry.kind)
-    let spec = (
+    let merged = (
         $kind
         | merge deep ($entry | reject -o needs env)
         | merge deep ($ov | reject -o needs env)
     )
+    # Its namespace by its key in the cluster's namespaces (`polar`, `builds`), so the cluster names it once
+    # (docs/architecture/build-orchestrator.md, 7b); a namespace that is not a key is a name, as a target may give one.
+    let namespace = ((load_cluster $target).namespaces | get -o $merged.namespace | default $merged.namespace)
+    let spec = ($merged | update namespace $namespace)
     { entry: $entry, ov: $ov, kind: $kind, spec: $spec }
 }
 
@@ -379,7 +399,17 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # A catalog agent implements PolarAgent: it says what it needs and the least time it needs to
     # drain in its own scaffold, and the catalog supplies what only the deployment knows. An agent
     # that cannot yet say so is a hand-written chart under infra/layers, not a catalog workload.
-    if ($spec.config? | default "") != "document" {
+    # A template's pods run no Polar binary of its own (docs/architecture/build-orchestrator.md, 5b): what runs there reads
+    # its environment, and the template has no document, health or probe.
+    let template = ($entry.kind == "template")
+    if $template {
+        if ($spec.config? | default "") != "env" {
+            error make { msg: $"($name): a template's pods run no Polar binary that reads a document: its configuration is its environment \(config: \"env\"\)" }
+        }
+        if (effective_instances $spec) != "many" {
+            error make { msg: $"($name): a template's pods are instances of its one workload, each with its own certificate: instances \"many\", issued by the credentials agent" }
+        }
+    } else if ($spec.config? | default "") != "document" {
         error make { msg: $"($name): a catalog workload is an agent that describes itself and reads a configuration document \(config: \"document\"\). One that does not is a chart under infra/layers" }
     }
     let scaffold = (scaffold_of $name $spec)
@@ -565,23 +595,27 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # disagree with the budget.
     # The budget defaults to the least the code says it needs; the entry sets it only to give more.
     let explicit_budget = (($ov.shutdown?.budget_secs? | default ($entry.shutdown?.budget_secs? | default null)))
-    let sd = if $explicit_budget == null {
+    # A template's pods run no agent builder to drain, so its code declares no least: the kind's budget stands, and sets only
+    # how long a stopped build has before it is killed.
+    let sd = if $explicit_budget == null and not $template {
         $spec.shutdown | upsert budget_secs (budget_minimum_of $scaffold)
     } else {
         $spec.shutdown
     }
     let grace = ($sd.budget_secs + $sd.grace_margin_secs)
 
-    # Health: the files and thresholds HealthCheckActor and polar-healthcheck read.
+    # Health: the files and thresholds HealthCheckActor and polar-healthcheck read. A template's pods have neither.
     let h = $spec.health
-    $volumes = ($volumes | append { name: $h.volume, secret: null, audience: null, from: "kind" })
-    $mounts = ($mounts | append { name: $h.volume, path: $h.dir, read_only: false, from: "kind" })
+    if not $template {
+        $volumes = ($volumes | append { name: $h.volume, secret: null, audience: null, from: "kind" })
+        $mounts = ($mounts | append { name: $h.volume, path: $h.dir, read_only: false, from: "kind" })
+    }
 
     # A pod that restarts in place (a Deployment's: `job` null) and runs polar-init: polar-init leaves the start marker in the
     # health volume at the end of every run, and the workload takes it as it starts, so a container restarted alone, which
     # finds none, exits for its pod to restart whole (docs/architecture/deployments.md, step 4). cert-issuer has no
     # polar-init, and a run's Job no restart in place: neither is told.
-    let in_place = (($spec.job? | default null) == null)
+    let in_place = (($spec.job? | default null) == null) and not $template
     if $in_place and $entry.kind != "ca" {
         let marker = $"($h.dir)/($START_MARKER_FILE)"
         $env_list = ($env_list | append (env_entry { name: "POLAR_START_MARKER", value: $marker } $vars "kind" $name))
@@ -592,7 +626,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     }
     let cert_files = ($cert_dirs | str join ",")
     let dep_list = ($deps | get endpoint | str join ",")
-    for e in [
+    let agent_env = if $template { [] } else { [
         { name: "POLAR_HEALTH_FILE", value: $"($h.dir)/polar-health.json" }
         { name: "POLAR_HEALTH_CERTS", value: $cert_files }
         { name: "POLAR_HEALTH_EXPIRY_SECS", value: ($h.expiry_secs | into string) }
@@ -606,7 +640,8 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         # What this deployment provides. The agent builder compares it with
         # what the code requires and refuses to start on a mismatch.
         { name: "POLAR_CAPABILITIES", value: ($needs | str join ",") }
-    ] {
+    ] }
+    for e in $agent_env {
         $env_list = ($env_list | append (env_entry $e $vars "kind" $name))
     }
 
@@ -657,15 +692,19 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # The agent reads one document, not an environment: the entries above are written into the
     # variables they name, and the pod is given the document and the secrets it refers to.
     let entries = $env_list
-    let filled = (fill_document $scaffold $env_list $name)
-    mut config_problems: list<string> = $filled.problems
-    if $sd.budget_secs < (budget_minimum_of $scaffold) {
-        $config_problems = ($config_problems | append $"($name) needs at least (budget_minimum_of $scaffold)s to drain, and the catalog gives (($sd.budget_secs))s")
+    mut config_problems: list<string> = []
+    mut config_map: any = null
+    if not $template {
+        let filled = (fill_document $scaffold $env_list $name)
+        $config_problems = $filled.problems
+        if $sd.budget_secs < (budget_minimum_of $scaffold) {
+            $config_problems = ($config_problems | append $"($name) needs at least (budget_minimum_of $scaffold)s to drain, and the catalog gives (($sd.budget_secs))s")
+        }
+        $config_map = { name: $"($name)-config", key: $DOCUMENT_FILE, content: (document_json $filled) }
+        $env_list = (pod_env $filled $"($DOCUMENT_DIR)/($DOCUMENT_FILE)")
+        $volumes = ($volumes | append { name: $DOCUMENT_VOLUME, secret: null, audience: null, config_map: $config_map.name, from: "document" })
+        $mounts = ($mounts | append { name: $DOCUMENT_VOLUME, path: $DOCUMENT_DIR, read_only: true, from: "document" })
     }
-    let config_map = { name: $"($name)-config", key: $DOCUMENT_FILE, content: (document_json $filled) }
-    $env_list = (pod_env $filled $"($DOCUMENT_DIR)/($DOCUMENT_FILE)")
-    $volumes = ($volumes | append { name: $DOCUMENT_VOLUME, secret: null, audience: null, config_map: $config_map.name, from: "document" })
-    $mounts = ($mounts | append { name: $DOCUMENT_VOLUME, path: $DOCUMENT_DIR, read_only: true, from: "document" })
     $volumes = ($volumes | each {|v| $v | default null config_map | default null claim | default [] items | default null mode })
 
     let ci = ($vars | get cert-issuer)
@@ -738,7 +777,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         _origin: $origin
         _settings: { issuer: $issuer, bootstrap: $spec.bootstrap, health: $h, shutdown: ($sd | insert termination_grace_secs $grace) }
         _from: { roles: $cluster_roles, env: $entries, volumes: $volumes, mounts: $mounts, deps: $deps, certs: $certs }
-    }
+    } | merge (if $template { { workspace: $spec.workspace } } else { {} })
 }
 
 # What the template takes: the resolved record without provenance. The agent template has polar-init and no pod group
@@ -755,6 +794,9 @@ def for_template [r: record] {
     )
     if $r.kind == "ca" {
         $common | reject polar_init_image cert_issuer_url init_mounts init_env dep_checks certs custody
+    } else if $r.kind == "template" {
+        # schema/pod-template-spec.dhall: the shared pod, and what a PodTemplate adds.
+        $common | select pull_policy pull_secrets polar_init_image cert_issuer_url sa_token_volume sa_token_path sa_token_expiration_secs service_account automount_sa_token restart_policy termination_grace_secs env volumes mounts init_mounts init_env dep_checks certs custody placement name kind namespace image instances needs workspace memory | update volumes { reject mode }
     } else {
         $common | reject fs_group | update volumes { reject mode }
     }
@@ -843,7 +885,7 @@ def check_all [target: string] {
         for p in (needs_workload $n.who $n.resolved.needs $caps $running) { $problems = ($problems | append $p) }
     }
     for r in $results { for p in $r.rules { $problems = ($problems | append $p) } }
-    let judged = ($results | where error == null | each {|x| { name: $x.who, r: $x.resolved } })
+    let judged = ($results | where error == null | where {|x| $x.resolved.config_map != null } | each {|x| { name: $x.who, r: $x.resolved } })
     let verdicts = (try { agent_checks $target $judged } catch {|e| [$"the agents could not judge their documents: ($e.msg)"] })
     for p in $verdicts { $problems = ($problems | append $p) }
     let sas = ($results | where error == null)
@@ -1204,7 +1246,7 @@ def "main resources" [
         pvcs: $r.resources.pvcs
         services: $r.resources.services
         # The document first (tests/resolve.nu reads it so), then any of the workload's own, such as its egress CA.
-        config_maps: ([$r.config_map] ++ $r.resources.config_maps)
+        config_maps: (([$r.config_map] | compact) ++ $r.resources.config_maps)
     } | to json
 }
 

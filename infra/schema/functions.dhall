@@ -264,15 +264,16 @@ let Instances = < one | many >
 -- A multi-instance workload (`instances` "many": authority-model.md, "Multi-instance workloads") is marked so on its
 -- object, `polar.dev/instances: many`, which infra/rules.nu reads (INSTANCES_ANNOTATION): its pods are instances of one
 -- identity, so it may run more than one. Any other is left unmarked.
-let workloadOf =
-      \ ( w
-        : { name : Text
-          , namespace : Text
-          , job : Optional Job
-          , instances : Instances
-          , pod : kubernetes.PodSpec.Type
-          }
-        ) ->
+-- The object's metadata (its name, namespace and marks) and its pod's template, which a workload and a PodTemplate share.
+let Object =
+      { name : Text
+      , namespace : Text
+      , instances : Instances
+      , pod : kubernetes.PodSpec.Type
+      }
+
+let objectOf =
+      \(w : Object) ->
         let labels = [ { mapKey = "name", mapValue = w.name } ]
 
         let instances =
@@ -298,6 +299,25 @@ let workloadOf =
                 }
               , spec = Some w.pod
               }
+
+        in  { labels, metadata, template }
+
+let workloadOf =
+      \ ( w
+        : { name : Text
+          , namespace : Text
+          , job : Optional Job
+          , instances : Instances
+          , pod : kubernetes.PodSpec.Type
+          }
+        ) ->
+        let object = objectOf w.(Object)
+
+        let labels = object.labels
+
+        let metadata = object.metadata
+
+        let template = object.template
 
         in  merge
               { None =
@@ -332,6 +352,19 @@ let workloadOf =
               }
               w.job
 
+-- A pod setup something of Polar's makes pods from, not a workload Polar runs itself: the build workload's, which the build
+-- orchestrator makes each build's Job from (docs/architecture/build-orchestrator.md, 5b). The same metadata and pod template
+-- as a workload's, in a PodTemplate.
+let podTemplateOf =
+      \(w : Object) ->
+        let object = objectOf w
+
+        in  kubernetes.Resource.PodTemplate
+              kubernetes.PodTemplate::{
+              , metadata = object.metadata
+              , template = Some object.template
+              }
+
 -- The workload container's restart: in a Deployment's pod, kept by the pod and restarting the whole pod on every exit; in
 -- a run's Job, left to the pod (`Never`).
 let restartOf =
@@ -358,6 +391,7 @@ in  { makeGraphEnv
     , Job
     , Instances
     , workloadOf
+    , podTemplateOf
     , restartOf
     , makeOpaqueSecret
     , makeDeployment

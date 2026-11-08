@@ -347,6 +347,13 @@ def main [] {
             assert equal (pull_policy_problems [$cron] | length) 1
         }
 
+        "a PodTemplate's pod is asked too": {
+            let template = { kind: "PodTemplate", metadata: { name: "build-runner" }, template: { spec: {
+                containers: [{ name: "pipeline", image: "r/build-fetch:latest", imagePullPolicy: "IfNotPresent" }]
+            } } }
+            assert equal (pull_policy_problems [$template] | length) 1
+        }
+
         "things that are not Jobs are not asked for the policy": {
             let docs = [
                 { kind: "Deployment", metadata: { name: "cert-issuer" }, spec: {} }

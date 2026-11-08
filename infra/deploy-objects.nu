@@ -226,14 +226,17 @@ export def deployment_facts [texts: list<string>, under_test: list<string> = []]
     ($texts | each {|t| { text: $t, under_test: false } }) ++ ($under_test | each {|t| { text: $t, under_test: true } })
     | each {|t| documents $t.text | each {|d| { d: $d, under_test: $t.under_test } } }
     | flatten
-    | where {|it| ($it.d.kind? | default "") in ["Deployment" "StatefulSet" "Job"] }
+    | where {|it| ($it.d.kind? | default "") in ["Deployment" "StatefulSet" "Job" "PodTemplate"] }
     | each {|it|
         let d = $it.d
-        let pod = $d.spec.template.spec
+        # The build workload is a PodTemplate whose pods are made in Jobs of its name (docs/architecture/build-orchestrator.md,
+        # 5b and 7b): their owner is a Job, as a run's is.
+        let template = ($d.kind == "PodTemplate")
+        let pod = (if $template { $d.template.spec } else { $d.spec.template.spec })
         let account = ($pod.serviceAccountName? | default "default")
         {
             identity: $"($account).($d.metadata.namespace).serviceaccount.cluster.local"
-            owner_kind: $d.kind
+            owner_kind: (if $template { "Job" } else { $d.kind })
             owner_name: $d.metadata.name
             namespace: $d.metadata.namespace
             service_account: $account

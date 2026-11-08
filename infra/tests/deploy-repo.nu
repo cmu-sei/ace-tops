@@ -239,6 +239,39 @@ spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee
             }
         }
         {
+            # docs/architecture/build-orchestrator.md, 5b and 7b: the build workload is a PodTemplate the orchestrator makes each build's
+            # Job from, so the record names its pods' owner as that workload's Job (the attestation agent takes a Job named
+            # `<workload>-...` as the workload's).
+            name: "a PodTemplate is recorded as the Job its pods are made in, under its own account"
+            body: {
+                let template = "
+apiVersion: v1
+kind: PodTemplate
+metadata: { name: build-runner, namespace: polar-builds }
+template:
+  metadata: { labels: { name: build-runner } }
+  spec:
+    serviceAccountName: build-runner
+    initContainers: [ { name: polar-init, image: 'r/polar-init@sha256:aa' }, { name: fetch, image: 'r/build-fetch@sha256:ff' } ]
+    containers: [ { name: pipeline, image: 'r/build-fetch@sha256:ff' } ]
+"
+                let facts = (deployment_facts [$template])
+                assert equal $facts [{
+                    identity: "build-runner.polar-builds.serviceaccount.cluster.local"
+                    owner_kind: "Job"
+                    owner_name: "build-runner"
+                    namespace: "polar-builds"
+                    service_account: "build-runner"
+                    containers: [
+                        { name: "fetch", image: "r/build-fetch@sha256:ff" }
+                        { name: "pipeline", image: "r/build-fetch@sha256:ff" }
+                        { name: "polar-init", image: "r/polar-init@sha256:aa" }
+                    ]
+                    under_test: false
+                }]
+            }
+        }
+        {
             name: "the record's version moves when its facts do and at no other time, so publishing the same render makes no new commit"
             body: {
                 let facts = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:1" }] }]

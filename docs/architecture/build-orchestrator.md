@@ -191,7 +191,13 @@ reported. That is the window Polar's detection-first threat model accepts for a 
   as a PodTemplate, and the `job-run` capability (a Role in the build namespace, computed from the declared writes); O2b the Job built
   from the PodTemplate read through the handler, and the judge's refusal of a Job whose pod asks for more than its template and mapping
   allow (5d); O2c the agent itself (his `agent` crate: supervisor, build registry, a job actor per
-  build, the signed `mappings` and escrowed `credentials` sections), on the builder and in the catalog.
+  build, the signed `mappings` and escrowed `credentials` sections), on the builder and in the catalog. O2a DONE 2026-11-08: the
+  `job-run` capability (O2a1), the build namespace (O2a2), the fetch image (O2a3a), and the `template` kind with `build-runner`'s
+  PodTemplate (O2a3b; `infra/config/workloads/build.nuon`, `schema/pod-template.dhall`, on `schema/agent-pod.dhall`, the pod every
+  catalog workload shares, split out of `agent.dhall` with every agent's manifest unchanged byte for byte). Server dry run on u7c:
+  accepted, with `restricted` warnings for the identity containers alone (below). Decided by standing rules, for review: the build
+  workload is in the `observers` pool, with the low-trust side, since it runs foreign code (`placement.md`); its fetch and pipeline
+  containers carry decision 4's hardening in the template itself (no privilege escalation, the default seccomp profile).
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet), the clone image that checks and unpacks it.
 - **O4** the log as a registry blob and its digest in the provenance event (a wire change).
@@ -201,3 +207,17 @@ reported. That is the window Polar's detection-first threat model accepts for a 
 Open, to raise when its bite comes: the registry write (an operation on the registry handler, its grant); which event carries the log's
 digest; the build Jobs' lifecycle (`lifecycle.md`: they are many short instances of one workload); reading whether a build is still
 running from its pod's activity (`remaining-work.md`, B21's direction).
+
+Found in O2a3b, for O2b and later:
+
+- *The pipeline's UID.* The custody daemon serves the UIDs it is told (`POLAR_CUSTODY_WORKLOAD_UIDS`, 1000 in every pod), so a pipeline
+  that a signed mapping runs as root, or as another UID, cannot sign through it, and cannot report its build. O2b decides how a
+  mapping's user and the daemon's served UIDs agree.
+- *The Job's name.* `job_name_for_build` names a Job `build-<id>`; the attestation agent takes a Job as `build-runner`'s only when it is
+  named `build-runner-<id>` (7b). O2b renames it.
+- *The fetch's registry.* `CYCLOPS_REGISTRY_INSECURE` is not set in the template: whether the fetch reads Polar's registry over plain
+  http is the cluster's fact, set with O3, where the archive is first pushed there.
+- *Polar's identity containers and `restricted`.* `polar-init` sets neither `allowPrivilegeEscalation: false` nor a seccomp profile,
+  nor does the custody daemon, in any Polar pod (`schema/functions.dhall`, `makePolarInitContainerWith`; `agent-pod.dhall`), and the
+  agents' own containers neither (`Constants.DropAllCapSecurityContext`). The build namespace's `restricted` warnings name only those
+  two, since the template hardens the build's own. Polar-wide, not this bite's.

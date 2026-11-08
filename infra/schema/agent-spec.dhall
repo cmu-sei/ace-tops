@@ -83,6 +83,32 @@ let Custody =
       , workload_uids : Text
       }
 
+-- What the pod pieces every Polar pod shares are made from (agent-pod.dhall): its identity's init containers (the custody
+-- daemon and polar-init), its volumes, its client's environment and mounts, its account, restart and placement. Both the
+-- agent template and the PodTemplate (pod-template.dhall) take it from their Spec by projection, `v.(Pod)`.
+let Pod =
+      { pull_policy : Text
+      , pull_secrets : List { name : Optional Text }
+      , polar_init_image : Text
+      , cert_issuer_url : Text
+      , sa_token_volume : Text
+      , sa_token_path : Text
+      , sa_token_expiration_secs : Natural
+      , service_account : Text
+      , automount_sa_token : Optional Bool
+      , restart_policy : Text
+      , termination_grace_secs : Natural
+      , env : List EnvEntry
+      , volumes : List VolumeEntry
+      , mounts : List MountEntry
+      , init_mounts : List InitMountEntry
+      , init_env : List EnvEntry
+      , dep_checks : List Text
+      , certs : List Text
+      , custody : Optional Custody
+      , placement : Optional { key : Text, pool : Text }
+      }
+
 let Spec =
       { name : Text
       , kind : Text
@@ -122,4 +148,4 @@ let Spec =
       , memory : Optional { request : Text, limit : Text }
       }
 
-in  { Spec, EnvEntry, VolumeEntry, MountEntry, InitMountEntry, Probe, Custody }
+in  { Spec, Pod, EnvEntry, VolumeEntry, MountEntry, InitMountEntry, Probe, Custody }

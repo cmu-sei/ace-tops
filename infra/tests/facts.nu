@@ -64,7 +64,10 @@ def main [] {
             let ca = (do $one "cert-issuer")
             assert equal [$ca.kind $ca.polar_init $ca.custody] ["ca" false false]
             assert equal (do $one "harness-producer").instances "many"
-            assert ($local | where workload != "harness-producer" | all {|w| $w.instances == "one" })
+            # The build workload: a template whose pods are each an instance (docs/architecture/build-orchestrator.md, 3 and 5b).
+            let build = (do $one "build-runner")
+            assert equal [$build.kind $build.instances $build.package $build.pool] ["template" "many" "build-fetch" "observers"]
+            assert ($local | where workload not-in ["harness-producer" "build-runner"] | all {|w| $w.instances == "one" })
         }
     }
 
