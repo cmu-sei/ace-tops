@@ -23,7 +23,8 @@
 
 //! build-orchestrator's supervisor. It holds what the orchestrator is configured with (the deployment's facts, the
 //! run-time settings, followed, and the signed mappings, followed), turns a ref update of a mapped repository into a
-//! build, admits it (`admission`), and starts an actor for each build admitted (`build`). At start it adopts the Jobs it
+//! build, admits it (`admission`), and starts an actor for each build admitted (`build`), which reads its reports with the
+//! agent's reader once its Job ends. At start it adopts the Jobs it
 //! finds running (docs/architecture/build-orchestrator.md, O2e2); every few minutes it removes the Jobs past their
 //! retention.
 
@@ -33,7 +34,7 @@ use crate::build::{BuildActor, BuildArgs, Start, actor_name, build_of};
 use crate::mappings::{self, Mapping};
 use crate::observed::Observed;
 use crate::publish::Publish;
-use crate::reader::READER;
+use crate::reader::{READER, Read};
 use crate::registry::{BuildRegistry, RegistryMessage};
 use crate::settings::{self, Deployment, Tuning};
 use crate::source::{NotYet, Source};
@@ -108,6 +109,7 @@ pub struct OrchestratorState {
     pub mappings: Vec<Mapping>,
     pub protocols: ProtocolHandle,
     pub publish: Arc<dyn Publish>,
+    pub reader: Arc<dyn Read>,
     pub source: Arc<dyn Source>,
     pub registry: ActorRef<RegistryMessage>,
     pub admission: Admission,
@@ -284,6 +286,9 @@ impl OrchestratorSupervisor {
             source: Arc::clone(&state.source),
             registry: state.registry.clone(),
             publish: Arc::clone(&state.publish),
+            reader: Arc::clone(&state.reader),
+            bounds: settings::narrowed(&state.forked_reader, &state.tuning.reader),
+            relay: state.tuning.relay,
             poll_every: POLL_EVERY,
         };
         if let Err(e) = Actor::spawn_linked(
@@ -396,9 +401,11 @@ impl Actor for OrchestratorSupervisor {
             .subscribe(myself.clone(), |event| match event {
                 InfrastructureEvent::PrepareShutdown => Some(OrchestratorMessage::PrepareShutdown),
             });
-        if resources.workers.get(READER).is_none() {
-            return Err(format!("the {READER} worker was not started").into());
-        }
+        let reader = resources
+            .workers
+            .get(READER)
+            .cloned()
+            .ok_or_else(|| format!("the {READER} worker was not started"))?;
         let protocols = resources
             .protocols
             .clone()
@@ -457,6 +464,7 @@ impl Actor for OrchestratorSupervisor {
             mappings: Vec::new(),
             protocols,
             publish: Arc::new(resources.tcp_client),
+            reader: Arc::new(reader),
             source: Arc::new(NotYet),
             registry,
             observed: Observed::new(OBSERVED_COMMITS),

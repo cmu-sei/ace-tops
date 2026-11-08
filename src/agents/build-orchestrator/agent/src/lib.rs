@@ -30,6 +30,7 @@
 pub mod admission;
 pub mod agent;
 pub mod build;
+pub mod lines;
 pub mod mappings;
 pub mod observed;
 pub mod publish;

@@ -25,6 +25,7 @@
 //! entry and never the value, wherever it is spoiled; the run-time settings' quantities and bounds.
 
 use build_orchestrator::admission::{Admission, Admitted};
+use build_orchestrator::lines::{Line, Lines};
 use build_orchestrator::mappings::{Mapping, parse};
 use build_orchestrator::settings::{SECTION, milli, narrowed};
 use orchestrator_core::types::{BuildRequest, Privileges, SourceRef};
@@ -260,7 +261,52 @@ fn build(n: u128) -> BuildRequest {
     }
 }
 
+/// A line of a log, without its newline: a report, something that begins like one, or the build's own output.
+fn log_line() -> impl Strategy<Value = Vec<u8>> {
+    let body = proptest::collection::vec(
+        any::<u8>().prop_filter("no newline", |b| *b != b'\n'),
+        0..40,
+    );
+    prop_oneof![
+        body.clone()
+            .prop_map(|b| [b"polar-report ".to_vec(), b].concat()),
+        (0usize..13, body.clone())
+            .prop_map(|(n, b)| [b"polar-report ".to_vec()[..n].to_vec(), b].concat()),
+        body,
+    ]
+}
+
 proptest! {
+    /// Whatever a log holds and wherever its pieces split it, the lines found are its report lines, in order: each what
+    /// follows the prefix when it is within the bound, and only its length when it is not.
+    #[test]
+    fn the_reports_found_are_the_logs_however_it_is_split(
+        lines in proptest::collection::vec(log_line(), 0..12),
+        ends_with_newline in any::<bool>(),
+        bound in 0usize..32,
+        cuts in proptest::collection::vec(any::<prop::sample::Index>(), 0..8),
+    ) {
+        let mut log = lines.join(&b'\n');
+        if ends_with_newline && !lines.is_empty() {
+            log.push(b'\n');
+        }
+        let expected: Vec<Line> = lines
+            .iter()
+            .filter_map(|line| line.strip_prefix(b"polar-report "))
+            .map(|rest| if rest.len() <= bound { Line::Report(rest.to_vec()) } else { Line::TooLong(rest.len()) })
+            .collect();
+        let mut at: Vec<usize> = cuts.iter().map(|c| c.index(log.len() + 1)).collect();
+        at.extend([0, log.len()]);
+        at.sort_unstable();
+        let mut finder = Lines::new(bound);
+        let mut found = Vec::new();
+        for pair in at.windows(2) {
+            found.extend(finder.feed(&log[pair[0]..pair[1]]));
+        }
+        found.extend(finder.finish());
+        prop_assert_eq!(found, expected);
+    }
+
     /// Whatever happens, in any order: no place is idle while a build waits, a build starts once, the waiting start in
     /// the order they came, and what admission counts is what has started and not ended.
     #[test]

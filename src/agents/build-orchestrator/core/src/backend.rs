@@ -128,13 +128,20 @@ impl Retention {
     }
 }
 
+/// A job's log, read once, a piece at a time: the next piece is asked for only when the last has been dealt with.
+#[async_trait]
+pub trait LogPieces: Send {
+    /// The next piece; `None` at the log's end, and an `Err` is the last the log says.
+    async fn next(&mut self) -> Option<Result<Vec<u8>, String>>;
+}
+
 /// Abstraction over build execution environments.
 ///
 /// The orchestrator uses this trait for pipeline jobs.
 /// Each has its own submit method because their manifests differ significantly
 /// (different images, resource requirements, env vars, and job naming).
-/// Poll and cancel work on the opaque handle. A job's log is read when it goes to the registry as a blob
-/// (docs/architecture/build-orchestrator.md, O4), not yet.
+/// Poll, cancel and log work on the opaque handle. A job's log is read once its job ends, for the reports in it; that it
+/// is kept as a blob in the registry comes later (docs/architecture/build-orchestrator.md, O4).
 ///
 /// Implementors: KubernetesBackend, (future) SshBackend, PodmanBackend.
 /// BuildJobActor holds Arc<dyn BuildBackend> — it never knows the concrete type.
@@ -150,6 +157,14 @@ pub trait BuildBackend: Send + Sync {
     /// Request cancellation. Best-effort — the backend may not guarantee
     /// immediate termination, particularly for running pods.
     async fn cancel(&self, handle: &BackendJobHandle) -> Result<(), BackendError>;
+
+    /// The log of a job that has ended: what its pipeline printed, for the reports in it (build-orchestrator.md, "How a
+    /// report is read"). Asked once, by the orchestrator that saw the job end.
+    async fn log(&self, _handle: &BackendJobHandle) -> Result<Box<dyn LogPieces>, BackendError> {
+        Err(BackendError::Unreachable(
+            "this backend keeps no log".into(),
+        ))
+    }
 
     /// This orchestrator's jobs that have not ended, as a restarted orchestrator adopts them: it watches each to its end
     /// (build-orchestrator.md, O2e2, "A restarted orchestrator adopts the Jobs still running"). A job that ended is not

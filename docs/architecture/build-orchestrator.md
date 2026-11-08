@@ -573,7 +573,26 @@ I write Rust code"):
     backend's adoption against the stand-in API (its own Jobs, not ended, one that does not say what it builds passed over)
     and a property that any build's Job not ended reads back as made and one ended is never adopted; and a property that
     whatever happens to admission, in any order, no place is idle while a build waits, a build starts once, the waiting
-    start in the order they came, and its counts are what started and did not end.
+    start in the order they came, and its counts are what started and did not end. O2e2b DONE 2026-11-08: once a build's
+    Job ends, however it ended, its actor reads the Job's log once, before it says how the build ended. Through two new
+    operations, `build.pods.list` (the pods the Job owns, by its uid, oldest first) and `build.pods.log` (the pipeline
+    container's log, streamed by the handler a piece at a time to its 256 MiB bound), both within `job-run`'s grants; a tap
+    hands each piece on and holds the handler's delivery until it is taken, so the log is read no faster than its reports
+    are (`BuildBackend::log`, `LogPieces`). The report lines are found as the pieces come (`lines`: a line that begins with
+    the prefix, kept to the reader's line bound and no further; every other line passed over unkept), each counted against
+    the relay's bounds, asked of the worker at the bounds in force when the build started, narrowed to the worker's
+    (`request`), read back (`Report::read_answer`), judged and stamped by the relay, and published in its `BuildReport`
+    envelope on `polar.provenance.events`. A worker's death fails the build at `reports` and ends the agent; a log that
+    cannot be had, or ends in an error, leaves the build as it ended and what was read relayed. Decided by standing rules,
+    for review: how many of a build's report lines were refused is logged with the build, and reaches its execution event
+    with O4's wire change (the log's digest), which changes the same events; until then the record of a refusal is the
+    orchestrator's log. Tested: the log read against the stand-in API (the Job's own pods, oldest first, the pipeline's
+    log whole however long, another Job's pod not read; a Job with no pod has no log); the build's actor with the reader's
+    own work in process (reports relayed and stamped with the orchestrator's id and published before the build's end,
+    the rest passed over or refused, however the log is split; a failed build's reports read too; a reader that dies failing
+    the build at `reports`, asked nothing more; a log not had or ending in an error; the line and report bounds, a line past
+    its bound never asked of the reader); and a property that whatever a log holds and wherever its pieces split it, the
+    lines found are exactly its report lines, each within the bound or known only by its length. O2e2 DONE.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports

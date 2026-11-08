@@ -33,7 +33,7 @@
 
 use crate::settings::{self, narrowed};
 use orchestrator_report::{Bounds, Tape, answer, answer_len};
-use polar_agent_builder::worker::{Work, Worker, WorkerDecl, WorkerError, fork};
+use polar_agent_builder::worker::{Work, Worker, WorkerDecl, WorkerError, WorkerHandle, fork};
 use std::time::Duration;
 
 /// What the agent asks its reader by.
@@ -131,4 +131,19 @@ pub fn fork_reader(config: &polar_env::Config) -> Result<Worker, WorkerError> {
     let bounds = settings::reader_bounds(config)
         .map_err(|e| WorkerError::System(format!("its bounds do not read: {e}")))?;
     fork(move || Reader::new(bounds))
+}
+
+/// How a build's actor asks the reader: the worker, or a test's stand-in.
+#[ractor::async_trait]
+pub trait Read: Send + Sync {
+    /// The worker's answer to `request` ([`request`]). An error other than too long a request is the worker's death, and
+    /// ends the agent.
+    async fn read(&self, request: Vec<u8>) -> Result<Vec<u8>, WorkerError>;
+}
+
+#[ractor::async_trait]
+impl Read for WorkerHandle {
+    async fn read(&self, request: Vec<u8>) -> Result<Vec<u8>, WorkerError> {
+        self.ask(request).await
+    }
 }

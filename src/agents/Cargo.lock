@@ -5420,6 +5420,7 @@ dependencies = [
  "orchestrator-core",
  "polar-agent-builder",
  "proptest",
+ "ractor",
  "serde",
  "serde_json",
  "tokio",

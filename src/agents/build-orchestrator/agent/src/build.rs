@@ -30,27 +30,39 @@
 //! when it starts (the mapping, the settings, through the backend it was given), so a build runs as the configuration said
 //! when it began.
 //!
-//! What it publishes: `ExecutionStarted` once its Job is made, then `ExecutionCompleted` or `ExecutionFailed` with the
-//! stage it failed at. A publish that fails is logged and the build goes on: its outcome is in the registry already.
+//! Once its Job ends, however it ended, it reads the Job's log, once (docs/architecture/build-orchestrator.md, "How a
+//! report is read"): each report line, at the reader's bounds as they were when the build started, through the locked-down
+//! worker and back (`Report::read_answer`), judged and stamped by the relay, and published in its `BuildReport` envelope
+//! on `polar.provenance.events`. What the relay or the reader refuses is counted and logged. A read that kills the worker
+//! fails the build at the stage of reading its reports, and the agent ends: the crash is evidence (O2e2).
+//!
+//! What it publishes of itself: `ExecutionStarted` once its Job is made, then `ExecutionCompleted` or `ExecutionFailed`
+//! with the stage it failed at, after its reports. A publish that fails is logged and the build goes on: its outcome is in
+//! the registry already.
 
+use crate::lines::{Line, Lines};
 use crate::mappings::Mapping;
 use crate::publish::Publish;
+use crate::reader::{Read, request};
 use crate::registry::RegistryMessage;
 use crate::source::Source;
 use chrono::{DateTime, Utc};
 use orchestrator_core::backend::{BackendJobHandle, BuildBackend, JobStatus};
+use orchestrator_core::relay::{Relay, RelayBounds};
 use orchestrator_core::types::{BuildRequest, BuildSpec, BuildState, SourceRef};
-use polar::topics::PROVENANCE_EXECUTIONS;
+use orchestrator_report::{Bounds, Report};
+use polar::topics::{PROVENANCE_EVENTS, PROVENANCE_EXECUTIONS};
 use polar::{BackendIdentity, ProvenanceEvent};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// The stages a build fails at, as `ExecutionFailed` names them.
 pub const AT_SOURCE: &str = "source";
 pub const AT_SCHEDULING: &str = "scheduling";
 pub const AT_EXECUTION: &str = "execution";
+pub const AT_REPORTS: &str = "reports";
 
 /// How a build begins.
 pub enum Start {
@@ -77,7 +89,18 @@ pub struct BuildArgs {
     pub source: Arc<dyn Source>,
     pub registry: ActorRef<RegistryMessage>,
     pub publish: Arc<dyn Publish>,
+    pub reader: Arc<dyn Read>,
+    /// The reader's bounds for this build: the narrower of the worker's and those signed when it started.
+    pub bounds: Bounds,
+    pub relay: RelayBounds,
     pub poll_every: Duration,
+}
+
+/// What came of reading a build's reports.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReportsRead {
+    pub relayed: usize,
+    pub refused: usize,
 }
 
 pub enum BuildMessage {
@@ -92,6 +115,9 @@ pub struct BuildActorState {
     source: Arc<dyn Source>,
     registry: ActorRef<RegistryMessage>,
     publish: Arc<dyn Publish>,
+    reader: Arc<dyn Read>,
+    bounds: Bounds,
+    relay: RelayBounds,
     poll_every: Duration,
     handle: Option<BackendJobHandle>,
     began: DateTime<Utc>,
@@ -135,8 +161,158 @@ impl BuildActor {
     }
 
     async fn say(state: &BuildActorState, event: ProvenanceEvent) {
-        if let Err(e) = state.publish.publish(PROVENANCE_EXECUTIONS, &event).await {
+        let sent = match rkyv::to_bytes::<rkyv::rancor::Error>(&event) {
+            Ok(payload) => {
+                state
+                    .publish
+                    .publish(PROVENANCE_EXECUTIONS, payload.to_vec())
+                    .await
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        if let Err(e) = sent {
             error!(build_id = %state.request.build_id, "an execution event was not published: {e}");
+        }
+    }
+
+    /// Reads the ended Job's log for its reports, relaying each the reader and the relay take. `Err` is the reader's death,
+    /// with why; a log that cannot be had, or that ends in an error, leaves what was read relayed and the rest unread.
+    async fn read_reports(state: &BuildActorState) -> Result<ReportsRead, String> {
+        let build_id = state.request.build_id;
+        let Some(handle) = &state.handle else {
+            return Ok(ReportsRead::default());
+        };
+        let mut log = match state.backend.log(handle).await {
+            Ok(log) => log,
+            Err(e) => {
+                warn!(%build_id, "the build's log could not be had, and its reports are not read: {e}");
+                return Ok(ReportsRead::default());
+            }
+        };
+        let mut lines = Lines::new(state.bounds.line);
+        let mut relay = Relay::new(build_id.to_string(), state.relay);
+        let mut relayed = 0;
+        while let Some(piece) = log.next().await {
+            let piece = match piece {
+                Ok(piece) => piece,
+                Err(e) => {
+                    warn!(%build_id, "the build's log ended in an error; what came after is not read: {e}");
+                    break;
+                }
+            };
+            for line in lines.feed(&piece) {
+                relayed += Self::report(state, &mut relay, line).await?;
+            }
+        }
+        if let Some(line) = lines.finish() {
+            relayed += Self::report(state, &mut relay, line).await?;
+        }
+        let read = ReportsRead {
+            relayed,
+            refused: relay.refused(),
+        };
+        if read.refused > 0 {
+            warn!(%build_id, relayed = read.relayed, refused = read.refused, "the build said something refused");
+        } else {
+            info!(%build_id, relayed = read.relayed, "the build's reports are relayed");
+        }
+        Ok(read)
+    }
+
+    /// One report line: counted against the build's bounds, read by the worker, judged and stamped, and published; 1 if it
+    /// was relayed. `Err` is the worker's death.
+    async fn report(
+        state: &BuildActorState,
+        relay: &mut Relay,
+        line: Line,
+    ) -> Result<usize, String> {
+        let build_id = state.request.build_id;
+        let len = match &line {
+            Line::Report(bytes) => bytes.len(),
+            Line::TooLong(len) => *len,
+        };
+        if let Err(why) = relay.take(len) {
+            debug!(%build_id, "a report not read: {why}");
+            return Ok(0);
+        }
+        let Line::Report(bytes) = line else {
+            relay.refuse();
+            debug!(%build_id, len, "a report longer than its bound, refused unread");
+            return Ok(0);
+        };
+        let answer = state
+            .reader
+            .read(request(&state.bounds, &bytes))
+            .await
+            .map_err(|e| format!("the reader died reading the build's report: {e}"))?;
+        let report = match Report::read_answer(&bytes, &answer, &state.bounds) {
+            Ok(report) => report,
+            Err(why) => {
+                relay.refuse();
+                debug!(%build_id, "a report refused: {why}");
+                return Ok(0);
+            }
+        };
+        let envelope = match relay.relay(report) {
+            Ok(envelope) => envelope,
+            Err(why) => {
+                debug!(%build_id, "a report refused: {why}");
+                return Ok(0);
+            }
+        };
+        let sent = match rkyv::to_bytes::<rkyv::rancor::Error>(&envelope) {
+            Ok(payload) => {
+                state
+                    .publish
+                    .publish(PROVENANCE_EVENTS, payload.to_vec())
+                    .await
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        match sent {
+            Ok(()) => Ok(1),
+            Err(e) => {
+                error!(%build_id, "a report was not published: {e}");
+                Ok(0)
+            }
+        }
+    }
+
+    /// The Job ended: its reports read, then how it ended said. The reader dying fails the build at its reports.
+    async fn ended(
+        myself: &ActorRef<BuildMessage>,
+        state: &mut BuildActorState,
+        status: JobStatus,
+    ) {
+        if let Err(why) = Self::read_reports(state).await {
+            error!(build_id = %state.request.build_id, "{why}");
+            Self::runs(state);
+            return Self::fail(myself, state, AT_REPORTS, why).await;
+        }
+        match status {
+            JobStatus::Failed { reason } => {
+                let reason =
+                    reason.unwrap_or_else(|| "the Job failed and the API said no more".into());
+                Self::fail(myself, state, AT_EXECUTION, reason).await;
+            }
+            _ => {
+                // A build quicker than a poll is never seen running: it ran.
+                Self::runs(state);
+                Self::transition(state, BuildState::Succeeded, None, None, None);
+                let duration_secs =
+                    u64::try_from((Utc::now() - state.began).num_seconds()).unwrap_or(0);
+                info!(build_id = %state.request.build_id, duration_secs, "the build succeeded");
+                Self::say(
+                    state,
+                    ProvenanceEvent::ExecutionCompleted {
+                        build_id: state.request.build_id.to_string(),
+                        duration_secs,
+                        at: now(),
+                    },
+                )
+                .await;
+                myself.stop(Some("succeeded".into()));
+            }
         }
     }
 
@@ -254,28 +430,8 @@ impl BuildActor {
                 Self::runs(state);
                 myself.send_after(state.poll_every, || BuildMessage::Poll);
             }
-            JobStatus::Succeeded => {
-                // A build quicker than a poll is never seen running: it ran.
-                Self::runs(state);
-                Self::transition(state, BuildState::Succeeded, None, None, None);
-                let duration_secs =
-                    u64::try_from((Utc::now() - state.began).num_seconds()).unwrap_or(0);
-                info!(build_id = %state.request.build_id, duration_secs, "the build succeeded");
-                Self::say(
-                    state,
-                    ProvenanceEvent::ExecutionCompleted {
-                        build_id: state.request.build_id.to_string(),
-                        duration_secs,
-                        at: now(),
-                    },
-                )
-                .await;
-                myself.stop(Some("succeeded".into()));
-            }
-            JobStatus::Failed { reason } => {
-                let reason =
-                    reason.unwrap_or_else(|| "the Job failed and the API said no more".into());
-                Self::fail(myself, state, AT_EXECUTION, reason).await;
+            status @ (JobStatus::Succeeded | JobStatus::Failed { .. }) => {
+                Self::ended(myself, state, status).await;
             }
             JobStatus::Unknown => {
                 Self::fail(
@@ -316,6 +472,9 @@ impl Actor for BuildActor {
             source: args.source,
             registry: args.registry,
             publish: args.publish,
+            reader: args.reader,
+            bounds: args.bounds,
+            relay: args.relay,
             poll_every: args.poll_every,
             handle: None,
             began: Utc::now(),

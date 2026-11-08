@@ -33,6 +33,9 @@ tracing.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 orchestrator-core.workspace = true
+# A pod's log comes as a stream to an actor (ProtocolHandle::stream), handed on a piece at a time (backend.rs, `Tap`).
+ractor.workspace = true
+tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 [lib]

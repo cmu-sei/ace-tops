@@ -28,24 +28,28 @@
 use crate::job::{JobOptions, build_job, departures, expired};
 use async_trait::async_trait;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Event, PodTemplate};
+use k8s_openapi::api::core::v1::{Event, Pod, PodTemplate};
 use orchestrator_core::backend::{
-    BackendJobHandle, BuildBackend, InFlight, JobGraphIdentity, JobStatus, Retention, SubmittedJob,
+    BackendJobHandle, BuildBackend, InFlight, JobGraphIdentity, JobStatus, LogPieces, Retention,
+    SubmittedJob,
 };
 use orchestrator_core::error::BackendError;
 use orchestrator_core::types::{BuildSpec, SourceRef};
 use polar_agent_builder::protocol::kubernetes::{
-    Answer, ApiAnswer, Call, Kubernetes, Propagation, Resource,
+    Answer, ApiAnswer, Call, Kubernetes, POD_LOG, Propagation, Resource,
 };
 use polar_agent_builder::protocol::{
-    Location, Operation, OperationDecl, ProtocolHandle, ProtocolKind, ReadFailure, Verb,
+    Delivery, Location, Operation, OperationDecl, ProtocolHandle, ProtocolKind, ReadFailure,
+    Streaming, Verb,
 };
+use ractor::{Actor, ActorProcessingErr, ActorRef};
 use serde_json::Value;
 use tracing::{info, instrument, warn};
 
 const JOB: Resource = Resource::of::<Job>();
 const EVENT: Resource = Resource::of::<Event>();
 const POD_TEMPLATE: Resource = Resource::of::<PodTemplate>();
+const POD: Resource = Resource::of::<Pod>();
 
 /// The label every Job the orchestrator makes carries (job.rs, `standard_metadata`), by which it finds its own.
 const MANAGED_BY: &str = "app.kubernetes.io/managed-by=build-orchestrator";
@@ -87,6 +91,8 @@ calls! {
     DeleteJob DELETE_JOB "build.jobs.delete" "a build's Job, cancelled or past its retention" [JOB.access(Verb::Delete)],
     ListJobs LIST_JOBS "build.jobs.list" "the orchestrator's own Jobs, to remove those past their retention" [JOB.access(Verb::List)],
     ListEvents LIST_EVENTS "build.events.list" "why a build's pod could not be made" [EVENT.access(Verb::List)],
+    ListPods LIST_PODS "build.pods.list" "a build's pods, whose log is read once its Job ends" [POD.access(Verb::List)],
+    ReadLog READ_LOG "build.pods.log" "the log of a build's pipeline, read once, for what the build reports" [POD_LOG],
 }
 
 pub struct KubernetesBackend {
@@ -262,6 +268,37 @@ impl BuildBackend for KubernetesBackend {
         }
     }
 
+    #[instrument(skip(self), fields(handle = %handle))]
+    async fn log(&self, handle: &BackendJobHandle) -> Result<Box<dyn LogPieces>, BackendError> {
+        let call = Call::List {
+            resource: POD,
+            namespace: self.namespace(),
+            labels: Some(format!("job-name={}", handle.name)),
+            fields: None,
+        };
+        let items = match self.protocols.ask(ListPods(call)).await {
+            Ok(Answer::Objects(items)) => items,
+            Ok(other) => {
+                return Err(BackendError::Unreachable(format!(
+                    "the API answered a list of pods {other:?}"
+                )));
+            }
+            Err(e) => return Err(BackendError::Unreachable(e.to_string())),
+        };
+        let pods = pods_of(items, &handle.uid);
+        if pods.is_empty() {
+            return Err(BackendError::Unreachable(
+                "the build's Job has no pod to read the log of".into(),
+            ));
+        }
+        Ok(Box::new(PodLogs {
+            protocols: self.protocols.clone(),
+            namespace: self.namespace(),
+            pods: pods.into(),
+            reading: None,
+        }))
+    }
+
     #[instrument(skip(self))]
     async fn in_flight(&self) -> Result<Vec<InFlight>, BackendError> {
         let mut found = Vec::new();
@@ -379,6 +416,144 @@ fn permanent_refusal(messages: &[String]) -> Option<String> {
 /// Interpret the k8s Job status conditions into our JobStatus enum.
 /// The k8s Job status model is unfortunately not a clean state machine —
 /// conditions are a list of booleans that must be read carefully.
+/// The pods of the Job whose uid is `job_uid`, oldest first: those it owns, so that no pod of another Job under the same
+/// labels is read as the build's. With no retries (`backoffLimit: 0`) there is one; a pod the Job made again is read
+/// after the one it replaced, each its own claims.
+fn pods_of(items: Vec<Value>, job_uid: &str) -> Vec<String> {
+    let mut pods: Vec<Pod> = items
+        .into_iter()
+        .filter_map(|item| serde_json::from_value(item).ok())
+        .filter(|pod: &Pod| {
+            pod.metadata
+                .owner_references
+                .iter()
+                .flatten()
+                .any(|owner| owner.kind == "Job" && owner.uid == job_uid)
+        })
+        .collect();
+    pods.sort_by_key(|pod| pod.metadata.creation_timestamp.as_ref().map(|t| t.0));
+    pods.into_iter()
+        .filter_map(|pod| pod.metadata.name)
+        .collect()
+}
+
+/// The pipeline's log of each of a build's pods in turn, a piece at a time.
+struct PodLogs {
+    protocols: ProtocolHandle,
+    namespace: String,
+    pods: std::collections::VecDeque<String>,
+    reading: Option<Reading>,
+}
+
+/// A pod's log being read: the pieces as the tap hands them on, and the stream, which ends when this is dropped.
+struct Reading {
+    pieces: tokio::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    tap: ActorRef<Tapped>,
+    _stream: Streaming,
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.tap.stop(None);
+    }
+}
+
+#[async_trait]
+impl LogPieces for PodLogs {
+    async fn next(&mut self) -> Option<Result<Vec<u8>, String>> {
+        loop {
+            if let Some(reading) = &mut self.reading {
+                match reading.pieces.recv().await {
+                    Some(piece) => return Some(piece),
+                    // This pod's log has ended: the next pod's, if there is one.
+                    None => self.reading = None,
+                }
+            }
+            let pod = self.pods.pop_front()?;
+            match self.open(pod).await {
+                Ok(reading) => self.reading = Some(reading),
+                Err(why) => return Some(Err(why)),
+            }
+        }
+    }
+}
+
+impl PodLogs {
+    async fn open(&self, pod: String) -> Result<Reading, String> {
+        // One piece held at a time: the handler reads the next only once this one is taken.
+        let (to, pieces) = tokio::sync::mpsc::channel(1);
+        let (tap, _) = Actor::spawn(None, Tap, to)
+            .await
+            .map_err(|e| format!("the log's tap did not start: {e}"))?;
+        let call = Call::Log {
+            namespace: self.namespace.clone(),
+            pod,
+            container: Some(crate::job::PIPELINE.to_string()),
+            follow: false,
+        };
+        let stream = self
+            .protocols
+            .stream(ReadLog(call), tap.clone(), Tapped)
+            .map_err(|e| {
+                tap.stop(None);
+                e.to_string()
+            })?;
+        Ok(Reading {
+            pieces,
+            tap,
+            _stream: stream,
+        })
+    }
+}
+
+/// Hands each piece of a streamed log on, holding the handler's delivery until the reader has taken it, so that the log
+/// is read no faster than its reports are.
+struct Tap;
+
+struct Tapped(Delivery<Answer>);
+
+#[async_trait]
+impl Actor for Tap {
+    type Msg = Tapped;
+    type State = tokio::sync::mpsc::Sender<Result<Vec<u8>, String>>;
+    type Arguments = tokio::sync::mpsc::Sender<Result<Vec<u8>, String>>;
+
+    async fn pre_start(
+        &self,
+        _: ActorRef<Tapped>,
+        to: Self::Arguments,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        Ok(to)
+    }
+
+    async fn handle(
+        &self,
+        myself: ActorRef<Tapped>,
+        Tapped(delivery): Tapped,
+        to: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        let piece = match &delivery.result {
+            Ok(Answer::Log(piece)) => Ok(piece.clone()),
+            Ok(Answer::LogEnded) => {
+                myself.stop(None);
+                return Ok(());
+            }
+            Ok(Answer::Said(answer)) => {
+                Err(format!("the API did not give the log: {}", said(answer)))
+            }
+            Ok(other) => Err(format!("the API answered a log {other:?}")),
+            Err(failure) => Err(format!("the log could not be read: {failure}")),
+        };
+        let last = piece.is_err();
+        // Gone if the reader has stopped reading: so does the tap.
+        if to.send(piece).await.is_err() || last {
+            myself.stop(None);
+        }
+        drop(delivery);
+        Ok(())
+    }
+}
+
 /// A Job of the orchestrator's that a poll would find pending or running, as a restarted orchestrator adopts it: what it
 /// builds, from the labels and annotations the Job was made with (`job::standard_metadata`), and how to reach it.
 /// `Ok(None)` for one a poll would find ended, by the same reading, so that a Job adopted is one no orchestrator has seen
@@ -784,6 +959,83 @@ mod tests {
             "{}",
             received[0].2
         );
+    }
+
+    const PODS: &str = "/api/v1/namespaces/builds/pods";
+
+    fn pod(name: &str, owner_uid: &str, made: &str) -> Value {
+        json!({"apiVersion": "v1", "kind": "Pod",
+               "metadata": {"name": name, "creationTimestamp": made,
+                            "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "build-1", "uid": owner_uid}]},
+               "spec": {"containers": []}})
+    }
+
+    async fn read_all(mut log: Box<dyn LogPieces>) -> Result<Vec<u8>, String> {
+        let mut read = Vec::new();
+        while let Some(piece) = log.next().await {
+            read.extend(piece?);
+        }
+        Ok(read)
+    }
+
+    /// A build's log is its pipeline's, of the pods its Job owns, oldest first, all of it however long; a pod another Job
+    /// owns is not read.
+    #[tokio::test]
+    async fn a_builds_log_is_its_own_pods_pipeline_read_whole() {
+        let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            PODS,
+            200,
+            json!({"apiVersion": "v1", "kind": "PodList", "metadata": {},
+                   "items": [pod("second", "u-1", "2026-11-08T10:00:00Z"), pod("foreign", "u-other", "2026-11-08T08:00:00Z"),
+                             pod("first", "u-1", "2026-11-08T09:00:00Z")]}),
+        );
+        let long: Vec<u8> = (0..300_000u32).map(|i| b'a' + (i % 26) as u8).collect();
+        api.logs(&format!("{PODS}/first/log"), long.clone());
+        api.logs(&format!("{PODS}/second/log"), b"polar-report {}\n".to_vec());
+        api.logs(&format!("{PODS}/foreign/log"), b"not this build's".to_vec());
+        let read = read_all(backend(&api).await.log(&handle()).await.unwrap())
+            .await
+            .unwrap();
+        let mut expected = long;
+        expected.extend_from_slice(b"polar-report {}\n");
+        assert_eq!(read.len(), expected.len());
+        assert!(read == expected, "the two pods' logs, in order");
+        let received = api.received().await;
+        assert!(
+            received[0].2.contains("labelSelector=job-name%3Dbuild-1"),
+            "{}",
+            received[0].2
+        );
+        let logs: Vec<(&str, &str)> = received[1..]
+            .iter()
+            .map(|(_, path, query, _)| (path.as_str(), query.as_str()))
+            .collect();
+        assert_eq!(logs.len(), 2, "{logs:?}");
+        assert!(
+            logs[0].0.ends_with("/first/log") && logs[1].0.ends_with("/second/log"),
+            "{logs:?}"
+        );
+        assert!(
+            logs.iter().all(|(_, q)| q.contains("container=pipeline")),
+            "{logs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_with_no_pod_has_no_log() {
+        let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            PODS,
+            200,
+            json!({"apiVersion": "v1", "kind": "PodList", "metadata": {}, "items": [pod("foreign", "u-other", "2026-11-08T08:00:00Z")]}),
+        );
+        assert!(matches!(
+            backend(&api).await.log(&handle()).await,
+            Err(BackendError::Unreachable(_))
+        ));
     }
 
     /// Only the orchestrator's own Jobs are looked over, and only those past their retention are removed, each by its uid.

@@ -21,24 +21,21 @@
    DM26-0670
 */
 
-//! Where a build's execution events go: its own word, on `polar.provenance.executions`, the broker stamping the
-//! orchestrator's identity on each. A trait, so a job actor is tested without a broker.
+//! Where what a build's actor says goes: its execution events, its own word, on `polar.provenance.executions`, and the
+//! reports it relays, each in a `BuildReport` envelope, on `polar.provenance.events`; the broker stamps the orchestrator's
+//! identity on each. A trait, so a build's actor is tested without a broker.
 
-use polar::ProvenanceEvent;
 use polar::cassini::TcpClient;
 
 #[ractor::async_trait]
 pub trait Publish: Send + Sync {
-    /// Publishes `event` on `topic`, waiting while the client has no room.
-    async fn publish(&self, topic: &str, event: &ProvenanceEvent) -> Result<(), String>;
+    /// Publishes `payload`, archived with rkyv, on `topic`, waiting while the client has no room.
+    async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<(), String>;
 }
 
 #[ractor::async_trait]
 impl Publish for TcpClient {
-    async fn publish(&self, topic: &str, event: &ProvenanceEvent) -> Result<(), String> {
-        let payload = rkyv::to_bytes::<rkyv::rancor::Error>(event)
-            .map_err(|e| e.to_string())?
-            .to_vec();
+    async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<(), String> {
         self.publish_when_ready(cassini_client::PublishRequest {
             topic: topic.to_string(),
             payload,
