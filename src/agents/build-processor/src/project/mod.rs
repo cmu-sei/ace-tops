@@ -875,4 +875,69 @@ mod tests {
         // The build itself is still written.
         assert!(format!("{ops:?}").contains("BuildJob"));
     }
+
+    /// A finding the scanner could not resolve to a package is FOUND_IN the artifact it was found in, when the scanner
+    /// says which (pipeline-design-reference.md, 4.4: the fallback when no package resolved); one that resolved links
+    /// to its package alone.
+    #[test]
+    fn a_finding_with_no_package_is_found_in_its_artifact() {
+        let advisory = |affected: Option<&str>, in_artifact: Option<&str>| {
+            let ops = project(
+                ProvenanceEvent::SecurityAdvisoryFound(SecurityAdvisoryFoundPayload {
+                    build_id: "b1".into(),
+                    severity: "high".into(),
+                    identifier: "RUSTSEC-2024-0001".into(),
+                    in_artifact: in_artifact.map(Into::into),
+                    kind: None,
+                    scanner: None,
+                    affected_package: affected.map(Into::into),
+                    cve_id: None,
+                    ghsa_id: None,
+                    fix_version: None,
+                    unaffected_constraint: None,
+                    advisory_url: None,
+                }),
+                T0,
+            )
+            .unwrap();
+            compile_graph_op(&ops[0]).unwrap();
+            raw(&ops).0.to_string()
+        };
+        let status = |affected: Option<&str>, in_artifact: Option<&str>| {
+            let ops = project(
+                ProvenanceEvent::PackageStatusFound(PackageStatusFoundPayload {
+                    build_id: "b1".into(),
+                    kind: "unmaintained".into(),
+                    identifier: "RUSTSEC-2024-0002".into(),
+                    package_name: "itoa".into(),
+                    package_version: "1.0.18".into(),
+                    in_artifact: in_artifact.map(Into::into),
+                    affected_package: affected.map(Into::into),
+                    advisory_url: None,
+                    scanner: None,
+                }),
+                T0,
+            )
+            .unwrap();
+            compile_graph_op(&ops[0]).unwrap();
+            raw(&ops).0.to_string()
+        };
+        for cypher in [
+            advisory(None, Some("sha256:art")),
+            status(None, Some("sha256:art")),
+        ] {
+            assert!(
+                cypher.contains("FOUND_IN") && cypher.contains("BuildArtifact"),
+                "{cypher}"
+            );
+        }
+        for cypher in [
+            advisory(Some("pkg:cargo/itoa@1.0.18"), Some("sha256:art")),
+            status(Some("pkg:cargo/itoa@1.0.18"), Some("sha256:art")),
+            advisory(None, None),
+            status(None, Some("")),
+        ] {
+            assert!(!cypher.contains("FOUND_IN"), "{cypher}");
+        }
+    }
 }

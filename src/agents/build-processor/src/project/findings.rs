@@ -30,6 +30,7 @@
 //!                               (SecurityAdvisory)-[:AFFECTS {at}]->(Package)
 //! (BuildJob)-[:REPORTED {at}]->(PackageStatus)-[:IS]->(Finding)
 //!                               (PackageStatus)-[:CONCERNS {at}]->(Package)
+//! (SecurityAdvisory | PackageStatus)-[:FOUND_IN {at}]->(BuildArtifact)   no package resolved
 //! ```
 //!
 //! Each event is one RawQuery, so each finding is written atomically. Edges
@@ -108,6 +109,8 @@ pub fn security_advisory(p: SecurityAdvisoryFoundPayload, observed_at: &str) -> 
               SET af.at = coalesce(af.at, $observed_at)",
         );
         params.push(("affected_purl".into(), purl.into()));
+    } else {
+        found_in(&mut cypher, &mut params, "a", p.in_artifact);
     }
     vec![GraphOp::RawMergeWrite { cypher, params }]
 }
@@ -152,6 +155,27 @@ pub fn package_status(p: PackageStatusFoundPayload, observed_at: &str) -> Vec<Gr
               SET c.at = coalesce(c.at, $observed_at)",
         );
         params.push(("affected_purl".into(), purl.into()));
+    } else {
+        found_in(&mut cypher, &mut params, "s", p.in_artifact);
     }
     vec![GraphOp::RawMergeWrite { cypher, params }]
+}
+
+/// The fallback when a finding resolved to no package (pipeline-design-reference.md, 4.4): it is FOUND_IN the build
+/// artifact it was found in, by content hash, when the scanner says which. `finding` is the Cypher variable bound to it.
+fn found_in(
+    cypher: &mut String,
+    params: &mut Vec<(String, BoltType)>,
+    finding: &str,
+    in_artifact: Option<String>,
+) {
+    let Some(content_hash) = in_artifact.filter(|h| !h.is_empty()) else {
+        return;
+    };
+    cypher.push_str(&format!(
+        " MERGE (art:BuildArtifact {{ content_hash: $in_artifact }}) \
+          MERGE ({finding})-[fi:FOUND_IN]->(art) \
+          SET fi.at = coalesce(fi.at, $observed_at)"
+    ));
+    params.push(("in_artifact".into(), content_hash.into()));
 }
