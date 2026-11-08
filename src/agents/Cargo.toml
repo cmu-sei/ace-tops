@@ -23,6 +23,7 @@
 resolver = "2"
 
 members = [
+    "build-orchestrator/core",
     "cassini/broker",
     "cassini/cassini-c2",
     "cassini/client",
@@ -205,6 +206,7 @@ jira_common = { path = "jira/common" }
 jwt_utils = { path = "jwt-utils" }
 kube-common = { path = "kubernetes/common" }
 polar = { path = "lib" }
+orchestrator-core = { path = "build-orchestrator/core" }
 libc = "0.2"
 polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }
