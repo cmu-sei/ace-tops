@@ -27,7 +27,7 @@
 //! say. An event it cannot read, or cannot project, is dropped with a warning and the next is read: the broker keeps
 //! no log, so what is dropped is gone, and nothing here claims otherwise.
 
-use crate::{AGENT_NAME, project};
+use crate::{AGENT_NAME, aging, project, settings};
 use chrono::Utc;
 use polar::ProvenanceEvent;
 use polar::graph::controller::{
@@ -43,15 +43,25 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 const DRAIN_WINDOW_SECS: u64 = 5;
+/// How often builds are looked over for one whose end never came (`crate::aging`).
+const SWEEP_EVERY: Duration = Duration::from_secs(300);
+/// How long the graph has to answer which builds are stale.
+const SWEEP_READ_SECS: u64 = 30;
 const GRAPH_STOP_SECS: u64 = 30;
 /// The drain window, then the graph controller's queue run to its end, with room to spare.
 pub const SHUTDOWN_BUDGET: std::time::Duration =
     std::time::Duration::from_secs(DRAIN_WINDOW_SECS + GRAPH_STOP_SECS + 10);
 
 pub enum ProcessorMessage {
-    ClientEvent { event: cassini_types::ClientEvent },
+    ClientEvent {
+        event: cassini_types::ClientEvent,
+    },
     Received(ProvenanceEvent),
     GraphSignal(GraphSignal),
+    /// The bound a build may go unheard of, changed by a signed update.
+    LostAfterChanged(std::time::Duration),
+    /// Time to look for builds whose end never came.
+    Sweep,
     PrepareShutdown,
     DrainElapsed,
 }
@@ -63,6 +73,7 @@ pub struct ProcessorState {
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     graph_controller: Option<ActorRef<GraphControllerMsg>>,
     drain: Drain,
+    lost_after: std::time::Duration,
 }
 
 impl ProcessorSupervisor {
@@ -102,6 +113,46 @@ impl ProcessorSupervisor {
                 error!("failed to hand an event to the supervisor: {e}");
             }
         })
+    }
+
+    /// Judges lost every build started and not heard of for `lost_after`, and hands the judgement to the graph
+    /// controller. A graph that does not answer is tried again at the next sweep.
+    async fn sweep(controller: ActorRef<GraphControllerMsg>, lost_after: std::time::Duration) {
+        let now = Utc::now();
+        let query = aging::stale_builds(&aging::cutoff(now, lost_after));
+        let rows = match ractor::rpc::call(
+            &controller,
+            |reply| GraphControllerMsg::Query(query, reply),
+            Some(Duration::from_secs(SWEEP_READ_SECS)),
+        )
+        .await
+        {
+            Ok(ractor::rpc::CallResult::Success(Ok(rows))) => rows,
+            Ok(ractor::rpc::CallResult::Success(Err(e))) => {
+                warn!("builds could not be looked over for one whose end never came: {e}");
+                return;
+            }
+            _ => {
+                warn!("the graph did not answer which builds are stale; the next sweep asks again");
+                return;
+            }
+        };
+        let stale: Vec<String> = rows
+            .iter()
+            .filter_map(|row| row.get::<String>("build_id").ok())
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        info!(
+            builds = ?stale,
+            "judged lost: started and not heard of for {lost_after:?}"
+        );
+        if let Some(op) = aging::judged_lost(stale, now, lost_after)
+            && let Err(e) = controller.cast(GraphControllerMsg::Op(op))
+        {
+            warn!("the judgement could not be handed to the graph controller: {e}");
+        }
     }
 
     /// Projects one event and hands its writes to the graph controller as one transaction, all or none. An event that
@@ -169,11 +220,35 @@ impl Actor for ProcessorSupervisor {
         .await
         .map_err(ActorProcessingErr::from)?;
 
+        let lost_after = match resources
+            .configuration
+            .follow_group(
+                settings::VARIABLES,
+                settings::lost_after,
+                &myself,
+                ProcessorMessage::LostAfterChanged,
+            )
+            .await
+        {
+            Ok(lost_after) => lost_after,
+            Err(e) => {
+                // The bound is judged with the rest of the configuration at start, so this is the configuration actor
+                // not answering: keep the default and say so, rather than end the agent.
+                let fallback = settings::DEFAULT_LOST_AFTER;
+                warn!(
+                    "the bound for a lost build is not followed ({e}); {fallback:?} until a restart"
+                );
+                fallback
+            }
+        };
+        myself.send_interval(SWEEP_EVERY, || ProcessorMessage::Sweep);
+
         Ok(ProcessorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             graph_controller: Some(graph_controller),
             drain: Drain::default(),
+            lost_after,
         })
     }
 
@@ -209,6 +284,19 @@ impl Actor for ProcessorSupervisor {
                     return Ok(());
                 }
                 Self::write(state, event)?;
+            }
+            ProcessorMessage::LostAfterChanged(lost_after) => {
+                info!("a build is judged lost after {lost_after:?} unheard of");
+                state.lost_after = lost_after;
+            }
+            ProcessorMessage::Sweep => {
+                if state.drain.is_draining() {
+                    return Ok(());
+                }
+                if let Some(controller) = state.graph_controller.clone() {
+                    // Off the mailbox: the read waits on the graph, and events keep coming.
+                    ractor::concurrency::spawn(Self::sweep(controller, state.lost_after));
+                }
             }
             ProcessorMessage::PrepareShutdown => {
                 if state.drain.begin(

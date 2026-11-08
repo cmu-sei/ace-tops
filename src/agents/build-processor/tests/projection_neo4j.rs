@@ -26,6 +26,7 @@
 //!
 //! Requires a container runtime for testcontainers (with Podman, DOCKER_HOST at its socket).
 
+use build_processor::aging::{cutoff, judged_lost, stale_builds};
 use build_processor::project::transaction;
 use neo4rs::{Graph, Query};
 use polar::graph::controller::compile_graph_op;
@@ -319,5 +320,93 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
         .await,
         1,
         "a start seen again made the finished build look running"
+    );
+
+    // ── A build nothing has been heard of for longer than the bound is judged lost ──
+    let started = |build_id: &str, at: &str| ProvenanceEvent::ExecutionStarted {
+        build_id: build_id.into(),
+        commit_sha: String::new(),
+        ref_name: String::new(),
+        repo_url: "https://git.example/polar.git".into(),
+        triggered_by: None,
+        backend: None,
+        at: at.into(),
+    };
+    let stage = |build_id: &str, at: &str| ProvenanceEvent::StageStarted {
+        build_id: build_id.into(),
+        stage_name: "build".into(),
+        stage_id: "s1".into(),
+        at: at.into(),
+    };
+    apply(
+        &graph,
+        started("quiet", "2026-10-01T00:00:00Z"),
+        "2026-10-01T00:00:01Z",
+    )
+    .await;
+    apply(
+        &graph,
+        stage("quiet", "2026-10-01T01:00:00Z"),
+        "2026-10-01T01:00:01Z",
+    )
+    .await;
+    apply(
+        &graph,
+        started("busy", "2026-10-01T00:00:00Z"),
+        "2026-10-01T00:00:01Z",
+    )
+    .await;
+    apply(
+        &graph,
+        stage("busy", "2026-11-08T11:00:00Z"),
+        "2026-11-08T11:00:01Z",
+    )
+    .await;
+    let now: chrono::DateTime<chrono::Utc> = "2026-11-08T12:00:00Z".parse().unwrap();
+    let bound = std::time::Duration::from_secs(86_400);
+    let stale = |graph: &Graph| {
+        let graph = graph.clone();
+        async move {
+            let mut rows = graph
+                .execute(stale_builds(&cutoff(now, bound)))
+                .await
+                .unwrap();
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                ids.push(row.get::<String>("build_id").unwrap());
+            }
+            ids.sort();
+            ids
+        }
+    };
+    // b1 finished, busy was heard of an hour ago: only quiet is lost.
+    assert_eq!(stale(&graph).await, ["quiet"]);
+    let judged = judged_lost(stale(&graph).await, now, bound).unwrap();
+    let mut txn = graph.start_txn().await.unwrap();
+    txn.run_queries(compile_graph_op(&judged).unwrap())
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    assert_eq!(
+        count(&graph, "MATCH (j:BuildJob {build_id: 'quiet', lost_by: 'build-processor', lost_after_secs: 86400}) WHERE j.lost_at IS NOT NULL RETURN count(j) AS n").await,
+        1
+    );
+    // Judged once.
+    assert!(stale(&graph).await.is_empty());
+    // Its end, arriving late, clears the judgement: it is heard from, and its end is what it reported.
+    apply(
+        &graph,
+        ProvenanceEvent::ExecutionCompleted {
+            build_id: "quiet".into(),
+            duration_secs: 7200,
+            at: "2026-10-01T02:00:00Z".into(),
+        },
+        "2026-11-08T12:30:00Z",
+    )
+    .await;
+    assert_eq!(
+        count(&graph, "MATCH (j:BuildJob {build_id: 'quiet'}) WHERE j.lost_at IS NULL AND j.lost_by IS NULL AND j.lost_after_secs IS NULL RETURN count(j) AS n").await,
+        1,
+        "a build heard from is still judged lost"
     );
 }

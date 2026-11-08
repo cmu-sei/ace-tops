@@ -32,6 +32,7 @@ chrono.workspace = true
 neo4rs.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
+polar-env.workspace = true
 ractor.workspace = true
 rkyv.workspace = true
 rustls.workspace = true

@@ -108,7 +108,7 @@ pub fn started(
         // they don't re-create it.
         upsert(
             job(&build_id),
-            vec![
+            [
                 Property("build_id".into(), string(&build_id)),
                 Property("repo_url".into(), string(repo_url)),
                 Property("commit_sha".into(), string(&commit_sha)),
@@ -118,7 +118,10 @@ pub fn started(
                     string(triggered_by.unwrap_or_else(|| "unknown".into())),
                 ),
                 Property("observed_at".into(), string(when.observed_at)),
-            ],
+            ]
+            .into_iter()
+            .chain(crate::aging::heard_from())
+            .collect(),
         ),
         transition(
             &build_id,
@@ -191,6 +194,8 @@ pub fn stage_started(
             ],
         ),
         edge(job(&build_id), "HAS_STAGE", stage, vec![]),
+        // Heard from: a judgement that it was lost no longer stands (crate::aging).
+        upsert(job(&build_id), crate::aging::heard_from()),
     ]
 }
 
@@ -203,38 +208,44 @@ pub fn stage_completed(
     when: &When,
 ) -> Vec<GraphOp> {
     // Upsert, not create: StageStarted may arrive after this, e.g. from a
-    // polling observer.
-    vec![upsert(
-        BuildNodeKey::BuildStage {
-            build_id,
-            stage_id: stage_id.clone(),
-        },
-        vec![
-            Property("stage_id".into(), string(stage_id)),
-            Property("stage_name".into(), string(stage_name)),
-            Property("outcome".into(), string(format!("{outcome:?}"))),
-            Property(
-                "duration_secs".into(),
-                GraphValue::I64(duration_secs as i64),
-            ),
-            Property("completed_at".into(), string(when.at)),
-            Property("observed_at".into(), string(when.observed_at)),
-        ],
-    )]
+    // polling observer. Heard from: a judgement that it was lost no longer stands (crate::aging).
+    vec![
+        upsert(job(&build_id), crate::aging::heard_from()),
+        upsert(
+            BuildNodeKey::BuildStage {
+                build_id,
+                stage_id: stage_id.clone(),
+            },
+            vec![
+                Property("stage_id".into(), string(stage_id)),
+                Property("stage_name".into(), string(stage_name)),
+                Property("outcome".into(), string(format!("{outcome:?}"))),
+                Property(
+                    "duration_secs".into(),
+                    GraphValue::I64(duration_secs as i64),
+                ),
+                Property("completed_at".into(), string(when.at)),
+                Property("observed_at".into(), string(when.observed_at)),
+            ],
+        ),
+    ]
 }
 
 pub fn completed(build_id: String, duration_secs: u64, when: &When) -> Vec<GraphOp> {
     vec![
         upsert(
             job(&build_id),
-            vec![
+            [
                 Property("completed_at".into(), string(when.at)),
                 Property(
                     "duration_secs".into(),
                     GraphValue::I64(duration_secs as i64),
                 ),
                 Property("observed_at".into(), string(when.observed_at)),
-            ],
+            ]
+            .into_iter()
+            .chain(crate::aging::heard_from())
+            .collect(),
         ),
         transition(
             &build_id,
@@ -260,12 +271,15 @@ pub fn failed(
     vec![
         upsert(
             job(&build_id),
-            vec![
+            [
                 Property("completed_at".into(), string(when.at)),
                 Property("failure_reason".into(), string(&reason)),
                 Property("failure_stage".into(), string(&stage)),
                 Property("observed_at".into(), string(when.observed_at)),
-            ],
+            ]
+            .into_iter()
+            .chain(crate::aging::heard_from())
+            .collect(),
         ),
         transition(
             &build_id,
@@ -283,10 +297,13 @@ pub fn cancelled(build_id: String, reason: Option<String>, when: &When) -> Vec<G
     vec![
         upsert(
             job(&build_id),
-            vec![
+            [
                 Property("completed_at".into(), string(when.at)),
                 Property("observed_at".into(), string(when.observed_at)),
-            ],
+            ]
+            .into_iter()
+            .chain(crate::aging::heard_from())
+            .collect(),
         ),
         transition(
             &build_id,

@@ -102,6 +102,14 @@ Points that are easy to get wrong:
   one is refused). States, `completed_at` and a stage's times are keyed on it,
   in UTC, so an event seen twice, or late, lands where it did; `observed_at` is
   when this processor saw it.
+- **A build whose end never came is judged lost, not ended.** Every five
+  minutes build-processor looks for builds whose latest state is `started` and
+  that nothing has been heard of (the start or any stage) for longer than
+  `POLAR_BUILD_LOST_AFTER_SECS` (a day unless the deployment says otherwise;
+  Dynamic, so a signed update changes it). It sets `lost_at`, `lost_after_secs`
+  and `lost_by` on the BuildJob: its inference, beside the states, which keep
+  only what reporters said. Any later event of the build clears them, so a late
+  end wins (`src/aging.rs`).
 - **`BuildJob.completed_at` means finished, not succeeded.** Success is the
   latest `BuildJobState {phase: 'succeeded'}`.
 - **An image has two layer identities.** `OCILayer` is a registry blob, keyed

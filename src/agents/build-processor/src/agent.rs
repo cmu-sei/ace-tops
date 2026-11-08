@@ -79,6 +79,7 @@ impl PolarAgent for BuildProcessor {
     // The constraints for the labels above come from here, on what each is merged on.
     const GRAPH_KEYS: &'static [fn() -> Vec<NodeShape>] =
         &[shapes_of::<ArtifactNodeKey>, shapes_of::<BuildNodeKey>];
+    const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
         "build-processor subscribes to the provenance stream on Cassini and writes each event into the graph: the \
          builds the orchestrator and CI report, what they produced, what scanners found, and what the resolver \

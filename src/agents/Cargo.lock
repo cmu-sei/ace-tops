@@ -932,6 +932,7 @@ dependencies = [
  "oci-client",
  "polar",
  "polar-agent-builder",
+ "polar-env",
  "polar-scudo",
  "proptest",
  "ractor",

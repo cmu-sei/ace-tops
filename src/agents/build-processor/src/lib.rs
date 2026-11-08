@@ -24,7 +24,9 @@
 //! Build processor: projects provenance events into the knowledge graph.
 //! See `agent` for what it declares, `supervisor` for the actor and `project` for the projections.
 pub mod agent;
+pub mod aging;
 pub mod project;
+pub mod settings;
 pub mod supervisor;
 
 /// The workload's name, in the catalog and on its certificate.
