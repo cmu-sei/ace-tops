@@ -32,6 +32,17 @@ disallowed-methods = [
     { path = "std::env::vars_os", reason = "an agent sees only the variables it declared; read them through Config" },
     { path = "std::env::set_var", reason = "the environment is read once, into a Config; a test passes an Env of its own" },
     { path = "std::env::remove_var", reason = "the environment is read once, into a Config; a test passes an Env of its own" },
+    # This crate also reads a clone with libgit2, to make a build's source archive (src/archive.rs), so it has git2, for that and
+    # nothing else: bringing a repository up to date is the protocol handler's (docs/architecture/protocol-handlers.md, "No way to
+    # the credential from domain code"). Its dependency on git2 cannot say so, so this does, as git/observe/clippy.toml does.
+    { path = "git2::Remote::fetch", reason = "ask the protocol handler: a fetch of its own is neither judged nor recorded" },
+    { path = "git2::Remote::download", reason = "ask the protocol handler: a fetch of its own is neither judged nor recorded" },
+    { path = "git2::Remote::connect", reason = "ask the protocol handler: a connection of its own is neither judged nor recorded" },
+    { path = "git2::Remote::connect_auth", reason = "ask the protocol handler: a connection of its own is neither judged nor recorded" },
+    { path = "git2::Remote::push", reason = "this agent only reads a clone, and asks the protocol handler for that" },
+    { path = "git2::Repository::clone", reason = "ask the protocol handler: a clone of its own is neither judged nor recorded" },
+    { path = "git2::Repository::clone_recurse", reason = "ask the protocol handler: a clone of its own is neither judged nor recorded" },
+    { path = "git2::build::RepoBuilder::clone", reason = "ask the protocol handler: a clone of its own is neither judged nor recorded" },
 ]
 
 

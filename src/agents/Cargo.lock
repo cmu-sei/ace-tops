@@ -948,10 +948,13 @@ name = "build-orchestrator"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "build-fetch",
  "cassini-client",
  "cassini-types",
  "chrono",
+ "flate2",
  "git-agent-common",
+ "git2",
  "orchestrator-backend-k8s",
  "orchestrator-core",
  "orchestrator-report",
@@ -964,6 +967,9 @@ dependencies = [
  "rkyv",
  "serde_json",
  "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "uuid",

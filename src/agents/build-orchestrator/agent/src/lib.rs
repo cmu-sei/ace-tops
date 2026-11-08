@@ -29,6 +29,7 @@
 //! for the actor that admits builds (`admission`, `observed`) and `build` for each build's own.
 pub mod admission;
 pub mod agent;
+pub mod archive;
 pub mod build;
 pub mod lines;
 pub mod mappings;

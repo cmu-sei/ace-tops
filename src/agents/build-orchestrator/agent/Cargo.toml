@@ -29,6 +29,9 @@ license.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
 chrono.workspace = true
+flate2.workspace = true
+# To read the clone the git handler brought up to date, and nothing more: clippy.toml forbids the rest.
+git2.workspace = true
 git-agent-common.workspace = true
 orchestrator-backend-k8s.workspace = true
 orchestrator-core.workspace = true
@@ -41,12 +44,17 @@ ractor.workspace = true
 rkyv.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tar.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# The fetch's own unpacking, which a build's pod runs on the archive.
+build-fetch = { path = "../fetch" }
+tempfile.workspace = true
 proptest.workspace = true
 # The real HTTP protocol, over a stand-in registry (polar_agent_builder::protocol::testing).
 polar-agent-builder = { workspace = true, features = ["testing"] }

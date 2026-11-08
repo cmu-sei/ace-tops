@@ -94,6 +94,11 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "reads the clone the handler fetched: `git/observe/clippy.toml` forbids the rest",
     ),
     (
+        "build-orchestrator",
+        "git2",
+        "reads the clone the handler fetched, for a build's source archive: `build-orchestrator/agent/clippy.toml` forbids the rest",
+    ),
+    (
         "oci-resolver",
         "oci-client",
         "its types: `resolver/clippy.toml` forbids its client",

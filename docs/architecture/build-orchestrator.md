@@ -663,6 +663,19 @@ I write Rust code"):
   every request to the configured host and allowed, an unchanged source sends no blob again, a refused blob leaves no manifest,
   and a tag a registry refuses sends nothing; a property that any archive's manifest and the reference a pod is given name it
   by exactly its digest and size; the address a pod reaches the registry by, and that the orchestrator is told it.
+  O3b DONE 2026-11-08: `archive::archive` reads a commit's tree from a repository and writes it as a gzipped tar, at most its
+  bound, refused as it is written past it, so an archive past it is never held whole. Deterministic: entries in the tree's own
+  order (git keeps a tree sorted), the commit's time on every entry, owner 0, git's modes (0644, 0755, a link), a gzip header
+  with no time or name. What the fetch would refuse is refused here first, so a build fails at its source with the reason and
+  not in its pod: a name that is not one (empty, `.`, `..`, a `/` or a NUL in it) and a link that is absolute or leaves the
+  tree (the fetch's own rule). A submodule is not in the archive: its source is another repository's. The orchestrator has
+  `git2` for this, reading the clone the handler brought up to date and nothing more: its `clippy.toml` forbids a fetch, a
+  connection, a clone or a push of its own, as the git observer's does, and `domain_has_no_way_out` says so of it. Tested
+  against real repositories: a property that any tree's archive is the same bytes from a repository that built it in another
+  order, and again, and that the fetch's own `unpack` gives back exactly its files, contents, executable bits and links;
+  a property that an archive is taken at its bound and refused one byte under it; links that leave refused and one that
+  climbs and stays taken; `.` and `..` refused, written as raw tree bytes since libgit2's builders refuse them; a submodule
+  left out; an unknown commit, or a name that is not one, no commit.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
