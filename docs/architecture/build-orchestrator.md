@@ -294,11 +294,60 @@ reaches one, and what a bug in it could do. In layers, the riskiest input meetin
 5. *What is relayed is what Polar built, never what it read.* The events published are encoded from the validated values. The bytes a
    build wrote never pass the worker: nothing downstream (Cassini, build-processor, Neo4j) sees one.
 
-Shown by: property tests (every valid report encodes and parses back to itself; no input of any bytes makes the gate or the parser
-panic, allocate or exceed a bound; a change that leaves the grammar is refused); coverage-guided fuzzing of the gate and the parser; a
-model checker's proof of the gate's bounds and the parser's totality (Kani, for Rust), an argument assurance readers can check; and the
-public corpus of parser edge cases behind "Parsing JSON is a Minefield" (JSONTestSuite), to be fetched only with the maintainer's leave.
-The pre-forked, strict-mode worker is a builder facility, so that any agent that must read foreign bytes can use it.
+Shown by: proofs, for every input, on the code that runs (Verus, below: the gate and the parser total, never out of bounds or
+overflowing, the tape never past its limit, nesting never past its bound); property tests (every valid report encodes and parses back
+to itself; no input of any bytes makes the gate or the parser panic, allocate or exceed a bound; a change that leaves the grammar is
+refused); coverage-guided fuzzing of the gate and the parser; and the public corpus of parser edge cases behind "Parsing JSON is a
+Minefield" (JSONTestSuite), to be fetched only with the maintainer's leave. The pre-forked, strict-mode worker is a builder facility,
+so that any agent that must read foreign bytes can use it.
+
+**Proved with Verus** (the maintainer, 2026-11-08: "Verus for the parser"; a controlled test of whether its constraints on how Rust is
+written are ones Polar can live with). Weighed:
+
+- *Kani* (bounded model checking of the Rust as written) needs almost no annotation, but proves only up to a bound: "no panic for lines
+  of up to 8 bytes" is not "no panic". Good at finding bugs, weak as an argument. Not used.
+- *Verus* (deductive proof of Rust, by an SMT solver) proves a property for every input, on the code that ships: the verified code is
+  compiled as written, its proofs and specifications erased. The cost: the code is written in the subset Verus reasons about, and the
+  proofs are written with it. Chosen.
+- *Lean* would let the grammar be defined and the parser proved against it, round trips and all, but its proofs are of Lean code: the
+  Rust would be translated to it (Aeneas, research grade, a subset of safe Rust) or the parser run as Lean. The strongest tie to a
+  specification, and the weakest to what runs. Not now.
+- *Alloy* models designs, not code: the right tool for the relay's trust (only the orchestrator publishes build reports; a `build_id` is
+  only ever its; a refused line reaches nothing downstream), not for the parser. Possible later.
+
+What Verus is today (read 2026-11-08):
+
+- Weekly releases, the latest `0.2026.11.02.8bf68ee` (2 November 2026), with a rolling pre-release from `main`. Prebuilt for Ubuntu
+  24.04 x86_64, macOS and Windows; other platforms build from source.
+- It verifies with a private Rust toolchain, pinned by its `rust-toolchain.toml`: `1.99.1`, with `rustc-dev` and `llvm-tools`. Polar's
+  workspace builds on a nightly (1.101); nixpkgs has `rustc` 1.99.0. Its solver is Z3, pinned at `4.16.0` (`source/tools/get-z3.sh`);
+  nixpkgs has 5.1.0.
+- `cargo verus` verifies the crates of a workspace that opt in (`[package.metadata.verus] verify = true`); the others compile as before.
+  Plain `cargo build` still builds an opted-in crate, its proofs erased; verification is `cargo verus verify -p <crate>`. A crate depends
+  on `vstd`, Verus's library of specifications, pinned to the release (`=0.0.0-<date>`), and on its macros.
+- Supported, of what the reader needs: structs, enums, `match`, `Option`, `Result` and `?`, `while` and `loop`, early return, `&mut`,
+  slices, `Vec`, unsigned arithmetic (every operation proved not to overflow), recursion with a `decreases` measure. Partly: iterators
+  and `for` loops, closures (no mutable capture). Strings are reasoned about as sequences of `char` through `vstd::string`, with
+  `str::as_bytes` not yet specified as a slice.
+
+What that means for the reader's code (O2d1): the gate and the parser work on bytes (`&[u8]`, a `Seq<u8>` to the proofs), never on
+`&str`; UTF-8 is checked by a loop of its own, proved against a definition of a well-formed sequence, not by `std::str::from_utf8`; loops
+are `while` loops with their invariants, not iterator chains or closures; the parser's recursion decreases with depth. Decoding a checked
+line into owned values (escapes, `String`s) is not proved: it runs after the checks, outside the worker, under the property tests.
+
+Packaging: a flake of its own on the maintainer's GitHub, Verus built from its release tag with the 1.99.1 toolchain and `rustc-dev`
+(from a Rust overlay, as nixpkgs' is 1.99.0), and Z3 4.16.0 (nixpkgs' version overridden), so that the solver and the verifier are
+pinned with the rest of Polar's toolchain; `vstd` from crates.io at the release's pin. The gominimal package set builds it the same way
+(from the tag, the vendored crates, the private toolchain's component tarballs checked against static.rust-lang.org, Z3 pinned).
+
+*Sources, read 2026-11-08:* [Verus releases](https://github.com/verus-lang/verus/releases);
+[INSTALL.md](https://github.com/verus-lang/verus/blob/main/INSTALL.md);
+[the release's rust-toolchain.toml](https://raw.githubusercontent.com/verus-lang/verus/release/0.2026.11.02.8bf68ee/rust-toolchain.toml);
+[its get-z3.sh](https://raw.githubusercontent.com/verus-lang/verus/release/0.2026.11.02.8bf68ee/source/tools/get-z3.sh);
+[the guide's supported features](https://verus-lang.github.io/verus/guide/features.html),
+[strings](https://verus-lang.github.io/verus/guide/strings.html) and [cargo verus](https://verus-lang.github.io/verus/guide/cargo_verus.html);
+[vstd's string specifications](https://docs.rs/crate/vstd/latest/source/string.rs) and [slice specifications](https://docs.rs/crate/vstd/latest/source/std_specs/slice.rs);
+[gominimal's Verus package](https://github.com/gominimal/pkgs/pull/1245).
 
 ## Plan, in bites
 
@@ -340,7 +389,8 @@ The pre-forked, strict-mode worker is a builder facility, so that any agent that
     and CA-bundle options are gone, the template's now. A property test makes the Job from any build and finds no departure,
     and finds each of 21 changes a build may not make whatever the build.
   - **O2d** the report reader ("How a report is read", above): O2d1 the byte gate, the `Report` type and Polar's own parser, with
-    property tests, fuzzing and the model checker's proofs; O2d2 the pre-forked worker in seccomp strict mode, a builder facility, and
+    property tests, fuzzing and Verus proofs (its flake first, on the maintainer's GitHub); O2d2 the pre-forked worker in seccomp
+    strict mode, a builder facility, and
     its validated hand-back; O2d3 the meaning checks and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
     `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
