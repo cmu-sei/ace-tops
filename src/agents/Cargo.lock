@@ -5363,17 +5363,14 @@ dependencies = [
 name = "orchestrator-backend-k8s"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
- "futures",
  "k8s-openapi",
- "kube",
  "orchestrator-core",
+ "polar-agent-builder",
  "proptest",
  "serde",
  "serde_json",
  "tokio",
- "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -5389,7 +5386,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
- "tokio",
  "tracing",
  "uuid",
 ]

@@ -26,7 +26,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rkyv::Archive;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncRead;
 
 use crate::error::BackendError;
 use crate::types::BuildSpec;
@@ -119,15 +118,13 @@ impl Retention {
     }
 }
 
-/// Boxed async log stream. Erases the backend-specific concrete type.
-pub type LogStream = Box<dyn AsyncRead + Send + Unpin>;
-
 /// Abstraction over build execution environments.
 ///
 /// The orchestrator uses this trait for pipeline jobs.
 /// Each has its own submit method because their manifests differ significantly
 /// (different images, resource requirements, env vars, and job naming).
-/// Poll, cancel, and logs work identically for both — the handle is opaque.
+/// Poll and cancel work on the opaque handle. A job's log is read when it goes to the registry as a blob
+/// (docs/architecture/build-orchestrator.md, O4), not yet.
 ///
 /// Implementors: KubernetesBackend, (future) SshBackend, PodmanBackend.
 /// BuildJobActor holds Arc<dyn BuildBackend> — it never knows the concrete type.
@@ -143,10 +140,6 @@ pub trait BuildBackend: Send + Sync {
     /// Request cancellation. Best-effort — the backend may not guarantee
     /// immediate termination, particularly for running pods.
     async fn cancel(&self, handle: &BackendJobHandle) -> Result<(), BackendError>;
-
-    /// Stream logs from a running or recently completed job.
-    /// May fail if the job has not yet started or logs have been GC'd by TTL.
-    async fn logs(&self, handle: &BackendJobHandle) -> Result<LogStream, BackendError>;
 
     /// Remove the finished jobs that are older than `retention` allows, and return their names. A job that has
     /// not finished is never touched. A backend with nothing to clean up keeps this default.

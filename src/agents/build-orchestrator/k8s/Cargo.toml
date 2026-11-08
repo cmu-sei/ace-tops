@@ -27,13 +27,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-tokio.workspace = true
-tokio-util.workspace = true
-anyhow.workspace = true
 k8s-openapi.workspace = true
-kube.workspace = true
+polar-agent-builder.workspace = true
 tracing.workspace = true
-futures.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 orchestrator-core.workspace = true
@@ -45,3 +41,6 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 proptest.workspace = true
+# The real Kubernetes protocol, over a stand-in API (polar_agent_builder::protocol::testing).
+polar-agent-builder = { workspace = true, features = ["testing"] }
+tokio.workspace = true

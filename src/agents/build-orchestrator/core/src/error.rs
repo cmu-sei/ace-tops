@@ -57,9 +57,6 @@ pub enum BackendError {
     #[error("job cancellation failed: {0}")]
     CancellationFailed(String),
 
-    #[error("log stream unavailable: {0}")]
-    LogStreamUnavailable(String),
-
     #[error("backend not reachable: {0}")]
     Unreachable(String),
 }
