@@ -309,6 +309,7 @@ pub(super) fn target_of(url: &Url) -> Result<Target, String> {
         host: host.to_ascii_lowercase(),
         encrypted: url.scheme() == "https",
         access: None,
+        reaches_node: Vec::new(),
     })
 }
 

@@ -1212,6 +1212,7 @@ pub(crate) mod tests {
                 host,
                 encrypted: request.encrypted,
                 access: None,
+                reaches_node: Vec::new(),
             })
         }
         async fn credential(

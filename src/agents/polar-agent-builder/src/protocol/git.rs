@@ -475,6 +475,7 @@ mod tests {
                 host: "github.com".to_string(),
                 encrypted: true,
                 access: None,
+                reaches_node: Vec::new(),
             })
         );
         assert_eq!(
@@ -483,6 +484,7 @@ mod tests {
                 host: "git.example.org".to_string(),
                 encrypted: false,
                 access: None,
+                reaches_node: Vec::new(),
             })
         );
     }

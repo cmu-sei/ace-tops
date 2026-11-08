@@ -206,6 +206,9 @@ pub struct Target {
     pub encrypted: bool,
     /// What a request to the Kubernetes API does; `None` for any other protocol.
     pub access: Option<Access>,
+    /// What an object the request would create gives a pod of its node, each way out of a container by its name
+    /// (`privileged`, `hostNetwork`, `hostPath`...): empty for anything else (`kubernetes::reaches_node`).
+    pub reaches_node: Vec<&'static str>,
 }
 
 /// Why a request is not allowed.
@@ -225,6 +228,9 @@ pub enum Denial {
     NoCredentialBound,
     #[error("the operation does not declare what the request would do to the cluster")]
     AccessUndeclared,
+    /// No Polar agent makes a pod that reaches its node, whatever it declares (docs/architecture/build-orchestrator.md, 5d).
+    #[error("the object would run a pod with access to its node")]
+    ReachesTheNode,
 }
 
 /// What [`judge`] decides.
@@ -273,6 +279,9 @@ pub fn judge(
             if !target.access.is_some_and(|wanted| access.contains(&wanted)) {
                 return Verdict::Deny(Denial::AccessUndeclared);
             }
+            if !target.reaches_node.is_empty() {
+                return Verdict::Deny(Denial::ReachesTheNode);
+            }
             None
         }
     };
@@ -313,6 +322,7 @@ mod tests {
             host: host.to_string(),
             encrypted,
             access: None,
+            reaches_node: Vec::new(),
         }
     }
 
@@ -530,6 +540,34 @@ mod tests {
         }
         assert_eq!(CREATE_JOBS.to_string(), "create batch/jobs");
         assert_eq!(WATCH_PODS.to_string(), "watch pods");
+    }
+
+    /// docs/architecture/build-orchestrator.md, 5d and O2c: no Polar agent makes a pod that reaches its node, whatever
+    /// its operation declares; one that asks nothing of the node is judged as before.
+    #[test]
+    fn a_create_that_would_reach_the_node_is_denied_whatever_is_declared() {
+        const CREATING: OperationDecl = declared(Location::Cluster {
+            access: &[CREATE_JOBS],
+        });
+        let creating = |reaches_node: Vec<&'static str>| Target {
+            reaches_node,
+            ..to_the_cluster(true, Some(CREATE_JOBS))
+        };
+        assert_eq!(
+            judge(&CREATING, &[CREATING], &creating(Vec::new()), None, None),
+            allowed(None)
+        );
+        for ways in [
+            vec!["privileged"],
+            vec!["hostNetwork", "hostPath"],
+            vec!["unconfined"],
+        ] {
+            assert_eq!(
+                judge(&CREATING, &[CREATING], &creating(ways.clone()), None, None),
+                Verdict::Deny(Denial::ReachesTheNode),
+                "{ways:?}"
+            );
+        }
     }
 
     fn credential() -> impl Strategy<Value = Credential> {

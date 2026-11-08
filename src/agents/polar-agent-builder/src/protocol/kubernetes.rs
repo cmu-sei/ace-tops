@@ -219,6 +219,95 @@ impl Call {
             Call::Log { .. } => POD_LOG,
         }
     }
+
+    /// What the object it would create gives a pod of its node ([`reaches_node`]); nothing, for any other call.
+    pub fn reaches_node(&self) -> Vec<&'static str> {
+        match self {
+            Call::Create { object, .. } => reaches_node(object),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// What `object`, which a call would create, gives a pod of its node: each way out of a container that no Polar agent's
+/// pod may have, by its Kubernetes name, whatever the agent declares (docs/architecture/build-orchestrator.md, 5d and
+/// O2c): privileged mode, the host's network, PID or IPC namespace, a host port, a host path, an unconfined seccomp or
+/// AppArmor profile, an unmasked `/proc`, a Windows host process. The whole object is read, not the pod spec at the path
+/// its kind puts one, so that no kind, nesting or container list is a way round it; a name counts only with the value that
+/// gives the pod something (`privileged: true`, a host port that is not 0, a `hostPath` volume). A value of an unexpected
+/// type is taken as asking: the API would refuse it, and nothing here guesses what it meant. The maps whose keys are
+/// anyone's names (labels, a ConfigMap's or a Secret's data) are not read for these names, and annotations only for the
+/// ones Kubernetes acts on (an unconfined AppArmor or seccomp profile).
+pub fn reaches_node(object: &Value) -> Vec<&'static str> {
+    let mut found = std::collections::BTreeSet::new();
+    scan_for_the_node(object, &mut found);
+    found.into_iter().collect()
+}
+
+fn scan_for_the_node(value: &Value, found: &mut std::collections::BTreeSet<&'static str>) {
+    let asks = |v: &Value| !matches!(v, Value::Null | Value::Bool(false));
+    let unconfined = |v: &Value| match v {
+        Value::Object(profile) => profile.get("type").is_some_and(|t| {
+            t.as_str() != Some("RuntimeDefault") && t.as_str() != Some("Localhost")
+        }),
+        Value::Null => false,
+        _ => true,
+    };
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map {
+                match key.as_str() {
+                    "labels" | "data" | "binaryData" | "stringData" => continue,
+                    "annotations" => {
+                        if let Value::Object(annotations) = v
+                            && annotations.iter().any(|(name, value)| {
+                                (name
+                                    .starts_with("container.apparmor.security.beta.kubernetes.io/")
+                                    || name.starts_with(
+                                        "container.seccomp.security.alpha.kubernetes.io/",
+                                    )
+                                    || name == "seccomp.security.alpha.kubernetes.io/pod")
+                                    && value.as_str() != Some("runtime/default")
+                                    && value.as_str() != Some("docker/default")
+                                    && !value.as_str().is_some_and(|p| p.starts_with("localhost/"))
+                            })
+                        {
+                            found.insert("unconfined");
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                let way = match key.as_str() {
+                    "privileged" if asks(v) => Some("privileged"),
+                    "hostNetwork" if asks(v) => Some("hostNetwork"),
+                    "hostPID" if asks(v) => Some("hostPID"),
+                    "hostIPC" if asks(v) => Some("hostIPC"),
+                    "hostProcess" if asks(v) => Some("hostProcess"),
+                    "hostPort" if !matches!(v, Value::Null) && v.as_u64() != Some(0) => {
+                        Some("hostPort")
+                    }
+                    "hostPath" if matches!(v, Value::Object(_)) => Some("hostPath"),
+                    "procMount" if !matches!(v, Value::Null) && v.as_str() != Some("Default") => {
+                        Some("procMount")
+                    }
+                    "seccompProfile" if unconfined(v) => Some("seccompProfile"),
+                    "appArmorProfile" if unconfined(v) => Some("appArmorProfile"),
+                    _ => None,
+                };
+                if let Some(way) = way {
+                    found.insert(way);
+                }
+                scan_for_the_node(v, found);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                scan_for_the_node(item, found);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The API's own answer to a call it did not do, for the operation's `read` to judge, as `http` hands it a status: what
@@ -369,6 +458,7 @@ impl Protocol for Kubernetes {
         let url = Url::parse(base).map_err(|_| "the API's address cannot be read".to_string())?;
         Ok(Target {
             access: Some(request.access()),
+            reaches_node: request.reaches_node(),
             ..http::target_of(&url)?
         })
     }
@@ -593,6 +683,7 @@ mod tests {
     };
     use super::*;
     use k8s_openapi::api::core::v1::{Namespace, Pod};
+    use proptest::prelude::*;
     use ractor::{Actor, ActorProcessingErr, ActorRef};
     use serde_json::json;
     use std::sync::Mutex;
@@ -1316,6 +1407,206 @@ mod tests {
             .await;
         assert_eq!(refused, Err(Failure::Denied(Denial::AccessUndeclared)));
         assert!(api.received().await.is_empty());
+    }
+
+    // -- what a create would give its pod of the node (docs/architecture/build-orchestrator.md, 5d and O2c) --------------
+
+    /// A pod spec holding `ways`, one each, where Kubernetes reads them: on the pod, on a container of the list `list`,
+    /// or as an annotation of the pod's metadata.
+    fn pod_with(ways: &[Way], list: &str) -> Value {
+        let mut pod = json!({"containers": [{"name": "c", "image": "i@sha256:00"}]});
+        let mut container =
+            json!({"name": "w", "image": "i@sha256:00", "securityContext": {}, "ports": []});
+        let mut annotations = serde_json::Map::new();
+        for way in ways {
+            match way {
+                Way::Privileged => container["securityContext"]["privileged"] = json!(true),
+                Way::HostNetwork => pod["hostNetwork"] = json!(true),
+                Way::HostPid => pod["hostPID"] = json!(true),
+                Way::HostIpc => pod["hostIPC"] = json!(true),
+                Way::HostPort => {
+                    container["ports"] = json!([{"containerPort": 80, "hostPort": 8080}])
+                }
+                Way::HostPath => pod["volumes"] = json!([{"name": "h", "hostPath": {"path": "/"}}]),
+                Way::UnconfinedSeccomp => {
+                    container["securityContext"]["seccompProfile"] = json!({"type": "Unconfined"})
+                }
+                Way::UnconfinedAppArmor => {
+                    pod["securityContext"] = json!({"appArmorProfile": {"type": "Unconfined"}})
+                }
+                Way::AppArmorAnnotation => {
+                    annotations.insert(
+                        "container.apparmor.security.beta.kubernetes.io/w".into(),
+                        json!("unconfined"),
+                    );
+                }
+                Way::UnmaskedProc => container["securityContext"]["procMount"] = json!("Unmasked"),
+                Way::HostProcess => {
+                    container["securityContext"]["windowsOptions"] = json!({"hostProcess": true})
+                }
+            }
+        }
+        pod[list] = json!([container]);
+        json!({"metadata": {"annotations": annotations}, "spec": pod})
+    }
+
+    /// `pod` (a pod's metadata and spec) in an object of `kind`, where that kind holds its pod.
+    fn holding(kind: &str, pod: Value) -> Value {
+        let template = json!({"metadata": pod["metadata"], "spec": pod["spec"]});
+        match kind {
+            "Pod" => json!({"kind": "Pod", "metadata": pod["metadata"], "spec": pod["spec"]}),
+            "PodTemplate" => json!({"kind": "PodTemplate", "template": template}),
+            "CronJob" => {
+                json!({"kind": "CronJob", "spec": {"jobTemplate": {"spec": {"template": template}}}})
+            }
+            other => json!({"kind": other, "spec": {"template": template}}),
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Way {
+        Privileged,
+        HostNetwork,
+        HostPid,
+        HostIpc,
+        HostPort,
+        HostPath,
+        UnconfinedSeccomp,
+        UnconfinedAppArmor,
+        AppArmorAnnotation,
+        UnmaskedProc,
+        HostProcess,
+    }
+
+    const WAYS: [Way; 11] = [
+        Way::Privileged,
+        Way::HostNetwork,
+        Way::HostPid,
+        Way::HostIpc,
+        Way::HostPort,
+        Way::HostPath,
+        Way::UnconfinedSeccomp,
+        Way::UnconfinedAppArmor,
+        Way::AppArmorAnnotation,
+        Way::UnmaskedProc,
+        Way::HostProcess,
+    ];
+
+    const KINDS: [&str; 8] = [
+        "Pod",
+        "Job",
+        "Deployment",
+        "StatefulSet",
+        "DaemonSet",
+        "ReplicaSet",
+        "CronJob",
+        "PodTemplate",
+    ];
+
+    const LISTS: [&str; 3] = ["containers", "initContainers", "ephemeralContainers"];
+
+    /// Each way out of a container is found, in every kind that holds a pod and every container list; a pod that asks
+    /// none, and asks for the safe values by name, reaches nothing.
+    #[test]
+    fn each_way_to_the_node_is_found_wherever_a_pod_holds_it() {
+        for kind in KINDS {
+            for list in LISTS {
+                assert_eq!(
+                    reaches_node(&holding(kind, pod_with(&[], list))),
+                    Vec::<&str>::new(),
+                    "{kind} {list}"
+                );
+                for way in WAYS {
+                    assert!(
+                        !reaches_node(&holding(kind, pod_with(&[way], list))).is_empty(),
+                        "{kind} {list} {way:?}"
+                    );
+                }
+            }
+        }
+        let safe = json!({"spec": {"hostNetwork": false, "hostPID": false, "volumes": [{"name": "e", "emptyDir": {}}],
+            "containers": [{"name": "c", "ports": [{"containerPort": 80, "hostPort": 0}],
+                "securityContext": {"privileged": false, "procMount": "Default", "seccompProfile": {"type": "RuntimeDefault"}}}]}});
+        assert_eq!(reaches_node(&safe), Vec::<&str>::new());
+    }
+
+    /// The names are read where they would be Kubernetes', not anywhere they are written: a label, an annotation or a
+    /// ConfigMap's or Secret's data that says `privileged` or `hostPath` gives a pod nothing; an annotation that asks for an
+    /// unconfined profile does, and one for the runtime's default or a profile on the node does not.
+    #[test]
+    fn a_name_that_is_only_a_label_or_data_gives_nothing() {
+        let config_map = json!({"kind": "ConfigMap",
+            "metadata": {"labels": {"privileged": "true", "hostPath": "x"}, "annotations": {"hostNetwork": "true"}},
+            "data": {"hostNetwork": "true", "procMount": "Unmasked", "hostPath": "/"},
+            "stringData": {"privileged": "true"}, "binaryData": {"hostPID": "dHJ1ZQ=="}});
+        assert_eq!(reaches_node(&config_map), Vec::<&str>::new());
+        let annotated = |profile: &str| {
+            json!({"metadata": {"annotations": {
+            "container.apparmor.security.beta.kubernetes.io/w": profile}}})
+        };
+        assert_eq!(reaches_node(&annotated("unconfined")), vec!["unconfined"]);
+        assert_eq!(
+            reaches_node(&annotated("runtime/default")),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            reaches_node(&annotated("localhost/polar")),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            reaches_node(&annotated("anything else")),
+            vec!["unconfined"],
+            "only what is known to confine"
+        );
+    }
+
+    /// A create of a Job whose pod reaches its node is refused by the judge before anything is sent, though its
+    /// operation declares creating Jobs.
+    #[tokio::test]
+    async fn a_create_whose_pod_would_reach_the_node_is_refused_and_nothing_is_sent() {
+        let api = KubeApi::start().await;
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let refused = site
+            .handle
+            .ask(Calling(Call::Create {
+                resource: JOB,
+                namespace: "builds".into(),
+                object: holding("Job", pod_with(&[Way::Privileged], "containers")),
+            }))
+            .await;
+        assert_eq!(refused, Err(Failure::Denied(Denial::ReachesTheNode)));
+        assert!(api.received().await.is_empty());
+    }
+
+    fn ways() -> impl Strategy<Value = Vec<Way>> {
+        proptest::sample::subsequence(WAYS.to_vec(), 0..=WAYS.len())
+    }
+
+    proptest! {
+        /// Whatever a pod asks of its node, in whichever kind and container list, the scan finds that it asks something
+        /// exactly when it asks anything, and the same whatever kind holds it.
+        #[test]
+        fn the_scan_finds_a_way_exactly_when_one_is_asked(
+            ways in ways(),
+            kind in proptest::sample::select(KINDS.to_vec()),
+            list in proptest::sample::select(LISTS.to_vec()),
+        ) {
+            let found = reaches_node(&holding(kind, pod_with(&ways, list)));
+            prop_assert_eq!(found.is_empty(), ways.is_empty());
+            prop_assert_eq!(&found, &reaches_node(&holding("Pod", pod_with(&ways, list))));
+        }
+
+        /// Only a create gives a pod anything: whatever else a call is, its target reaches nothing, and a create's
+        /// target says what its object asks.
+        #[test]
+        fn only_a_create_reaches_the_node(ways in ways()) {
+            let object = holding("Job", pod_with(&ways, "containers"));
+            let created = Call::Create { resource: JOB, namespace: "builds".into(), object };
+            let target = Kubernetes::target(&created, Some("https://10.96.0.1")).unwrap();
+            prop_assert_eq!(target.reaches_node.is_empty(), ways.is_empty());
+            let got = Call::Get { resource: JOB, namespace: "builds".into(), name: "j".into() };
+            prop_assert!(Kubernetes::target(&got, Some("https://10.96.0.1")).unwrap().reaches_node.is_empty());
+        }
     }
 
     /// The record of a call says which operation it was and where it went, as every other request's, and nothing of the

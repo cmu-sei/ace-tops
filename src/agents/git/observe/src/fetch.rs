@@ -181,7 +181,8 @@ mod tests {
                     Ok(Target {
                         host,
                         encrypted: true,
-                        access: None
+                        access: None,
+                        reaches_node: Vec::new(),
                     })
                 );
             }
