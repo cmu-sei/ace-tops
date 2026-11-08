@@ -471,7 +471,7 @@ def main [] {
 
         # docs/architecture/http-observers.md, "GitLab": a namespace that is not Polar's, whose pods Polar's CA issues to, is one
         # the attestation agent attests, or the credentials agent refuses its pods as not found.
-        "the namespaces beyond Polar's first are made with their Pod Security, the build namespace's baseline enforced and restricted warned": {
+        "the namespaces beyond Polar's first are made with their Pod Security, the build namespace's restricted warned and audited, nothing enforced": {
             let cluster = {
                 namespaces: { polar: "polar", graph: "polar-graph", auth: "polar-auth", builds: "polar-builds" }
                 pod_security: { builds: { enforce: "baseline", warn: "restricted", audit: "restricted" } }
@@ -485,10 +485,14 @@ def main [] {
                 } }
                 { name: "gitlab-test", labels: {} }
             ]
-            # As committed, sandbox-local's: the build namespace, as decided (docs/architecture/build-orchestrator.md, 5d).
+            # As committed, sandbox-local's: the build namespace, as decided (docs/architecture/build-orchestrator.md, 5d): Polar refuses
+            # what a build pod may not have, and Pod Security only records, so a custody sidecar's IPC_LOCK is not refused there.
             let committed = (open ($INFRA | path join "config/cluster.nuon"))
             assert equal ((added_namespaces ($committed | reject -o attest_also)) | get name) ["polar-builds"]
-            assert equal ((added_namespaces $committed) | first | get labels | get "pod-security.kubernetes.io/enforce") "baseline"
+            assert equal ((added_namespaces $committed) | first | get labels) {
+                "pod-security.kubernetes.io/warn": "restricted"
+                "pod-security.kubernetes.io/audit": "restricted"
+            }
             # A Pod Security level that is not one is refused, and so is a key the cluster does not have.
             for bad in [{ builds: { enforce: "lenient" } } { nowhere: { enforce: "baseline" } }] {
                 let refused = (try { added_namespaces ($cluster | update pod_security $bad); null } catch {|e| $e.msg })

@@ -79,9 +79,13 @@ Asked, the maintainer, 2026-11-07:
    replaced per build"): Kubernetes requires an image on a PodTemplate's container (a server dry run on u7c: `containers[0].image:
    Required value`), so the template carries the fetch init container, its image pinned by digest, and a `pipeline` container with that
    same image, which the orchestrator replaces with the mapping's pipeline image in each Job. The fetch image is read from the template.
-5d. **The build namespace enforces Pod Security Admission `baseline`, and warns and audits `restricted`** (the maintainer, "Baseline
-   enforced, restricted warned"): Kubernetes itself refuses a privileged container or host access there, which no mapping may ask for,
-   while a signed mapping's run-as-root or added capabilities (decision 4) still run, and every build below restricted is on record.
+5d. **Polar judges what a build pod may ask for; Kubernetes' Pod Security only records it** (the maintainer, 2026-11-08, revising
+   "Baseline enforced, restricted warned" of the day before). No build pod may run privileged or reach its node (host namespaces, host
+   ports, `hostPath`), whatever its mapping says; a signed mapping's run-as-root or added capabilities (decision 4) still run. That rule
+   is Polar's, held where the Job is made: the orchestrator's Kubernetes judge refuses a Job create whose pod asks for more than the
+   catalog's template and the repository's signed mapping allow, and the attestation agent judges each build pod against the signed
+   record before it is issued a certificate. The build namespace's Pod Security labels warn and audit at `restricted` and enforce
+   nothing. Why, below ("Why a build pod is judged by Polar, not by Pod Security").
 
 Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 
@@ -99,6 +103,77 @@ Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 7. Who asked for a build is the broker-stamped publisher of the request; it ends through its HealthCheckActor's verdict; its retention is
    a supervised actor; the shared `client-tls` fallback goes; the clone image is built here.
 
+## Why a build pod is judged by Polar, not by Pod Security
+
+Decided by the maintainer, 2026-11-08, with the reasoning here so that it can be checked and defended.
+
+**The claim.** What a build pod may ask of its node is decided in Polar's application layer, from signed inputs, by checks that are
+Polar's code, tested and on record. Kubernetes' Pod Security Admission is not part of that decision: it is a coarse, fixed policy that
+judges a capability by its name, and it cannot tell a sound request from an unsound one. Polar can, because it knows what each
+container is for and who signed for it.
+
+**What showed it.** Decision 5d first had the build namespace enforce Pod Security `baseline`, so that Kubernetes would refuse a
+privileged build. Every Polar pod has the custody daemon as a sidecar (`key-custody.md`, step 2), and build pods are no exception
+(decision 7b). The daemon keeps every key in its own memory and locks that memory with `mlockall`, so that no key reaches swap
+(`polar-custody/daemon/src/lib.rs:72`, `lock_memory`). Locking memory past the default limit needs the `IPC_LOCK` capability. A
+server dry run on u7c (2026-11-08) of a pod adding `IPC_LOCK` in `polar-builds` was refused: `violates PodSecurity "baseline:latest":
+non-default capabilities (container "c" must not include "IPC_LOCK" in securityContext.capabilities.add)`.
+
+`baseline` refuses it because its list of allowed capabilities is the set Docker grants every container by default, and `IPC_LOCK`
+was never in it. Nothing about `IPC_LOCK` is dangerous: it lets a process pin its own pages, still within its cgroup's memory limit;
+it reads no other process, touches nothing on the host and raises no privilege. The custody daemon's use is the one it exists for. So
+the standard refused a sound request on a technicality, and the only ways to satisfy it were to weaken Polar (drop custody, or drop the
+memory lock) or to maintain a copy of the standard with an exception carved into it (an admission policy, considered below).
+
+**The argument.** The case for enforcing Pod Security was that it stops a dangerous pod even if the orchestrator is wrong. Follow how a
+dangerous build pod would come to exist:
+
+1. The pod is built only from the catalog's PodTemplate (decision 5b), which is in the signed deployment, and the repository's mapping,
+   which is signed configuration (decision 4). The orchestrator has no other source of pod settings.
+2. The Job is created only through the orchestrator's Kubernetes protocol handler, whose judge refuses any call the code did not declare
+   (decision 5a; `polar-agent-builder/src/protocol/judge.rs`, `Denial::AccessUndeclared`). From O2b, the same judge refuses a Job whose
+   pod asks for privileged mode, host namespaces, host ports, `hostPath`, or a capability that the template and the mapping do not name.
+   That rule is written once, in Polar's code, with example tests and property tests over generated pod specs. *Not built yet: O2b.*
+3. The orchestrator's own process is locked down by the builder (seccomp and Landlock) and attested (`runtime-attestation.md`, the
+   table of what an attacker does and what catches it). A blocked call or a crash is evidence, reported. *The attestation of its pod is
+   built; the lockdown is designed, not built yet (`key-custody.md`: no pod carries a seccomp profile yet).*
+4. Every build pod is judged by the attestation agent against the signed record before the credentials agent issues it a certificate
+   (`attestation/common/src/verdict.rs:135`, `judge`: its owner, its ServiceAccount, every container's pinned image). A pod that is not
+   what was signed gets no certificate, so it cannot speak on Cassini: it can neither report a build nor publish anything.
+
+A dangerous pod therefore needs signed inputs that ask for it, which a reviewer signed and the record shows, or code running inside a
+compromised orchestrator that goes around its own handler. The first is refused by step 2 whatever was signed. The second is the
+compromised Polar process, which Polar's threat model already answers: make it hard (the lockdown), notice it (attestation, crash
+evidence) and keep operating through it, able to shut it down (`runtime-attestation.md`, "What an attacker is assumed to want"). A
+Kubernetes namespace label does not change that answer. It would only have stood in for checks that Polar makes itself, with more
+knowledge than the label has.
+
+**Where Kubernetes fits.** Polar must run on Kubernetes and accepts its limits; the regress of "who checks the checker" stops at its
+control plane, which is why that control plane is on Polar's written trust base (`runtime-attestation.md`, "The trust base is written
+down"). That is acceptance, not reliance: Polar does not hand its security decisions to a Kubernetes feature where it can make them
+better itself. Pod Security stays in the build namespace as a record: it warns whoever creates a pod below `restricted`, and writes the
+same to the API server's audit log, at no cost.
+
+It also keeps Polar's decisions its own across deployment targets. Polar is built to meet different targets at different levels of
+assurance: its identity is its own CA's certificates, judged by Cedar and Cassini; its runtime knowledge is signed configuration;
+Kubernetes is one protocol behind the builder's handlers (5a) and one backend behind `BuildBackend`
+(`build-orchestrator/core/src/backend.rs`). A rule held in Polar's judge and attestation, from signed intent, applies wherever Polar
+is deployed, with the visibility to reason about it. A namespace label applies only where that platform does.
+
+**Alternatives weighed.**
+
+- *Enforce `baseline` and run build pods without custody.* Each build pod's key would be a file in its volume, readable by the
+  repository's own build code: the weakest key handling in the pod that runs the most foreign code. Rejected.
+- *Enforce `baseline` and drop `IPC_LOCK` from the sidecar there.* The daemon logs the failed lock and runs, but its keys may then reach
+  swap. A weaker custody, accepted only to satisfy a label. Rejected.
+- *A `ValidatingAdmissionPolicy` that copies `baseline`, allowing `IPC_LOCK` on the custody container alone.* It works (built into the
+  API server since 1.30), but Polar would keep a hand copy of a standard that moves with Kubernetes, and it is still Kubernetes deciding
+  from pod fields what Polar decides from signed intent. Rejected; it may return as an extra layer if a reviewer asks for one.
+
+**What remains.** Polar's judge (step 2) acts before the Job exists; the attestation agent (step 4) acts after Kubernetes has started
+the pod. A pod that got past step 2 (only by a compromised orchestrator) would run until it is judged, without a certificate, and be
+reported. That is the window Polar's detection-first threat model accepts for a compromised process anywhere in Polar.
+
 ## Plan, in bites
 
 - **O1** the core and Kubernetes crates (types, backend, the Job spec), with decisions 1 and 4 in the Job and no Secret path; tests first
@@ -111,7 +186,8 @@ Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
   credential of its own; a job's log stays in its pod until O4, so the backend trait has no log.
 - **O2** the agent on the builder and in the catalog: 5, 5b, 6 and 7. In bites: O2a the build namespace, the build workload rendered
   as a PodTemplate, and the `job-run` capability (a Role in the build namespace, computed from the declared writes); O2b the Job built
-  from the PodTemplate read through the handler; O2c the agent itself (his `agent` crate: supervisor, build registry, a job actor per
+  from the PodTemplate read through the handler, and the judge's refusal of a Job whose pod asks for more than its template and mapping
+  allow (5d); O2c the agent itself (his `agent` crate: supervisor, build registry, a job actor per
   build, the signed `mappings` and escrowed `credentials` sections), on the builder and in the catalog.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet), the clone image that checks and unpacks it.
