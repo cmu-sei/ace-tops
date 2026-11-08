@@ -94,6 +94,7 @@ pub(crate) mod own_name;
 pub(crate) mod startup;
 pub mod topic_gate;
 pub mod topics;
+pub mod worker;
 pub use shutdown::{DEFAULT_SHUTDOWN_BUDGET, SHUTDOWN_BUDGET_ENV};
 pub use topics::{Access, Cause, TopicDecl, TopicSet};
 

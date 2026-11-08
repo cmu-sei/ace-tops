@@ -72,6 +72,8 @@ serde_json.workspace = true
 # A held section's digest, in what an agent answers of its configuration in force.
 sha2.workspace = true
 thiserror.workspace = true
+# The worker: fork, its lockdown by prctl and seccomp's strict mode, its pipes (src/worker.rs).
+libc.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 # A stand-in git server for the tests of an agent (`protocol::testing`).
@@ -92,5 +94,10 @@ polar-health = { path = "../polar-health", features = ["virtual-time"] }
 proptest.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
-libc.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+# A worker is forked only from a process of one thread, and libtest runs tests on threads of its own: its tests are one
+# binary with a main of its own.
+[[test]]
+name = "worker"
+harness = false

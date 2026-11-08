@@ -447,8 +447,21 @@ I write Rust code"):
     steps. JSONTestSuite (the maintainer's leave, 2026-11-08): its 318 parsing cases vendored at a pinned commit
     (`build-orchestrator/report/tests/jsontestsuite`), all 188 that JSON refuses refused, the 95 it accepts read or refused only
     for what the grammar leaves out (65 read), no case panicking. O2d1 DONE. O2d2 the pre-forked worker in seccomp
-    strict mode, a builder facility, and
-    its validated hand-back; O2d3 the meaning checks and the re-encoding.
+    strict mode, a builder facility, and its validated hand-back; planned 2026-11-08 (the maintainer: "The agent ends and
+    restarts"): an agent declares the workers it needs; the builder forks each in `run`, after the configuration is judged and
+    before the runtime is built (refusing if the process has more than one thread); the child closes every descriptor but its
+    two pipes, sets no-new-privileges and not-dumpable, allocates its buffers at the bounds signed at start (a Dynamic change may
+    narrow, never widen, them), enters seccomp's strict mode, and answers length-prefixed requests. A worker that dies (killed by
+    seccomp, a crash, a timeout) cannot be forked again once the runtime runs: its death is evidence, the pending reports are
+    refused, and the agent ends, its pod restarting with a fresh worker. In three: O2d2a the builder's fork, strict mode and
+    pipe protocol, tested in a child of the test binary (the test runner is threaded); O2d2b the async handle and the death's
+    verdict; O2d2c the report worker's function and its tape hand-back (16-byte records), re-checked and decoded on the parent's
+    side. O2d2a DONE 2026-11-08: `polar_agent_builder::worker` (`fork`, `Work`, `Worker::ask`), tested in a binary of one
+    thread (`tests/worker.rs`): a worker answers within its bounds; a system call strict mode does not allow, or memory asked
+    of the kernel, kills it; a descriptor the agent had open is closed in it; a forged answer longer than it may give is
+    refused and the worker ended; a process with a second thread forks none. Open until O6: that the container runtime's
+    default seccomp profile lets the pod set strict mode (`prctl`) and close its descriptors (`close_range`). O2d3 the meaning
+    checks and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
     `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
     `polar.provenance.executions`, and build-processor's `whose_word` split to it.
