@@ -51,6 +51,7 @@ pub mod findings;
 pub mod outputs;
 pub mod registry;
 
+use execution::When;
 use polar::ProvenanceEvent;
 use polar::graph::controller::{GraphOp, IntoGraphKey, Property};
 use ractor::ActorProcessingErr;
@@ -74,6 +75,7 @@ pub fn project(
             repo_url,
             triggered_by,
             backend,
+            at,
         } => execution::started(
             build_id,
             commit_sha,
@@ -81,39 +83,81 @@ pub fn project(
             repo_url,
             triggered_by,
             backend,
-            observed_at,
+            &When {
+                at: &reported(&at)?,
+                observed_at,
+            },
         ),
         ProvenanceEvent::StageStarted {
             build_id,
             stage_name,
             stage_id,
-        } => execution::stage_started(build_id, stage_name, stage_id, observed_at),
+            at,
+        } => execution::stage_started(
+            build_id,
+            stage_name,
+            stage_id,
+            &When {
+                at: &reported(&at)?,
+                observed_at,
+            },
+        ),
         ProvenanceEvent::StageCompleted {
             build_id,
             stage_name,
             stage_id,
             duration_secs,
             outcome,
+            at,
         } => execution::stage_completed(
             build_id,
             stage_name,
             stage_id,
             duration_secs,
             outcome,
-            observed_at,
+            &When {
+                at: &reported(&at)?,
+                observed_at,
+            },
         ),
         ProvenanceEvent::ExecutionCompleted {
             build_id,
             duration_secs,
-        } => execution::completed(build_id, duration_secs, observed_at),
+            at,
+        } => execution::completed(
+            build_id,
+            duration_secs,
+            &When {
+                at: &reported(&at)?,
+                observed_at,
+            },
+        ),
         ProvenanceEvent::ExecutionFailed {
             build_id,
             reason,
             stage,
-        } => execution::failed(build_id, reason, stage, observed_at),
-        ProvenanceEvent::ExecutionCancelled { build_id, reason } => {
-            execution::cancelled(build_id, reason, observed_at)
-        }
+            at,
+        } => execution::failed(
+            build_id,
+            reason,
+            stage,
+            &When {
+                at: &reported(&at)?,
+                observed_at,
+            },
+        ),
+        ProvenanceEvent::ExecutionCancelled {
+            build_id,
+            reason,
+            at,
+        } => execution::cancelled(
+            build_id,
+            reason,
+            &When {
+                at: &reported(&at)?,
+                observed_at,
+            },
+        ),
 
         // ── Build outputs ─────────────────────────────────────────────────────
         ProvenanceEvent::ArtifactProduced(p) => outputs::artifact_produced(p),
@@ -220,6 +264,16 @@ pub fn transaction(
 ) -> Result<Option<GraphOp>, ActorProcessingErr> {
     let ops = project(event, observed_at)?;
     Ok((!ops.is_empty()).then_some(GraphOp::Transaction { ops }))
+}
+
+/// When the reporter says an event happened, as the graph keeps a time: RFC 3339 in UTC. A time that is not RFC 3339
+/// with its offset is refused, and the event with it.
+fn reported(at: &str) -> Result<String, ActorProcessingErr> {
+    let time = chrono::DateTime::parse_from_rfc3339(at)
+        .map_err(|e| format!("the event's time {at:?} is not RFC 3339: {e}"))?;
+    Ok(time
+        .with_timezone(&chrono::Utc)
+        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
 }
 
 // ── Shared op builders ─────────────────────────────────────────────────────────
@@ -382,6 +436,7 @@ mod tests {
                 repo_url: "https://static.crates.io/crates/itoa/itoa-1.0.18.crate".into(),
                 triggered_by: None,
                 backend: None,
+                at: T0.into(),
             },
             T0,
         )
@@ -421,11 +476,13 @@ mod tests {
                     node_label: "KubernetesJob".into(),
                     identity_props: vec![("uid".into(), "u1".into())],
                 }),
+                at: T0.into(),
             },
             ProvenanceEvent::StageStarted {
                 build_id: "b1".into(),
                 stage_name: "build".into(),
                 stage_id: "s1".into(),
+                at: T0.into(),
             },
             ProvenanceEvent::StageCompleted {
                 build_id: "b1".into(),
@@ -433,19 +490,23 @@ mod tests {
                 stage_id: "s1".into(),
                 duration_secs: 3,
                 outcome: StageOutcome::Succeeded,
+                at: T0.into(),
             },
             ProvenanceEvent::ExecutionCompleted {
                 build_id: "b1".into(),
                 duration_secs: 5,
+                at: T0.into(),
             },
             ProvenanceEvent::ExecutionFailed {
                 build_id: "b2".into(),
                 reason: "exit 1".into(),
                 stage: Some("build".into()),
+                at: T0.into(),
             },
             ProvenanceEvent::ExecutionCancelled {
                 build_id: "b3".into(),
                 reason: Some("superseded".into()),
+                at: T0.into(),
             },
             ProvenanceEvent::ArtifactProduced(ArtifactProducedPayload {
                 artifact_content_hash: "sha256:art".into(),
@@ -716,5 +777,78 @@ mod tests {
             "an empty key was written: {written}"
         );
         assert!(written.contains("pkg:cargo/itoa@1.0.18"));
+    }
+
+    /// A build's states are keyed on when its reporter says each happened, in UTC, not on when it was seen: an event
+    /// seen twice, or late, lands on the same state.
+    #[test]
+    fn a_builds_states_are_keyed_on_the_reporters_time() {
+        let started = |observed: &str| {
+            format!(
+                "{:?}",
+                project(
+                    ProvenanceEvent::ExecutionStarted {
+                        build_id: "b1".into(),
+                        commit_sha: "c0ffee".into(),
+                        ref_name: "refs/heads/main".into(),
+                        repo_url: "https://git.example/polar.git".into(),
+                        triggered_by: None,
+                        backend: None,
+                        at: "2026-10-16T02:00:00+02:00".into(),
+                    },
+                    observed,
+                )
+                .unwrap()
+            )
+        };
+        let first = started("2026-11-01T00:00:00Z");
+        assert!(
+            first.contains(r#"valid_from: "2026-10-16T00:00:00Z""#),
+            "{first}"
+        );
+        assert!(
+            first.contains(r#"Property("at", String("2026-10-16T00:00:00Z"))"#),
+            "{first}"
+        );
+        // Seen again a day later: the same writes, but for when it was seen.
+        let again = started("2026-11-02T00:00:00Z");
+        assert_eq!(
+            first.replace("2026-11-01T00:00:00Z", "SEEN"),
+            again.replace("2026-11-02T00:00:00Z", "SEEN")
+        );
+    }
+
+    /// A time that is not RFC 3339 is not a time: the event is refused and writes nothing.
+    #[test]
+    fn an_event_whose_time_is_not_rfc3339_is_refused() {
+        for at in [
+            "",
+            "yesterday",
+            "2026-10-16 00:00:00",
+            "2026-10-16T00:00:00",
+        ] {
+            let refused = project(
+                ProvenanceEvent::ExecutionCompleted {
+                    build_id: "b1".into(),
+                    duration_secs: 3,
+                    at: at.into(),
+                },
+                T0,
+            );
+            assert!(refused.is_err(), "{at:?} was taken");
+        }
+    }
+
+    /// What the pipeline's `emit-execution-completed` writes (scripts/pipeline/core/events.nu, `reported-now`: the
+    /// local offset and nanoseconds) is read, and its time kept in UTC.
+    #[test]
+    fn a_pipelines_json_event_and_its_time_are_read() {
+        let json = r#"{"type":"execution_completed","build_id":"b1","duration_secs":3,"at":"2026-11-07T18:59:59.123456789-05:00"}"#;
+        let event: ProvenanceEvent = serde_json::from_str(json).unwrap();
+        let written = format!("{:?}", project(event, T0).unwrap());
+        assert!(
+            written.contains(r#"valid_from: "2026-11-07T23:59:59.123456789Z""#),
+            "{written}"
+        );
     }
 }

@@ -37,9 +37,11 @@
 //! `completed_at` is set on success, failure *and* cancellation: it means
 //! "finished". The outcome is the `phase` of the latest `BuildJobState`.
 //!
-//! `observed_at` records when this processor saw the event, which is useful for
-//! measuring observer lag. It is distinct from when the reporting system says
-//! the event happened.
+//! Two times: `at`, when the reporter says the event happened (RFC 3339, kept in
+//! UTC), on which a build's states, `completed_at`, a stage's times and the
+//! BUILT_BY and EXECUTED_IN edges are keyed, so an event seen twice, or late,
+//! lands where it did; and `observed_at`, when this processor saw it, which is
+//! useful for measuring observer lag.
 //!
 //! Node ownership: `BuildJob`, `BuildJobState` and `BuildStage` are owned here
 //! and freely upserted. `GitCommit` and backend job nodes belong to their
@@ -55,25 +57,33 @@ use polar::graph::nodes::git::GitNodeKey;
 use polar::{BackendIdentity, StageOutcome};
 use tracing::warn;
 
+/// An event's two times: `at`, when its reporter says it happened (RFC 3339 in UTC), and `observed_at`, when this
+/// processor saw it.
+pub struct When<'a> {
+    pub at: &'a str,
+    pub observed_at: &'a str,
+}
+
 fn job(build_id: &str) -> BuildNodeKey {
     BuildNodeKey::BuildJob {
         build_id: build_id.to_string(),
     }
 }
 
-/// Append a `BuildJobState` instance. The state history is append-only; the
-/// current state is the instance with the latest `valid_from`.
-fn transition(build_id: &str, observed_at: &str, mut props: Vec<Property>) -> GraphOp {
+/// Append a `BuildJobState` instance, valid from `at`, when the reporter says it happened. The state history is
+/// append-only; the current state is the instance with the latest `valid_from`, and an event seen again lands on the
+/// same instance.
+fn transition(build_id: &str, at: &str, mut props: Vec<Property>) -> GraphOp {
     props.push(Property(
         "valid_from".into(),
-        GraphValue::String(observed_at.to_string()),
+        GraphValue::String(at.to_string()),
     ));
     GraphOp::UpdateState {
         resource_key: job(build_id).into_key(),
         state_type_key: BuildNodeKey::State.into_key(),
         state_instance_key: BuildNodeKey::BuildJobState {
             build_id: build_id.to_string(),
-            valid_from: observed_at.to_string(),
+            valid_from: at.to_string(),
         }
         .into_key(),
         state_instance_props: props,
@@ -91,7 +101,7 @@ pub fn started(
     repo_url: String,
     triggered_by: Option<String>,
     backend: Option<BackendIdentity>,
-    observed_at: &str,
+    when: &When,
 ) -> Vec<GraphOp> {
     let mut ops = vec![
         // The BuildJob anchor. Later events add properties and states to it;
@@ -107,12 +117,12 @@ pub fn started(
                     "triggered_by".into(),
                     string(triggered_by.unwrap_or_else(|| "unknown".into())),
                 ),
-                Property("observed_at".into(), string(observed_at)),
+                Property("observed_at".into(), string(when.observed_at)),
             ],
         ),
         transition(
             &build_id,
-            observed_at,
+            when.at,
             vec![Property("phase".into(), string("started"))],
         ),
     ];
@@ -127,7 +137,7 @@ pub fn started(
             BUILT_BY,
             job(&build_id),
             vec![
-                Property("at".into(), string(observed_at)),
+                Property("at".into(), string(when.at)),
                 Property("ref_name".into(), string(ref_name)),
             ],
         ));
@@ -142,7 +152,7 @@ pub fn started(
                 job(&build_id),
                 "EXECUTED_IN",
                 BuildNodeKey::BackendJob(identity),
-                vec![Property("at".into(), string(observed_at))],
+                vec![Property("at".into(), string(when.at))],
             )),
             Err(e) => {
                 warn!(build_id, error = %e, "backend job identity refused — no EXECUTED_IN edge")
@@ -164,7 +174,7 @@ pub fn stage_started(
     build_id: String,
     stage_name: String,
     stage_id: String,
-    observed_at: &str,
+    when: &When,
 ) -> Vec<GraphOp> {
     let stage = BuildNodeKey::BuildStage {
         build_id: build_id.clone(),
@@ -176,8 +186,8 @@ pub fn stage_started(
             vec![
                 Property("stage_id".into(), string(stage_id)),
                 Property("stage_name".into(), string(stage_name)),
-                Property("started_at".into(), string(observed_at)),
-                Property("observed_at".into(), string(observed_at)),
+                Property("started_at".into(), string(when.at)),
+                Property("observed_at".into(), string(when.observed_at)),
             ],
         ),
         edge(job(&build_id), "HAS_STAGE", stage, vec![]),
@@ -190,7 +200,7 @@ pub fn stage_completed(
     stage_id: String,
     duration_secs: u64,
     outcome: StageOutcome,
-    observed_at: &str,
+    when: &When,
 ) -> Vec<GraphOp> {
     // Upsert, not create: StageStarted may arrive after this, e.g. from a
     // polling observer.
@@ -207,28 +217,28 @@ pub fn stage_completed(
                 "duration_secs".into(),
                 GraphValue::I64(duration_secs as i64),
             ),
-            Property("completed_at".into(), string(observed_at)),
-            Property("observed_at".into(), string(observed_at)),
+            Property("completed_at".into(), string(when.at)),
+            Property("observed_at".into(), string(when.observed_at)),
         ],
     )]
 }
 
-pub fn completed(build_id: String, duration_secs: u64, observed_at: &str) -> Vec<GraphOp> {
+pub fn completed(build_id: String, duration_secs: u64, when: &When) -> Vec<GraphOp> {
     vec![
         upsert(
             job(&build_id),
             vec![
-                Property("completed_at".into(), string(observed_at)),
+                Property("completed_at".into(), string(when.at)),
                 Property(
                     "duration_secs".into(),
                     GraphValue::I64(duration_secs as i64),
                 ),
-                Property("observed_at".into(), string(observed_at)),
+                Property("observed_at".into(), string(when.observed_at)),
             ],
         ),
         transition(
             &build_id,
-            observed_at,
+            when.at,
             vec![
                 Property("phase".into(), string("succeeded")),
                 Property(
@@ -244,22 +254,22 @@ pub fn failed(
     build_id: String,
     reason: String,
     stage: Option<String>,
-    observed_at: &str,
+    when: &When,
 ) -> Vec<GraphOp> {
     let stage = stage.unwrap_or_else(|| "unattributed".into());
     vec![
         upsert(
             job(&build_id),
             vec![
-                Property("completed_at".into(), string(observed_at)),
+                Property("completed_at".into(), string(when.at)),
                 Property("failure_reason".into(), string(&reason)),
                 Property("failure_stage".into(), string(&stage)),
-                Property("observed_at".into(), string(observed_at)),
+                Property("observed_at".into(), string(when.observed_at)),
             ],
         ),
         transition(
             &build_id,
-            observed_at,
+            when.at,
             vec![
                 Property("phase".into(), string("failed")),
                 Property("reason".into(), string(reason)),
@@ -269,18 +279,18 @@ pub fn failed(
     ]
 }
 
-pub fn cancelled(build_id: String, reason: Option<String>, observed_at: &str) -> Vec<GraphOp> {
+pub fn cancelled(build_id: String, reason: Option<String>, when: &When) -> Vec<GraphOp> {
     vec![
         upsert(
             job(&build_id),
             vec![
-                Property("completed_at".into(), string(observed_at)),
-                Property("observed_at".into(), string(observed_at)),
+                Property("completed_at".into(), string(when.at)),
+                Property("observed_at".into(), string(when.observed_at)),
             ],
         ),
         transition(
             &build_id,
-            observed_at,
+            when.at,
             vec![
                 Property("phase".into(), string("cancelled")),
                 Property(

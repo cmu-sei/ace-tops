@@ -292,14 +292,19 @@ mod tests {
         let event = ProvenanceEvent::ExecutionCompleted {
             build_id: "b1".into(),
             duration_secs: 3,
+            at: "2026-10-16T00:00:00Z".into(),
         };
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&event).unwrap();
         match ProcessorSupervisor::decode(&bytes) {
             Some(ProvenanceEvent::ExecutionCompleted {
                 build_id,
                 duration_secs,
+                at,
             }) => {
-                assert_eq!((build_id.as_str(), duration_secs), ("b1", 3))
+                assert_eq!(
+                    (build_id.as_str(), duration_secs, at.as_str()),
+                    ("b1", 3, "2026-10-16T00:00:00Z")
+                )
             }
             other => panic!("expected the build's completion, got {other:?}"),
         }
@@ -310,6 +315,7 @@ mod tests {
         let event = ProvenanceEvent::ExecutionCompleted {
             build_id: "b1".into(),
             duration_secs: 3,
+            at: "2026-10-16T00:00:00Z".into(),
         };
         let json = serde_json::to_vec(&event).unwrap();
         assert!(matches!(

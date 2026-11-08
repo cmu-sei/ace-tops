@@ -54,6 +54,12 @@ def emit [payload: record]: nothing -> nothing {
     $json | cassini-client publish $BUILD_EVENTS_TOPIC
 }
 
+# When an event happened, as build-processor takes it: RFC 3339 with the offset. Each execution and stage event
+# carries it (`at`), and a build's states are keyed on it, so the same event seen twice lands on the same state.
+export def reported-now []: nothing -> string {
+    date now | format date "%Y-%m-%dT%H:%M:%S%.f%:z"
+}
+
 # ── Execution lifecycle ────────────────────────────────────────────────────────
 #
 # Emit ExecutionStarted — first event in the build lifecycle.
@@ -76,6 +82,7 @@ export def emit-execution-started [
         repo_url: $repo_url
         backend: null
         triggered_by: null
+        at: (reported-now)
     }
     if ($triggered_by | is-not-empty) {
         $payload = ($payload | upsert triggered_by $triggered_by)
@@ -84,13 +91,13 @@ export def emit-execution-started [
 }
 
 export def emit-execution-completed [duration_secs: int]: nothing -> nothing {
-    emit {type: "execution_completed", build_id: (get-build-id), duration_secs: $duration_secs}
+    emit {type: "execution_completed", build_id: (get-build-id), duration_secs: $duration_secs, at: (reported-now)}
 }
 
 export def emit-execution-failed [reason: string, --stage: string = ""]: nothing -> nothing {
     mut payload = {
         build_id: (get-build-id),
-        type: "execution_failed", reason: $reason, stage: null}
+        type: "execution_failed", reason: $reason, stage: null, at: (reported-now)}
     if ($stage | is-not-empty) {
         $payload = ($payload | upsert stage $stage)
     }
@@ -100,7 +107,7 @@ export def emit-execution-failed [reason: string, --stage: string = ""]: nothing
 # TODO: Until we figure out how to capture SIGTERM and SIGKILL in nushell, we don't really have a great way to fire this off.
 # It might be nice for CI systems that are able to do it for us
 # export def emit-execution-cancelled [--reason: string = ""]: nothing -> nothing {
-#     mut payload = {type: "execution_cancelled", reason: null}
+#     mut payload = {type: "execution_cancelled", reason: null, at: (reported-now)}
 #     if ($reason | is-not-empty) {
 #         $payload = ($payload | upsert reason $reason)
 #     }

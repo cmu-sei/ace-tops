@@ -253,27 +253,33 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
     );
 
     // ── An archive build has no commit to be BUILT_BY ────────────────────────
-    apply(
-        &graph,
-        ProvenanceEvent::ExecutionStarted {
-            build_id: "b1".into(),
-            commit_sha: String::new(),
-            ref_name: String::new(),
-            repo_url: "https://static.crates.io/crates/openssl-sys/openssl-sys-0.9.117.crate"
-                .into(),
-            triggered_by: Some("polar.analysis.scheduler".into()),
-            backend: None,
-        },
-        "2026-10-16T02:00:00Z",
-    )
-    .await;
+    let started = ProvenanceEvent::ExecutionStarted {
+        build_id: "b1".into(),
+        commit_sha: String::new(),
+        ref_name: String::new(),
+        repo_url: "https://static.crates.io/crates/openssl-sys/openssl-sys-0.9.117.crate".into(),
+        triggered_by: Some("polar.analysis.scheduler".into()),
+        backend: None,
+        at: "2026-10-16T02:00:00Z".into(),
+    };
+    let started_again = || ProvenanceEvent::ExecutionStarted {
+        build_id: "b1".into(),
+        commit_sha: String::new(),
+        ref_name: String::new(),
+        repo_url: "https://static.crates.io/crates/openssl-sys/openssl-sys-0.9.117.crate".into(),
+        triggered_by: Some("polar.analysis.scheduler".into()),
+        backend: None,
+        at: "2026-10-16T02:00:00Z".into(),
+    };
+    apply(&graph, started, "2026-10-16T02:00:01Z").await;
     apply(
         &graph,
         ProvenanceEvent::ExecutionCompleted {
             build_id: "b1".into(),
             duration_secs: 3,
+            at: "2026-10-16T02:00:05Z".into(),
         },
-        "2026-10-16T02:00:05Z",
+        "2026-10-16T02:00:06Z",
     )
     .await;
     assert_eq!(
@@ -288,5 +294,30 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
         )
         .await,
         1
+    );
+
+    // ── A build's start seen again after it finished is the same state ───────
+    // Redelivered, or late from a slow path, an hour after it happened: it lands on the start it already has, and the
+    // build is still finished.
+    apply(&graph, started_again(), "2026-10-16T03:00:00Z").await;
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:BuildJob {build_id: 'b1'})-[:TRANSITIONED_TO]->(s:BuildJobState) RETURN count(s) AS n"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:BuildJob {build_id: 'b1'})-[:TRANSITIONED_TO]->(s:BuildJobState)
+             WITH s ORDER BY s.valid_from DESC LIMIT 1
+             WHERE s.phase = 'succeeded'
+             RETURN count(s) AS n"
+        )
+        .await,
+        1,
+        "a start seen again made the finished build look running"
     );
 }

@@ -97,6 +97,11 @@ registry   (OCIArtifact)-[:HOSTED_BY]->(OCIRegistry)
 
 Points that are easy to get wrong:
 
+- **A build's times are its reporter's.** Each execution and stage event
+  carries `at`, when its reporter says it happened (RFC 3339; an event without
+  one is refused). States, `completed_at` and a stage's times are keyed on it,
+  in UTC, so an event seen twice, or late, lands where it did; `observed_at` is
+  when this processor saw it.
 - **`BuildJob.completed_at` means finished, not succeeded.** Success is the
   latest `BuildJobState {phase: 'succeeded'}`.
 - **An image has two layer identities.** `OCILayer` is a registry blob, keyed

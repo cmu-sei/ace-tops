@@ -389,6 +389,10 @@ pub enum ProvenanceEvent {
         /// TODO: It's TBD whether this field should be mandatory or not, but eventually, we want to tie a workload identity back to every event..
         triggered_by: Option<String>,
         backend: Option<BackendIdentity>,
+        /// When the reporter says it happened: RFC 3339 with its offset. Its word, as the rest is; a build's states are
+        /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
+        /// RFC 3339 is refused.
+        at: String,
     },
 
     /// A named stage within a build execution has started.
@@ -397,6 +401,10 @@ pub enum ProvenanceEvent {
         stage_name: String,
         /// Scoped to the build — (build_id, stage_id) must be unique.
         stage_id: String,
+        /// When the reporter says it happened: RFC 3339 with its offset. Its word, as the rest is; a build's states are
+        /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
+        /// RFC 3339 is refused.
+        at: String,
     },
 
     /// A named stage within a build execution has completed.
@@ -406,12 +414,20 @@ pub enum ProvenanceEvent {
         stage_id: String,
         duration_secs: u64,
         outcome: StageOutcome,
+        /// When the reporter says it happened: RFC 3339 with its offset. Its word, as the rest is; a build's states are
+        /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
+        /// RFC 3339 is refused.
+        at: String,
     },
 
     /// A build execution completed successfully.
     ExecutionCompleted {
         build_id: String,
         duration_secs: u64,
+        /// When the reporter says it happened: RFC 3339 with its offset. Its word, as the rest is; a build's states are
+        /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
+        /// RFC 3339 is refused.
+        at: String,
     },
 
     /// A build execution failed.
@@ -422,12 +438,20 @@ pub enum ProvenanceEvent {
         build_id: String,
         reason: String,
         stage: Option<String>,
+        /// When the reporter says it happened: RFC 3339 with its offset. Its word, as the rest is; a build's states are
+        /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
+        /// RFC 3339 is refused.
+        at: String,
     },
 
     /// A build execution was cancelled.
     ExecutionCancelled {
         build_id: String,
         reason: Option<String>,
+        /// When the reporter says it happened: RFC 3339 with its offset. Its word, as the rest is; a build's states are
+        /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
+        /// RFC 3339 is refused.
+        at: String,
     },
 
     SecurityAdvisoryFound(SecurityAdvisoryFoundPayload),
