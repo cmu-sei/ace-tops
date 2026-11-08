@@ -135,6 +135,8 @@
     polar-scheduler: { issuer: "credentials-agent" }
     git-repo-processor: { issuer: "credentials-agent" }
     build-processor: { issuer: "credentials-agent" }
+    # The build orchestrator (docs/architecture/build-orchestrator.md, O2e4): one client certificate, for Cassini.
+    build-orchestrator: { issuer: "credentials-agent" }
     # The state agent's reader (docs/architecture/soft-state.md), which presents its one client certificate to Neo4j
     # too (graph-read).
     soft-state-observer: { issuer: "credentials-agent" }

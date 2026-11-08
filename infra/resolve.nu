@@ -144,7 +144,7 @@ def all_workloads [target: string] {
 def service_vars [services: record, cluster: record] {
     $services
     | transpose name s
-    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _attested: (attested_namespaces $cluster | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
+    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _namespace_names: $cluster.namespaces, _attested: (attested_namespaces $cluster | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
         let ns = ($cluster.namespaces | get $it.s.namespace)
         let dns = $"($it.s.dns_name).($ns).svc.($cluster.domain)"
         let addr = $"($dns):($it.s.port)"
@@ -154,13 +154,19 @@ def service_vars [services: record, cluster: record] {
     }
 }
 
-# Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from) and {<service>.dns|port|addr}.
-# A placeholder left over is an error: it means a capability names a service that services.nuon does not have.
+# Replaces {workload} (the workload's own name), {registry} (the registry the nodes pull from), {namespaces.<key>} (the
+# cluster's name for the namespace of that key, as a catalog entry names one: the build orchestrator's build namespace)
+# and {<service>.dns|port|addr}. A placeholder left over is an error: it means a capability names a service that
+# services.nuon does not have, or a namespace the cluster does not.
 def subst [text: string, vars: record, who: string] {
-    let start = ($text | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
+    let named = ($vars._namespace_names? | default {} | transpose key name | reduce --fold $text {|it, acc| $acc | str replace --all $"{namespaces.($it.key)}" $it.name })
+    if ($named =~ '\{namespaces\.[A-Za-z0-9-]+\}') {
+        error make { msg: $"($who): '($text)' names a namespace the cluster does not have" }
+    }
+    let start = ($named | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
     let out = (
         $vars
-        | reject -o _registry _namespaces _attested _deployment_source _handed_off
+        | reject -o _registry _namespaces _namespace_names _attested _deployment_source _handed_off
         | transpose name v
         | reduce --fold $start {|it, acc|
             $acc

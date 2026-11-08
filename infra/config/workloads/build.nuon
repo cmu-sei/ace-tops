@@ -21,7 +21,7 @@
 
 # infra/config/workloads/build.nuon
 #
-# The build workload (docs/architecture/build-orchestrator.md): the pod setup the build orchestrator makes each build's Job
+# The build orchestrator, and the build workload (docs/architecture/build-orchestrator.md): the pod setup the orchestrator makes each build's Job
 # from, a PodTemplate in the build namespace. Each build pod fetches its source from Polar's registry by digest (build-fetch),
 # then runs the repository's pipeline image, which its signed mapping pins, in place of the template's. It holds no Polar
 # identity (revised 3): it reports by printing, and the orchestrator judges what it printed and relays it.
@@ -37,5 +37,23 @@
     workspace: "/workspace"
     # Builds run foreign code: the low-trust side, with the observers (docs/architecture/placement.md).
     pool: "observers"
+  }
+
+  {
+    # Builds a mapped repository when a ref of it moves: a Job made from build-runner's template, in its namespace. Its
+    # capabilities are its code's (`build-orchestrator --scaffold`): `job-run`, a Role in that namespace, computed from
+    # the Kubernetes operations it declares.
+    name: "build-orchestrator"
+    kind: "agent"
+    image: "build-orchestrator"
+    config: "document"
+    # A controller, deciding what runs, with no graph password: on core, as the git controller is (docs/architecture/
+    # placement.md). It reads what builds print only through its locked-down reader. Decided by that row's rule, for review.
+    pool: "core"
+    # Where its builds are, the deployment's facts (decision 5): the template's namespace, by its key, and its name.
+    env: [
+      { name: "POLAR_ORCHESTRATOR_NAMESPACE", value: "{namespaces.builds}" }
+      { name: "POLAR_ORCHESTRATOR_TEMPLATE", value: "build-runner" }
+    ]
   }
 ]

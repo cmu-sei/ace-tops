@@ -277,6 +277,7 @@
           credentialsAgentObserverImage = polarPkgs.credentialsAgent.observerImage;
 
           buildProcessorImage  = polarPkgs.buildProcessor.buildProcessorImage;
+          buildOrchestratorImage = polarPkgs.buildOrchestrator.buildOrchestratorImage;
 
           # ── Infrastructure containers ─────────────────────────────────────────
           nuInitImage = polarPkgs.nuInit.image;

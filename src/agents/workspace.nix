@@ -273,6 +273,13 @@ let
       crateArgs = individualCrateArgs;
     };
 
+    # The build orchestrator: builds a mapped repository when a ref of it moves (docs/architecture/build-orchestrator.md).
+    buildOrchestrator = import ./build-orchestrator/agent/package.nix {
+      inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
+      crateArgs = individualCrateArgs;
+      healthcheckDrv = healthcheck;
+    };
+
     polarCustody = import ./polar-custody/package.nix {
       inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
       crateArgs = individualCrateArgs;
@@ -284,5 +291,5 @@ let
     };
 in
 {
-        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit buildFetch polarCustody polarTools healthcheck credentialsAgent secretHarness;
+        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit buildFetch buildOrchestrator polarCustody polarTools healthcheck credentialsAgent secretHarness;
 }

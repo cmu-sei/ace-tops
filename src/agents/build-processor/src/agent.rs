@@ -46,13 +46,11 @@ impl PolarAgent for BuildProcessor {
             polar::topics::PROVENANCE_EVENTS,
             "what builds report (their stages, outputs, and what scanners found), each relayed by the orchestrator in a \
              BuildReport envelope",
-        )
-        .waiting("the build orchestrator relays what builds print (docs/architecture/build-orchestrator.md, revised 3); it is not in the catalog yet"),
+        ),
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_EXECUTIONS,
             "what the orchestrator saw of the builds it ran: started, completed, failed or cancelled",
-        )
-        .waiting("the build orchestrator is not in the catalog yet (docs/architecture/build-orchestrator.md, O2e4)"),
+        ),
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_RESOLUTIONS,
             "what the resolver verified a registry serves, believed from nowhere else",

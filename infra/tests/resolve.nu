@@ -54,6 +54,7 @@ const BUDGETS = {
     git-repo-observer: 40
     git-repo-processor: 45
     git-repo-controller: 10
+    build-orchestrator: 15
 }
 
 # The record the template takes, as the pipeline gets it.
@@ -369,7 +370,8 @@ def main [] {
         # the open pool's (services) is given nothing. The mapping is the maintainer's (2026-10-28).
         "under the separated topology every workload is placed in its pool, and the open pool's in none": {
             let pools = {
-                core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server attestation-agent]
+                # The build orchestrator decides what runs, as the git controller decides what is observed (O2e4).
+                core: [credentials-agent cert-issuer cassini git-repo-controller polar-git-server attestation-agent build-orchestrator]
                 # The build workload runs foreign code: the low-trust side (docs/architecture/build-orchestrator.md, O2a).
                 observers: [git-repo-observer jira-observer kube-observer polar-scheduler-observer credentials-agent-observer oci-registry-resolver openapi-observer build-runner]
                 writers: [kube-consumer git-repo-processor jira-processor polar-scheduler soft-state-observer soft-state-processor openapi-processor build-processor]
@@ -468,6 +470,27 @@ def main [] {
                     assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
                 }
                 assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-auth" "polar-builds" "polar-graph"]
+            }
+        }
+
+        # docs/architecture/build-orchestrator.md, decision 5 and O2e4: where its builds are is the catalog's to say, the
+        # namespace by the cluster's name for its key; and it may run Jobs there and do nothing else in the API.
+        "the build orchestrator is told where its builds are, and given a Role there alone": {
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                let r = (resolve_for $t "build-orchestrator")
+                assert equal (env_value $r "POLAR_ORCHESTRATOR_NAMESPACE" $t) "polar-builds"
+                assert equal (env_value $r "POLAR_ORCHESTRATOR_TEMPLATE" $t) "build-runner"
+                let resources = (^nu $RESOLVER resources build-orchestrator --target $t | from json)
+                assert equal $resources.cluster_roles []
+                assert equal ($resources.namespaced_roles | get namespace) ["polar-builds"]
+                let rules = ($resources.namespaced_roles | first | get rules | each {|r| $r.resources | each {|res| { res: $res, verbs: ($r.verbs | sort) } } } | flatten | sort-by res)
+                assert equal $rules [
+                    { res: "events", verbs: ["list"] }
+                    { res: "jobs", verbs: ["create" "delete" "get" "list"] }
+                    { res: "pods", verbs: ["get" "list"] }
+                    { res: "pods/log", verbs: ["get"] }
+                    { res: "podtemplates", verbs: ["get"] }
+                ]
             }
         }
 
@@ -685,8 +708,9 @@ def main [] {
             }
         }
 
+        # The build orchestrator's Role in the build namespace (job-run) is the other, held to its rules above.
         "no other workload's capabilities give it a namespaced Role": {
-            for n in (^nu $RESOLVER names | from json | where {|n| $n != "attestation-agent" }) {
+            for n in (^nu $RESOLVER names | from json | where {|n| $n not-in ["attestation-agent" "build-orchestrator"] }) {
                 assert equal (^nu $RESOLVER resources $n | from json | get namespaced_roles) [] $n
             }
         }

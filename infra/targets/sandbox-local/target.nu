@@ -158,6 +158,9 @@ def main [] {
                 "build-processor.yaml"
                 # The build workload's pod setup, a PodTemplate in polar-builds (docs/architecture/build-orchestrator.md, 5b).
                 "build-runner.yaml"
+                # What makes a build's Job from it, and the Role in polar-builds that lets it (job-run).
+                "build-orchestrator-resources.yaml"
+                "build-orchestrator.yaml"
                 "attestation-agent-resources.yaml"
                 "attestation-agent.yaml"
                 # The load harness's accounts and configuration only: infra/load-harness.nu makes its Jobs per run.

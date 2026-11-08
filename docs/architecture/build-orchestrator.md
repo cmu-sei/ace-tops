@@ -604,7 +604,20 @@ I write Rust code"):
     match the functions they name, and it tests the Cassini daemon route revised 3 removed); left as it was. Tested:
     belief for every kind on each of the three topics; an envelope believed for its build and refused for another, for
     every kind that names one; the build stream reading relayed reports and nothing else (a bare event, archived or JSON,
-    refused); its topics; and, against Neo4j, the projection as before.
+    refused); its topics; and, against Neo4j, the projection as before. O2e4, the catalog and the image, 2026-11-08: the
+    orchestrator is a catalog workload (`config/workloads/build.nuon`, beside the build workload it makes Jobs from),
+    told where its builds are as the deployment's facts (decision 5): its namespace by the cluster's name for the
+    template's key, through a placeholder resolve now has (`{namespaces.<key>}`; a key the cluster lacks is an error, not
+    text left in), and the template's name. Its `job-run` Role in the build namespace is the capability's
+    (`capabilities.nuon`), computed from its operations; no ClusterRole. Its certificate comes from the credentials agent
+    (sandbox-local's issuer list), its manifests are in sandbox-local's agents layer after the template's, and its image
+    is a Nix container like build-processor's (`build-orchestrator/agent/package.nix`, `container.dhall`). On `core`, by the
+    git controller's row (`placement.md`): a controller deciding what runs, with no graph password. Decided by that rule,
+    for review. build-processor's two waiting notes are gone, its other sides now in the catalog. Tested: resolve (it is told
+    `polar-builds` and `build-runner`, and given one Role there with exactly `job-run`'s rules; its pool; its issuer; the
+    budget it declares) against scaffolds built from this tree, with facts, rules, topics, the catalog topic cross-check,
+    images, layers, egress, agent pods, deploy objects, the deployment repository, graph and document; the image built
+    with Nix.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports

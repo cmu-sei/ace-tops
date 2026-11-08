@@ -62,6 +62,7 @@ there: placement is the target's to declare.
 | core | credentials-agent, cert-issuer, cassini | the maintainer, by name |
 | core | git-repo-controller | decides what is observed, holds no graph password (`git-controller.md`): off the writers' host, the power to decide and the graph password stay apart. *Decided, the maintainer, 2026-10-28* |
 | core | polar-git-server | serves signed authority (the schedules, the policy). *Decided, the maintainer, 2026-10-28* |
+| core | build-orchestrator | decides what builds run and makes their Jobs, holding no graph password; it reads what builds print only through its locked-down reader (`build-orchestrator.md`). *Decided by the agent that built it, 2026-11-08, by the git controller's row; for review* |
 | observers | git-repo-observer, jira-observer, kube-observer, polar-scheduler-observer, credentials-agent-observer, openapi-observer | the low-trust side; the credentials agent's observer is its low-trust gateway |
 | observers | oci-registry-resolver | reads registries outside the cluster and holds no graph password. *Decided by the agent that placed it, for review, 2026-11-02* |
 | writers | kube-consumer, git-repo-processor, jira-processor, polar-scheduler, openapi-processor | the graph writers (polar-scheduler writes the ledger to the graph, `git-controller.md`) |
