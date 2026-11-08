@@ -363,6 +363,13 @@ Each step is taken in bites, each reported before the next.
   - Not re-read by that session: bodies of up to 256 MiB read whole and copied before `is_admin`, with no limit on concurrent requests; and, lesser, a push-log line or
     event lost on a crash, a 500 after 120 s though refs moved, `access.rs` writing without fsync, quarantine directories leaking and reused across restarts, `run_git`
     without a timeout, and signing-check errors logged as refusals.
+- [ ] **polar-scheduler-observer's git calls have no time bound** (handed over 2026-11-08 by the agentic-control-plane session, found by its
+  first rule-review run; its rule `limits calls-out-time-bounded` carries it as a gap, `rules/limits.rules.dhall` at `568f6ba4` there). `git_ops.rs`
+  ~64-75 `run()` calls `Command::output()`, unbounded, for clone, fetch, pull and push; its callers await it through `spawn_blocking(...).await`
+  with no `tokio::time::timeout` (`deployment_copy.rs` ~114-116 `copy_main`, `deployment_record.rs` ~117 `file_at_main`, `supervisor.rs` ~190
+  `ensure_repo`), and no `http.lowSpeedLimit`/`lowSpeedTime` is set: a git server that accepts and never answers holds three actors in `handle`
+  for good, their mailboxes unserved. A fix bounds each run (a child killed past a deadline, or `tokio::process` under a timeout), tested with a
+  server that accepts and never answers: the call ends in error inside the bound and the actor goes on. Not scheduled.
 - [ ] **The Kubernetes agents' failure handling** (handed over 2026-11-07 by the agentic-control-plane session, from four blind reviews, two unguided and
   two judging against the approved ELIDE rules; the count is how many found each; write-up in that branch's `docs/architecture/elide-intent.md`, "Tested
   blind, on Kubernetes", local at `3d84b4ee`; lines are main's as of `fe2195a7`, paths under `src/agents/`). Not fixed unless said; for the maintainer to
