@@ -25,7 +25,7 @@
 //! `polar_agent_builder::PolarAgent`.
 
 use crate::supervisor::{ObserverSupervisor, SERVICE_NAME, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -34,6 +34,7 @@ pub struct CredentialsObserver;
 
 impl PolarAgent for CredentialsObserver {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str = "The HTTP front of the credentials agent: relays certificate, account and admin requests to the consumer over Cassini";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;

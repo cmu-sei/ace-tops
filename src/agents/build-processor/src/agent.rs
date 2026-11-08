@@ -27,7 +27,9 @@ use crate::AGENT_NAME;
 use crate::supervisor::{ProcessorSupervisor, SHUTDOWN_BUDGET};
 use polar::graph::controller::{NodeShape, shapes_of};
 use polar::graph::nodes::builds::{ArtifactNodeKey, BuildNodeKey};
-use polar_agent_builder::{Capability, Configured, GraphDecl, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{
+    Capability, Configured, GraphDecl, PolarAgent, Role, StartError, TopicDecl,
+};
 use ractor::Actor;
 use std::time::Duration;
 
@@ -35,6 +37,7 @@ pub struct BuildProcessor;
 
 impl PolarAgent for BuildProcessor {
     const NAME: &'static str = AGENT_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str = "Projects the provenance stream (builds, what they produced, findings, what registries serve) into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;

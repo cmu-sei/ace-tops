@@ -27,7 +27,7 @@ use gitlab_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME};
 use polar_agent_builder::protocol::credentials::section;
 use polar_agent_builder::protocol::{Credential, Location, OperationDecl, ProtocolKind};
 use polar_agent_builder::{
-    Capability, Cause, Configured, PolarAgent, RuntimeSection, StartError, TopicDecl,
+    Capability, Cause, Configured, PolarAgent, Role, RuntimeSection, StartError, TopicDecl,
 };
 use polar_http_observer::{CREDENTIALED_SOURCES, Kind};
 use std::time::Duration;
@@ -71,6 +71,7 @@ impl Kind for GitlabObserver {
 
 impl PolarAgent for GitlabObserver {
     const NAME: &'static str = OBSERVER_NAME;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str = "Reads what its signed sources ask of GitLab's GraphQL API and publishes each page for the processor";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = polar_http_observer::observer::SHUTDOWN_BUDGET;

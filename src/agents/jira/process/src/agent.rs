@@ -25,7 +25,9 @@
 //! `polar_agent_builder::PolarAgent`.
 
 use crate::supervisor::{ConsumerSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Configured, GraphDecl, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{
+    Capability, Configured, GraphDecl, PolarAgent, Role, StartError, TopicDecl,
+};
 use ractor::Actor;
 use std::time::Duration;
 
@@ -35,6 +37,7 @@ pub struct JiraProcessor;
 
 impl PolarAgent for JiraProcessor {
     const NAME: &'static str = crate::BROKER_CLIENT_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str =
         "Writes the Jira projects, groups, users and issues the observer publishes into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];

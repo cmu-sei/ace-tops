@@ -25,7 +25,7 @@
 
 use crate::supervisor::{SERVICE_NAME, SHUTDOWN_BUDGET, SinkSupervisor};
 use harness_common::lanes::LANES;
-use polar_agent_builder::{Capability, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -36,6 +36,7 @@ pub struct HarnessSink;
 
 impl PolarAgent for HarnessSink {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Harness;
     const PURPOSE: &'static str = "Receives a run's messages from Cassini and measures them, for the load harness to measure the broker";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;

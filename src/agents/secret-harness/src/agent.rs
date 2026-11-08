@@ -24,7 +24,7 @@
 //! What the harness is, as the infrastructure asks to be told: see `polar_agent_builder::PolarAgent`.
 
 use crate::supervisor::{HarnessSupervisor, SERVICE_NAME, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Configured, PolarAgent, StartError};
+use polar_agent_builder::{Capability, Configured, PolarAgent, Role, StartError};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -33,6 +33,7 @@ pub struct SecretHarness;
 
 impl PolarAgent for SecretHarness {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Harness;
     const PURPOSE: &'static str = "Checks the credentials agent's secret policy from inside the cluster, as two different identities";
     const NEEDS: &'static [Capability] = &[Capability::Encryption];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;

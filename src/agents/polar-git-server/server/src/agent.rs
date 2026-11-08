@@ -22,7 +22,7 @@
 */
 
 use crate::supervisor::{GitServerSupervisor, SERVICE_NAME, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -31,6 +31,7 @@ pub struct GitServer;
 
 impl PolarAgent for GitServer {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str = "Hosts Polar's configuration repositories over git smart HTTP, authenticating users and agents by their mTLS certificates";
     const NEEDS: &'static [Capability] = &[];
     // It runs on its own or in a cluster: a Cassini client when its deployment provides Cassini.

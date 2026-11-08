@@ -23,7 +23,7 @@
 
 use crate::supervisor::{SERVICE_NAME, SHUTDOWN_BUDGET, SchedulerObserverSupervisor};
 use polar_agent_builder::{
-    Capability, Cause, Configured, PolarAgent, StartError, TopicDecl, topics::FamilyDecl,
+    Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl, topics::FamilyDecl,
 };
 use polar_env::Section;
 use ractor::Actor;
@@ -33,6 +33,7 @@ pub struct SchedulerObserver;
 
 impl PolarAgent for SchedulerObserver {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str = "Keeps a checkout of the schedules repository current and publishes each schedule change on Cassini";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;

@@ -27,7 +27,8 @@ use gitlab_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME, PROCESSOR_NAME};
 use polar::graph::controller::NodeShape;
 use polar_agent_builder::runtime::SectionAuthority;
 use polar_agent_builder::{
-    Capability, Configured, EdgeDecl, GraphDecl, PolarAgent, RuntimeSection, StartError, TopicDecl,
+    Capability, Configured, EdgeDecl, GraphDecl, PolarAgent, Role, RuntimeSection, StartError,
+    TopicDecl,
 };
 use polar_http_processor::{Kind, SECTION_BODY, SECTION_NAME, judge, node_shapes};
 use polar_projection::Bounds;
@@ -85,6 +86,7 @@ impl Kind for GitlabProcessor {
 
 impl PolarAgent for GitlabProcessor {
     const NAME: &'static str = PROCESSOR_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str =
         "Writes what GitLab's pages say into the graph, by a signed projection";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];

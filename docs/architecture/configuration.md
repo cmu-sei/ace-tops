@@ -234,6 +234,7 @@ a trait, so implementing it is hooking into the infrastructure.)
 pub trait PolarAgent: Sized + 'static {
     const NAME: &'static str;
     const PURPOSE: &'static str;                       // one line, required
+    const ROLE: Role;                                  // observer, processor, controller, service or harness (2026-11-07)
     const NEEDS: &'static [Capability];                // what it asks of its deployment
     const SHUTDOWN_BUDGET: Duration;                   // the least it needs to drain
     const SECTIONS: &'static [&'static Section] = &[]; // its own variables, declared with polar-env

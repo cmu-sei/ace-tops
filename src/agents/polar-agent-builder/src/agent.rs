@@ -44,12 +44,13 @@
 //! A complete agent, and one that leaves out what the trait requires, which does not compile:
 //!
 //! ```
-//! use polar_agent_builder::{Capability, Configured, PolarAgent, StartError};
+//! use polar_agent_builder::{Capability, Configured, PolarAgent, Role, StartError};
 //! use std::time::Duration;
 //! struct Complete;
 //! impl PolarAgent for Complete {
 //!     const NAME: &'static str = "complete";
 //!     const PURPOSE: &'static str = "says what it needs";
+//!     const ROLE: Role = Role::Observer;
 //!     const NEEDS: &'static [Capability] = &[Capability::Cassini];
 //!     const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
 //!     async fn start(_: Configured) -> Result<(), StartError> { Ok(()) }
@@ -71,6 +72,7 @@ use crate::command::{CommandSpec, spec_problems};
 use crate::environment;
 use crate::graph_schema::{EdgeDecl, EdgeEntry, GraphDecl, GraphEntry};
 use crate::protocol::{OperationDecl, OperationEntry, ProtocolSetup};
+use crate::role::Role;
 use crate::runtime::RuntimeSection;
 use crate::startup::{self, Startup};
 use crate::topics::{Facts, FamilyDecl, TopicDecl, TopicEntry, TopicSet};
@@ -91,6 +93,9 @@ pub trait PolarAgent: Sized + 'static {
     const NAME: &'static str;
     /// One line, for a person: what the agent is for.
     const PURPOSE: &'static str;
+    /// What part the agent plays: observer, processor, controller, service or harness. The scaffold prints it, and the rules
+    /// over each part select by it (`role`).
+    const ROLE: Role;
     /// What it asks of its deployment, beyond the Cassini client, which every agent is and so
     /// need not list. The deployment states what it provides in `POLAR_CAPABILITIES`, and the
     /// agent does not start if one it needs is missing.
@@ -409,6 +414,9 @@ pub struct ArgDocument {
 pub struct AgentInfo {
     pub name: String,
     pub purpose: String,
+    /// What part the agent plays ([`PolarAgent::ROLE`]). A scaffold written before it reads as None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
     /// What the binary is, as `--version --json` prints it: the platform version, the Cassini protocol version, the
     /// target and the allocator, never the commit (polar-version). A scaffold written before it reads as None.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -598,6 +606,7 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
         agent: AgentInfo {
             name: A::NAME.to_string(),
             purpose: A::PURPOSE.to_string(),
+            role: Some(A::ROLE),
             version: Some(polar_version::record(A::NAME)),
         },
         requires: needs_of::<A>()
@@ -1239,6 +1248,7 @@ mod tests {
 
     impl PolarAgent for Example {
         const NAME: &'static str = "example-agent";
+        const ROLE: Role = Role::Processor;
         const PURPOSE: &'static str = "Copies things from one place to another";
         const NEEDS: &'static [Capability] = &[Capability::Cassini, Capability::GraphWrite];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
@@ -1267,6 +1277,7 @@ mod tests {
 
     impl PolarAgent for Watched {
         const NAME: &'static str = "watched-agent";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Notes that it was started";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1280,6 +1291,7 @@ mod tests {
 
     impl PolarAgent for Bare {
         const NAME: &'static str = "bare-agent";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Needs nothing";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1293,6 +1305,7 @@ mod tests {
 
     impl PolarAgent for Serving {
         const NAME: &'static str = "serving";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Serves instead of consuming";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -1308,6 +1321,7 @@ mod tests {
 
     impl PolarAgent for Muddled {
         const NAME: &'static str = "muddled";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Contradicts itself";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -1322,6 +1336,7 @@ mod tests {
 
     impl PolarAgent for Scheduling {
         const NAME: &'static str = "scheduling";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Publishes each workload's configuration";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1340,6 +1355,7 @@ mod tests {
 
     impl PolarAgent for Reading {
         const NAME: &'static str = "reading";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Answers each reader";
         const NEEDS: &'static [Capability] = &[Capability::GraphRead];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1376,6 +1392,7 @@ mod tests {
 
     impl PolarAgent for Keyed {
         const NAME: &'static str = "keyed";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Writes things";
         const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1420,6 +1437,7 @@ mod tests {
 
     impl PolarAgent for Linking {
         const NAME: &'static str = "linking";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Writes things and their parts";
         const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1467,6 +1485,7 @@ mod tests {
         struct Reaching;
         impl PolarAgent for Reaching {
             const NAME: &'static str = "reaching";
+            const ROLE: Role = Role::Observer;
             const PURPOSE: &'static str = "Writes things";
             const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
             const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1486,6 +1505,7 @@ mod tests {
 
     impl PolarAgent for Redundant {
         const NAME: &'static str = "redundant";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Declares what is implied";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1729,6 +1749,7 @@ mod tests {
     fn the_scaffold_names_the_agent_and_what_it_requires() {
         let doc = scaffold_document::<Example>();
         assert_eq!(doc.agent.name, "example-agent");
+        assert_eq!(doc.agent.role, Some(Role::Processor));
         assert_eq!(doc.requires, vec!["cassini", "graph-write"]);
         assert_eq!(doc.shutdown_budget_minimum_secs, 30);
         assert_eq!(doc.document.format, polar_env::DOCUMENT_FORMAT);
@@ -1832,6 +1853,7 @@ mod tests {
         struct Listing;
         impl PolarAgent for Listing {
             const NAME: &'static str = "listing";
+            const ROLE: Role = Role::Observer;
             const PURPOSE: &'static str = "Lists what is computed";
             const NEEDS: &'static [Capability] = &[Capability::SoftState];
             const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1921,6 +1943,7 @@ mod tests {
     struct Calling;
     impl PolarAgent for Calling {
         const NAME: &'static str = "calling";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "calls a site";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -1970,6 +1993,7 @@ mod tests {
         struct GoesOut;
         impl PolarAgent for GoesOut {
             const NAME: &'static str = "goes-out";
+            const ROLE: Role = Role::Observer;
             const PURPOSE: &'static str = "goes out";
             const NEEDS: &'static [Capability] = &[];
             const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -2006,6 +2030,7 @@ mod tests {
         struct Undeclared;
         impl PolarAgent for Undeclared {
             const NAME: &'static str = "undeclared";
+            const ROLE: Role = Role::Observer;
             const PURPOSE: &'static str = "calls a site it does not name";
             const NEEDS: &'static [Capability] = &[];
             const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -2025,6 +2050,7 @@ mod tests {
         struct Twice;
         impl PolarAgent for Twice {
             const NAME: &'static str = "twice";
+            const ROLE: Role = Role::Observer;
             const PURPOSE: &'static str = "lists its credentials section";
             const NEEDS: &'static [Capability] = &[];
             const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -2226,6 +2252,16 @@ mod tests {
         let text = scaffold_json::<Example>(None, |_: &str| None::<String>).unwrap();
         let back: AgentDocument = serde_json::from_str(&text).unwrap();
         assert_eq!(back, scaffold_document::<Example>());
+    }
+
+    #[test]
+    fn the_scaffold_says_what_part_the_agent_plays_and_one_written_before_reads_without() {
+        let text = scaffold_json::<Example>(None, |_: &str| None::<String>).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["agent"]["role"], "processor");
+        value["agent"].as_object_mut().unwrap().remove("role");
+        let before: AgentDocument = serde_json::from_value(value).unwrap();
+        assert_eq!(before.agent.role, None);
     }
 
     // -- filling it from a file ----------------------------------------------------------------
@@ -2470,6 +2506,7 @@ mod tests {
 
     impl<const SLOT: usize> PolarAgent for Marked<SLOT> {
         const NAME: &'static str = "marked-agent";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Notes that it was started";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
@@ -2572,6 +2609,7 @@ mod tests {
 
     impl PolarAgent for Independent {
         const NAME: &'static str = "independent";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Speaks over Cassini without depending on it";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const DEPENDS_ON_CASSINI: bool = false;
@@ -2590,6 +2628,7 @@ mod tests {
 
     impl PolarAgent for Dependent {
         const NAME: &'static str = "dependent";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Speaks over Cassini and depends on it";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SELF_TEST: bool = false;
@@ -2657,6 +2696,7 @@ mod tests {
 
     impl PolarAgent for Either {
         const NAME: &'static str = "either";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Runs alone or in a cluster";
         const NEEDS: &'static [Capability] = &[];
         const OPTIONAL: &'static [Capability] = &[Capability::Cassini];
@@ -2748,6 +2788,7 @@ mod tests {
 
     impl PolarAgent for OptionalGraph {
         const NAME: &'static str = "optional-graph";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Tries to make the graph optional";
         const NEEDS: &'static [Capability] = &[];
         const OPTIONAL: &'static [Capability] = &[Capability::GraphWrite];
@@ -2761,6 +2802,7 @@ mod tests {
 
     impl PolarAgent for AlwaysAndOptional {
         const NAME: &'static str = "always-and-optional";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Is a client and may do without";
         const NEEDS: &'static [Capability] = &[];
         const OPTIONAL: &'static [Capability] = &[Capability::Cassini];
@@ -2774,6 +2816,7 @@ mod tests {
 
     impl PolarAgent for NeededAndOptional {
         const NAME: &'static str = "needed-and-optional";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Needs it and may do without";
         const NEEDS: &'static [Capability] = &[Capability::Cassini, Capability::GraphWrite];
         const OPTIONAL: &'static [Capability] = &[Capability::GraphWrite, Capability::GraphWrite];
@@ -2933,6 +2976,7 @@ mod tests {
     struct Commanding;
     impl PolarAgent for Commanding {
         const NAME: &'static str = "commanding";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Declares one command";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -2982,6 +3026,7 @@ mod tests {
     struct BadCommands;
     impl PolarAgent for BadCommands {
         const NAME: &'static str = "bad-commands";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Declares commands badly";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -3009,6 +3054,7 @@ mod tests {
     struct ServiceWithCommands;
     impl PolarAgent for ServiceWithCommands {
         const NAME: &'static str = "service-with-commands";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Is not a client";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -3045,6 +3091,7 @@ mod tests {
     struct WithRuntime;
     impl PolarAgent for WithRuntime {
         const NAME: &'static str = "with-runtime";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Declares one runtime section";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -3084,6 +3131,7 @@ mod tests {
     struct TwiceDeclared;
     impl PolarAgent for TwiceDeclared {
         const NAME: &'static str = "twice-declared";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Declares a section twice";
         const NEEDS: &'static [Capability] = &[Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -3096,6 +3144,7 @@ mod tests {
     struct ServiceWithRuntime;
     impl PolarAgent for ServiceWithRuntime {
         const NAME: &'static str = "service-with-runtime";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "Is not a client";
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
@@ -3139,6 +3188,7 @@ mod tests {
     };
     impl PolarAgent for Unsound {
         const NAME: &'static str = "";
+        const ROLE: Role = Role::Observer;
         const PURPOSE: &'static str = "";
         const NEEDS: &'static [Capability] = &[Capability::Cassini, Capability::Cassini];
         const SHUTDOWN_BUDGET: Duration = Duration::ZERO;

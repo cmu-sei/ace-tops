@@ -26,7 +26,7 @@
 use crate::SERVICE_NAME;
 use crate::supervisor::{SHUTDOWN_BUDGET, StateSupervisor};
 use polar_agent_builder::topics::FamilyDecl;
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use soft_state_common::{OBSERVER_NAME, REPLIES_FAMILY, REQUESTS_TOPIC};
@@ -36,6 +36,7 @@ pub struct SoftStateObserver;
 
 impl PolarAgent for SoftStateObserver {
     const NAME: &'static str = OBSERVER_NAME;
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str =
         "Answers other agents' requests for soft state, read from the graph, by who asks";
     const NEEDS: &'static [Capability] = &[Capability::GraphRead];

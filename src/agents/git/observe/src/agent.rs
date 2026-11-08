@@ -28,7 +28,7 @@ use crate::settings;
 use crate::supervisor::{RootSupervisor, SHUTDOWN_BUDGET};
 use polar_agent_builder::protocol::OperationDecl;
 use polar_agent_builder::{
-    Capability, Cause, Configured, PolarAgent, RuntimeSection, StartError, TopicDecl,
+    Capability, Cause, Configured, PolarAgent, Role, RuntimeSection, StartError, TopicDecl,
 };
 use polar_env::Section;
 use ractor::Actor;
@@ -41,6 +41,7 @@ pub struct GitObserver;
 
 impl PolarAgent for GitObserver {
     const NAME: &'static str = AGENT_NAME;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str =
         "Watches git repositories it is told of and publishes their commits and ref updates";
     const NEEDS: &'static [Capability] = &[];

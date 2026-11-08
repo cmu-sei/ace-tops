@@ -27,7 +27,7 @@
 //! Its settings are a section of its own (`settings.rs`), read from the snapshot the builder took.
 
 use crate::supervisor::{ConsumerSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -41,6 +41,7 @@ pub struct CredentialsConsumer;
 
 impl PolarAgent for CredentialsConsumer {
     const NAME: &'static str = crate::supervisor::SERVICE_NAME;
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str = "Issues certificates and keeps the credentials ledger: the cluster's certificate authority front end";
     // The graph is declared as a section of its own, not required as a capability: this agent
     // projects to the graph but its health must not depend on Neo4j (the ledger is its source of

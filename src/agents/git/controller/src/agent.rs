@@ -26,7 +26,7 @@
 
 use crate::SERVICE_NAME;
 use crate::supervisor::{RootSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use ractor::Actor;
 use std::time::Duration;
 
@@ -42,6 +42,7 @@ pub struct GitController;
 
 impl PolarAgent for GitController {
     const NAME: &'static str = AGENT_NAME;
+    const ROLE: Role = Role::Controller;
     const PURPOSE: &'static str =
         "Decides which git repositories are observed, and tells the git observer";
     const NEEDS: &'static [Capability] = &[];

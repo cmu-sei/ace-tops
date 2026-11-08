@@ -25,7 +25,7 @@
 
 use crate::supervisor::{ClusterConsumerSupervisor, SHUTDOWN_BUDGET};
 use polar_agent_builder::{
-    Capability, Cause, Configured, GraphDecl, PolarAgent, StartError, TopicDecl,
+    Capability, Cause, Configured, GraphDecl, PolarAgent, Role, StartError, TopicDecl,
 };
 use ractor::Actor;
 use std::time::Duration;
@@ -34,6 +34,7 @@ pub struct KubeConsumer;
 
 impl PolarAgent for KubeConsumer {
     const NAME: &'static str = crate::BROKER_CLIENT_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str =
         "Projects the Kubernetes resources the observer publishes into the Polar knowledge graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite, Capability::Encryption];

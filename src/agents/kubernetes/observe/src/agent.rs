@@ -25,7 +25,7 @@
 
 use crate::supervisor::{ClusterObserverSupervisor, SHUTDOWN_BUDGET};
 use polar_agent_builder::protocol::OperationDecl;
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use ractor::Actor;
 use std::time::Duration;
 
@@ -33,6 +33,7 @@ pub struct KubeObserver;
 
 impl PolarAgent for KubeObserver {
     const NAME: &'static str = crate::TCP_CLIENT_NAME;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str =
         "Watches the Kubernetes API and publishes what it sees to Cassini";
     const NEEDS: &'static [Capability] = &[Capability::KubeApiRead];

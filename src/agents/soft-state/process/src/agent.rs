@@ -27,7 +27,7 @@ use crate::SERVICE_NAME;
 use crate::supervisor::{SHUTDOWN_BUDGET, WriterSupervisor};
 use polar_agent_builder::topics::FamilyDecl;
 use polar_agent_builder::{
-    Capability, Cause, Configured, GraphDecl, PolarAgent, StartError, TopicDecl,
+    Capability, Cause, Configured, GraphDecl, PolarAgent, Role, StartError, TopicDecl,
 };
 use polar_env::Section;
 use polar_health::report::{HEALTH_QUERY_FAMILY, HEALTH_REPLIES_TOPIC};
@@ -39,6 +39,7 @@ pub struct SoftStateProcessor;
 
 impl PolarAgent for SoftStateProcessor {
     const NAME: &'static str = PROCESSOR_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str =
         "Asks every agent about its health and writes what it hears into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];

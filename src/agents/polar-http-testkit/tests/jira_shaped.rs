@@ -30,8 +30,8 @@ use polar_agent_builder::protocol::credentials::section;
 use polar_agent_builder::protocol::{Credential, Location, OperationDecl, ProtocolKind};
 use polar_agent_builder::runtime::SectionAuthority;
 use polar_agent_builder::{
-    Capability, Cause, Configured, EdgeDecl, GraphDecl, PolarAgent, RuntimeSection, StartError,
-    TopicDecl,
+    Capability, Cause, Configured, EdgeDecl, GraphDecl, PolarAgent, Role, RuntimeSection,
+    StartError, TopicDecl,
 };
 use polar_http_observer::paging::{Paging, Style};
 use polar_http_observer::{CREDENTIALED_SOURCES, Kind as ObserverKind};
@@ -77,6 +77,7 @@ impl ObserverKind for JiraShapedObserver {
 
 impl PolarAgent for JiraShapedObserver {
     const NAME: &'static str = OBSERVER;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str = "Reads Jira-shaped pages for the kit's tests";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = polar_http_observer::observer::SHUTDOWN_BUDGET;
@@ -132,6 +133,7 @@ impl ProcessorKind for JiraShapedProcessor {
 
 impl PolarAgent for JiraShapedProcessor {
     const NAME: &'static str = PROCESSOR;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str = "Writes Jira-shaped pages into the graph for the kit's tests";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
     const SHUTDOWN_BUDGET: Duration = polar_http_processor::SHUTDOWN_BUDGET;

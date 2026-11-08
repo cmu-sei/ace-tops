@@ -26,7 +26,7 @@
 use openapi_common::{OBSERVATIONS_TOPIC, OBSERVER_NAME};
 use polar_agent_builder::protocol::{Location, OperationDecl, ProtocolKind};
 use polar_agent_builder::{
-    Capability, Cause, Configured, PolarAgent, RuntimeSection, StartError, TopicDecl,
+    Capability, Cause, Configured, PolarAgent, Role, RuntimeSection, StartError, TopicDecl,
 };
 use polar_http_observer::{Kind, SOURCES};
 use std::time::Duration;
@@ -49,6 +49,7 @@ impl Kind for OpenApiObserver {
 
 impl PolarAgent for OpenApiObserver {
     const NAME: &'static str = OBSERVER_NAME;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str = "Reads the OpenAPI and Swagger documents its signed sources name and publishes them for the processor";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = polar_http_observer::observer::SHUTDOWN_BUDGET;

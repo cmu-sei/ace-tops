@@ -1050,6 +1050,32 @@ def "main names" [--target: string = $DEFAULT_TARGET] {
     print (all_workloads $target | get name | to json --raw)
 }
 
+# What each workload is, in every target that runs it, as a JSON array: its crate, its kind and pool, its instances in
+# effect, whether its keys are the custody daemon's and whether polar-init runs before it: for tools that judge a crate
+# by how it is deployed. Applying the catalog is the sign-off for these, so they are the resolver's, never worked out
+# again. It reads no scaffold.
+def "main facts" [] {
+    let kinds = (open ($CONFIG | path join "kinds.nuon"))
+    glob ($INFRA | path join "targets/*/config.nuon") | sort | each {|f| $f | path dirname | path basename }
+    | each {|target|
+        let cluster = (load_cluster $target)
+        all_workloads $target | each {|w|
+            let spec = (spec_of $w.name $target $kinds).spec
+            {
+                target: $target
+                workload: $w.name
+                package: (check_names $spec).package
+                kind: $spec.kind
+                pool: ($spec.pool? | default null)
+                instances: (effective_instances $spec)
+                custody: (custody_of $cluster $spec)
+                polar_init: ($spec.kind != "ca")
+            }
+        }
+    }
+    | flatten | to json | print
+}
+
 # Writes the scaffold of every agent in the catalog to `dir`, one `<agent>.json` each: what `polar-sign template`
 # and `polar-sign sign` read to know what each agent takes (its runtime sections, the settings a signed document
 # may change, their defaults and which fields are secret). An author keeps them in `scaffolds/` next to their

@@ -26,7 +26,7 @@
 
 use crate::supervisor::{SERVICE_NAME, SHUTDOWN_BUDGET, SchedulerSupervisor};
 use polar_agent_builder::{
-    Capability, Cause, Configured, PolarAgent, StartError, TopicDecl, topics::FamilyDecl,
+    Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl, topics::FamilyDecl,
 };
 use ractor::Actor;
 use std::time::Duration;
@@ -35,6 +35,7 @@ pub struct SchedulerProcessor;
 
 impl PolarAgent for SchedulerProcessor {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str =
         "Records schedule changes in the graph and notifies the agents they concern";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];

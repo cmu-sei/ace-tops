@@ -25,7 +25,7 @@
 //! (docs/architecture/cert-issuer-isolation.md, "1b in detail").
 
 use crate::supervisor::{CertIssuerSupervisor, SERVICE_NAME, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -34,6 +34,7 @@ pub struct CertIssuer;
 
 impl PolarAgent for CertIssuer {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str = "Polar's certificate authority front: signs the certificates the floor allows on a \
         token alone, and those the credentials agent vouches for";
     const NEEDS: &'static [Capability] = &[Capability::Cassini];

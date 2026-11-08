@@ -29,7 +29,7 @@ use crate::supervisor::{ResolverSupervisor, SHUTDOWN_BUDGET};
 use crate::{credentials, registry, settings};
 use polar_agent_builder::protocol::OperationDecl;
 use polar_agent_builder::{
-    Capability, Cause, Configured, PolarAgent, RuntimeSection, StartError, TopicDecl,
+    Capability, Cause, Configured, PolarAgent, Role, RuntimeSection, StartError, TopicDecl,
 };
 use polar_env::Section;
 use ractor::Actor;
@@ -39,6 +39,7 @@ pub struct OciResolver;
 
 impl PolarAgent for OciResolver {
     const NAME: &'static str = crate::BROKER_CLIENT_NAME;
+    const ROLE: Role = Role::Observer;
     const PURPOSE: &'static str = "Follows image references other agents discover to their registry and publishes the verified manifest";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;

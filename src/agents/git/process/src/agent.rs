@@ -26,7 +26,7 @@
 
 use crate::SERVICE_NAME;
 use crate::supervisor::{GitProcessorSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Configured, PolarAgent, Role, StartError, TopicDecl};
 use ractor::Actor;
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ pub struct GitProcessor;
 
 impl PolarAgent for GitProcessor {
     const NAME: &'static str = SERVICE_NAME;
+    const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str =
         "Records the commits and ref updates the git observer publishes in the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];

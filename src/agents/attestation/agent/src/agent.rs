@@ -29,7 +29,7 @@ use attestation_common::{
     REQUESTS_TOPIC,
 };
 use polar_agent_builder::protocol::OperationDecl;
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, StartError, TopicDecl};
+use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -38,6 +38,7 @@ pub struct AttestationAgent;
 
 impl PolarAgent for AttestationAgent {
     const NAME: &'static str = AGENT_NAME;
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str =
         "Answers whether an instance is what the deployment made, from what it sees of the cluster";
     const NEEDS: &'static [Capability] = &[Capability::PodRead];

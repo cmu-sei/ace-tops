@@ -34,7 +34,7 @@ use crate::{
     broker::{Broker, BrokerArgs},
     settings,
 };
-use polar_agent_builder::{Capability, Configured, PolarAgent, StartError};
+use polar_agent_builder::{Capability, Configured, PolarAgent, Role, StartError};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -43,6 +43,7 @@ pub struct CassiniBroker;
 
 impl PolarAgent for CassiniBroker {
     const NAME: &'static str = "cassini";
+    const ROLE: Role = Role::Service;
     const PURPOSE: &'static str =
         "The message broker every agent connects to over mutual TLS: sessions, topics, subscribers";
     const NEEDS: &'static [Capability] = &[];
