@@ -193,7 +193,7 @@ pub fn sbom_analyzed(mut fragment: SbomGraphFragment) -> Vec<GraphOp> {
     // ── Package nodes, root included ─────────────────────────────────────────
     // license and source are intrinsic to a (name, version), so they belong on
     // the Package node (unlike scope, which is relative to one SBOM and would
-    // belong on an edge).
+    // belong on an edge). An SBOM that gives none says nothing about them, so it does not erase what another gave.
     let opt_str = |v: &Option<String>| match v {
         Some(s) => GraphValue::String(s.clone()),
         None => GraphValue::Null,
@@ -221,8 +221,8 @@ pub fn sbom_analyzed(mut fragment: SbomGraphFragment) -> Vec<GraphOp> {
                  SET p.name = row.name, \
                      p.version = row.version, \
                      p.component_type = row.component_type, \
-                     p.license = row.license, \
-                     p.source = row.source"
+                     p.license = coalesce(row.license, p.license), \
+                     p.source = coalesce(row.source, p.source)"
                 .to_string(),
             params: vec![("rows".to_string(), BoltType::from(GraphValue::List(rows)))],
         });

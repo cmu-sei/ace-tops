@@ -30,8 +30,8 @@ use build_processor::project::transaction;
 use neo4rs::{Graph, Query};
 use polar::graph::controller::compile_graph_op;
 use polar::{
-    ContainerImageCreatedPayload, DiscoverySourceRef, OciLayerEntry, ProvenanceEvent,
-    SecurityAdvisoryFoundPayload,
+    ContainerImageCreatedPayload, DiscoverySourceRef, OciLayerEntry, PackageRef, ProvenanceEvent,
+    SbomGraphFragment, SecurityAdvisoryFoundPayload,
 };
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::neo4j::Neo4j;
@@ -216,6 +216,40 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
         )
         .await,
         2
+    );
+
+    // ── A package's license stands until an SBOM says another ─────────────────
+    let sbom = |hash: &str, license: Option<&str>| {
+        ProvenanceEvent::SbomAnalyzed(SbomGraphFragment {
+            artifact_content_hash: hash.into(),
+            filename: format!("{hash}.cdx.json"),
+            root: None,
+            components: vec![PackageRef {
+                purl: "pkg:cargo/itoa@1.0.18".into(),
+                name: "itoa".into(),
+                version: "1.0.18".into(),
+                component_type: "library".into(),
+                license: license.map(Into::into),
+                source: Some("registry".into()),
+            }],
+            edges: vec![],
+        })
+    };
+    apply(
+        &graph,
+        sbom("sha256:one", Some("MIT OR Apache-2.0")),
+        "2026-10-16T03:00:00Z",
+    )
+    .await;
+    apply(&graph, sbom("sha256:two", None), "2026-10-16T03:00:01Z").await;
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (p:Package {purl: 'pkg:cargo/itoa@1.0.18', license: 'MIT OR Apache-2.0'}) RETURN count(p) AS n"
+        )
+        .await,
+        1,
+        "an SBOM that gives no license erased the one recorded"
     );
 
     // ── An archive build has no commit to be BUILT_BY ────────────────────────
