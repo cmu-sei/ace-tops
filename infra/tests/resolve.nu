@@ -510,77 +510,71 @@ def main [] {
             assert ($refused != null and ($refused | str contains "nowhere")) $"($refused)"
         }
 
-        # docs/architecture/build-orchestrator.md, 5b, 5c and 7b: the build workload is a PodTemplate in the build namespace, which
-        # the orchestrator makes each build's Job from: many instances, each issued its own certificate by the credentials agent.
-        # No Polar binary of its own runs in it, so it has no scaffold, no document, no health and no probe, and its topics are
-        # its entry's.
-        "the build workload is a template of many instances in the build namespace, issued by the credentials agent, on its environment": {
+        # docs/architecture/build-orchestrator.md, 5b, 5c and revised 3: the build workload is a PodTemplate in the build namespace,
+        # which the orchestrator makes each build's Job from. A build pod holds no Polar identity: no certificate, no custody
+        # daemon, no polar-init, no Cassini client; the orchestrator relays what it prints. No Polar binary of its own runs in it,
+        # so it has no scaffold, no document, no health and no probe.
+        "the build workload is a template in the build namespace, with no identity, on its environment": {
             let r = (resolve "build-runner")
             assert equal $r.kind "template"
             assert equal $r.namespace "polar-builds" "the entry names the namespace by its key, builds"
-            assert equal $r.instances "many"
-            assert equal (settings "build-runner").issuer "credentials-agent"
             assert equal $r.restart_policy "Never" "a build runs once; its Job, not the pod, is what is retried"
             assert equal $r.service_account "build-runner"
-            assert ($r.custody != null) "its keys are the daemon's, as every agent's"
-            assert ($r.certs | all {|c| $c | str contains ":custody:" }) $"($r.certs)"
-            # The client the pipeline publishes with (cassini-client) reads its environment, not a document.
-            assert ($r.env | where name == "POLAR_CONFIG" | is-empty) "no document"
+            assert equal $r.needs [] "no Cassini, no tracing, no pinned CA: nothing of Polar's in the pod"
+            assert equal $r.env [] "no client environment"
+            assert equal $r.volumes [] "no token, no certificate, no CA, no socket"
+            assert equal $r.mounts []
+            assert equal $r.automount_sa_token false
             assert equal (^nu $RESOLVER resources build-runner | from json | get config_maps) [] "no document's ConfigMap"
-            for v in ["BROKER_ADDR" "CASSINI_SERVER_NAME" "TLS_CLIENT_CERT" "TLS_CA_CERT" "POLAR_CUSTODY_SOCKET"] {
-                assert (($r.env | where name == $v | length) == 1) $"($v) is given once"
-            }
-            assert ($r.env | where name == "TLS_CLIENT_KEY" | is-empty) "the daemon holds the key"
-            for v in ["POLAR_HEALTH_FILE" "POLAR_SHUTDOWN_BUDGET_SECS" "POLAR_CAPABILITIES" "POLAR_START_MARKER"] {
-                assert ($r.env | where name == $v | is-empty) $"($v): no agent builder runs in it"
-            }
-            assert ($r.volumes | where name == "polar-health" | is-empty) "no health volume"
-            assert ($r.init_env | where name == "POLAR_INIT_START_MARKER" | is-empty) "no start marker"
             assert equal $r.workspace "/workspace" "where build-fetch unpacks and the pipeline builds (orchestrator_core::WORKSPACE_PATH)"
+            for absent in [custody certs init_env init_mounts polar_init_image dep_checks probe instances] {
+                assert ($absent not-in ($r | columns)) $"($absent): the template takes nothing of an identity"
+            }
         }
 
-        "the build workload's PodTemplate: custody, polar-init, then the fetch, and one pipeline container on the fetch image until a build replaces it": {
+        "the build workload's PodTemplate: the fetch, then one pipeline container on the fetch image until a build replaces it, and nothing of Polar's": {
             use ../rules.nu [is_multi_instance]
             let o = (object_of "build-runner" "sandbox-local")
             assert equal $o.kind "PodTemplate"
             assert equal $o.metadata.name "build-runner"
             assert equal $o.metadata.namespace "polar-builds"
-            assert (is_multi_instance $o) "marked many"
+            assert (not (is_multi_instance $o)) "its pods are never issued, so they are not instances of an identity"
             assert equal $o.template.metadata.labels { name: "build-runner" }
             let pod = $o.template.spec
             assert equal $pod.serviceAccountName "build-runner"
+            assert equal $pod.automountServiceAccountToken false
             assert equal $pod.restartPolicy "Never"
-            assert equal ($pod.initContainers | get name) ["polar-custody" "polar-init" "fetch"]
+            assert equal ($pod.initContainers | get name) ["fetch"]
             assert equal ($pod.containers | get name) ["pipeline"]
-            let fetch = ($pod.initContainers | last)
+            let fetch = ($pod.initContainers | first)
             let pipeline = ($pod.containers | first)
             assert ($fetch.image | str contains "/build-fetch") $fetch.image
             assert equal $pipeline.image $fetch.image "decision 5c: the pipeline runs the fetch image until the orchestrator replaces it"
             assert equal ($fetch.restartPolicy? | default null) null "the fetch runs once, before the pipeline, not as a sidecar"
             assert equal ($fetch.env | where name == "CYCLOPS_WORKSPACE" | get value) ["/workspace"]
             # Decision 4: a build runs hardened, non-root, with no privilege escalation, every capability dropped and the default
-            # seccomp profile, until its signed mapping says otherwise (the orchestrator, O2b).
+            # seccomp profile, until its signed mapping says otherwise (the orchestrator, O2c).
             for c in [$fetch $pipeline] {
-                assert equal ($c.volumeMounts | where name == "workspace" | get mountPath) ["/workspace"] $c.name
+                assert equal ($c.volumeMounts | get name) ["workspace"] $"($c.name) mounts the workspace alone"
+                assert equal ($c.volumeMounts | first | get mountPath) "/workspace" $c.name
                 assert equal $c.securityContext.capabilities.drop ["ALL"] $c.name
+                assert equal ($c.securityContext.capabilities.add? | default null) null $c.name
                 assert equal $c.securityContext.runAsNonRoot true $c.name
                 assert equal $c.securityContext.allowPrivilegeEscalation false $c.name
                 assert equal $c.securityContext.seccompProfile.type "RuntimeDefault" $c.name
             }
-            assert ($fetch.volumeMounts | where name == "polar-custody" | is-empty) "the fetch speaks to nobody: no socket, no certificate"
-            assert ($pipeline.volumeMounts | any {|m| $m.mountPath == "/run/polar-custody" }) "the pipeline signs through the daemon"
-            assert equal ($pod.volumes | where name == "workspace" | get emptyDir | length) 1
+            assert equal ($pipeline.env? | default []) [] "the pipeline is told nothing of Polar's"
+            assert equal ($pod.volumes | get name) ["workspace"]
             assert equal ($pipeline.livenessProbe? | default null) null "no polar-healthcheck in a pipeline image"
             assert equal ($pipeline.restartPolicy? | default null) null
-            # The daemon is as it is in every pod: its IPC_LOCK is Polar's to judge (decision 5d).
-            assert equal ($pod.initContainers | first | get securityContext.capabilities.add) ["IPC_LOCK"]
         }
 
-        "a template is refused as one instance, on cert-issuer, and reading a document": {
+        "a template that would hold an identity, publish or read a document is refused": {
             let real = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
             for case in [
-                { change: { instances: "one" }, says: "many" }
-                { change: { issuer: "cert-issuer" }, says: "many" }
+                { change: { provides: ["cassini"] }, says: "identity" }
+                { change: { custody: true }, says: "identity" }
+                { change: { topics: [{ name: "polar.provenance.events", access: "publish", purpose: "x", unprompted: "y" }] }, says: "relay" }
                 { change: { config: "document" }, says: "env" }
             ] {
                 with_target ($real | upsert workloads.build-runner $case.change) {|t|
@@ -860,7 +854,7 @@ def main [] {
         # docs/architecture/authority-model.md, "Multi-instance workloads": the load harness's producer is multi-instance
         # where the credentials agent issues it (its object marked, its pods each an instance in the model), and one
         # instance where a target still has cert-issuer issue it; every other workload is one.
-        "the harness producer is multi-instance where the credentials agent issues it, the build workload is, and nothing else is": {
+        "the harness producer is multi-instance where the credentials agent issues it, and nothing else is": {
             use ../rules.nu [is_multi_instance, parallelism_problems]
             let o = (object_of "harness-producer" "sandbox-local")
             assert (is_multi_instance $o) "sandbox-local"
@@ -871,7 +865,7 @@ def main [] {
                 assert equal (resolve_for $t "harness-producer").instances "one" "issued by cert-issuer there"
             }
             assert (not (is_multi_instance (object_of "harness-sink" "sandbox-local")))
-            assert equal (resolve_for "sandbox-local" "build-runner").instances "many"
+            # The build workload's pods are never issued (docs/architecture/build-orchestrator.md, revised 3): no instances to speak of.
             for n in (^nu $RESOLVER names --target sandbox-local | from json | where {|n| $n not-in ["harness-producer" "build-runner"] }) {
                 assert equal (resolve_for "sandbox-local" $n).instances "one" $n
             }
@@ -956,12 +950,11 @@ def main [] {
             for w in ["cassini" "credentials-agent" "credentials-agent-observer" "polar-scheduler" "polar-scheduler-observer" "polar-git-server" "kube-observer"] {
                 assert ($w in $named) $"($w) is not in the model: ($named | str join ', ')"
             }
-            # Each by its own namespace: the build workload's is the build namespace (docs/architecture/build-orchestrator.md, 7b).
             for w in $m.workloads {
-                let namespace = (if $w.workload == "build-runner" { "polar-builds" } else { "polar" })
-                assert equal $w.identity $"($w.workload).($namespace).serviceaccount.cluster.local"
+                assert equal $w.identity $"($w.workload).polar.serviceaccount.cluster.local"
             }
-            assert ("build-runner" in $named) "the build workload's instances are issued by the credentials agent"
+            # A build pod holds no Polar identity (docs/architecture/build-orchestrator.md, revised 3): nothing to issue it.
+            assert ("build-runner" not-in $named) "the build workload is never issued"
             assert (not ($model | str contains "system:serviceaccount")) "a token subject in the model"
             let observer = ($m.workloads | where workload == "credentials-agent-observer" | first)
             assert equal [$observer.issuer $observer.bootstrap] ["cert-issuer" true]
@@ -1221,12 +1214,12 @@ def main [] {
             assert equal (env_value (resolve "credentials-agent") "CREDENTIALS_AGENT_CA_CERT") "/etc/polar-ca/ca.pem"
         }
 
-        "every workload that runs polar-init trusts cert-issuer's CA as a mounted file, and cert-issuer, the CA, mounts none": {
+        "every workload that runs polar-init trusts cert-issuer's CA as a mounted file, and cert-issuer, the CA, and a template, which is never issued, mount none": {
             # The observer path verifies what it is issued against the pinned CA (docs/architecture/core-restarts.md,
             # "The plan", step 1), so no workload is left to fetch it unverified.
             for n in (^nu $RESOLVER names | from json) {
                 let r = (resolve $n)
-                if $r.kind == "ca" {
+                if $r.kind in ["ca" "template"] {
                     assert (not ($r.volumes | any {|v| $v.name == "polar-ca" })) $n
                 } else {
                     assert ($r.volumes | any {|v| $v.name == "polar-ca" and $v.config_map == "polar-ca" }) $n
@@ -1466,8 +1459,13 @@ def main [] {
 
         # The test above runs each agent's image, so it needs a cluster, and a workload left on cert-issuer was only found when
         # its pod could not start. This reads the settings alone.
-        "a workload on the sandbox-local target asks the credentials agent for its certificates unless it is a bootstrap identity": {
+        "a workload on the sandbox-local target asks the credentials agent for its certificates unless it is a bootstrap identity, or a template, which asks for none": {
             for n in (^nu $RESOLVER names | from json) {
+                # A template's pods hold no Polar identity (docs/architecture/build-orchestrator.md, revised 3): no polar-init asks.
+                if (resolve $n).kind == "template" {
+                    assert ("polar_init_image" not-in (resolve $n | columns)) $n
+                    continue
+                }
                 let s = (settings $n)
                 assert ($s.bootstrap or $s.issuer == "credentials-agent") $"($n) asks ($s.issuer)"
             }

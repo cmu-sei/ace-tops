@@ -45,7 +45,8 @@ impl PolarAgent for BuildProcessor {
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_EVENTS,
             "what builds report: executions, their outputs, what scanners found",
-        ),
+        )
+        .waiting("the build orchestrator relays what builds print (docs/architecture/build-orchestrator.md, revised 3); it is not in the catalog yet"),
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_RESOLUTIONS,
             "what the resolver verified a registry serves, believed from nowhere else",

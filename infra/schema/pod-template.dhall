@@ -23,14 +23,14 @@
 -- infra/schema/pod-template.dhall
 --
 -- The build workload's pod setup, as a PodTemplate in the build namespace (docs/architecture/build-orchestrator.md, 5b and
--- 5c), which the build orchestrator reads and makes each build's Job from. On the pod every catalog workload shares
--- (agent-pod.dhall), its identity first, then:
+-- 5c), which the build orchestrator reads and makes each build's Job from. On the base every catalog pod has
+-- (agent-pod.dhall), with no identity: a build pod holds no Polar certificate, custody daemon or polar-init (revised 3).
 --
 --   fetch      an init container: build-fetch reads the source archive from Polar's registry by digest, checks it and
 --              unpacks it into the workspace. The orchestrator gives it the archive's digest for each build.
 --   pipeline   the one container, on the same image until the orchestrator replaces it with the repository's pipeline
---              image, pinned by its signed mapping. It publishes what the build did through the custody daemon's
---              certificate.
+--              image, pinned by its signed mapping. It reports what the build did by printing `polar-report` lines,
+--              which the orchestrator reads from its log, judges and relays.
 --
 -- The names are the orchestrator's (orchestrator-backend-k8s, job.rs). Structure only: every fact arrives in the Spec.
 
@@ -48,7 +48,7 @@ let AgentPod = ./agent-pod.dhall
 
 let render =
       λ(v : P.Spec) →
-        let pod = AgentPod v.(T.Pod)
+        let pod = AgentPod.base v.(T.Base)
 
         -- A build runs hardened (docs/architecture/build-orchestrator.md, decision 4): non-root, no privilege escalation, every
         -- capability dropped, the default seccomp profile. The orchestrator relaxes the pipeline's only as its signed mapping
@@ -106,13 +106,14 @@ let render =
                         }
                       ]
                   )
-              with initContainers = Some (pod.initContainers # [ fetch ])
+              with initContainers = Some [ fetch ]
               with containers = [ pipeline ]
 
         in  functions.podTemplateOf
               { name = v.name
               , namespace = v.namespace
-              , instances = v.instances
+              -- Its pods are never issued, so they are not instances of an identity.
+              , instances = < one | many >.one
               , pod = podSpec
               }
 

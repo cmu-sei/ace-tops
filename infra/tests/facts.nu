@@ -64,10 +64,11 @@ def main [] {
             let ca = (do $one "cert-issuer")
             assert equal [$ca.kind $ca.polar_init $ca.custody] ["ca" false false]
             assert equal (do $one "harness-producer").instances "many"
-            # The build workload: a template whose pods are each an instance (docs/architecture/build-orchestrator.md, 3 and 5b).
+            # The build workload: a template whose pods hold no Polar identity (docs/architecture/build-orchestrator.md, revised 3), and
+            # no custody daemon, nor polar-init.
             let build = (do $one "build-runner")
-            assert equal [$build.kind $build.instances $build.package $build.pool] ["template" "many" "build-fetch" "observers"]
-            assert ($local | where workload not-in ["harness-producer" "build-runner"] | all {|w| $w.instances == "one" })
+            assert equal [$build.kind $build.package $build.pool $build.custody $build.polar_init] ["template" "build-fetch" "observers" false false]
+            assert ($local | where workload != "harness-producer" | all {|w| $w.instances == "one" })
         }
     }
 

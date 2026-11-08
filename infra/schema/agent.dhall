@@ -48,8 +48,8 @@ let render =
       λ(v : T.Spec) →
         let restart = functions.restartOf v.job
 
-        -- The pod every catalog workload shares (agent-pod.dhall), and the agent's own container in it.
-        let pod = AgentPod v.(T.Pod)
+        -- The pod every catalog workload shares, with an agent's identity (agent-pod.dhall), and the agent's own container in it.
+        let pod = AgentPod.base v.(T.Base)
 
         let env = pod.env
 
@@ -57,6 +57,7 @@ let render =
 
         let podSpec =
               pod.spec
+              with initContainers = Some (AgentPod.identity v.(T.Pod))
               with containers =
                 [ kubernetes.Container::{
                   , name = v.name

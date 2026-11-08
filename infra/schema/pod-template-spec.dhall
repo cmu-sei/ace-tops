@@ -22,21 +22,22 @@
 
 -- infra/schema/pod-template-spec.dhall
 --
--- The record `infra/resolve.nu json <workload>` produces for a workload of kind "template", as a Dhall type: the pod every
--- catalog workload shares (agent-spec.dhall, `Pod`), and what a PodTemplate adds to it. render-catalog.nu checks the
--- resolved JSON against it with `json-to-dhall`, as it does an agent's.
+-- The record `infra/resolve.nu json <workload>` produces for a workload of kind "template", as a Dhall type: the base every
+-- catalog pod has (agent-spec.dhall, `Base`), and what a PodTemplate adds to it. No identity: a build pod holds none
+-- (docs/architecture/build-orchestrator.md, revised 3). render-catalog.nu checks the resolved JSON against it with
+-- `json-to-dhall`, as it does an agent's.
 
 let T = ./agent-spec.dhall
 
 let Spec =
-        T.Pod
+        T.Base
       ⩓ { name : Text
         , kind : Text
         , namespace : Text
         -- The image the template's containers run until something of Polar's replaces one: for the build workload, the
         -- fetch image (docs/architecture/build-orchestrator.md, 5c).
         , image : Text
-        , instances : < one | many >
+        , pull_policy : Text
         , needs : List Text
         -- Where the fetch unpacks the source and the pipeline builds: orchestrator_core::WORKSPACE_PATH.
         , workspace : Text

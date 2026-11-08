@@ -20,9 +20,6 @@
 # DM26-0670
 
 use state.nu [get-build-id]
-use logging.nu [log-debug]
-export const SUBJECT_PREFIX = "polar.provenance"
-export const BUILD_EVENTS_TOPIC = $"($SUBJECT_PREFIX).events"
 
 # ---------------------------------------------------------------------------
 # Canonical ProvenanceEvent emission
@@ -38,20 +35,29 @@ export const BUILD_EVENTS_TOPIC = $"($SUBJECT_PREFIX).events"
 # about it. init-pipeline-state must be called once at the top of the
 # pipeline (see state.nu) before any function in this file is used.
 #
-# cassini.nu's emit remains the lower-level transport
-# primitive — it knows how to publish a record, nothing more. This module
-# owns the build_id contract on top of it.
+# A build reports by printing (docs/architecture/build-orchestrator.md,
+# revised 3): each event is one line on standard output, REPORT_PREFIX and
+# then the event as compact JSON. The build pod holds no Polar identity and
+# no Cassini client; the orchestrator reads the pod's log once it ends,
+# judges each report line and relays what passes, stamped with the build it
+# started. This module owns the build_id contract on top of that.
 # ---------------------------------------------------------------------------
 
-# Emit an event to the unified provenance events topic.
+# What starts a report line in a build's output; any other line is the build's own output.
+export const REPORT_PREFIX = "polar-report "
+
+# One report line: the prefix, then the payload as compact JSON, which escapes any newline a string holds.
+export def report-line [payload: record]: nothing -> string {
+    $REPORT_PREFIX + ($payload | to json --raw)
+}
+
+# Report an event, for the orchestrator to judge and relay.
 # The payload record must include a `type` field matching a ProvenanceEvent
 # variant name in snake_case, plus all fields for that variant.
 # build_id is carried on the payload itself for variants that have one —
-# it is not on this envelope.
+# it is not on this envelope, and the orchestrator stamps its own over it.
 def emit [payload: record]: nothing -> nothing {
-    let json = ($payload | to json --raw)
-    log-debug $json
-    $json | cassini-client publish $BUILD_EVENTS_TOPIC
+    print (report-line $payload)
 }
 
 # When an event happened, as build-processor takes it: RFC 3339 with the offset. Each execution and stage event

@@ -23,8 +23,8 @@
 #
 # The build workload (docs/architecture/build-orchestrator.md): the pod setup the build orchestrator makes each build's Job
 # from, a PodTemplate in the build namespace. Each build pod fetches its source from Polar's registry by digest (build-fetch),
-# then runs the repository's pipeline image, which its signed mapping pins, in place of the template's; it publishes what the
-# build did, as its own instance of this workload.
+# then runs the repository's pipeline image, which its signed mapping pins, in place of the template's. It holds no Polar
+# identity (revised 3): it reports by printing, and the orchestrator judges what it printed and relays it.
 [
   {
     name: "build-runner"
@@ -35,16 +35,6 @@
     namespace: "builds"
     # Where the fetch unpacks the source and the pipeline builds: orchestrator_core::WORKSPACE_PATH.
     workspace: "/workspace"
-    # What its pods publish, in place of a scaffold's topics: what a build did, for build-processor
-    # (scripts/pipeline/core/events.nu).
-    topics: [
-      {
-        name: "polar.provenance.events"
-        access: "publish"
-        purpose: "what a build ran and produced, reported by the build itself"
-        unprompted: "a build reports as it runs: what it started, produced and found, and how it ended"
-      }
-    ]
     # Builds run foreign code: the low-trust side, with the observers (docs/architecture/placement.md).
     pool: "observers"
   }

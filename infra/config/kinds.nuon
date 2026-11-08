@@ -104,14 +104,14 @@
 
   # A pod setup something of Polar's makes pods from, not a workload Polar runs itself: the build workload, a PodTemplate in
   # the build namespace that the build orchestrator reads and makes each build's Job from (docs/architecture/build-orchestrator.md,
-  # 5b and 5c; schema/pod-template.dhall). Its pods are instances of its one identity, each issued its own certificate by the
-  # credentials agent (decision 3), so it is many and on the credentials agent. No Polar binary of its own runs in them: it has
-  # no scaffold, no document, no health and no probe, its configuration is its environment, and its topics are its entry's
-  # (decision 7b). The agent's probe, health and shutdown fields it inherits are not rendered.
+  # 5b and 5c; schema/pod-template.dhall). Its pods hold no Polar identity (revised 3): no capability, no certificate, no custody
+  # daemon, no polar-init; what they print, the orchestrator judges and relays. No Polar binary of its own runs in them: no
+  # scaffold, no document, no health and no probe, and its configuration is its environment. The agent's probe, health and
+  # issuer fields it inherits are not rendered.
   template: {
     extends: "agent"
-    instances: "many"
-    issuer: "credentials-agent"
+    needs: []
+    custody: false
     config: "env"
   }
 

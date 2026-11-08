@@ -65,7 +65,6 @@ use ./core/state.nu [
 # The colour helpers (core/mod.nu): phase 0's logging names them, and `use ./core/<file>.nu` brings in none of them.
 use ./core *
 use ./core/oci.nu *
-use ./core/cassini.nu *
 use ./core/logging.nu *
 use ./core/events.nu *
 use ./core/cargo.nu workspace-root
@@ -799,8 +798,6 @@ def main [
     # the same build_id regardless of call depth or module boundaries.
     init-pipeline-state $build_id
 
-    let daemon = (start-cassini-daemon)
-
     let result = try {
         let start_time = (date now)
 
@@ -912,8 +909,6 @@ def main [
         emit-execution-failed $msg
         $msg
     }
-
-    stop-cassini-daemon $daemon
 
     if $result != null {
         error make {msg: $result}

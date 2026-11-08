@@ -225,7 +225,7 @@ const DOCUMENT_VOLUME = "polar-config"
 # function. The directory is filled by asking each agent's image on the cluster (`collect-scaffolds`, which up.nu runs
 # before it renders; infra/agent-pods.nu), or holds stubs, for a test that must not ask the agents.
 def scaffold_of [name: string, spec: record] {
-    if ($spec.kind? | default "agent") == "template" { return (template_scaffold $name $spec) }
+    if ($spec.kind? | default "agent") == "template" { return (template_scaffold $name) }
     let dir = ($env.POLAR_SCAFFOLD_DIR? | default "")
     if ($dir | is-empty) {
         error make { msg: $"($name): POLAR_SCAFFOLD_DIR is not set. The agents' scaffolds come from their images on the cluster: nu infra/resolve.nu collect-scaffolds <dir> --target <target>, then set POLAR_SCAFFOLD_DIR=<dir>" }
@@ -237,15 +237,15 @@ def scaffold_of [name: string, spec: record] {
     open $file
 }
 
-# What a template says about itself in place of a scaffold (docs/architecture/build-orchestrator.md, 7b): no Polar binary of
-# its own runs in its pods to print one, so its topics are its catalog entry's, written as an agent's scaffold writes them,
-# and it requires, drains, owns and reads nothing of its own.
-def template_scaffold [name: string, entry: record] {
+# What a template says about itself in place of a scaffold: no Polar binary of its own runs in its pods to print one, and they
+# hold no Polar identity (docs/architecture/build-orchestrator.md, revised 3), so it requires, publishes, drains, owns and
+# reads nothing.
+def template_scaffold [name: string] {
     {
         agent: { name: $name, role: "template" }
         requires: []
         shutdown_budget_minimum_secs: 0
-        topics: ($entry.topics? | default [] | each {|t| { from: "declared" } | merge $t })
+        topics: []
         groups: []
         graph: []
         sections: []
@@ -399,15 +399,16 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # A catalog agent implements PolarAgent: it says what it needs and the least time it needs to
     # drain in its own scaffold, and the catalog supplies what only the deployment knows. An agent
     # that cannot yet say so is a hand-written chart under infra/layers, not a catalog workload.
-    # A template's pods run no Polar binary of its own (docs/architecture/build-orchestrator.md, 5b): what runs there reads
-    # its environment, and the template has no document, health or probe.
+    # A template's pods run no Polar binary of its own and hold no Polar identity (docs/architecture/build-orchestrator.md, 5b
+    # and revised 3): what runs there reads its environment, publishes nothing on Cassini (what a build prints, the orchestrator
+    # relays), and has no document, health, probe, certificate or custody daemon.
     let template = ($entry.kind == "template")
     if $template {
         if ($spec.config? | default "") != "env" {
             error make { msg: $"($name): a template's pods run no Polar binary that reads a document: its configuration is its environment \(config: \"env\"\)" }
         }
-        if (effective_instances $spec) != "many" {
-            error make { msg: $"($name): a template's pods are instances of its one workload, each with its own certificate: instances \"many\", issued by the credentials agent" }
+        if (($spec.topics? | default []) | is-not-empty) {
+            error make { msg: $"($name): a template's pods hold no Polar identity and say nothing on Cassini: what they print, the agent that runs them judges and relays, on its own topics" }
         }
     } else if ($spec.config? | default "") != "document" {
         error make { msg: $"($name): a catalog workload is an agent that describes itself and reads a configuration document \(config: \"document\"\). One that does not is a chart under infra/layers" }
@@ -423,6 +424,9 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     let needs = (needs_in_force ($kind.needs ++ (requires_of $scaffold) ++ $provided | uniq) ($cluster.handed_off? | default false))
 
     let custody = (custody_of $cluster $spec)
+    if $template and (($needs | is-not-empty) or ($spec.custody? | default false)) {
+        error make { msg: $"($name): a template's pods hold no Polar identity \(docs/architecture/build-orchestrator.md, revised 3\): no capability \(($needs | str join ', ')\) and no custody daemon" }
+    }
 
     # Its node pool, the catalog's (docs/architecture/placement.md): what a workload is decides it, not the target, which
     # declares only the pools its cluster has.
@@ -448,9 +452,10 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     let no_start_wait = (($entry.no_start_wait? | default []) ++ ($ov.no_start_wait? | default []))
 
     mut env_list: list<any> = []
-    mut volumes: list<any> = [
+    # The token polar-init presents for the pod's certificates: a template's pods have neither.
+    mut volumes: list<any> = (if $template { [] } else { [
         { name: $spec.sa_token.volume, secret: null, audience: $cluster.sa_token_audience, from: "kind" }
-    ]
+    ] })
     mut mounts: list<any> = []
     mut init_mounts: list<any> = []
     mut deps: list<any> = []
@@ -660,7 +665,8 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # resolved.
     let declared_vars = ($scaffold.sections | each {|s| $s.variables | get name } | flatten)
     if "CREDENTIALS_AGENT_AUTHORITY_MODEL" in $declared_vars {
-        let records = (all_workloads $target | each {|w| issuance_record $w $target $kinds })
+        # What is issued: a template's pods never are (docs/architecture/build-orchestrator.md, revised 3).
+        let records = (all_workloads $target | where {|w| $w.kind != "template" } | each {|w| issuance_record $w $target $kinds })
         $env_list = ($env_list | append { name: "CREDENTIALS_AGENT_AUTHORITY_MODEL", value: (model_facts $records $cluster.domain | to json --raw), secret: null, key: null, from: "catalog" })
     }
 
@@ -795,8 +801,8 @@ def for_template [r: record] {
     if $r.kind == "ca" {
         $common | reject polar_init_image cert_issuer_url init_mounts init_env dep_checks certs custody
     } else if $r.kind == "template" {
-        # schema/pod-template-spec.dhall: the shared pod, and what a PodTemplate adds.
-        $common | select pull_policy pull_secrets polar_init_image cert_issuer_url sa_token_volume sa_token_path sa_token_expiration_secs service_account automount_sa_token restart_policy termination_grace_secs env volumes mounts init_mounts init_env dep_checks certs custody placement name kind namespace image instances needs workspace memory | update volumes { reject mode }
+        # schema/pod-template-spec.dhall: the base every pod has, and what a PodTemplate adds; no identity.
+        $common | select pull_secrets sa_token_expiration_secs service_account automount_sa_token restart_policy termination_grace_secs env volumes mounts placement name kind namespace image pull_policy needs workspace memory | update volumes { reject mode }
     } else {
         $common | reject fs_group | update volumes { reject mode }
     }
@@ -856,6 +862,7 @@ def check_all [target: string] {
             let r = (resolve $n $target)
             {
                 who: $n
+                kind: $r.kind
                 issuer: $r.issuer
                 bootstrap: $r.bootstrap
                 identity: $"($r.service_account).($r.namespace)"
@@ -866,7 +873,7 @@ def check_all [target: string] {
                 resolved: $r
             }
         } catch {|e|
-            { who: $n, issuer: null, bootstrap: null, identity: null, rules: [], error: $e.msg, resolved: null }
+            { who: $n, kind: null, issuer: null, bootstrap: null, identity: null, rules: [], error: $e.msg, resolved: null }
         }
     })
     for r in ($results | where error != null) { $problems = ($problems | append $r.error) }
@@ -899,7 +906,8 @@ def check_all [target: string] {
     }
     # Where each workload gets its certificates, and the rule that only the bootstrap identities may ask
     # cert-issuer directly (an error once the floor is enforced, a list of what is still to move until then).
-    let issuance = (issuer_problems ($sas | select who issuer bootstrap) ((load_cluster $target).issuance?.floor_enforced? | default false))
+    # Only what is issued: a template's pods never are.
+    let issuance = (issuer_problems ($sas | where kind != "template" | select who issuer bootstrap) ((load_cluster $target).issuance?.floor_enforced? | default false))
     for p in $issuance.errors { $problems = ($problems | append $p) }
     { problems: $problems, pending: $issuance.pending }
 }
@@ -1112,7 +1120,8 @@ def "main facts" [] {
                 pool: ($spec.pool? | default null)
                 instances: (effective_instances $spec)
                 custody: (custody_of $cluster $spec)
-                polar_init: ($spec.kind != "ca")
+                # cert-issuer is the issuer; a template's pods are never issued.
+                polar_init: ($spec.kind not-in ["ca" "template"])
             }
         }
     }

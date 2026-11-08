@@ -310,21 +310,38 @@ The pre-forked, strict-mode worker is a builder facility, so that any agent that
   for writes (`job-run`, a Role in the build namespace) comes with the agent, in O2, where the build namespace is a catalog fact. O1c2 DONE
   2026-11-07: the backend over those calls (`orchestrator-backend-k8s`, `backend.rs`), one operation for each, with no client or
   credential of its own; a job's log stays in its pod until O4, so the backend trait has no log.
-- **O2** the agent on the builder and in the catalog: 5, 5b, 6 and 7. In bites: O2a the build namespace, the build workload rendered
-  as a PodTemplate, and the `job-run` capability (a Role in the build namespace, computed from the declared writes); O2b the Job built
-  from the PodTemplate read through the handler, and the judge's refusal of a Job whose pod asks for more than its template and mapping
-  allow (5d); O2c the agent itself (his `agent` crate: supervisor, build registry, a job actor per
-  build, the signed `mappings` and escrowed `credentials` sections), on the builder and in the catalog. O2a DONE 2026-11-08: the
-  `job-run` capability (O2a1), the build namespace (O2a2), the fetch image (O2a3a), and the `template` kind with `build-runner`'s
-  PodTemplate (O2a3b; `infra/config/workloads/build.nuon`, `schema/pod-template.dhall`, on `schema/agent-pod.dhall`, the pod every
-  catalog workload shares, split out of `agent.dhall` with every agent's manifest unchanged byte for byte). Server dry run on u7c:
-  accepted, with `restricted` warnings for the identity containers alone (below). Decided by standing rules, for review: the build
-  workload is in the `observers` pool, with the low-trust side, since it runs foreign code (`placement.md`); its fetch and pipeline
-  containers carry decision 4's hardening in the template itself (no privilege escalation, the default seccomp profile).
+- **O2** the agent on the builder and in the catalog: 5, 5b, 6 and 7, and 3 as revised. Reworked 2026-11-08 around revised 3 (the
+  maintainer, "Yes, record it and start O2b"):
+  - **O2a** the build namespace, the build workload rendered as a PodTemplate, and the `job-run` capability. O2a DONE 2026-11-08: the
+    `job-run` capability (O2a1), the build namespace (O2a2), the fetch image (O2a3a), and the `template` kind with `build-runner`'s
+    PodTemplate (O2a3b; `infra/config/workloads/build.nuon`, `schema/pod-template.dhall`, on `schema/agent-pod.dhall`, the pod every
+    catalog workload shares, split out of `agent.dhall` with every agent's manifest unchanged byte for byte). Server dry run on u7c:
+    accepted, with `restricted` warnings for the identity containers alone (below). Decided by standing rules, for review: the build
+    workload is in the `observers` pool, with the low-trust side, since it runs foreign code (`placement.md`); its fetch and pipeline
+    containers carry decision 4's hardening in the template itself (no privilege escalation, the default seccomp profile).
+  - **O2b** the template without an identity: no custody, polar-init, projected token or client environment, the fetch then the
+    pipeline; the `template` kind not issued and not a Cassini client, `build-runner` out of the credentials agent's authority model;
+    build-processor's events subscription waiting again, for the orchestrator; `events.nu` printing `polar-report` lines. DONE
+    2026-11-08: `schema/agent-pod.dhall` split into a `base` every pod has and an agent's `identity` (custody, polar-init), every
+    agent's manifest unchanged byte for byte; the template on the base alone, the fetch then the pipeline; a template refused if it
+    would hold an identity (a capability, custody), name topics or read a document; `build-runner` out of the authority model and the
+    issuer rule; `ci.nu` no longer starts a Cassini daemon. Server dry run on u7c: accepted with no warning, `restricted` in full.
+    Left for O2e: `ci.nu` still prints the execution events (started, failed), which revised 3 makes the orchestrator's to say.
+  - **O2c** the Job built from the PodTemplate read through the handler (`get podtemplates`), named `build-runner-<build id>`, the
+    pipeline's image, command and privileges from the mapping; the builder's judge refusing any pod-bearing create that asks for
+    privileged mode, host namespaces, host ports or `hostPath`, for every agent; the orchestrator's check that a Job's pod is its
+    template's, changed only where the mapping signed. Property tests for both.
+  - **O2d** the report reader ("How a report is read", above): O2d1 the byte gate, the `Report` type and Polar's own parser, with
+    property tests, fuzzing and the model checker's proofs; O2d2 the pre-forked worker in seccomp strict mode, a builder facility, and
+    its validated hand-back; O2d3 the meaning checks and the re-encoding.
+  - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
+    `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
+    `polar.provenance.executions`, and build-processor's `whose_word` split to it.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
-  have yet), the clone image that checks and unpacks it.
-- **O4** the log as a registry blob and its digest in the provenance event (a wire change).
-- **O5** build-processor holds a `build_id` to the pod instance that started it (3).
+  have yet); the fetch image (O2a3a) checks and unpacks it.
+- **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
+  in it judged by the O2d reader and relayed.
+- **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
 - **O6** live on u7c: a test repository built end to end, its build in the graph.
 
 Open, to raise when its bite comes: the registry write (an operation on the registry handler, its grant); which event carries the log's
@@ -334,13 +351,13 @@ running from its pod's activity (`remaining-work.md`, B21's direction).
 Found in O2a3b, for O2b and later:
 
 - *The pipeline's UID.* The custody daemon serves the UIDs it is told (`POLAR_CUSTODY_WORKLOAD_UIDS`, 1000 in every pod), so a pipeline
-  that a signed mapping runs as root, or as another UID, cannot sign through it, and cannot report its build. O2b decides how a
-  mapping's user and the daemon's served UIDs agree.
+  that a signed mapping runs as root, or as another UID, could not sign through it. Answered by revised 3: a build pod holds no
+  identity, so a mapping may run its pipeline as any user.
 - *The Job's name.* `job_name_for_build` names a Job `build-<id>`; the attestation agent takes a Job as `build-runner`'s only when it is
-  named `build-runner-<id>` (7b). O2b renames it.
+  named `build-runner-<id>` (7b). O2c renames it.
 - *The fetch's registry.* `CYCLOPS_REGISTRY_INSECURE` is not set in the template: whether the fetch reads Polar's registry over plain
   http is the cluster's fact, set with O3, where the archive is first pushed there.
 - *Polar's identity containers and `restricted`.* `polar-init` sets neither `allowPrivilegeEscalation: false` nor a seccomp profile,
   nor does the custody daemon, in any Polar pod (`schema/functions.dhall`, `makePolarInitContainerWith`; `agent-pod.dhall`), and the
-  agents' own containers neither (`Constants.DropAllCapSecurityContext`). The build namespace's `restricted` warnings name only those
-  two, since the template hardens the build's own. Polar-wide, not this bite's.
+  agents' own containers neither (`Constants.DropAllCapSecurityContext`). Found by the build namespace's `restricted` warnings in
+  O2a3b; since O2b a build pod has no identity containers and meets `restricted` in full. Polar-wide for the agents, not this bite's.

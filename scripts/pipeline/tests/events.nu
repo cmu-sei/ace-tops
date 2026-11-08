@@ -24,7 +24,7 @@
 # What the pipeline's provenance events carry (core/events.nu). Run: nu scripts/pipeline/tests/events.nu
 
 use std/assert
-use ../core/events.nu [reported-now]
+use ../core/events.nu [reported-now, report-line, REPORT_PREFIX]
 
 def main [] {
     let tests = [
@@ -35,6 +35,19 @@ def main [] {
                 assert ($at =~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:\d{2}|Z)$') $at
                 let age = ((date now) - ($at | into datetime))
                 assert ($age >= 0sec and $age < 5sec) $"($at) is ($age) from now"
+            }
+        }
+        {
+            # docs/architecture/build-orchestrator.md, revised 3: a build reports by printing; the orchestrator reads its log after
+            # the pod ends, judges each report line and relays what passes.
+            name: "a report is one line: the prefix, then the event as compact JSON, whatever its strings hold"
+            body: {
+                let event = { type: "artifact_produced", name: "a\nb", note: "polar-report {\"x\":1}", size: 3 }
+                let line = (report-line $event)
+                assert equal $REPORT_PREFIX "polar-report "
+                assert ($line | str starts-with $REPORT_PREFIX) $line
+                assert equal ($line | lines | length) 1 "a newline in a string stays escaped"
+                assert equal ($line | str substring ($REPORT_PREFIX | str length).. | from json) $event "it reads back as the event"
             }
         }
     ]
