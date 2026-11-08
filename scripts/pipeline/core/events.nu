@@ -60,7 +60,7 @@ def emit [payload: record]: nothing -> nothing {
     print (report-line $payload)
 }
 
-# When an event happened, as build-processor takes it: RFC 3339 with the offset. Each execution and stage event
+# When an event happened, as build-processor takes it: RFC 3339 with the offset. Each stage event
 # carries it (`at`), and a build's states are keyed on it, so the same event seen twice lands on the same state.
 export def reported-now []: nothing -> string {
     date now | format date "%Y-%m-%dT%H:%M:%S%.f%:z"
@@ -68,57 +68,9 @@ export def reported-now []: nothing -> string {
 
 # ── Execution lifecycle ────────────────────────────────────────────────────────
 #
-# Emit ExecutionStarted — first event in the build lifecycle.
-# Creates the BuildJob anchor node in the graph.
-# TODO: Adding this ensures we get a git commit node, but we also have the whole db present during the build.
-# Perhaps we could get more data than the hash (e.g. remote refs, author, timestamp, etc. )
-export def emit-execution-started [
-    commit_sha: string
-    ref_name: string
-    repo_url: string
-    --triggered_by: string = "" # TODO: Not sure we care for this field, could be useful, could just be noise
-]: nothing -> nothing {
-    let build_id = get-build-id
-
-    mut payload = {
-        type: "execution_started"
-        build_id: $build_id
-        commit_sha: $commit_sha
-        ref_name: $ref_name
-        repo_url: $repo_url
-        backend: null
-        triggered_by: null
-        at: (reported-now)
-    }
-    if ($triggered_by | is-not-empty) {
-        $payload = ($payload | upsert triggered_by $triggered_by)
-    }
-    emit $payload
-}
-
-export def emit-execution-completed [duration_secs: int]: nothing -> nothing {
-    emit {type: "execution_completed", build_id: (get-build-id), duration_secs: $duration_secs, at: (reported-now)}
-}
-
-export def emit-execution-failed [reason: string, --stage: string = ""]: nothing -> nothing {
-    mut payload = {
-        build_id: (get-build-id),
-        type: "execution_failed", reason: $reason, stage: null, at: (reported-now)}
-    if ($stage | is-not-empty) {
-        $payload = ($payload | upsert stage $stage)
-    }
-    emit $payload
-}
-
-# TODO: Until we figure out how to capture SIGTERM and SIGKILL in nushell, we don't really have a great way to fire this off.
-# It might be nice for CI systems that are able to do it for us
-# export def emit-execution-cancelled [--reason: string = ""]: nothing -> nothing {
-#     mut payload = {type: "execution_cancelled", reason: null, at: (reported-now)}
-#     if ($reason | is-not-empty) {
-#         $payload = ($payload | upsert reason $reason)
-#     }
-#     emit $payload
-# }
+# None here: that a build started, completed, failed or was cancelled is the orchestrator's to say, on
+# polar.provenance.executions, from what it saw of the build's Job (docs/architecture/build-orchestrator.md, "Settled
+# with it", two topics). The reader refuses an execution kind a build prints.
 
 # Emit VulnerabilityFound — a SecurityAdvisory-shaped finding from a scanner:
 # cargo-audit's `vulnerability`, `unsound`, and `notice` kinds. Each of these

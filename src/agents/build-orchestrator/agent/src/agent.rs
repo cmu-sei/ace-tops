@@ -58,8 +58,7 @@ impl PolarAgent for BuildOrchestrator {
             PROVENANCE_EXECUTIONS,
             "what it observed of a build it ran: started, completed, failed or cancelled",
         )
-        .because(&[Cause::Topic(GIT_REPOSITORY_EVENTS)])
-        .waiting("build-processor is to read executions here (build-orchestrator.md, O2e3)"),
+        .because(&[Cause::Topic(GIT_REPOSITORY_EVENTS)]),
     ];
     const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
     const RUNTIME: &'static [&'static polar_agent_builder::RuntimeSection] =

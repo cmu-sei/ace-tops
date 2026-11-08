@@ -801,10 +801,9 @@ def main [
     let result = try {
         let start_time = (date now)
 
-        let ref_name   = (^git branch --show-current | str trim)
-        let repo_url   = (^git config --get remote.origin.url | str trim)
-
-        emit-execution-started $commit_sha $ref_name $repo_url
+        # That the build started, completed or failed is the orchestrator's to say, on its own topic, from what it saw
+        # (docs/architecture/build-orchestrator.md, "Settled with it", two topics): the pipeline reports only what it made
+        # and found, and a line it prints of an execution is refused.
 
         rm --force --recursive $artifact_dir
         mkdir -v $artifact_dir
@@ -897,8 +896,6 @@ def main [
         }
 
         let elapsed = (date now) - $start_time
-        let duration_secs = ($elapsed / 1sec | math round)
-        emit-execution-completed $duration_secs
         log-info $"pipeline complete \(duration: ($elapsed | format duration 'ms')\)" --component $COMPONENT
 
 
@@ -906,7 +903,6 @@ def main [
     } catch {|e|
         let msg = $e.msg
         log-error $msg --component $COMPONENT
-        emit-execution-failed $msg
         $msg
     }
 

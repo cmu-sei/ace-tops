@@ -34,7 +34,8 @@
 //! ## Current topology
 //!
 //! ```text
-//! polar.provenance.events       ← what builds report, build-processor subscribes
+//! polar.provenance.events       ← what builds report, the orchestrator relays, build-processor subscribes
+//! polar.provenance.executions   ← the orchestrator alone publishes what it saw of a build, build-processor subscribes
 //! polar.provenance.resolutions  ← the resolver alone publishes, build-processor subscribes
 //! polar.provenance.discovery    ← observer agents publish, resolver subscribes
 //! polar.git.repositories      ← git observer publishes, git processor subscribes
@@ -42,19 +43,18 @@
 
 // ── Provenance ─────────────────────────────────────────────────────────────────
 
-/// What builds report: executions and stages, what they produced, what scanners found. Build pipelines
-/// (nushell and Rust) publish here; build-processor subscribes. What a registry serves is not said here:
-/// that is the resolver's word, on [`PROVENANCE_RESOLUTIONS`], and build-processor believes it nowhere else.
-///
-/// Wire formats accepted on this topic:
-/// - rkyv-serialized [`ProvenanceEvent`] (Rust agents)
-/// - JSON-serialized [`ProvenanceEvent`] (nushell pipeline stages)
+/// What builds report: their stages, what they produced, what scanners found. A build prints its reports, and the
+/// orchestrator reads them from its log, judges each and relays it here, rkyv-archived in a
+/// [`BuildReport`](crate::events::BuildReport) envelope stamped with the build (docs/architecture/build-orchestrator.md,
+/// revised 3); build-processor subscribes and reads nothing else here. That a build started or ended is not said here
+/// (that is the orchestrator's word, on [`PROVENANCE_EXECUTIONS`]), nor what a registry serves (the resolver's, on
+/// [`PROVENANCE_RESOLUTIONS`]).
 pub const PROVENANCE_EVENTS: &str = "polar.provenance.events";
 
 /// What the build orchestrator observed of a build it ran: that it started, completed, failed or was cancelled. Its own
 /// word, not a build's claim, so its own topic: the orchestrator alone declares it, and a build that prints an execution
-/// event has it refused (docs/architecture/build-orchestrator.md, "Settled with it", two topics). build-processor is to
-/// believe executions only here (O2e3).
+/// event has it refused (docs/architecture/build-orchestrator.md, "Settled with it", two topics). build-processor believes
+/// executions only here.
 pub const PROVENANCE_EXECUTIONS: &str = "polar.provenance.executions";
 
 /// Provenance discovery requests.

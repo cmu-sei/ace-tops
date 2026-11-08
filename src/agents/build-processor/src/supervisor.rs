@@ -21,8 +21,9 @@
    DM26-0670
 */
 
-//! The build processor's supervisor: it receives what builds report and what the resolver verified, each on its own
-//! topic through the builder's subscriptions and believed only there (`project::believed_on`), projects
+//! The build processor's supervisor: it receives what builds report (relayed by the orchestrator, each in its `BuildReport`
+//! envelope), what the orchestrator saw of the builds it ran, and what the resolver verified, each on its own topic through
+//! the builder's subscriptions and believed only there (`project::believed_on`), projects
 //! each event (`project`) and hands the writes to its graph controller, and tells health what the graph and the broker
 //! say. An event it cannot read, or cannot project, is dropped with a warning and the next is read: the broker keeps
 //! no log, so what is dropped is gone, and nothing here claims otherwise.
@@ -77,28 +78,37 @@ pub struct ProcessorState {
 }
 
 impl ProcessorSupervisor {
-    /// An event as it came: archived by a Rust agent, or JSON from a pipeline's nushell stages. `None` if it is
-    /// neither, and why is logged.
-    pub fn decode(payload: &[u8]) -> Option<ProvenanceEvent> {
-        let archived = match rkyv::from_bytes::<ProvenanceEvent, rkyv::rancor::Error>(payload) {
-            Ok(event) => return Some(event),
-            Err(e) => e,
-        };
-        match serde_json::from_slice::<ProvenanceEvent>(payload) {
-            Ok(event) => Some(event),
-            Err(json) => {
-                warn!(rkyv_error = %archived, json_error = %json, "not a provenance event -- dropped");
-                None
-            }
+    /// An event as it came on `topic`, archived by the agent that published it: on the build stream, a report in the
+    /// `BuildReport` envelope the orchestrator relayed it in, believed for the envelope's build ([`project::relayed`]);
+    /// elsewhere, the event itself. `None` if it is not, and why is logged. No pipeline publishes since build pods hold no
+    /// identity (docs/architecture/build-orchestrator.md, revised 3), so no other form is read.
+    pub fn decode(topic: &str, payload: &[u8]) -> Option<ProvenanceEvent> {
+        if topic == polar::topics::PROVENANCE_EVENTS {
+            let envelope = match rkyv::from_bytes::<polar::events::BuildReport, rkyv::rancor::Error>(
+                payload,
+            ) {
+                Ok(envelope) => envelope,
+                Err(e) => {
+                    warn!("not a relayed report on {topic} -- dropped: {e}");
+                    return None;
+                }
+            };
+            return project::relayed(envelope)
+                .inspect_err(|why| warn!("a relayed report refused -- dropped: {why}"))
+                .ok();
         }
+        rkyv::from_bytes::<ProvenanceEvent, rkyv::rancor::Error>(payload)
+            .inspect_err(|e| warn!("not a provenance event on {topic} -- dropped: {e}"))
+            .ok()
     }
 
     /// A subscription to `topic` that hands over each event believed there ([`project::believed_on`]): a registry fact
-    /// on the build stream, or a build's report on the resolver's topic, is dropped with a warning.
+    /// on the build stream, a build's execution on it, or a build's report on the resolver's topic, is dropped with a
+    /// warning.
     fn stream(topic: &'static str, to: &ActorRef<ProcessorMessage>) -> Subscription {
         let to = to.clone();
         Subscription::new(topic, move |incoming| {
-            let Some(event) = Self::decode(&incoming.payload) else {
+            let Some(event) = Self::decode(topic, &incoming.payload) else {
                 return;
             };
             if !project::believed_on(topic, &event) {
@@ -192,6 +202,7 @@ impl Actor for ProcessorSupervisor {
         let key_indexes = configured.graph_key_indexes();
         let resources = AgentBuilder::new(myself.clone(), AGENT_NAME)
             .with_subscription(Self::stream(polar::topics::PROVENANCE_EVENTS, &myself))
+            .with_subscription(Self::stream(polar::topics::PROVENANCE_EXECUTIONS, &myself))
             .with_subscription(Self::stream(polar::topics::PROVENANCE_RESOLUTIONS, &myself))
             .with_lifecycle_handler(|event| Some(ProcessorMessage::ClientEvent { event }))
             .into_configured(configured)
@@ -375,46 +386,86 @@ mod tests {
     use super::ProcessorSupervisor;
     use polar::ProvenanceEvent;
 
-    #[test]
-    fn an_event_a_rust_agent_archived_is_read() {
-        let event = ProvenanceEvent::ExecutionCompleted {
+    use polar::events::BuildReport;
+    use polar::topics::{PROVENANCE_EVENTS, PROVENANCE_EXECUTIONS, PROVENANCE_RESOLUTIONS};
+
+    fn completed() -> ProvenanceEvent {
+        ProvenanceEvent::ExecutionCompleted {
             build_id: "b1".into(),
             duration_secs: 3,
             at: "2026-10-16T00:00:00Z".into(),
-        };
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&event).unwrap();
-        match ProcessorSupervisor::decode(&bytes) {
-            Some(ProvenanceEvent::ExecutionCompleted {
-                build_id,
-                duration_secs,
-                at,
-            }) => {
-                assert_eq!(
+        }
+    }
+
+    fn stage(build_id: &str) -> ProvenanceEvent {
+        ProvenanceEvent::StageStarted {
+            build_id: build_id.into(),
+            stage_name: "build".into(),
+            stage_id: "s1".into(),
+            at: "2026-10-16T00:00:00Z".into(),
+        }
+    }
+
+    fn relayed(build_id: &str, report: ProvenanceEvent) -> Vec<u8> {
+        rkyv::to_bytes::<rkyv::rancor::Error>(&BuildReport {
+            build_id: build_id.into(),
+            report,
+        })
+        .unwrap()
+        .to_vec()
+    }
+
+    #[test]
+    fn an_event_the_orchestrator_archived_is_read_on_its_topic() {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&completed()).unwrap();
+        for topic in [PROVENANCE_EXECUTIONS, PROVENANCE_RESOLUTIONS] {
+            match ProcessorSupervisor::decode(topic, &bytes) {
+                Some(ProvenanceEvent::ExecutionCompleted {
+                    build_id,
+                    duration_secs,
+                    at,
+                }) => assert_eq!(
                     (build_id.as_str(), duration_secs, at.as_str()),
                     ("b1", 3, "2026-10-16T00:00:00Z")
-                )
+                ),
+                other => panic!("expected the build's completion, got {other:?}"),
             }
-            other => panic!("expected the build's completion, got {other:?}"),
         }
     }
 
     #[test]
-    fn an_event_a_pipeline_wrote_as_json_is_read() {
-        let event = ProvenanceEvent::ExecutionCompleted {
-            build_id: "b1".into(),
-            duration_secs: 3,
-            at: "2026-10-16T00:00:00Z".into(),
-        };
-        let json = serde_json::to_vec(&event).unwrap();
+    fn the_build_stream_reads_relayed_reports_and_nothing_else() {
         assert!(matches!(
-            ProcessorSupervisor::decode(&json),
-            Some(ProvenanceEvent::ExecutionCompleted { .. })
+            ProcessorSupervisor::decode(PROVENANCE_EVENTS, &relayed("b1", stage("b1"))),
+            Some(ProvenanceEvent::StageStarted { .. })
         ));
+        // Not the envelope's build: refused.
+        assert!(
+            ProcessorSupervisor::decode(PROVENANCE_EVENTS, &relayed("b1", stage("b2"))).is_none()
+        );
+        // A bare event, as a pipeline once published it, archived or as JSON: not a relayed report.
+        let bare = rkyv::to_bytes::<rkyv::rancor::Error>(&stage("b1")).unwrap();
+        assert!(ProcessorSupervisor::decode(PROVENANCE_EVENTS, &bare).is_none());
+        let json = serde_json::to_vec(&stage("b1")).unwrap();
+        assert!(ProcessorSupervisor::decode(PROVENANCE_EVENTS, &json).is_none());
+        assert!(
+            ProcessorSupervisor::decode(
+                PROVENANCE_EXECUTIONS,
+                &serde_json::to_vec(&completed()).unwrap()
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn what_is_not_an_event_is_dropped_not_fatal() {
-        assert!(ProcessorSupervisor::decode(b"not an event").is_none());
-        assert!(ProcessorSupervisor::decode(&[]).is_none());
+        for topic in [
+            PROVENANCE_EVENTS,
+            PROVENANCE_EXECUTIONS,
+            PROVENANCE_RESOLUTIONS,
+        ] {
+            assert!(ProcessorSupervisor::decode(topic, b"not an event").is_none());
+            assert!(ProcessorSupervisor::decode(topic, &[]).is_none());
+        }
     }
 }

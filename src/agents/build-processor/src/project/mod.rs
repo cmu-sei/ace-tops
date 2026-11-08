@@ -214,7 +214,11 @@ pub fn project(
 pub enum Word {
     /// What a registry serves: the resolver's, on [`polar::topics::PROVENANCE_RESOLUTIONS`].
     Registry,
-    /// What a build reports: on [`polar::topics::PROVENANCE_EVENTS`].
+    /// That a build started, completed, failed or was cancelled: what the orchestrator saw of a build it ran, on
+    /// [`polar::topics::PROVENANCE_EXECUTIONS`] (docs/architecture/build-orchestrator.md, "Settled with it", two topics).
+    Orchestrator,
+    /// What a build reports, relayed by the orchestrator in a `BuildReport` envelope: on
+    /// [`polar::topics::PROVENANCE_EVENTS`].
     Build,
     /// A request for the resolver to fetch and verify something, believed on neither.
     Request,
@@ -227,11 +231,11 @@ pub fn whose_word(event: &ProvenanceEvent) -> Word {
         | ProvenanceEvent::OCIRegistryDiscovered { .. }
         | ProvenanceEvent::ImageRefResolved { .. } => Word::Registry,
         ProvenanceEvent::ExecutionStarted { .. }
-        | ProvenanceEvent::StageStarted { .. }
-        | ProvenanceEvent::StageCompleted { .. }
         | ProvenanceEvent::ExecutionCompleted { .. }
         | ProvenanceEvent::ExecutionFailed { .. }
-        | ProvenanceEvent::ExecutionCancelled { .. }
+        | ProvenanceEvent::ExecutionCancelled { .. } => Word::Orchestrator,
+        ProvenanceEvent::StageStarted { .. }
+        | ProvenanceEvent::StageCompleted { .. }
         | ProvenanceEvent::ArtifactProduced(_)
         | ProvenanceEvent::SbomAnalyzed(_)
         | ProvenanceEvent::BinaryLinked(_)
@@ -245,14 +249,53 @@ pub fn whose_word(event: &ProvenanceEvent) -> Word {
     }
 }
 
-/// Whether `event`, arriving on `topic`, is believed: a registry fact only from the resolver's topic, a build's report
-/// only from the provenance stream. Who may publish on each is the broker's to decide, on the publisher's
-/// broker-stamped identity, so a build publisher cannot speak for a registry.
+/// Whether `event`, arriving on `topic`, is believed: a registry fact only from the resolver's topic, a build's execution
+/// only from the orchestrator's, a build's report only from the provenance stream. Who may publish on each is the broker's
+/// to decide, on the publisher's broker-stamped identity, so a build's word cannot speak for a registry or for what the
+/// orchestrator saw.
 pub fn believed_on(topic: &str, event: &ProvenanceEvent) -> bool {
     match whose_word(event) {
         Word::Registry => topic == polar::topics::PROVENANCE_RESOLUTIONS,
+        Word::Orchestrator => topic == polar::topics::PROVENANCE_EXECUTIONS,
         Word::Build => topic == polar::topics::PROVENANCE_EVENTS,
         Word::Request => false,
+    }
+}
+
+/// The build an event names, where its kind has one. No wildcard: a new kind does not compile until it is placed.
+pub fn build_id_of(event: &ProvenanceEvent) -> Option<&str> {
+    match event {
+        ProvenanceEvent::ExecutionStarted { build_id, .. }
+        | ProvenanceEvent::StageStarted { build_id, .. }
+        | ProvenanceEvent::StageCompleted { build_id, .. }
+        | ProvenanceEvent::ExecutionCompleted { build_id, .. }
+        | ProvenanceEvent::ExecutionFailed { build_id, .. }
+        | ProvenanceEvent::ExecutionCancelled { build_id, .. } => Some(build_id),
+        ProvenanceEvent::SecurityAdvisoryFound(p) => Some(&p.build_id),
+        ProvenanceEvent::PackageStatusFound(p) => Some(&p.build_id),
+        ProvenanceEvent::ArtifactProduced(p) => p.build_id.as_deref(),
+        ProvenanceEvent::OCIArtifactCreated { build_id, .. } => build_id.as_deref(),
+        ProvenanceEvent::SbomAnalyzed(_)
+        | ProvenanceEvent::BinaryLinked(_)
+        | ProvenanceEvent::ContainerImageCreated(_)
+        | ProvenanceEvent::ArtifactDiscovered { .. }
+        | ProvenanceEvent::OCIArtifactDiscovered { .. }
+        | ProvenanceEvent::OCIRegistryDiscovered { .. }
+        | ProvenanceEvent::OCIArtifactResolved { .. }
+        | ProvenanceEvent::ImageRefResolved { .. }
+        | ProvenanceEvent::Ignored => None,
+    }
+}
+
+/// A report as the orchestrator relayed it (`BuildReport`), believed for the build the envelope names: the orchestrator
+/// stamped it, so an event that names another build is not one the orchestrator relayed as it is, and is refused.
+pub fn relayed(envelope: polar::events::BuildReport) -> Result<ProvenanceEvent, String> {
+    match build_id_of(&envelope.report) {
+        Some(named) if named != envelope.build_id => Err(format!(
+            "the report names build {named} and its envelope build {}",
+            envelope.build_id
+        )),
+        _ => Ok(envelope.report),
     }
 }
 
@@ -636,7 +679,7 @@ mod tests {
     /// provenance stream; and a discovery is a request to the resolver, believed on neither.
     #[test]
     fn each_kind_is_believed_on_one_topic_only() {
-        use super::Word::{Build, Registry, Request};
+        use super::Word::{Build, Orchestrator, Registry, Request};
         let registry_facts = [
             ProvenanceEvent::OCIArtifactResolved {
                 uri: "reg/x@sha256:m".into(),
@@ -661,9 +704,30 @@ mod tests {
                 .iter()
                 .any(|r| std::mem::discriminant(r) == std::mem::discriminant(e))
         }) {
-            assert_eq!(whose_word(&event), Build, "{event:?}");
-            assert!(believed_on(polar::topics::PROVENANCE_EVENTS, &event));
-            assert!(!believed_on(polar::topics::PROVENANCE_RESOLUTIONS, &event));
+            let topic = match event {
+                ProvenanceEvent::ExecutionStarted { .. }
+                | ProvenanceEvent::ExecutionCompleted { .. }
+                | ProvenanceEvent::ExecutionFailed { .. }
+                | ProvenanceEvent::ExecutionCancelled { .. } => {
+                    assert_eq!(whose_word(&event), Orchestrator, "{event:?}");
+                    polar::topics::PROVENANCE_EXECUTIONS
+                }
+                _ => {
+                    assert_eq!(whose_word(&event), Build, "{event:?}");
+                    polar::topics::PROVENANCE_EVENTS
+                }
+            };
+            for elsewhere in [
+                polar::topics::PROVENANCE_EVENTS,
+                polar::topics::PROVENANCE_EXECUTIONS,
+                polar::topics::PROVENANCE_RESOLUTIONS,
+            ] {
+                assert_eq!(
+                    believed_on(elsewhere, &event),
+                    elsewhere == topic,
+                    "{event:?} on {elsewhere}"
+                );
+            }
         }
         let request = ProvenanceEvent::OCIArtifactDiscovered {
             uri: "reg/x:1".into(),
@@ -674,10 +738,40 @@ mod tests {
         assert_eq!(whose_word(&request), Request);
         for topic in [
             polar::topics::PROVENANCE_EVENTS,
+            polar::topics::PROVENANCE_EXECUTIONS,
             polar::topics::PROVENANCE_RESOLUTIONS,
             "elsewhere",
         ] {
             assert!(!believed_on(topic, &request), "{topic}");
+        }
+    }
+
+    /// A relayed report is believed for its envelope's build: one that names another build is refused, one that names
+    /// none, or the same, is the envelope's.
+    #[test]
+    fn a_report_is_believed_for_its_envelopes_build_and_no_other() {
+        for event in one_of_each() {
+            let named = build_id_of(&event).map(str::to_string);
+            let envelope = |build_id: &str, event| polar::events::BuildReport {
+                build_id: build_id.to_string(),
+                report: event,
+            };
+            let kind = format!("{event:?}");
+            match named {
+                Some(id) => {
+                    assert!(relayed(envelope(&id, event)).is_ok(), "{kind}");
+                    let again = one_of_each()
+                        .into_iter()
+                        .find(|e| format!("{e:?}") == kind)
+                        .unwrap();
+                    let refused = relayed(envelope("another", again)).unwrap_err();
+                    assert!(
+                        refused.contains("another") && refused.contains(&id),
+                        "{refused}"
+                    );
+                }
+                None => assert!(relayed(envelope("any", event)).is_ok(), "{kind}"),
+            }
         }
     }
 

@@ -44,9 +44,15 @@ impl PolarAgent for BuildProcessor {
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_EVENTS,
-            "what builds report: executions, their outputs, what scanners found",
+            "what builds report (their stages, outputs, and what scanners found), each relayed by the orchestrator in a \
+             BuildReport envelope",
         )
         .waiting("the build orchestrator relays what builds print (docs/architecture/build-orchestrator.md, revised 3); it is not in the catalog yet"),
+        TopicDecl::subscribe(
+            polar::topics::PROVENANCE_EXECUTIONS,
+            "what the orchestrator saw of the builds it ran: started, completed, failed or cancelled",
+        )
+        .waiting("the build orchestrator is not in the catalog yet (docs/architecture/build-orchestrator.md, O2e4)"),
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_RESOLUTIONS,
             "what the resolver verified a registry serves, believed from nowhere else",
@@ -85,7 +91,7 @@ impl PolarAgent for BuildProcessor {
     const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
         "build-processor subscribes to the provenance stream on Cassini and writes each event into the graph: the \
-         builds the orchestrator and CI report, what they produced, what scanners found, and what the resolver \
+         builds the orchestrator ran, what they produced, what scanners found, and what the resolver \
          verified a registry serves. It is the only writer of those labels. It needs the graph (GRAPH_*).",
     );
 
@@ -129,10 +135,10 @@ mod tests {
         }
     }
 
-    /// It reads what builds report and what the resolver verified, each on its own topic, and nothing else: the legacy
-    /// linker topic has had no publisher since the old GitLab consumer went.
+    /// It reads what builds report, what the orchestrator saw of them, and what the resolver verified, each on its own
+    /// topic, and nothing else: the legacy linker topic has had no publisher since the old GitLab consumer went.
     #[test]
-    fn it_subscribes_to_the_build_stream_and_the_resolvers_topic_alone() {
+    fn it_subscribes_to_the_build_stream_the_orchestrators_and_the_resolvers_topics_alone() {
         use polar_agent_builder::Access;
         let topics: Vec<(&str, bool)> = BuildProcessor::TOPICS
             .iter()
@@ -142,6 +148,7 @@ mod tests {
             topics,
             [
                 (polar::topics::PROVENANCE_EVENTS, true),
+                (polar::topics::PROVENANCE_EXECUTIONS, true),
                 (polar::topics::PROVENANCE_RESOLUTIONS, true)
             ]
         );

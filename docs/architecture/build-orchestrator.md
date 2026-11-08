@@ -592,7 +592,19 @@ I write Rust code"):
     the rest passed over or refused, however the log is split; a failed build's reports read too; a reader that dies failing
     the build at `reports`, asked nothing more; a log not had or ending in an error; the line and report bounds, a line past
     its bound never asked of the reader); and a property that whatever a log holds and wherever its pieces split it, the
-    lines found are exactly its report lines, each within the bound or known only by its length. O2e2 DONE.
+    lines found are exactly its report lines, each within the bound or known only by its length. O2e2 DONE. O2e3 DONE
+    2026-11-08: build-processor believes each kind on its one topic by whose word it is (`whose_word`): a build's
+    execution (started, completed, failed, cancelled) the orchestrator's, on `polar.provenance.executions`, which it now
+    subscribes to; a build's reports on `polar.provenance.events`, read only as `BuildReport` envelopes and believed for the
+    envelope's build, an event that names another build refused (`relayed`, by `build_id_of`); a registry's facts on the
+    resolver's topic as before. It reads rkyv alone: its JSON form was the pipelines', and no pipeline publishes since
+    build pods hold no identity, so a second wire format is closed with its last sender. The pipeline no longer prints
+    execution events (`ci.nu`, `core/events.nu`); the reader refuses one a build prints. `lib/src/topics.rs` and the
+    event type's routing note say so. Found, for later: `scripts/pipeline/smoke-test.nu` does not parse (its calls do not
+    match the functions they name, and it tests the Cassini daemon route revised 3 removed); left as it was. Tested:
+    belief for every kind on each of the three topics; an envelope believed for its build and refused for another, for
+    every kind that names one; the build stream reading relayed reports and nothing else (a bare event, archived or JSON,
+    refused); its topics; and, against Neo4j, the projection as before.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports

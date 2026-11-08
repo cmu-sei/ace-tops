@@ -343,14 +343,16 @@ pub struct ContainerImageCreatedPayload {
 ///
 /// ## Wire formats
 ///
-/// - Rust agents serialize this directly via rkyv and publish to the broker.
-///   Zero-copy deserialization on the consumer side.
-/// - Nushell pipeline stages emit JSON matching variant shapes. The supervisor
-///   deserializes with `serde_json::from_slice::<ProvenanceEvent>`.
+/// - Rust agents serialize this directly via rkyv and publish to the broker, and build-processor reads rkyv alone.
+/// - A build's pipeline prints its reports as JSON lines in its log, which the orchestrator reads with its own reader,
+///   never with serde (docs/architecture/build-orchestrator.md, "How a report is read"), and relays in a [`BuildReport`]
+///   envelope.
 ///
 /// ## Routing
 ///
-/// All events flow through `polar.provenance.events`. Each agent subscribes
+/// Each kind is believed on one topic, by whose word it is: a build's reports on `polar.provenance.events`, what the
+/// orchestrator saw of a build on `polar.provenance.executions`, what a registry serves on
+/// `polar.provenance.resolutions` (build-processor, `project::whose_word`). Each agent subscribes
 /// and handles the variants it owns. Unrecognized variants hit the `Ignored`
 /// arm rather than a wildcard — the compiler will force a decision when new
 /// variants are added.
