@@ -75,12 +75,27 @@ Asked, the maintainer, 2026-11-07:
    env. So the facts stay the catalog's and are said once, as the load harness's runs copy its rendered Job, and a new catalog applies
    without restarting the orchestrator. His read them from JSON in a rendered config file.
 
+5c. **The template's container runs the fetch image until a build replaces it** (the maintainer, 2026-11-08, "The fetch image,
+   replaced per build"): Kubernetes requires an image on a PodTemplate's container (a server dry run on u7c: `containers[0].image:
+   Required value`), so the template carries the fetch init container, its image pinned by digest, and a `pipeline` container with that
+   same image, which the orchestrator replaces with the mapping's pipeline image in each Job. The fetch image is read from the template.
+5d. **The build namespace enforces Pod Security Admission `baseline`, and warns and audits `restricted`** (the maintainer, "Baseline
+   enforced, restricted warned"): Kubernetes itself refuses a privileged container or host access there, which no mapping may ask for,
+   while a signed mapping's run-as-root or added capabilities (decision 4) still run, and every build below restricted is on record.
+
 Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 
 5. Deployment facts (the build namespace, the clone image, by digest) come from the catalog, and run-time settings (the concurrency cap,
    resources, retention, the default command) are Dynamic signed settings; no rendered file and no env overrides.
 6. Its capabilities are declared once, in its code, including one that says it creates Jobs and their Secrets, computed by the builder;
    it is a catalog workload, not a `src/deploy` one.
+7b. For O2a: namespaces are named by their `cluster.namespaces` key wherever the catalog names one (`builds` is `polar-builds`); the
+   build workload is `build-runner`, its Jobs `build-runner-<build id>` (the attestation agent finds a Job's pod by the workload's prefix);
+   the build namespace is attested, since the credentials agent refuses a pod the attestation agent cannot find; the build workload's
+   topics are its catalog entry's, as no Polar binary of its own runs there to print a scaffold; the `job-run` Role's rules are fixed in
+   `capabilities.nuon`, mirrored in the builder, which holds every declared access to what the agent's capabilities grant; build pods
+   use custody as every agent does. The new namespace gets the CA file every pod reads (`up.nu`, `spread_ca`), which today only Polar's
+   first namespaces and `attest_also` get.
 7. Who asked for a build is the broker-stamped publisher of the request; it ends through its HealthCheckActor's verdict; its retention is
    a supervised actor; the shared `client-tls` fallback goes; the clone image is built here.
 
