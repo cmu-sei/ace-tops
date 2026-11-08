@@ -1051,13 +1051,15 @@ pub(crate) fn problems(
                 "operation `{name}`: the Kubernetes protocol goes to the cluster and nothing else does"
             ));
         }
-        if to_the_cluster
-            && !needs.contains(&crate::Capability::KubeApiRead)
-            && !needs.contains(&crate::Capability::PodRead)
-        {
-            problems.push(format!(
-                "operation `{name}` reads the Kubernetes API, and {agent} needs no capability that gives it a token to"
-            ));
+        // What it may do there is what one of its capabilities' RBAC grants it, and the token comes with that capability.
+        if let Location::Cluster { access } = operation.location {
+            for wanted in access {
+                if !crate::capability::granted(needs, wanted) {
+                    problems.push(format!(
+                        "operation `{name}` may {wanted}, and none of {agent}'s capabilities grants it"
+                    ));
+                }
+            }
         }
         if credential.is_some() && credentials.is_none() {
             problems.push(format!(
@@ -1139,6 +1141,8 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const WATCH_PODS: &[Access] = &[Access::new(Verb::Watch, "", "pods")];
+    const CREATE_JOBS: &[Access] = &[Access::new(Verb::Create, "batch", "jobs")];
+    const CREATE_SECRETS: &[Access] = &[Access::new(Verb::Create, "", "secrets")];
     const WATCH_PODS_AND_CREATE_JOBS: &[Access] = &[
         Access::new(Verb::Watch, "", "pods"),
         Access::new(Verb::Create, "batch", "jobs"),
@@ -2337,7 +2341,42 @@ pub(crate) mod tests {
             assert!(problems("a", &watches, None, &[], true, &[enough]).is_empty());
         }
         let all = problems("a", &watches, None, &[], true, &[]).join(" | ");
-        assert!(all.contains("reads the Kubernetes API"), "{all}");
+        assert!(
+            all.contains("may watch pods, and none of a's capabilities grants it"),
+            "{all}"
+        );
+
+        // A write is granted by job-run alone, and kube-api-read, which reads anything, grants none.
+        let makes = [OperationDecl {
+            name: "makes",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: CREATE_JOBS,
+            },
+        }];
+        assert!(problems("a", &makes, None, &[], true, &[crate::Capability::JobRun]).is_empty());
+        let all = problems(
+            "a",
+            &makes,
+            None,
+            &[],
+            true,
+            &[crate::Capability::KubeApiRead],
+        )
+        .join(" | ");
+        assert!(all.contains("may create batch/jobs"), "{all}");
+        let secrets = [OperationDecl {
+            name: "secrets",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: CREATE_SECRETS,
+            },
+        }];
+        let all =
+            problems("a", &secrets, None, &[], true, &[crate::Capability::JobRun]).join(" | ");
+        assert!(all.contains("may create secrets"), "{all}");
 
         let says_nothing = [OperationDecl {
             name: "says-nothing",
@@ -2469,6 +2508,56 @@ pub(crate) mod tests {
             for credential in presented.into_iter().flatten() {
                 prop_assert_eq!(credential, secret.as_bytes().to_vec());
             }
+        }
+    }
+
+    /// The accesses a cluster declaration draws from, for the property below: each capability's, and some none grants.
+    const ACCESSES: [Access; 7] = [
+        Access::new(Verb::Watch, "", "pods"),
+        Access::new(Verb::Watch, "apps", "deployments"),
+        Access::new(Verb::Get, "", "secrets"),
+        Access::new(Verb::Create, "batch", "jobs"),
+        Access::new(Verb::Get, "", "pods/log"),
+        Access::new(Verb::Create, "", "secrets"),
+        Access::new(Verb::Delete, "", "pods"),
+    ];
+
+    fn declared_with(access: Access) -> &'static [OperationDecl] {
+        static ALL: std::sync::OnceLock<Vec<[OperationDecl; 1]>> = std::sync::OnceLock::new();
+        let all = ALL.get_or_init(|| {
+            ACCESSES
+                .iter()
+                .map(|a| {
+                    let access: &'static [Access] = Box::leak(Box::new([*a]));
+                    [OperationDecl {
+                        name: "cluster",
+                        doc: "",
+                        protocol: ProtocolKind::KUBERNETES,
+                        location: Location::Cluster { access },
+                    }]
+                })
+                .collect()
+        });
+        &all[ACCESSES.iter().position(|a| *a == access).unwrap()]
+    }
+
+    proptest! {
+        /// A cluster operation's access is a problem exactly when none of the capabilities the agent needs grants it:
+        /// kube-api-read any read, pod-read and job-run their Roles' rules, and nothing else anything.
+        #[test]
+        fn what_a_cluster_operation_may_do_is_what_its_capabilities_grant(
+            access in proptest::sample::select(ACCESSES.to_vec()),
+            needs in proptest::sample::subsequence(crate::Capability::ALL.to_vec(), 0..=crate::Capability::ALL.len()),
+        ) {
+            let found = problems("a", declared_with(access), None, &[], true, &needs);
+            let refused = found.iter().any(|p| p.contains("grants it"));
+            let grants = needs.iter().any(|c| match c {
+                crate::Capability::KubeApiRead => !access.verb.writes(),
+                crate::Capability::PodRead => crate::capability::POD_READ_GRANTS.contains(&access),
+                crate::Capability::JobRun => crate::capability::JOB_RUN_GRANTS.contains(&access),
+                _ => false,
+            });
+            prop_assert_eq!(refused, !grants, "{:?} {:?}", needs, found);
         }
     }
 }

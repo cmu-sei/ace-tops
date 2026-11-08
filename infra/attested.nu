@@ -89,3 +89,18 @@ export def floor_entries_also [also: list, groups: list<string> = []] {
         }
     }
 }
+
+# The namespaces a capability's Role goes in: the one it names, by its key among the cluster's namespaces, alone; or, when it
+# names none, every namespace Polar attests. A key the cluster does not have is refused.
+export def role_namespaces [role: record, cluster: record, capability: string] {
+    match ($role.namespace? | default null) {
+        null => (attested_namespaces $cluster)
+        $key => {
+            let found = ($cluster.namespaces | get -o $key)
+            if $found == null {
+                error make { msg: $"capability ($capability): its Role names the namespace `($key)`, which the cluster's namespaces do not have \(($cluster.namespaces | columns | str join ', ')\)" }
+            }
+            [$found]
+        }
+    }
+}

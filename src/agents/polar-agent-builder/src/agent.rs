@@ -431,7 +431,7 @@ pub(crate) fn needs_of<A: PolarAgent>() -> Vec<Capability> {
     if A::CREDENTIALS.is_some() {
         listed.push(Capability::Encryption);
     }
-    computed_needs(A::CASSINI_CLIENT, &listed, A::GRAPH)
+    computed_needs(A::CASSINI_CLIENT, &listed, A::GRAPH, A::OPERATIONS)
 }
 
 /// The runtime sections `A` accepts: what it lists, and its credentials section if it declares credentials.
@@ -441,11 +441,13 @@ fn runtime_of<A: PolarAgent>() -> Vec<&'static RuntimeSection> {
 
 /// What an agent needs, from how it is declared: `Cassini` first for a Cassini client, then what it lists, then
 /// `SoftState` for an agent that declares a graph read, which the builder gives a state actor for
-/// (docs/architecture/soft-state.md). Each once, in that order.
+/// (docs/architecture/soft-state.md), then `JobRun` for one whose cluster operations declare a write
+/// (docs/architecture/build-orchestrator.md). Each once, in that order.
 pub fn computed_needs(
     cassini_client: bool,
     listed: &[Capability],
     graph: &[GraphDecl],
+    operations: &[crate::protocol::OperationDecl],
 ) -> Vec<Capability> {
     let mut needs = if cassini_client {
         vec![Capability::Cassini]
@@ -462,6 +464,13 @@ pub fn computed_needs(
         .any(|d| d.access == crate::graph_schema::GraphAccess::Reads);
     if reads && !needs.contains(&Capability::SoftState) {
         needs.push(Capability::SoftState);
+    }
+    let writes = operations.iter().any(|operation| match operation.location {
+        crate::protocol::Location::Cluster { access } => access.iter().any(|a| a.verb.writes()),
+        _ => false,
+    });
+    if writes && !needs.contains(&Capability::JobRun) {
+        needs.push(Capability::JobRun);
     }
     needs
 }
@@ -710,7 +719,7 @@ fn surface_problems<A: PolarAgent>() -> Vec<String> {
         A::CREDENTIALS,
         &variables,
         A::CASSINI_CLIENT,
-        A::NEEDS,
+        &needs_of::<A>(),
     ));
     problems.extend(crate::topics::problems(&topic_facts::<A>(), A::TOPICS));
     problems.extend(crate::topics::family_problems(A::TOPIC_FAMILIES));
@@ -1029,6 +1038,12 @@ pub fn declaration_problems<A: PolarAgent>() -> Vec<String> {
         problems.push(
             "soft-state is listed by hand: the builder adds it for an agent that declares a graph read \
              (GRAPH), and only then"
+                .to_string(),
+        );
+    }
+    if A::NEEDS.contains(&Capability::JobRun) || A::OPTIONAL.contains(&Capability::JobRun) {
+        problems.push(
+            "job-run is listed by hand: the builder adds it for an agent whose cluster operations declare a write              (OPERATIONS), and only then"
                 .to_string(),
         );
     }
@@ -1874,6 +1889,38 @@ mod tests {
         proptest::sample::select(Capability::ALL.to_vec())
     }
 
+    /// Operations of each kind a declaration may hold: none to the cluster, a watch, a write.
+    const OPERATION_KINDS: [crate::protocol::OperationDecl; 3] = {
+        use crate::protocol::{Access, Location, OperationDecl, ProtocolKind, Verb};
+        [
+            OperationDecl {
+                name: "elsewhere",
+                doc: "",
+                protocol: ProtocolKind::TEST,
+                location: Location::Arbitrary,
+            },
+            OperationDecl {
+                name: "watches",
+                doc: "",
+                protocol: ProtocolKind::KUBERNETES,
+                location: Location::Cluster {
+                    access: &[Access::new(Verb::Watch, "", "pods")],
+                },
+            },
+            OperationDecl {
+                name: "makes",
+                doc: "",
+                protocol: ProtocolKind::KUBERNETES,
+                location: Location::Cluster {
+                    access: &[
+                        Access::new(Verb::Get, "batch", "jobs"),
+                        Access::new(Verb::Create, "batch", "jobs"),
+                    ],
+                },
+            },
+        ]
+    };
+
     fn graph_decl() -> impl proptest::strategy::Strategy<Value = GraphDecl> {
         use proptest::prelude::*;
         (prop::sample::select(vec!["A", "B", "C"]), any::<bool>()).prop_map(|(label, owns)| {
@@ -1893,9 +1940,13 @@ mod tests {
             cassini in proptest::prelude::any::<bool>(),
             listed in proptest::collection::vec(capability(), 0..6),
             graph in proptest::collection::vec(graph_decl(), 0..5),
+            operations in proptest::collection::vec(proptest::sample::select(OPERATION_KINDS.to_vec()), 0..4),
         ) {
-            let needs = computed_needs(cassini, &listed, &graph);
+            let needs = computed_needs(cassini, &listed, &graph, &operations);
             let reads = graph.iter().any(|d| d.access == crate::graph_schema::GraphAccess::Reads);
+            let writes = operations.iter().any(|o| matches!(o.location,
+                crate::protocol::Location::Cluster { access } if access.iter().any(|a| a.verb.writes())));
+            proptest::prop_assert_eq!(needs.contains(&Capability::JobRun), writes || listed.contains(&Capability::JobRun));
             proptest::prop_assert_eq!(needs.first() == Some(&Capability::Cassini), cassini || listed.first() == Some(&Capability::Cassini));
             proptest::prop_assert_eq!(needs.contains(&Capability::SoftState), reads || listed.contains(&Capability::SoftState));
             let mut unique = needs.clone();
@@ -1910,12 +1961,13 @@ mod tests {
                     listed.contains(capability)
                         || (*capability == Capability::Cassini && cassini)
                         || (*capability == Capability::SoftState && reads)
+                        || (*capability == Capability::JobRun && writes)
                 );
             }
             // Deterministic, and independent of how the graph declarations are ordered.
             let mut reversed = graph.clone();
             reversed.reverse();
-            proptest::prop_assert_eq!(&needs, &computed_needs(cassini, &listed, &reversed));
+            proptest::prop_assert_eq!(&needs, &computed_needs(cassini, &listed, &reversed, &operations));
         }
     }
 

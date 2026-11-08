@@ -32,6 +32,7 @@
 //! compares the two and refuses to start on a mismatch, with a message that
 //! names the missing capability.
 
+use crate::protocol::{Access, Verb};
 use std::fmt;
 
 /// Environment variable the deployment sets to the comma-separated list of
@@ -57,11 +58,66 @@ pub enum Capability {
     /// Reads its own soft state back through the state agent (docs/architecture/soft-state.md). Never listed by hand:
     /// the builder adds it for an agent that declares a graph read (`PolarAgent::GRAPH`), and starts its state actor.
     SoftState,
+    /// Runs work as Kubernetes Jobs in the build namespace: makes, reads and removes them, reads their pods, logs and
+    /// events and the build workload's PodTemplate, and nothing else (docs/architecture/build-orchestrator.md). Never
+    /// listed by hand: the builder adds it for an agent whose cluster operations declare a write.
+    JobRun,
+}
+
+/// What a capability lets an agent do to the Kubernetes API, as its RBAC rules in `capabilities.nuon` say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grants {
+    Nothing,
+    /// Get, list and watch on anything: `kube-api-read`'s ClusterRole.
+    ReadAnything,
+    /// These, and no more.
+    These(&'static [Access]),
+}
+
+const fn read(group: &'static str, resource: &'static str) -> [Access; 3] {
+    [
+        Access::new(Verb::Get, group, resource),
+        Access::new(Verb::List, group, resource),
+        Access::new(Verb::Watch, group, resource),
+    ]
+}
+
+/// `pod-read`'s Role, in each attested namespace: get, list and watch on pods and what owns them.
+pub const POD_READ_GRANTS: &[Access] = &{
+    let [a, b, c] = read("", "pods");
+    let [d, e, f] = read("apps", "replicasets");
+    let [g, h, i] = read("apps", "deployments");
+    let [j, k, l] = read("apps", "statefulsets");
+    let [m, n, o] = read("batch", "jobs");
+    [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o]
+};
+
+/// `job-run`'s Role, in the build namespace alone. No Secret: a build's source comes by digest
+/// (docs/architecture/build-orchestrator.md, decision 1).
+pub const JOB_RUN_GRANTS: &[Access] = &[
+    Access::new(Verb::Create, "batch", "jobs"),
+    Access::new(Verb::Get, "batch", "jobs"),
+    Access::new(Verb::List, "batch", "jobs"),
+    Access::new(Verb::Delete, "batch", "jobs"),
+    Access::new(Verb::Get, "", "pods"),
+    Access::new(Verb::List, "", "pods"),
+    Access::new(Verb::Get, "", "pods/log"),
+    Access::new(Verb::List, "", "events"),
+    Access::new(Verb::Get, "", "podtemplates"),
+];
+
+/// Whether one of `needs` lets an agent do `access` to the Kubernetes API.
+pub fn granted(needs: &[Capability], access: &Access) -> bool {
+    needs.iter().any(|capability| match capability.grants() {
+        Grants::Nothing => false,
+        Grants::ReadAnything => !access.verb.writes(),
+        Grants::These(granted) => granted.contains(access),
+    })
 }
 
 impl Capability {
     /// Every capability, in the order the catalog lists them.
-    pub const ALL: [Capability; 7] = [
+    pub const ALL: [Capability; 8] = [
         Capability::Cassini,
         Capability::GraphWrite,
         Capability::GraphRead,
@@ -69,7 +125,18 @@ impl Capability {
         Capability::KubeApiRead,
         Capability::PodRead,
         Capability::SoftState,
+        Capability::JobRun,
     ];
+
+    /// What it lets an agent do to the Kubernetes API.
+    pub const fn grants(self) -> Grants {
+        match self {
+            Capability::KubeApiRead => Grants::ReadAnything,
+            Capability::PodRead => Grants::These(POD_READ_GRANTS),
+            Capability::JobRun => Grants::These(JOB_RUN_GRANTS),
+            _ => Grants::Nothing,
+        }
+    }
 
     /// The capability a name in `POLAR_CAPABILITIES` stands for, if this code knows it.
     pub fn from_name(name: &str) -> Option<Capability> {
@@ -95,6 +162,7 @@ impl Capability {
             Capability::KubeApiRead => "kube-api-read",
             Capability::PodRead => "pod-read",
             Capability::SoftState => "soft-state",
+            Capability::JobRun => "job-run",
         }
     }
 }

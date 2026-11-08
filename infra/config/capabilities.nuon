@@ -192,6 +192,37 @@
     }
   }
 
+  # Runs work as Kubernetes Jobs in the build namespace, and nothing else in the Kubernetes API: a Role there alone (its
+  # `namespace`, a key of the cluster's namespaces), with the workload's own ServiceAccount token. Never listed by hand: the
+  # builder adds it for an agent whose cluster operations declare a write, and holds each operation's access to these rules
+  # (polar-agent-builder/src/capability.rs, JOB_RUN_GRANTS). No Secret: a build's source comes by digest
+  # (docs/architecture/build-orchestrator.md).
+  job-run: {
+    pod: {
+      volumes: [ { name: "{workload}-sa-token", secret: "{workload}-sa-token" } ]
+      mounts: [ { name: "{workload}-sa-token", path: "/var/run/secrets/kubernetes.io/serviceaccount", read_only: false } ]
+    }
+    identity: {}
+    dependency: {}
+    init: {}
+    resources: {
+      sa_token_secret: "{workload}-sa-token"
+      namespaced_roles: [
+        {
+          name: "{workload}-jobs"
+          namespace: "builds"
+          rules: [
+            { api_groups: ["batch"], resources: ["jobs"], verbs: ["create", "get", "list", "delete"] }
+            { api_groups: [""], resources: ["pods"], verbs: ["get", "list"] }
+            { api_groups: [""], resources: ["pods/log"], verbs: ["get"] }
+            { api_groups: [""], resources: ["events"], verbs: ["list"] }
+            { api_groups: [""], resources: ["podtemplates"], verbs: ["get"] }
+          ]
+        }
+      ]
+    }
+  }
+
   # The deployment CA's certificate, which `deploy-repo.nu ensure` puts there: what the attestation agent checks the deployment's
   # record with (docs/architecture/runtime-attestation.md). Public, and it has no other authority.
   deployment-ca: {

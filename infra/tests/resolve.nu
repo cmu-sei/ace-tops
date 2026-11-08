@@ -36,7 +36,7 @@ use std/assert
 use ../test-cluster.nu
 use ../cluster-registry.nu
 use ../registry.nu [node_registry]
-use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also]
+use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also role_namespaces]
 
 const RESOLVER = (path self | path dirname | path dirname | path join "resolve.nu")
 
@@ -470,6 +470,14 @@ def main [] {
 
         # docs/architecture/http-observers.md, "GitLab": a namespace that is not Polar's, whose pods Polar's CA issues to, is one
         # the attestation agent attests, or the credentials agent refuses its pods as not found.
+        "a capability's Role goes in the namespace it names alone, in every attested one when it names none, and a key the cluster lacks is refused": {
+            let cluster = { namespaces: { polar: "polar", graph: "polar-graph", builds: "polar-builds" }, attest_also: ["gitlab-test"] }
+            assert equal (role_namespaces { name: "r", rules: [] } $cluster "pod-read") ["polar" "polar-graph" "polar-builds" "gitlab-test"]
+            assert equal (role_namespaces { name: "r", namespace: "builds", rules: [] } $cluster "job-run") ["polar-builds"]
+            let refused = (try { role_namespaces { name: "r", namespace: "nowhere", rules: [] } $cluster "job-run"; null } catch {|e| $e.msg })
+            assert ($refused != null and ($refused | str contains "nowhere")) $"($refused)"
+        }
+
         "a target may name more namespaces Polar attests, and not one that is Polar's own, Kubernetes' or not a name": {
             let own = ["polar" "polar-graph" "polar-auth"]
             assert equal (attest_also_problems ["gitlab-test"] $own) []

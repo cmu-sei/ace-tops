@@ -54,7 +54,7 @@ use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
 use egress.nu
-use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also]
+use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces]
 use under-test.nu
 const CONFIG = ($INFRA | path join "config")
 
@@ -504,9 +504,10 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         for r in ($cap.resources.cluster_roles? | default []) {
             $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: $r.rules, from: $n })
         }
-        # A Role in each namespace Polar attests: its own, and those the target names besides.
+        # A Role in the namespace it names (a key of the cluster's namespaces), or in each namespace Polar attests: its own, and
+        # those the target names besides.
         for r in ($cap.resources.namespaced_roles? | default []) {
-            for namespace in (attested_namespaces $cluster) {
+            for namespace in (role_namespaces $r $cluster $n) {
                 $namespaced_roles = ($namespaced_roles | append { name: (subst $r.name $vars $name), namespace: $namespace, rules: $r.rules })
             }
         }
