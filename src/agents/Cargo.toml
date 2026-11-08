@@ -24,6 +24,7 @@ resolver = "2"
 
 members = [
     "build-orchestrator/core",
+    "build-orchestrator/k8s",
     "cassini/broker",
     "cassini/cassini-c2",
     "cassini/client",
@@ -207,6 +208,7 @@ jwt_utils = { path = "jwt-utils" }
 kube-common = { path = "kubernetes/common" }
 polar = { path = "lib" }
 orchestrator-core = { path = "build-orchestrator/core" }
+orchestrator-backend-k8s = { path = "build-orchestrator/k8s" }
 libc = "0.2"
 polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }

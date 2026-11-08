@@ -5360,6 +5360,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchestrator-backend-k8s"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "orchestrator-core",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "orchestrator-core"
 version = "1.0.0"
 dependencies = [
