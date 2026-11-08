@@ -51,10 +51,10 @@ fn mapping() -> impl Strategy<Value = Mapping> {
         any::<bool>(),
         any::<bool>(),
         proptest::collection::vec("[A-Z][A-Z_]{0,10}", 0..4),
-        proptest::collection::vec("[a-z0-9-]{1,12}", 0..4),
+        proptest::option::of("[a-z0-9-]{1,12}"),
     )
         .prop_map(
-            |(host, path, digest, command, root, escalate, caps, credentials)| {
+            |(host, path, digest, command, root, escalate, caps, credential)| {
                 let url = format!("https://{host}.example/{}", path.join("/"));
                 Mapping {
                     repo: RepoId::from_url(&url),
@@ -66,7 +66,7 @@ fn mapping() -> impl Strategy<Value = Mapping> {
                         allow_privilege_escalation: escalate,
                         add_capabilities: caps,
                     },
-                    credentials,
+                    credential,
                 }
             },
         )
@@ -98,8 +98,8 @@ fn written(m: &Mapping) -> Value {
             "add_capabilities": m.privileges.add_capabilities,
         });
     }
-    if !m.credentials.is_empty() {
-        entry["credentials"] = json!(m.credentials);
+    if let Some(credential) = &m.credential {
+        entry["credential"] = json!(credential);
     }
     entry
 }
@@ -159,8 +159,8 @@ fn spoil(entry: &mut Value, how: usize) -> &'static str {
             "`privileges.run_as_root`"
         }
         10 => {
-            object.insert("credentials".into(), json!([format!("{MARK}_UPPER")]));
-            "`credentials`"
+            object.insert("credential".into(), json!(format!("{MARK}_UPPER")));
+            "`credential`"
         }
         _ => {
             object.insert(format!("{MARK}-Key"), json!(1));
@@ -182,6 +182,10 @@ fn config(pairs: &[(&str, String)]) -> Config {
         (
             "POLAR_ORCHESTRATOR_REGISTRY".to_string(),
             "http://registry.polar-registry.svc.cluster.local:5000".to_string(),
+        ),
+        (
+            "POLAR_ORCHESTRATOR_CLONES".to_string(),
+            "/var/lib/build-orchestrator/clones".to_string(),
         ),
     ]);
     for (k, v) in pairs {

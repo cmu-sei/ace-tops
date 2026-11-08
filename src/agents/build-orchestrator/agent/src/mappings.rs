@@ -26,8 +26,8 @@
 //!
 //! A signed document, authored with `polar-sign` and carried by the scheduler, replaces it whole. It is the one place a
 //! build's pipeline image, command and privileges come from: never a build request, never the template. Nothing secret
-//! is in it: a mapping names the credentials its builds may be fetched with, and the `credentials` section (O3) holds
-//! them.
+//! is in it: a mapping names the credential its source is fetched with, if it needs one, and the `credentials` section holds
+//! it. No credential reaches a build's pod (decision 1), so the fetch is all a mapping names one for.
 
 use git_agent_common::remote::{credential_name_problem, https_host};
 use orchestrator_core::types::{Privileges, pinned_by_digest};
@@ -45,8 +45,6 @@ pub const MAX_URL: usize = 2048;
 /// Most words in a command, and the longest one.
 pub const MAX_COMMAND: usize = 64;
 pub const MAX_WORD: usize = 4096;
-/// Most credentials a mapping names.
-pub const MAX_CREDENTIALS: usize = 16;
 /// Most capabilities a mapping adds: more than Linux has.
 pub const MAX_CAPABILITIES: usize = 64;
 
@@ -55,7 +53,7 @@ const FIELDS: [&str; 5] = [
     "pipeline_image",
     "command",
     "privileges",
-    "credentials",
+    "credential",
 ];
 const PRIVILEGES: [&str; 3] = [
     "run_as_root",
@@ -67,7 +65,7 @@ pub static MAPPINGS: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: "The repositories build-orchestrator builds, and with what. Replaced whole by each version.",
-    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credentials": {"type": "list of credential names", "required": false, "doc": "the credentials a build of this repository may be fetched with, by name; none unless named"}}}}"#,
+    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}}}}"#,
     validate,
 };
 
@@ -83,8 +81,8 @@ pub struct Mapping {
     /// The pipeline's command; `None`, the orchestrator's default.
     pub command: Option<Vec<String>>,
     pub privileges: Privileges,
-    /// The credentials its builds may be fetched with, by name.
-    pub credentials: Vec<String>,
+    /// The credential its source is fetched with, by name; `None`, it is fetched with none.
+    pub credential: Option<String>,
 }
 
 fn validate(body: &Value) -> Result<(), Vec<String>> {
@@ -158,12 +156,6 @@ const COMMAND: List = List {
     most: MAX_COMMAND,
     longest: MAX_WORD,
     may_be_empty: false,
-};
-const CREDENTIALS: List = List {
-    shown: "credentials",
-    most: MAX_CREDENTIALS,
-    longest: 64,
-    may_be_empty: true,
 };
 const CAPABILITIES: List = List {
     shown: "privileges.add_capabilities",
@@ -306,13 +298,20 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
     };
     let command = text_list(object, &label, "command", &COMMAND, &mut problems);
     let privileges = privileges(object, &label, &mut problems);
-    let credentials =
-        text_list(object, &label, "credentials", &CREDENTIALS, &mut problems).unwrap_or_default();
-    for (n, name) in credentials.iter().enumerate() {
-        if let Some(why) = credential_name_problem(name) {
-            problems.push(format!("{label}: `credentials` item {n} {why}"));
+    let credential = match object.get("credential") {
+        None => None,
+        Some(Value::String(name)) => match credential_name_problem(name) {
+            None => Some(name.clone()),
+            Some(why) => {
+                problems.push(format!("{label}: `credential` {why}"));
+                None
+            }
+        },
+        Some(_) => {
+            problems.push(format!("{label}: `credential` must be a credential's name"));
+            None
         }
-    }
+    };
 
     if problems.is_empty() {
         Ok(Mapping {
@@ -321,7 +320,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             pipeline_image,
             command,
             privileges,
-            credentials,
+            credential,
         })
     } else {
         Err(problems)
@@ -340,14 +339,14 @@ mod tests {
     #[test]
     fn a_mapping_reads() {
         let parsed = parse(&json!({"repositories": [
-            {"url": "https://git.example.org/a/b.git", "pipeline_image": image(), "credentials": ["git-a"],
+            {"url": "https://git.example.org/a/b.git", "pipeline_image": image(), "credential": "git-a",
              "privileges": {"run_as_root": true, "add_capabilities": ["SETUID", "SETGID"]}}
         ]}))
         .unwrap();
         assert_eq!(parsed.len(), 1);
         let m = &parsed[0];
         assert_eq!(m.repo, RepoId::from_url("https://git.example.org/a/b.git"));
-        assert_eq!(m.credentials, ["git-a"]);
+        assert_eq!(m.credential.as_deref(), Some("git-a"));
         assert!(m.command.is_none());
         assert!(m.privileges.run_as_root);
         assert!(!m.privileges.allow_privilege_escalation);
@@ -361,7 +360,7 @@ mod tests {
         ]}))
         .unwrap();
         assert_eq!(parsed[0].privileges, Privileges::default());
-        assert!(parsed[0].credentials.is_empty());
+        assert!(parsed[0].credential.is_none());
     }
 
     #[test]
@@ -369,7 +368,7 @@ mod tests {
         let problems = parse(&json!({"repositories": [
             {"url": "http://x.example/y", "pipeline_image": image(), "extra": 1},
             {"url": "https://u:secret@x.example/y", "pipeline_image": image()},
-            {"url": "https://x.example/y", "pipeline_image": image(), "credentials": "git-a"},
+            {"url": "https://x.example/y", "pipeline_image": image(), "credential": ["git-a"]},
             {"url": "https://x.example/z", "pipeline_image": image()},
             {"url": "https://x.example/z", "pipeline_image": image()},
             {"url": "https://x.example/w", "pipeline_image": "reg/x:latest"},
@@ -377,7 +376,7 @@ mod tests {
             {"url": "https://x.example/u", "pipeline_image": image(), "command": []},
             {"url": "https://x.example/t", "pipeline_image": image(),
              "privileges": {"privileged": true, "run_as_root": "yes", "add_capabilities": ["ALL", "CAP_SYS_ADMIN"]}},
-            {"url": "https://x.example/s", "pipeline_image": image(), "credentials": ["Secret_Name"]},
+            {"url": "https://x.example/s", "pipeline_image": image(), "credential": "Secret_Name"},
             {"url": "https://x.example/r", "pipeline_image": image(), "Hidden-Key-secret": 1},
         ], "other": 1}))
         .unwrap_err();
@@ -386,7 +385,7 @@ mod tests {
             "entry 0: `extra`",
             "entry 0: `url`",
             "entry 1: `url`",
-            "entry 2: `credentials`",
+            "entry 2: `credential` must be",
             "entry 4: the repository is mapped more than once",
             "entry 5: `pipeline_image` must be an image pinned by digest",
             "entry 6: `pipeline_image` is required",
@@ -394,7 +393,7 @@ mod tests {
             "entry 8: `privileges.privileged` is not a privilege",
             "entry 8: `privileges.run_as_root` must be true or false",
             "entry 8: `privileges.add_capabilities` names 2",
-            "entry 9: `credentials` item 0",
+            "entry 9: `credential` may have",
             "entry 10: `(a name that is not shown)`",
         ] {
             assert!(

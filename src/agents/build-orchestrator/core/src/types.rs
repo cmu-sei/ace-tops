@@ -42,6 +42,9 @@ pub mod source_env {
     pub const SOURCE_BLOB: &str = "CYCLOPS_SOURCE_BLOB";
     /// For the fetch: the archive's sha256, lower-case hex, which it is checked against before it is unpacked.
     pub const SOURCE_SHA256: &str = "CYCLOPS_SOURCE_SHA256";
+    /// For the fetch: `true` when the archive's registry is spoken to over plain http (the registry in the cluster, as a pod
+    /// reaches it); left out, https. The fetch's own name for it (build-orchestrator/fetch, `INSECURE`).
+    pub const REGISTRY_INSECURE: &str = "CYCLOPS_REGISTRY_INSECURE";
     /// For the pipeline: "git" or "archive", what the source was.
     pub const SOURCE_KIND: &str = "CYCLOPS_SOURCE_KIND";
     pub const ARCHIVE_SHA256: &str = "CYCLOPS_ARCHIVE_SHA256";
@@ -187,6 +190,8 @@ pub fn pinned_by_digest(image: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceArchive {
     reference: String,
+    /// Its registry is spoken to over plain http.
+    over_http: bool,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -198,9 +203,20 @@ pub struct UnpinnedArchive(pub String);
 impl SourceArchive {
     pub fn new(reference: String) -> Result<Self, UnpinnedArchive> {
         if pinned_by_digest(&reference) {
-            Ok(Self { reference })
+            Ok(Self {
+                reference,
+                over_http: false,
+            })
         } else {
             Err(UnpinnedArchive(reference))
+        }
+    }
+
+    /// The same archive, in a registry spoken to over plain http.
+    pub fn over_http(self) -> Self {
+        Self {
+            over_http: true,
+            ..self
         }
     }
 
@@ -217,15 +233,23 @@ impl SourceArchive {
             .unwrap_or_default()
     }
 
-    /// Env vars for the source-fetch init container: the blob and its digest, and nothing of where it came from.
+    /// Env vars for the source-fetch init container: the blob and its digest, whether its registry is plain http, and nothing
+    /// of where the source came from.
     pub fn fetch_env(&self) -> Vec<(String, String)> {
-        vec![
+        let mut env = vec![
             (source_env::SOURCE_BLOB.to_string(), self.reference.clone()),
             (
                 source_env::SOURCE_SHA256.to_string(),
                 self.sha256().to_string(),
             ),
-        ]
+        ];
+        if self.over_http {
+            env.push((
+                source_env::REGISTRY_INSECURE.to_string(),
+                "true".to_string(),
+            ));
+        }
+        env
     }
 }
 

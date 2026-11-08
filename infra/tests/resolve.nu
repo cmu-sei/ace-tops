@@ -482,6 +482,11 @@ def main [] {
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_NAMESPACE" $t) "polar-builds"
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_TEMPLATE" $t) "build-runner"
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_REGISTRY" $t) "http://registry.polar-registry.svc.cluster.local:5000"
+                # Its clones are on a volume of the pod's own (working-checkout), under where that volume is mounted (O3c).
+                assert equal (env_value $r "POLAR_ORCHESTRATOR_CLONES" $t) "/var/lib/build-orchestrator/clones"
+                let checkout = ($r.mounts | where name == "build-orchestrator-checkout")
+                assert equal ($checkout | get path) ["/var/lib/build-orchestrator"]
+                assert ($r.volumes | any {|v| $v.name == "build-orchestrator-checkout" })
                 let resources = (^nu $RESOLVER resources build-orchestrator --target $t | from json)
                 assert equal $resources.cluster_roles []
                 assert equal ($resources.namespaced_roles | get namespace) ["polar-builds"]

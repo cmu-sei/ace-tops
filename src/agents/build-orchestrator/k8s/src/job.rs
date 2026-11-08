@@ -651,9 +651,11 @@ fn env_departs(name: &str, want: &Container, got: &Container, found: &mut Vec<St
         if name == FETCH
             && added.name != source_env::SOURCE_BLOB
             && added.name != source_env::SOURCE_SHA256
+            && !(added.name == source_env::REGISTRY_INSECURE
+                && added.value.as_deref() == Some("true"))
         {
             found.push(format!(
-                "the fetch is told {}, beyond its blob and digest",
+                "the fetch is told {}, beyond its blob, its digest and whether its registry is plain http",
                 added.name
             ));
         }
@@ -852,6 +854,22 @@ pub(crate) mod tests {
             assert!(env(fetch).contains(&(source_env::SOURCE_SHA256.into(), Some(HEX.into()))));
             assert_eq!(fetch.image.as_deref(), Some(FETCH_IMAGE));
         }
+    }
+
+    /// An archive in a registry spoken to over plain http (the registry in the cluster, as a pod reaches it) tells the fetch so,
+    /// and nothing else is added (O3c).
+    #[test]
+    fn an_archive_over_http_tells_the_fetch_so_and_no_more() {
+        let mut build = spec(git());
+        build.archive = build.archive.clone().over_http();
+        let job = built(&build);
+        let fetch = container(&job, FETCH);
+        assert!(env(fetch).contains(&(source_env::REGISTRY_INSECURE.into(), Some("true".into()))));
+        assert_eq!(env(fetch).len(), 4, "{:?}", env(fetch));
+        assert_eq!(
+            departures(&template(), &job, &build.privileges),
+            Vec::<String>::new()
+        );
     }
 
     /// No part of a build's Job holds a credential, a Secret or anything of Polar's identity (revised 3).
@@ -1095,9 +1113,13 @@ pub(crate) mod tests {
             any::<bool>(),
             proptest::collection::hash_map("[A-Z][A-Z_]{0,8}", "[a-z0-9]{0,8}", 0..3),
             proptest::option::of(proptest::collection::vec("[a-z/]{1,8}", 1..3)),
+            any::<bool>(),
         )
-            .prop_map(|(privileges, archived, env, entrypoint)| {
+            .prop_map(|(privileges, archived, env, entrypoint, over_http)| {
                 let mut build = spec(if archived { archive() } else { git() });
+                if over_http {
+                    build.archive = build.archive.clone().over_http();
+                }
                 build.privileges = privileges;
                 build.env = env;
                 build.entrypoint = entrypoint;

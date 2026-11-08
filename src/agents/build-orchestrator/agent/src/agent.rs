@@ -33,7 +33,8 @@ use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, Start
 use ractor::Actor;
 use std::time::Duration;
 
-/// What it asks of the outside: the backend's Kubernetes operations, and the push of a build's source to the registry.
+/// What it asks of the outside: the backend's Kubernetes operations, the fetch of a build's source and its push to the
+/// registry.
 pub const OPERATIONS: &[OperationDecl] = &[
     backend::GET_POD_TEMPLATE,
     backend::CREATE_JOB,
@@ -44,6 +45,8 @@ pub const OPERATIONS: &[OperationDecl] = &[
     backend::LIST_PODS,
     backend::READ_LOG,
     crate::push::PUSH,
+    crate::source::FETCH,
+    crate::source::FETCH_PUBLIC,
 ];
 
 pub struct BuildOrchestrator;
@@ -77,6 +80,8 @@ impl PolarAgent for BuildOrchestrator {
     const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
     const RUNTIME: &'static [&'static polar_agent_builder::RuntimeSection] =
         &[&crate::mappings::MAPPINGS];
+    const CREDENTIALS: Option<&'static polar_agent_builder::RuntimeSection> =
+        Some(&crate::credentials::CREDENTIALS);
     const HELP: Option<&'static str> = Some(
         "build-orchestrator builds a repository when the git observer reports that a ref of it moved and the `mappings` \
          runtime section (a signed document) names it: a Job made from the build workload's PodTemplate \
@@ -137,7 +142,17 @@ mod tests {
             .collect();
         assert_eq!(http.len(), 1, "{http:?}");
         assert_eq!(http[0].name, "registry.source.push");
-        // Computed from its writes, and nothing more: no read of the whole cluster.
-        assert_eq!(scaffold.requires, ["cassini", "job-run"]);
+        // Its two fetches, as the git observer's: with the credential a mapping names, or with none.
+        let mut git: Vec<_> = scaffold
+            .operations
+            .iter()
+            .filter(|o| o.protocol == "git")
+            .map(|o| o.name.as_str())
+            .collect();
+        git.sort();
+        assert_eq!(git, ["git.fetch", "git.fetch-public"]);
+        // job-run computed from its writes, and nothing more: no read of the whole cluster; encryption for the escrowed
+        // credentials its fetches may name.
+        assert_eq!(scaffold.requires, ["cassini", "encryption", "job-run"]);
     }
 }

@@ -117,15 +117,28 @@ impl BuildBackend for Backend {
     }
 }
 
-struct Archive(Result<(), String>);
+/// A source step that gives an archive or refuses, and keeps the credential and bound it was asked with.
+struct Archive(Result<(), String>, Mutex<Vec<(Option<String>, usize)>>);
 
 #[ractor::async_trait]
 impl Source for Archive {
-    async fn prepare(&self, _: &SourceRef) -> Result<SourceArchive, String> {
+    async fn prepare(
+        &self,
+        _: &SourceRef,
+        credential: Option<&str>,
+        bound: usize,
+    ) -> Result<SourceArchive, String> {
+        self.1
+            .lock()
+            .unwrap()
+            .push((credential.map(str::to_string), bound));
         self.0.clone()?;
         Ok(SourceArchive::new(format!("registry.polar/build-sources@sha256:{HEX}")).unwrap())
     }
 }
+
+/// The bound a build's source is held to in these tests.
+const MAX_SOURCE: usize = 1234;
 
 /// What was published, read back as its topic's subscriber reads it.
 #[derive(Default)]
@@ -177,6 +190,10 @@ fn reader() -> InProcess {
 }
 
 fn mapping(command: Option<Vec<String>>) -> Mapping {
+    mapping_with(command, None)
+}
+
+fn mapping_with(command: Option<Vec<String>>, credential: Option<&str>) -> Mapping {
     Mapping {
         url: URL.into(),
         repo: RepoId::from_url(URL),
@@ -187,7 +204,7 @@ fn mapping(command: Option<Vec<String>>) -> Mapping {
             allow_privilege_escalation: false,
             add_capabilities: vec!["SETUID".into()],
         },
-        credentials: vec![],
+        credential: credential.map(str::to_string),
     }
 }
 
@@ -226,6 +243,8 @@ struct Ran {
     reports_first: bool,
     submitted: Vec<BuildSpec>,
     asked: usize,
+    /// The credential and bound the source step was asked with, each time.
+    prepared: Vec<(Option<String>, usize)>,
 }
 
 async fn run(start: Start, backend: Backend, source: Result<(), String>, adopted: bool) -> Ran {
@@ -264,6 +283,7 @@ async fn run_with(
     let backend = Arc::new(backend);
     let said = Arc::new(Said::default());
     let reader = Arc::new(reader);
+    let source_step = Arc::new(Archive(source, Mutex::new(Vec::new())));
     let (_, ended) = Actor::spawn(
         None,
         BuildActor,
@@ -271,12 +291,13 @@ async fn run_with(
             request,
             start,
             backend: backend.clone(),
-            source: Arc::new(Archive(source)),
+            source: source_step.clone(),
             registry: registry.clone(),
             publish: said.clone(),
             reader: reader.clone(),
             bounds,
             relay,
+            max_source: MAX_SOURCE,
             poll_every: Duration::from_millis(5),
         },
     )
@@ -311,6 +332,7 @@ async fn run_with(
     }
     let submitted = backend.submitted.lock().unwrap().clone();
     let asked = *reader.asked.lock().unwrap();
+    let prepared = std::mem::take(&mut *source_step.1.lock().unwrap());
     Ran {
         id,
         state: record.state,
@@ -323,6 +345,7 @@ async fn run_with(
         },
         submitted,
         asked,
+        prepared,
     }
 }
 
@@ -745,4 +768,39 @@ async fn a_build_is_read_to_its_bounds_and_no_further() {
     )
     .await;
     assert_eq!((ran.relayed.len(), ran.asked), (2, 2));
+}
+
+#[tokio::test]
+async fn the_source_is_fetched_with_the_mappings_credential_and_held_to_the_builds_bound() {
+    for credential in [None, Some("git-a")] {
+        let start = Start::New {
+            mapping: mapping_with(None, credential),
+            ref_name: "refs/heads/main".into(),
+            triggered_by: None,
+            default_command: vec![],
+        };
+        let ran = run(
+            start,
+            scripted(vec![Ok(JobStatus::Succeeded)]),
+            Ok(()),
+            false,
+        )
+        .await;
+        assert_eq!(ran.prepared, [(credential.map(str::to_string), MAX_SOURCE)]);
+    }
+    // An adopted build's source was prepared by the orchestrator that started it.
+    let ran = run(
+        Start::Adopted {
+            handle: BackendJobHandle {
+                name: "j".into(),
+                uid: "u".into(),
+            },
+            made_at: None,
+        },
+        scripted(vec![Ok(JobStatus::Succeeded)]),
+        Ok(()),
+        true,
+    )
+    .await;
+    assert!(ran.prepared.is_empty());
 }

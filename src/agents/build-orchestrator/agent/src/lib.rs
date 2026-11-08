@@ -31,6 +31,7 @@ pub mod admission;
 pub mod agent;
 pub mod archive;
 pub mod build;
+pub mod credentials;
 pub mod lines;
 pub mod mappings;
 pub mod observed;

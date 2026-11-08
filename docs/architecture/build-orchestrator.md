@@ -676,6 +676,26 @@ I write Rust code"):
   a property that an archive is taken at its bound and refused one byte under it; links that leave refused and one that
   climbs and stays taken; `.` and `..` refused, written as raw tree bytes since libgit2's builders refuse them; a submodule
   left out; an unknown commit, or a name that is not one, no commit.
+  O3c DONE 2026-11-08: `source::GitSource` takes `NotYet`'s place. It fetches a build's commit through the git handler, with
+  `git.fetch` (the credential the mapping names, bound to its host) or `git.fetch-public` (none), into the repository's clone
+  in `POLAR_ORCHESTRATOR_CLONES` (named by the digest of its URL, so no URL makes a path of its own), one fetch of a repository
+  at a time since two builds of it share the clone; reads the archive from that clone in the fetch's `read`, at the build's
+  bound (`POLAR_ORCHESTRATOR_MAX_SOURCE_BYTES`, Dynamic, 256 MiB; Polar's own tree is about 6 MB gzipped); pushes it (`push`);
+  and gives the build the archive by its digest at the registry, marked plain http when the registry is. The fetch is then
+  told so (`CYCLOPS_REGISTRY_INSECURE=true`), the one thing beyond its blob and digest `departures` lets it be told, so whether
+  the registry is plain http is said once, by the orchestrator's own registry setting: the open "fetch's registry" item, closed.
+  The escrowed `credentials` section is the builder's shared shape (`credentials.rs`), and with it the orchestrator needs
+  `encryption`. The catalog gives it the clones' directory on the `working-checkout` volume, an emptyDir as the git observer's,
+  since a clone can be fetched again. Decided by standing rules, for review: a mapping names one `credential`, as the git
+  controller's repository entry does, in place of Vaughn's list of credentials "a build may be given": no credential reaches a
+  build's pod (decision 1), so the fetch is all a mapping names one for (nothing has been signed for the section yet). Tested
+  through the real protocols, a stand-in git server and the stand-in registry (`tests/common`): a commit fetched, archived to
+  exactly the bytes the origin's own commit archives to, pushed, and given to the build by that digest at the registry, the
+  fetch told it is plain http; a commit the repository lacks, or a source past its bound, pushes nothing; two builds of one
+  repository at once each get it; a mapping naming a credential the agent does not hold is not fetched without it; only a git
+  repository's source is fetched. And: the mapping's credential and the build's bound reach the source step, and an adopted
+  build's source is not prepared again (the build's actor); a Job's fetch told the registry is plain http departs from its
+  template nowhere, in the departures property too; the agent's two fetches and its needs; the catalog's clones and volume.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

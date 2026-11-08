@@ -226,6 +226,32 @@ pub async fn git_handle(
     .await
 }
 
+/// A handler over git and HTTP at once, as an agent that fetches a repository and pushes what it made of it has: git going
+/// out directly and trusting the CA of [`git_ca`], HTTP trusting `ca_pem` as well, `operations` declared and `variables` in
+/// force, its credentials answered by `credentials`.
+pub async fn git_and_http_handle(
+    ca_pem: &str,
+    operations: &'static [OperationDecl],
+    variables: Vec<(&str, String)>,
+    credentials: Option<Arc<dyn CredentialSource>>,
+) -> Site {
+    git_ca();
+    let certificate = reqwest::Certificate::from_pem(ca_pem.as_bytes()).expect("the test's CA");
+    let client = Http::builder(super::http::CONNECT_TIMEOUT, super::http::REQUEST_TIMEOUT)
+        .add_root_certificate(certificate)
+        .no_proxy()
+        .build()
+        .expect("the test's client");
+    handle_of(
+        Instances::of(Git::with_egress(Egress::default(), super::git::MAX_FETCH))
+            .and(Http::with_client(client)),
+        operations,
+        variables,
+        credentials,
+    )
+    .await
+}
+
 /// The CA a git server of a test presents a certificate from. libgit2 takes a CA once, for the whole process, so all the
 /// tests of a process share this one.
 pub fn git_ca() -> &'static TestCa {

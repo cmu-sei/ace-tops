@@ -41,6 +41,10 @@ fn config(pairs: &[(&str, &str)]) -> Config {
             "POLAR_ORCHESTRATOR_REGISTRY",
             "http://registry.polar-registry.svc.cluster.local:5000",
         ),
+        (
+            "POLAR_ORCHESTRATOR_CLONES",
+            "/var/lib/build-orchestrator/clones",
+        ),
     ]
     .iter()
     .chain(pairs)

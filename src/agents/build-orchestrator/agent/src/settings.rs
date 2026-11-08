@@ -58,6 +58,19 @@ pub static REGISTRY: Required<String> = Required::text(
      host and a port, and nothing more",
 );
 
+pub static CLONES: Required<String> = Required::text(
+    "POLAR_ORCHESTRATOR_CLONES",
+    "the directory the git handler keeps each mapped repository's clone in, to read a build's source from; the pod's own, \
+     written by nothing else",
+);
+
+pub static MAX_SOURCE_BYTES: Defaulted<usize> = Defaulted::number(
+    "POLAR_ORCHESTRATOR_MAX_SOURCE_BYTES",
+    "the largest a build's source archive may be, gzipped, in bytes; past it the build fails at its source. At least 1",
+    "268435456",
+)
+.dynamic();
+
 pub static CONCURRENT_BUILDS: Defaulted<usize> = Defaulted::number(
     "POLAR_ORCHESTRATOR_CONCURRENT_BUILDS",
     "how many builds run at once; one over it waits its turn. At least 1",
@@ -175,10 +188,11 @@ pub static DEFAULT_COMMAND: Defaulted<Vec<String>> = Defaulted::list(
 .dynamic();
 
 /// The deployment's facts.
-pub static DEPLOYMENT: &[&dyn Described] = &[&NAMESPACE, &TEMPLATE, &REGISTRY];
+pub static DEPLOYMENT: &[&dyn Described] = &[&NAMESPACE, &TEMPLATE, &REGISTRY, &CLONES];
 
 /// The run-time settings, followed as one group: an update that changes several is one change.
 pub static TUNING: &[&dyn Described] = &[
+    &MAX_SOURCE_BYTES,
     &CONCURRENT_BUILDS,
     &CPU_LIMIT,
     &MEMORY_LIMIT,
@@ -201,6 +215,8 @@ static VARIABLES: &[&dyn Described] = &[
     &NAMESPACE,
     &TEMPLATE,
     &REGISTRY,
+    &CLONES,
+    &MAX_SOURCE_BYTES,
     &CONCURRENT_BUILDS,
     &CPU_LIMIT,
     &MEMORY_LIMIT,
@@ -239,11 +255,15 @@ pub struct Deployment {
     pub template: String,
     /// The registry's address, `http(s)://host:port`.
     pub registry: String,
+    /// Where the repositories' clones are kept.
+    pub clones: String,
 }
 
 /// The run-time settings in force.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tuning {
+    /// The largest a build's source archive may be, in bytes.
+    pub max_source: usize,
     pub concurrent_builds: usize,
     pub resources: PipelineResources,
     pub workspace_limit: String,
@@ -258,12 +278,14 @@ pub fn deployment(config: &Config) -> Result<Deployment, String> {
         namespace: config.read(&NAMESPACE).map_err(|e| e.to_string())?,
         template: config.read(&TEMPLATE).map_err(|e| e.to_string())?,
         registry: config.read(&REGISTRY).map_err(|e| e.to_string())?,
+        clones: config.read(&CLONES).map_err(|e| e.to_string())?,
     })
 }
 
 pub fn tuning(config: &Config) -> Result<Tuning, String> {
     let read = |e: polar_env::ConfigError| e.to_string();
     Ok(Tuning {
+        max_source: config.read(&MAX_SOURCE_BYTES).map_err(read)?,
         concurrent_builds: config.read(&CONCURRENT_BUILDS).map_err(read)?,
         resources: PipelineResources {
             cpu_limit: config.read(&CPU_LIMIT).map_err(read)?,
@@ -424,6 +446,7 @@ fn relations(env: &dyn Env) -> Vec<String> {
         }
     }
     for var in [
+        &MAX_SOURCE_BYTES,
         &CONCURRENT_BUILDS,
         &MAX_REPORTS,
         &REPORT_LINE_BYTES,
@@ -463,6 +486,10 @@ mod tests {
             (
                 "POLAR_ORCHESTRATOR_REGISTRY",
                 "http://registry.polar-registry.svc.cluster.local:5000",
+            ),
+            (
+                "POLAR_ORCHESTRATOR_CLONES",
+                "/var/lib/build-orchestrator/clones",
             ),
         ]
         .into_iter()
@@ -510,6 +537,7 @@ mod tests {
         assert!(config.check().is_empty(), "{:?}", config.check());
         let tuning = tuning(&config).unwrap();
         assert_eq!(tuning.concurrent_builds, 1);
+        assert_eq!(tuning.max_source, 256 * 1024 * 1024);
         assert_eq!(tuning.resources, PipelineResources::default());
         assert_eq!(tuning.retention, Retention::default());
         assert_eq!(tuning.relay, RelayBounds::default());
@@ -521,6 +549,7 @@ mod tests {
                 namespace: "polar-builds".into(),
                 template: "build-runner".into(),
                 registry: "http://registry.polar-registry.svc.cluster.local:5000".into(),
+                clones: "/var/lib/build-orchestrator/clones".into(),
             }
         );
     }
@@ -602,6 +631,7 @@ mod tests {
             ),
             ("POLAR_ORCHESTRATOR_KEEP_FAILED_SECS", "0", "at least 60"),
             ("POLAR_ORCHESTRATOR_CONCURRENT_BUILDS", "0", "at least 1"),
+            ("POLAR_ORCHESTRATOR_MAX_SOURCE_BYTES", "0", "at least 1"),
             ("POLAR_ORCHESTRATOR_MAX_REPORTS", "0", "at least 1"),
             ("POLAR_ORCHESTRATOR_MAX_REPORT_BYTES", "0", "at least 1"),
             ("POLAR_ORCHESTRATOR_REPORT_LINE_BYTES", "0", "at least 1"),

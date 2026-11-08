@@ -37,7 +37,7 @@ use crate::publish::Publish;
 use crate::reader::{READER, Read};
 use crate::registry::{BuildRegistry, RegistryMessage};
 use crate::settings::{self, Deployment, Tuning};
-use crate::source::{NotYet, Source};
+use crate::source::{GitSource, Source};
 use chrono::Utc;
 use git_agent_common::GitRepositoryMessage;
 use orchestrator_backend_k8s::backend::KubernetesBackend;
@@ -289,6 +289,7 @@ impl OrchestratorSupervisor {
             reader: Arc::clone(&state.reader),
             bounds: settings::narrowed(&state.forked_reader, &state.tuning.reader),
             relay: state.tuning.relay,
+            max_source: state.tuning.max_source,
             poll_every: POLL_EVERY,
         };
         if let Err(e) = Actor::spawn_linked(
@@ -452,6 +453,11 @@ impl Actor for OrchestratorSupervisor {
             "builds run from the template in the namespace"
         );
 
+        let source: Arc<dyn Source> = Arc::new(GitSource::new(
+            protocols.clone(),
+            deployment.clones.clone(),
+            deployment.registry.clone(),
+        ));
         Ok(OrchestratorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
@@ -465,7 +471,7 @@ impl Actor for OrchestratorSupervisor {
             protocols,
             publish: Arc::new(resources.tcp_client),
             reader: Arc::new(reader),
-            source: Arc::new(NotYet),
+            source,
             registry,
             observed: Observed::new(OBSERVED_COMMITS),
             starts: HashMap::new(),
@@ -627,7 +633,7 @@ mod tests {
             pipeline_image: format!("registry.polar/ci@sha256:{}", "c".repeat(64)),
             command: None,
             privileges: Privileges::default(),
-            credentials: vec![],
+            credential: None,
         }]
     }
 

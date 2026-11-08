@@ -93,6 +93,8 @@ pub struct BuildArgs {
     /// The reader's bounds for this build: the narrower of the worker's and those signed when it started.
     pub bounds: Bounds,
     pub relay: RelayBounds,
+    /// The largest its source archive may be.
+    pub max_source: usize,
     pub poll_every: Duration,
 }
 
@@ -118,6 +120,7 @@ pub struct BuildActorState {
     reader: Arc<dyn Read>,
     bounds: Bounds,
     relay: RelayBounds,
+    max_source: usize,
     poll_every: Duration,
     handle: Option<BackendJobHandle>,
     began: DateTime<Utc>,
@@ -355,7 +358,15 @@ impl BuildActor {
                 default_command,
             }) => {
                 Self::transition(state, BuildState::PreparingSource, None, None, None);
-                let archive = match state.source.prepare(&state.request.source).await {
+                let archive = match state
+                    .source
+                    .prepare(
+                        &state.request.source,
+                        mapping.credential.as_deref(),
+                        state.max_source,
+                    )
+                    .await
+                {
                     Ok(archive) => archive,
                     Err(why) => return Self::fail(myself, state, AT_SOURCE, why).await,
                 };
@@ -475,6 +486,7 @@ impl Actor for BuildActor {
             reader: args.reader,
             bounds: args.bounds,
             relay: args.relay,
+            max_source: args.max_source,
             poll_every: args.poll_every,
             handle: None,
             began: Utc::now(),

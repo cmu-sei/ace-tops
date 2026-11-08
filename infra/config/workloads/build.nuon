@@ -56,6 +56,11 @@
       { name: "POLAR_ORCHESTRATOR_TEMPLATE", value: "build-runner" }
       # Where a build's source is pushed and its pod fetches it from (O3): the registry in the cluster, as a pod reaches it.
       { name: "POLAR_ORCHESTRATOR_REGISTRY", value: "{pod-registry}" }
+      # Where the git handler keeps each mapped repository's clone, on the working-checkout volume below (O3c).
+      { name: "POLAR_ORCHESTRATOR_CLONES", value: "/var/lib/{workload}/clones" }
     ]
+    # Clones can be fetched again, so they need not outlive the pod; the image has no directory a non-root user may write, so
+    # it is an emptyDir, as the git observer's is.
+    provides: ["working-checkout"]
   }
 ]

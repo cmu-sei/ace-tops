@@ -243,6 +243,14 @@ impl Instances {
         )]))
     }
 
+    /// With `protocol` as well, for an agent that speaks more than one.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn and<P: Protocol>(mut self, protocol: P) -> Self {
+        self.0
+            .insert(P::KIND.as_str(), Arc::new(protocol) as Started);
+        self
+    }
+
     /// This protocol as the agent started it, if an operation it declared uses it.
     fn get<P: Protocol>(&self) -> Option<Arc<P>> {
         self.0.get(P::KIND.as_str())?.clone().downcast().ok()
