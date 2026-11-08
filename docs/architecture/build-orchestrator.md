@@ -340,6 +340,42 @@ Packaging: a flake of its own on the maintainer's GitHub, Verus built from its r
 pinned with the rest of Polar's toolchain; `vstd` from crates.io at the release's pin. The gominimal package set builds it the same way
 (from the tag, the vendored crates, the private toolchain's component tarballs checked against static.rust-lang.org, Z3 pinned).
 
+What it took (O2d1a, 2026-11-08). Packaged: Verus built from its tag needed three things a developer's machine gives it, each
+in `nix-verus`'s README (`pkg-config` and `zstd` for a build dependency; a stand-in for `rustup`, which the `verus` crate's build
+script asks for the toolchain's name; and a git repository, which `rust_verify`'s reads its version from). `vstd` verifies as it is
+built, 2,159 obligations. A crate proved with it still builds with plain `cargo` on Polar's nightly, its proofs erased, with no
+warning: the workspace is unchanged but for `vstd` and Verus's macros in its lock.
+
+Proved, `orchestrator-report` (`cargo verus verify -p orchestrator-report`, or `just verify`), for every input and any bounds, with
+no precondition on either public function, so that it holds for the unverified callers too:
+
+- `gate`: terminates, never panics, indexes out of bounds or overflows; passes a line only within its length, free of control
+  characters, and UTF-8 as `vstd::utf8::valid_utf8` defines it (a scalar at a time, from the front, overlongs and surrogates
+  refused), the loop carrying one invariant: what is left is valid exactly when the line is.
+- `parse`: terminates (its recursion decreases with depth, by a measure on `value`, `object` and `list` together), never panics or
+  overflows; the tape never past its limit nor past what a `u32` counts, and its limit unchanged; every key's and text's span inside
+  the line, every container's end inside the tape.
+
+Not proved, and held by property tests instead (`tests/props.rs`): that the gate's UTF-8 agrees with `std::str::from_utf8` (a
+differential test of the two definitions on the build that runs); that any value of the grammar, written as JSON writes it,
+parses to one token for each value and key; that anything after a report is refused.
+
+What Verus asked of the code, the maintainer's question ("I've long-wondered if I could deal with the constraints it places on how
+I write Rust code"):
+
+- Bytes and indexes, `while` loops with their invariants and a `decreases` measure, early returns and `?`, `Vec` push, set and
+  clear, fixed arrays, `&mut` parameters: all as ordinary Rust. No iterator chains or closures in what is proved.
+- A postcondition names a mutable reference's state after the call `final(x)`, beside `old(x)` (this release's mutable-reference
+  support); a variable only the proof uses is `let ghost`, so that a plain build has none.
+- A verifier attribute (`loop_isolation`) is not erased from a plain build, so the facts it would carry into an inner loop are
+  written as that loop's invariants instead.
+- A range test is two comparisons: Verus reasons about the comparisons, not `RangeInclusive::contains` (clippy's
+  `manual_range_contains` is allowed for the crate, with that reason).
+- The effort: the gate verified on its second run, the parser after five rounds of fixes, two of them for keeping a plain build clean; every failure named the line and the obligation, and
+  the fixes were facts the code relied on without saying (the tape only grows; a string consumes its opening quote). One was a
+  defect: a tape given more than four billion slots would have truncated a container's end, stored as a `u32`; the tape now refuses
+  to grow past what a `u32` counts.
+
 *Sources, read 2026-11-08:* [Verus releases](https://github.com/verus-lang/verus/releases);
 [INSTALL.md](https://github.com/verus-lang/verus/blob/main/INSTALL.md);
 [the release's rust-toolchain.toml](https://raw.githubusercontent.com/verus-lang/verus/release/0.2026.11.02.8bf68ee/rust-toolchain.toml);
@@ -389,7 +425,10 @@ pinned with the rest of Polar's toolchain; `vstd` from crates.io at the release'
     and CA-bundle options are gone, the template's now. A property test makes the Job from any build and finds no departure,
     and finds each of 21 changes a build may not make whatever the build.
   - **O2d** the report reader ("How a report is read", above): O2d1 the byte gate, the `Report` type and Polar's own parser, with
-    property tests, fuzzing and Verus proofs (its flake first, on the maintainer's GitHub); O2d2 the pre-forked worker in seccomp
+    property tests, fuzzing and Verus proofs (its flake first, on the maintainer's GitHub). O2d1a DONE 2026-11-08: Verus packaged
+    (`github.com/daveman1010221/nix-verus`, in the dev shell; `just verify`), and the gate and the parser proved, 35 obligations
+    (`build-orchestrator/report`, below); left for O2d1, the report grammar's check, decoding a checked line, fuzzing and
+    JSONTestSuite. O2d2 the pre-forked worker in seccomp
     strict mode, a builder facility, and
     its validated hand-back; O2d3 the meaning checks and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as

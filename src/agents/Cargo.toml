@@ -26,6 +26,7 @@ members = [
     "build-orchestrator/core",
     "build-orchestrator/fetch",
     "build-orchestrator/k8s",
+    "build-orchestrator/report",
     "cassini/broker",
     "cassini/cassini-c2",
     "cassini/client",
@@ -212,6 +213,9 @@ kube-common = { path = "kubernetes/common" }
 polar = { path = "lib" }
 orchestrator-core = { path = "build-orchestrator/core" }
 orchestrator-backend-k8s = { path = "build-orchestrator/k8s" }
+# Verus's library of specifications, at the release nix-verus builds (its release.nix, `vstd`): what a crate proved with
+# Verus depends on, erased from a plain build (build-orchestrator/report; docs/architecture/build-orchestrator.md).
+vstd = "=0.0.0-2026-11-01-0251"
 libc = "0.2"
 polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }

@@ -415,6 +415,11 @@ fmt:
 static-analysis:
     nu scripts/pipeline/static-tools.nu --manifest-path src/agents/Cargo.toml
 
+# The proofs: each crate proved with Verus ([package.metadata.verus] verify = true), checked by the dev shell's Verus
+# (nix-verus). Run before committing a change to one (docs/architecture/build-orchestrator.md, "Proved with Verus").
+verify:
+    cd src/agents && cargo-verus verify -p orchestrator-report
+
 # Also run by static-analysis. Exit 1: a source is gone; exit 2: github.com could not be reached, nothing was checked.
 # Check that every git source in a Cargo.lock or flake.lock is fetchable anonymously at its pinned revision
 check-sources:

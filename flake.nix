@@ -54,6 +54,11 @@
     nix-scudo.url                                 = "github:daveman1010221/nix-scudo";
     nix-scudo.inputs.nixpkgs.follows              = "nixpkgs";
     nix-scudo.inputs.flake-utils.follows          = "flake-utils";
+    # Verus, which proves the build report reader (docs/architecture/build-orchestrator.md, "Proved with Verus"): built from
+    # its release tag with the Rust toolchain and Z3 the release pins.
+    nix-verus.url                                 = "github:daveman1010221/nix-verus";
+    # Its own rust-overlay, not ours: Verus pins its toolchain (1.99.1), which ours, locked for the workspace's, may not have.
+    nix-verus.inputs.nixpkgs.follows              = "nixpkgs";
 
     pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
     pyproject-nix.inputs.nixpkgs.follows = "nixpkgs";
@@ -288,6 +293,9 @@
         };
 
         devShells.default = container.devShell.overrideAttrs (old: {
+          # `verus` and `cargo-verus` (cargo verus verify -p orchestrator-report), on their own pinned toolchain; the
+          # workspace's builds stay on its own.
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ inputs.nix-verus.packages.${system}.verus ];
           shellHook = old.shellHook + ''
             export BIND_ADDR="127.0.0.1:8080"
             export CASSINI_BIND_ADDR="$BIND_ADDR"
