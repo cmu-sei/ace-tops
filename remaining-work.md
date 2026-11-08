@@ -799,7 +799,7 @@ Each step is taken in bites, each reported before the next.
   "Build-processor first"): P1 his projection onto main's build-processor; P2 onto the builder and into the catalog as a Deployment (the transport,
   Job, exit 0, drains, refusals, render-time settings, graph password, N2, and the legacy `polar.provenance.linker` topic, which nothing has
   published to since G5a removed the old GitLab consumer; `topics.md` still names it); P3 the remaining projection findings, one a commit, tests
-  first; then the orchestrator's design conversation before any of it is ported. P1 DONE 2026-11-07: taken from `de642e6a` and the
+  first; then the orchestrator's design conversation before any of it is ported (HELD 2026-11-07: four decisions asked and answered, three by standing rules, and the plan in bites O1-O6, `docs/architecture/build-orchestrator.md`). P1 DONE 2026-11-07: taken from `de642e6a` and the
   `OCILayerDiffId`/`HAS_DIFF_ID` part of `04badb51`; not taken, his analysis events (`PackageAnalysisStarted`, `AnalysisFindingReported`, no
   producer on either branch) and `PackageRef::archive_sha256` (a wire change with no producer). His findings projection wrote `ON CREATE SET`,
   which the graph controller's raw-write guard refuses (`validate_raw_op_text`, MATCH/MERGE/SET/UNWIND only, there since v3.0.0), so every finding
