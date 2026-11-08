@@ -851,4 +851,28 @@ mod tests {
             "{written}"
         );
     }
+
+    /// A backend that names no property of its job is not linked: it would match every job of its label.
+    #[test]
+    fn a_backend_job_with_no_identity_is_not_linked() {
+        let ops = project(
+            ProvenanceEvent::ExecutionStarted {
+                build_id: "b1".into(),
+                commit_sha: "c0ffee".into(),
+                ref_name: "refs/heads/main".into(),
+                repo_url: "https://git.example/polar.git".into(),
+                triggered_by: None,
+                backend: Some(BackendIdentity {
+                    node_label: "KubernetesJob".into(),
+                    identity_props: vec![],
+                }),
+                at: T0.into(),
+            },
+            T0,
+        )
+        .unwrap();
+        assert!(!format!("{ops:?}").contains("EXECUTED_IN"));
+        // The build itself is still written.
+        assert!(format!("{ops:?}").contains("BuildJob"));
+    }
 }

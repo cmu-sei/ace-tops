@@ -168,20 +168,34 @@ impl NodeKeyVocabulary for BuildNodeKey {
 /// from that system's own metadata. node_label and every
 /// identity_props key are validated at construction -- the two
 /// positions Cypher can never parameterize -- the same pattern
-/// DynamicNodeKey uses elsewhere in this crate.
+/// DynamicNodeKey uses elsewhere in this crate. It names at least one
+/// property: with none it would merge on the label alone and match every
+/// node of it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BackendJobIdentity {
     node_label: String,
     identity_props: Vec<(String, String)>,
 }
 
+/// Why a backend job's identity was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum BackendJobIdentityError {
+    #[error(transparent)]
+    Identifier(#[from] CypherIdentifierError),
+    #[error("a {0} job's identity names no property, so it would match every {0} node")]
+    NoProperty(String),
+}
+
 impl BackendJobIdentity {
     pub fn new(
         node_label: impl Into<String>,
         identity_props: Vec<(String, String)>,
-    ) -> Result<Self, CypherIdentifierError> {
+    ) -> Result<Self, BackendJobIdentityError> {
         let node_label = node_label.into();
         validate_cypher_identifier(&node_label)?;
+        if identity_props.is_empty() {
+            return Err(BackendJobIdentityError::NoProperty(node_label));
+        }
         for (k, _) in &identity_props {
             validate_cypher_identifier(k)?;
         }

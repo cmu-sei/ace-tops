@@ -203,6 +203,8 @@ async fn backend_job_identity_construction_rejects_unsafe_input() {
     assert!(
         BackendJobIdentity::new("GitLabRunner", vec![("}) DROP //".into(), "42".into())]).is_err()
     );
+    // An identity with no property would be `MERGE (b:GitLabRunner)`, which matches every node of the label.
+    assert!(BackendJobIdentity::new("GitLabRunner", vec![]).is_err());
 }
 
 #[tokio::test]
