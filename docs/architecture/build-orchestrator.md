@@ -706,6 +706,24 @@ I write Rust code"):
   the workspace"), and the pipeline printed the repository's README. Found for the watched build: a build pod lives seconds, so
   `kubectl logs -f` started before it, or without `--all-containers`, misses it; the fetch says one line and the orchestrator's
   log is a build's fuller record. O3 DONE.
+- **Found 2026-11-08, planning the watched build, to fix before it** (the maintainer: "This must be fixed first"; "Deps first,
+  then network"):
+  - *A build's dependencies would come from outside the record.* Decision 1 brings the source by digest, its origin never
+    reached by the pod; but `cargo build` in the pod would fetch every crate it locks from crates.io, foreign code choosing what to
+    fetch, nothing judged or recorded. Decision 1 holds for dependencies too: the orchestrator fetches each through its handlers,
+    checked against the digest the lock file pins, and the pod builds offline. Polar's own `Cargo.lock`: 863 packages, 773 from
+    crates.io each pinned by sha256, 10 git dependencies from five repositories each pinned by a commit, the rest the workspace's;
+    about 174 MB of crates.
+  - *A build pod can reach anything.* No NetworkPolicy covers `polar-builds`, and u7c's network plugin enforces none
+    (`cert-issuer-isolation.md`, "Does the dev cluster enforce NetworkPolicy? No"): a pod running foreign code reaches the
+    internet, Cassini, Neo4j, cert-issuer and the registry, which takes pushes from any pod without a login. Polar's own pods pin
+    their images by digest (`tag@sha256:`), so a pushed tag replaces none of them; what a push could do is fill the registry or
+    mislead what reads a tag. To be closed as `cert-issuer-isolation.md`'s layer 4 is designed: a deny-all egress policy for the
+    build namespace (the fetch's way to the registry its one exception), a canary that proves the cluster enforces it, and the
+    build namespace requiring enforcement, so the orchestrator runs no build where it is not proved: for pods that run foreign
+    code the fallback is no builds, not open ones. A policy engine on u7c is the maintainer's to approve. A policy is the pod's,
+    so its pipeline would still reach the registry its fetch needs; the registry refusing anonymous pushes is
+    `registry-gate.md`'s ground, and until then that is the residual risk, recorded.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
