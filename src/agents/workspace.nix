@@ -267,6 +267,12 @@ let
       crateArgs = individualCrateArgs;
     };
 
+    # The source-fetch init container of a build's pod (docs/architecture/build-orchestrator.md, decision 1).
+    buildFetch = import ./build-orchestrator/fetch/package.nix {
+      inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
+      crateArgs = individualCrateArgs;
+    };
+
     polarCustody = import ./polar-custody/package.nix {
       inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
       crateArgs = individualCrateArgs;
@@ -278,5 +284,5 @@ let
     };
 in
 {
-        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit polarCustody polarTools healthcheck credentialsAgent secretHarness;
+        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit buildFetch polarCustody polarTools healthcheck credentialsAgent secretHarness;
 }
