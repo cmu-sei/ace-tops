@@ -34,6 +34,10 @@ serde_json.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 rkyv.workspace = true
+# Polar's event types, which a relayed report is re-encoded as (src/relay.rs).
+polar.workspace = true
+# The report reader (build-orchestrator/report): what the relay judges and re-encodes.
+orchestrator-report.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

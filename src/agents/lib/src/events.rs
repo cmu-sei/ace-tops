@@ -549,3 +549,14 @@ pub enum ProvenanceEvent {
         media_type: String,
     },
 }
+
+/// What a build reported, relayed by the build orchestrator (docs/architecture/build-orchestrator.md, revised 3): the build
+/// that printed it, by the orchestrator's own `build_id` for the build it started, and the report as one of Polar's events.
+/// A build pod holds no Polar identity, so a report is never a build's word on Cassini: the orchestrator read it from the
+/// pod's log, judged it and stamped it; any `build_id` the line itself carried was read and never believed. The event is a
+/// fact about artifacts; whose word it is, and for which build, sits beside it here.
+#[derive(Debug, Archive, RkyvSerialize, RkyvDeserialize, Deserialize, Serialize)]
+pub struct BuildReport {
+    pub build_id: String,
+    pub report: ProvenanceEvent,
+}

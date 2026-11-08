@@ -23,6 +23,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod relay;
 pub mod types;
 
 /// The path inside every job where source code is available.

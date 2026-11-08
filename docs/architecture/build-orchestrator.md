@@ -478,10 +478,23 @@ I write Rust code"):
     bytes answered and read give exactly what reading them directly gives, an answer cut short, made longer, past the bound
     or of another kind is refused, a tampered one never panics; and in a real worker in strict mode (`tests/worker.rs`), the
     eight seeds and five refusals each read as directly, the worker alive after them. O2d2 DONE. O2d3 the meaning checks
-    and the re-encoding.
+    and the re-encoding: DONE 2026-11-08, `orchestrator_core::relay`. Every report relayed goes in an envelope,
+    `polar::events::BuildReport { build_id, report }` (the maintainer, "An envelope for every relayed report": three kinds'
+    event types have no `build_id`, and the stamp belongs beside the facts, not in them); `build_id` is the orchestrator's, in
+    the envelope and in the event wherever the event has one, whatever the line said. A `Relay` per build holds it to its
+    bounds (10,000 report lines and 64 MiB, refused ones counted, Dynamic settings with the agent in O2e) and judges what the
+    values mean: every hash a graph key is made from (an artifact's, an SBOM's, a binary's, a tarball's, a config's, a
+    layer's, an image's and a binding's digest when given) is `sha256:` and 64 lower-case hex, as the pipeline writes them,
+    or the report is refused naming the field; purls are build-processor's to judge, as an SBOM may name a component by none.
+    Then the report re-encoded as Polar's event: what is relayed is what Polar built from the values, never the bytes. Tested:
+    the stamp over a line's own `build_id`, each malformed digest refused by field, the bounds, a property that any report
+    with well-formed digests relays and its envelope survives rkyv, another that any one digest spoiled is refused; and each
+    `Refusal`'s message its own sentence, the same whatever the line (polar-cc's survey, claimed). A wire change, read by
+    build-processor in O2e. O2d DONE.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
     `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
-    `polar.provenance.executions`, and build-processor's `whose_word` split to it.
+    `polar.provenance.executions`, and build-processor's `whose_word` split to it; build-processor reading the relayed
+    claims as `BuildReport` envelopes, believing the envelope's `build_id`.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports

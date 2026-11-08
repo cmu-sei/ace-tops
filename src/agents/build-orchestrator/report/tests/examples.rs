@@ -23,7 +23,7 @@
 
 //! The gate and the parser, by example: what a report is, and each way a line is not one.
 
-use orchestrator_report::{Bounds, KEYS, Refusal, Tape, Token, gate, parse};
+use orchestrator_report::{Bounds, KEYS, Refusal, Tape, Token, gate, parse, refusal_code};
 
 fn gated(line: &str) -> Result<(), Refusal> {
     gate(line.as_bytes(), &Bounds::default())
@@ -188,4 +188,51 @@ fn a_tape_is_never_grown() {
         let _ = parse(text.as_bytes(), &bounds, &mut tape);
         assert_eq!(tape.tokens.capacity(), capacity, "{text}");
     }
+}
+
+/// Every refusal says what was wrong, in a sentence of its own, and never what the line said: its message is the same
+/// whatever line it refuses, so nothing of the line reaches a log by it.
+#[test]
+fn every_refusal_says_what_was_wrong_and_nothing_of_the_line() {
+    let all = [
+        Refusal::TooLong,
+        Refusal::Control,
+        Refusal::NotUtf8,
+        Refusal::OutsideTheGrammar,
+        Refusal::Unbalanced,
+        Refusal::TooDeep,
+        Refusal::StringTooLong,
+        Refusal::NumberTooLarge,
+        Refusal::BadNumber,
+        Refusal::BadEscape,
+        Refusal::TooManyTokens,
+        Refusal::TooManyKeys,
+        Refusal::TooManyItems,
+        Refusal::DuplicateKey,
+        Refusal::NotAValue,
+        Refusal::Trailing,
+        Refusal::NotAnObject,
+        Refusal::UnknownKind,
+        Refusal::UnknownKey,
+        Refusal::MissingKey,
+        Refusal::WrongType,
+        Refusal::UnknownWord,
+    ];
+    let mut messages: Vec<String> = all.iter().map(|r| r.to_string()).collect();
+    assert!(
+        messages.iter().all(|m| m.split_whitespace().count() >= 4),
+        "{messages:?}"
+    );
+    messages.sort();
+    messages.dedup();
+    assert_eq!(messages.len(), all.len(), "each its own");
+    // Each has its own code in a worker's answer, from 1.
+    let mut codes: Vec<u32> = all.iter().map(|r| refusal_code(*r)).collect();
+    codes.sort();
+    assert_eq!(codes, (1..=all.len() as u32).collect::<Vec<_>>());
+    // The same refusal of two lines that share nothing says the same.
+    let one = parsed(r#"{"secret-token-1": 1, "secret-token-1": 2}"#).unwrap_err();
+    let other = parsed(r#"{"x": 1, "x": 2}"#).unwrap_err();
+    assert_eq!((one, one.to_string()), (other, other.to_string()));
+    assert!(!one.to_string().contains("secret-token-1"));
 }
