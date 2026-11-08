@@ -54,7 +54,7 @@ use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
 use egress.nu
-use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces]
+use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces, added_namespaces]
 use under-test.nu
 const CONFIG = ($INFRA | path join "config")
 
@@ -1337,6 +1337,12 @@ def "main topology" [--target: string = $DEFAULT_TARGET] {
 # The namespaces a target attests besides Polar's own, as JSON: the namespaces chart makes each, as it makes Polar's.
 def "main attest-also" [--target: string = $DEFAULT_TARGET] {
     load_cluster $target | get -o attest_also | default [] | to json --raw
+}
+
+# The namespaces Polar makes beyond its first, each with its labels, as JSON: the namespaces chart writes them and up.nu puts
+# the CA's ConfigMap in each (attested.nu, added_namespaces).
+def "main added-namespaces" [--target: string = $DEFAULT_TARGET] {
+    added_namespaces (load_cluster $target) | to json --raw
 }
 
 # The floor's entries for the servers a target names beside Neo4j, as JSON: render.nu adds them as it adds Neo4j's.

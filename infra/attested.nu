@@ -104,3 +104,31 @@ export def role_namespaces [role: record, cluster: record, capability: string] {
         }
     }
 }
+
+# Polar's first namespaces, which the namespaces chart writes itself (namespaces.dhall), by their keys.
+const FIRST = ["polar" "graph" "auth"]
+const LEVELS = ["privileged" "baseline" "restricted"]
+const MODES = ["enforce" "warn" "audit"]
+
+# The namespaces Polar makes beyond its first, each with its labels: the cluster's other namespaces (the build namespace), with
+# the Pod Security the cluster gives each by its key (`pod_security`), then those the target attests besides, with none. A
+# Pod Security entry for a key the cluster does not have, or a level that is not one, is refused.
+export def added_namespaces [cluster: record] {
+    let security = ($cluster.pod_security? | default {})
+    for key in ($security | columns) {
+        if $key not-in ($cluster.namespaces | columns) {
+            error make { msg: $"pod_security names `($key)`, which the cluster's namespaces do not have" }
+        }
+        for mode in ($security | get $key | columns) {
+            let level = ($security | get $key | get $mode)
+            if $mode not-in $MODES or $level not-in $LEVELS {
+                error make { msg: $"pod_security.($key): `($mode): ($level)` is not a Pod Security mode \(($MODES | str join ', ')\) and level \(($LEVELS | str join ', ')\)" }
+            }
+        }
+    }
+    let own = ($cluster.namespaces | transpose key name | where {|n| $n.key not-in $FIRST } | each {|n|
+        let modes = ($security | get -o $n.key | default {})
+        { name: $n.name, labels: ($modes | transpose mode level | reduce --fold {} {|m, acc| $acc | insert $"pod-security.kubernetes.io/($m.mode)" $m.level }) }
+    })
+    $own ++ ($cluster.attest_also? | default [] | each {|name| { name: $name, labels: {} } })
+}

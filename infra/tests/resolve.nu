@@ -36,7 +36,7 @@ use std/assert
 use ../test-cluster.nu
 use ../cluster-registry.nu
 use ../registry.nu [node_registry]
-use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also role_namespaces]
+use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also role_namespaces added_namespaces]
 
 const RESOLVER = (path self | path dirname | path dirname | path join "resolve.nu")
 
@@ -457,19 +457,45 @@ def main [] {
                 let resources = (^nu $RESOLVER resources attestation-agent --target $t | from json)
                 assert equal $resources.cluster_roles []
                 let namespaces = ($resources.namespaced_roles | get namespace | sort)
-                assert equal $namespaces ["polar" "polar-auth" "polar-graph"]
+                # Polar's own and the build namespace, whose pods the credentials agent issues to.
+                assert equal $namespaces ["polar" "polar-auth" "polar-builds" "polar-graph"]
                 for role in $resources.namespaced_roles {
                     let verbs = ($role.rules | get verbs | flatten | uniq | sort)
                     assert equal $verbs ["get" "list" "watch"] $role.namespace
                     let kinds = ($role.rules | get resources | flatten | sort)
                     assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
                 }
-                assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-auth" "polar-graph"]
+                assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-auth" "polar-builds" "polar-graph"]
             }
         }
 
         # docs/architecture/http-observers.md, "GitLab": a namespace that is not Polar's, whose pods Polar's CA issues to, is one
         # the attestation agent attests, or the credentials agent refuses its pods as not found.
+        "the namespaces beyond Polar's first are made with their Pod Security, the build namespace's baseline enforced and restricted warned": {
+            let cluster = {
+                namespaces: { polar: "polar", graph: "polar-graph", auth: "polar-auth", builds: "polar-builds" }
+                pod_security: { builds: { enforce: "baseline", warn: "restricted", audit: "restricted" } }
+                attest_also: ["gitlab-test"]
+            }
+            assert equal (added_namespaces $cluster) [
+                { name: "polar-builds", labels: {
+                    "pod-security.kubernetes.io/enforce": "baseline"
+                    "pod-security.kubernetes.io/warn": "restricted"
+                    "pod-security.kubernetes.io/audit": "restricted"
+                } }
+                { name: "gitlab-test", labels: {} }
+            ]
+            # As committed, sandbox-local's: the build namespace, as decided (docs/architecture/build-orchestrator.md, 5d).
+            let committed = (open ($INFRA | path join "config/cluster.nuon"))
+            assert equal ((added_namespaces ($committed | reject -o attest_also)) | get name) ["polar-builds"]
+            assert equal ((added_namespaces $committed) | first | get labels | get "pod-security.kubernetes.io/enforce") "baseline"
+            # A Pod Security level that is not one is refused, and so is a key the cluster does not have.
+            for bad in [{ builds: { enforce: "lenient" } } { nowhere: { enforce: "baseline" } }] {
+                let refused = (try { added_namespaces ($cluster | update pod_security $bad); null } catch {|e| $e.msg })
+                assert ($refused != null) $"($bad)"
+            }
+        }
+
         "a capability's Role goes in the namespace it names alone, in every attested one when it names none, and a key the cluster lacks is refused": {
             let cluster = { namespaces: { polar: "polar", graph: "polar-graph", builds: "polar-builds" }, attest_also: ["gitlab-test"] }
             assert equal (role_namespaces { name: "r", rules: [] } $cluster "pod-read") ["polar" "polar-graph" "polar-builds" "gitlab-test"]

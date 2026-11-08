@@ -24,7 +24,8 @@
 # infra/layers/1-platform/infra/namespaces/main.nu
 #
 # Chart entrypoint for namespace definitions.
-# Renders: polar, polar-graph, and polar-auth namespaces.
+# Renders: polar, polar-graph and polar-auth, then the namespaces the context adds (`added`: the build namespace, and those the
+# target attests besides), each with its labels.
 # Applied first in every target — all other resources depend on these.
 #
 # Called by render.nu with a context record:
@@ -49,11 +50,13 @@ def main [context_nuon: string] {
     let src = ($chart_dir | path join "namespaces.dhall")
     let out = ($output_dir | path join "namespaces.yaml")
     print $"  rendering namespaces.dhall -> namespaces.yaml"
-    let also = ($context.attestAlso? | default [] | each {|name|
-        { apiVersion: "v1", kind: "Namespace", metadata: { name: $name } } | to yaml
+    let added = ($context.added? | default [] | each {|n|
+        let metadata = if ($n.labels | is-empty) { { name: $n.name } } else { { name: $n.name, labels: $n.labels } }
+        { apiVersion: "v1", kind: "Namespace", metadata: $metadata } | to yaml
     })
-    # Polar's own namespaces, then each it attests besides (infra/attested.nu), which the attestation agent has a Role in.
-    [(dhall_yaml $src ["--documents"]) ...$also] | str join "---\n" | save --force $out
+    # Polar's first namespaces, then the others it makes and each it attests besides (infra/attested.nu, added_namespaces), with
+    # their Pod Security labels; the attestation agent has a Role in each.
+    [(dhall_yaml $src ["--documents"]) ...$added] | str join "---\n" | save --force $out
 
     print $"  namespaces: done"
 }

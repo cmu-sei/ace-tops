@@ -564,7 +564,7 @@ def step_ca [config: record] {
 # The CA's ConfigMap in every namespace Polar attests beside its own (infra/attested.nu), each run: bootstrap-ca makes it in
 # `polar` and `polar-graph`, once, and a pod in another that asks the credentials agent for a certificate checks it by it.
 def spread_ca [target: string, configmap: string] {
-    let others = (^$nu.current-exe infra/resolve.nu attest-also --target $target | from json)
+    let others = (^$nu.current-exe infra/resolve.nu added-namespaces --target $target | from json | get name)
     if ($others | is-empty) { return }
     let source = (^kubectl -n $POLAR get configmap $configmap -o json | from json)
     for namespace in $others {

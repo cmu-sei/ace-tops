@@ -33,6 +33,15 @@
     polar: "polar"
     graph: "polar-graph"
     auth: "polar-auth"
+    # Where the build orchestrator's Jobs run (docs/architecture/build-orchestrator.md).
+    builds: "polar-builds"
+  }
+
+  # Pod Security Admission, by namespace key, for a namespace Polar makes beyond its first: the build namespace refuses what no
+  # build may have (privileged containers, host access), and warns and audits every build that runs below restricted, which a
+  # signed mapping may ask for (docs/architecture/build-orchestrator.md, 5d).
+  pod_security: {
+    builds: { enforce: "baseline", warn: "restricted", audit: "restricted" }
   }
 
   # Registry as the cluster's nodes reach it. For u7s this is the slirp4netns
