@@ -444,7 +444,9 @@ I write Rust code"):
     (`github.com/daveman1010221/nix-verus`, in the dev shell; `just verify`), and the gate and the parser proved, 35 obligations
     (`build-orchestrator/report`, below). O2d1b DONE 2026-11-08: the report grammar's check proved too (58 obligations in all),
     decoding a checked line into owned values (not proved; property tests and fuzzing), and a fuzz target through all four
-    steps. Left: JSONTestSuite, with the maintainer's leave. O2d2 the pre-forked worker in seccomp
+    steps. JSONTestSuite (the maintainer's leave, 2026-11-08): its 318 parsing cases vendored at a pinned commit
+    (`build-orchestrator/report/tests/jsontestsuite`), all 188 that JSON refuses refused, the 95 it accepts read or refused only
+    for what the grammar leaves out (65 read), no case panicking. O2d1 DONE. O2d2 the pre-forked worker in seccomp
     strict mode, a builder facility, and
     its validated hand-back; O2d3 the meaning checks and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
