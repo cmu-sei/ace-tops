@@ -696,6 +696,16 @@ I write Rust code"):
   repository's source is fetched. And: the mapping's credential and the build's bound reach the source step, and an adopted
   build's source is not prepared again (the build's actor); a Job's fetch told the registry is plain http departs from its
   template nowhere, in the departures property too; the agent's two fetches and its needs; the catalog's clones and volume.
+  O3d DONE 2026-11-08, live on u7c (9bf8e0f6): the maintainer signed and pushed a `mappings` section (version 1) mapping
+  `https://github.com/octocat/Hello-World` to `polar-nu-init` from u7c's registry, pinned by digest, and the git controller's
+  `repositories` section naming the same repository. The observer reported its default branch; the orchestrator fetched the
+  commit from github.com (`git.fetch-public`), archived it, pushed the archive, the empty config and the manifest to the registry
+  in the cluster (seven `registry.source.push` requests: HEAD, POST, PUT for each blob, and the manifest), read the template, made
+  the Job, polled it to its end (complete in 6 s), read its pod's log (no report in it) and said it succeeded, 10 s in all, every
+  request judged and allowed. The pod's fetch pulled the archive by its digest over plain http and unpacked it ("the source is in
+  the workspace"), and the pipeline printed the repository's README. Found for the watched build: a build pod lives seconds, so
+  `kubectl logs -f` started before it, or without `--all-containers`, misses it; the fetch says one line and the orchestrator's
+  log is a build's fuller record. O3 DONE.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
