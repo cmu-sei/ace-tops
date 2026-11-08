@@ -45,6 +45,11 @@
 //! has a precondition: what it needs it checks, so the proofs hold for any caller, the unverified ones included. None
 //! allocates past what the tape was given, so they can run where nothing may ask for memory (the locked-down worker, O2d2).
 //!
+//! In the agent, the three run in a locked-down worker (`polar_agent_builder::worker`): [`answer()`], proved as they are,
+//! writes what they made into the worker's answer as a header and a 16-byte record for each token, never past its buffer;
+//! on the agent's side, [`Report::read_answer`] holds the answer to its shape and bounds, rebuilds the tape, and checks it
+//! again before decoding.
+//!
 //! Then [`Report::read`] decodes a checked line into owned values, its escapes undone: the one step that allocates, and
 //! the one not proved. It runs outside the worker, refuses any tape it cannot read, and is held by property tests (every
 //! report reads back as itself) and by fuzzing (`fuzz/`: any bytes, through all four steps).
@@ -55,11 +60,13 @@
 // Verus reasons about the comparisons themselves, not about `RangeInclusive::contains`: a range is written as two.
 #![allow(clippy::manual_range_contains)]
 
+mod answer;
 mod gate;
 mod grammar;
 mod report;
 mod tape;
 
+pub use answer::{HEADER, RECORD, answer, answer_len, kind_code, refusal_code};
 pub use gate::{Bounds, KEYS, NUMBER_DIGITS, Refusal, gate};
 pub use grammar::{Kind, check};
 pub use report::{

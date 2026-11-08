@@ -468,8 +468,17 @@ I write Rust code"):
     as it does for any child of the builder's that ends unexpectedly (`shutdown::on_child_death`; its health says it is
     draining). Decided by that precedent, for review: the agent ends through its supervisor's orderly shutdown, not a verdict
     of the health actor's, which has no message for it. Tested in the same binary: a handle's round trip, a request past the
-    bound failing nothing, a worker killed from outside and one that spins past its time each failing its actor. O2d3 the
-    meaning checks and the re-encoding.
+    bound failing nothing, a worker killed from outside and one that spins past its time each failing its actor. O2d2c DONE
+    2026-11-08: `orchestrator_report::answer`, proved (70 obligations in the crate now), runs the gate, the parser and the
+    check and writes the tape as a 16-byte header (0 or a refusal's code, the kind's code, the count) and a 16-byte record per
+    token, never past its buffer, refusing a tape too big for it; `Report::read_answer`, on the agent's side, holds an answer
+    to its exact length and the bounds, rebuilds the tape, checks it again, decodes from the line's own bytes, and refuses a
+    kind the line is not. A forged tape that passes the check can make the line say only what its author could have written.
+    The proof found one bug while it was written: a header zeroed past the width its writer takes. Tested: in process, any
+    bytes answered and read give exactly what reading them directly gives, an answer cut short, made longer, past the bound
+    or of another kind is refused, a tampered one never panics; and in a real worker in strict mode (`tests/worker.rs`), the
+    eight seeds and five refusals each read as directly, the worker alive after them. O2d2 DONE. O2d3 the meaning checks
+    and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
     `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
     `polar.provenance.executions`, and build-processor's `whose_word` split to it.

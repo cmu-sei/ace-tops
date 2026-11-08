@@ -41,3 +41,10 @@ verify = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The builder's worker, to run the reader's answer in one as the agent will (tests/worker.rs): for the tests alone.
+polar-agent-builder.workspace = true
+
+# A worker is forked only from a process of one thread, and libtest runs tests on threads of its own.
+[[test]]
+name = "worker"
+harness = false

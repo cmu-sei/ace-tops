@@ -5421,6 +5421,7 @@ dependencies = [
 name = "orchestrator-report"
 version = "1.0.0"
 dependencies = [
+ "polar-agent-builder",
  "proptest",
  "vstd",
 ]

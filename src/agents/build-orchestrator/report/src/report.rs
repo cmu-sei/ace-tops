@@ -25,7 +25,7 @@
 //! [`check`](crate::check), outside the locked-down worker (build-orchestrator.md, O2d2), and holds itself to the tape it is
 //! given all the same: anything it cannot read is refused, never assumed.
 
-use crate::{Kind, Refusal, Tape, Token, check};
+use crate::{Bounds, HEADER, Kind, RECORD, Refusal, Tape, Token, check, kind_code, refusal_code};
 
 /// What a build reported, as Polar's event types (`polar::events`) have it, without a `build_id`: the orchestrator stamps
 /// its own on what it relays.
@@ -260,6 +260,79 @@ impl Report {
                 uri: o.text_or_empty("uri")?,
             }),
         })
+    }
+
+    /// The kind of report this is.
+    pub fn kind(&self) -> Kind {
+        match self {
+            Report::StageStarted { .. } => Kind::StageStarted,
+            Report::StageCompleted { .. } => Kind::StageCompleted,
+            Report::SecurityAdvisoryFound(_) => Kind::SecurityAdvisoryFound,
+            Report::PackageStatusFound(_) => Kind::PackageStatusFound,
+            Report::ArtifactProduced { .. } => Kind::ArtifactProduced,
+            Report::SbomAnalyzed(_) => Kind::SbomAnalyzed,
+            Report::BinaryLinked { .. } => Kind::BinaryLinked,
+            Report::ContainerImageCreated(_) => Kind::ContainerImageCreated,
+        }
+    }
+
+    /// The report a worker's `answer` says `line` is (build-orchestrator.md, O2d2), on the agent's side: the answer held
+    /// to its exact shape and to `bounds`, its tape rebuilt, then checked again and decoded from the line's own bytes, as
+    /// [`read`](Self::read) does; and the kind it claims must be the line's. A worker's refusal is taken as said: refusing
+    /// is all a lying worker could gain by it. A worker that forged a tape the check passes could make the line say only
+    /// what its author could have written, since every value is the line's own bytes.
+    pub fn read_answer(line: &[u8], answer: &[u8], bounds: &Bounds) -> Result<Report, Refusal> {
+        let word = |at: usize, width: usize| -> Result<u64, Refusal> {
+            let bytes = answer.get(at..at + width).ok_or(Refusal::NotAValue)?;
+            Ok(bytes
+                .iter()
+                .rev()
+                .fold(0u64, |v, b| (v << 8) | u64::from(*b)))
+        };
+        let status = word(0, 4)?;
+        if status != 0 {
+            return Err(refusal_of(status).unwrap_or(Refusal::NotAValue));
+        }
+        let kind = word(4, 4)?;
+        let count = usize::try_from(word(8, 8)?).map_err(|_| Refusal::TooManyTokens)?;
+        if count > bounds.tokens || answer.len() != HEADER + RECORD * count {
+            return Err(Refusal::NotAValue);
+        }
+        let mut tape = Tape::new(&Bounds {
+            tokens: count,
+            ..*bounds
+        });
+        for i in 0..count {
+            let at = HEADER + RECORD * i;
+            let (tag, a, b) = (word(at, 4)?, word(at + 4, 4)?, word(at + 8, 8)?);
+            let (a, b32) = (a as u32, u32::try_from(b));
+            tape.tokens.push(match tag {
+                1 => Token::Object {
+                    members: a,
+                    end: b32.map_err(|_| Refusal::NotAValue)?,
+                },
+                2 => Token::List {
+                    items: a,
+                    end: b32.map_err(|_| Refusal::NotAValue)?,
+                },
+                3 => Token::Key {
+                    start: a,
+                    end: b32.map_err(|_| Refusal::NotAValue)?,
+                },
+                4 => Token::Text {
+                    start: a,
+                    end: b32.map_err(|_| Refusal::NotAValue)?,
+                },
+                5 => Token::Int(b),
+                6 => Token::Null,
+                _ => return Err(Refusal::NotAValue),
+            });
+        }
+        let report = Report::read(line, &tape)?;
+        if u64::from(kind_code(report.kind())) != kind {
+            return Err(Refusal::NotAValue);
+        }
+        Ok(report)
     }
 
     /// The line a build prints for this report, without [`PREFIX`](crate::PREFIX): one JSON object, as the grammar has
@@ -645,4 +718,34 @@ impl Writer {
     fn done(self) -> String {
         format!("{{{}}}", self.members.join(", "))
     }
+}
+
+/// The refusal a worker's answer names by its code (`refusal_code`), if it names one.
+fn refusal_of(code: u64) -> Option<Refusal> {
+    const ALL: [Refusal; 22] = [
+        Refusal::TooLong,
+        Refusal::Control,
+        Refusal::NotUtf8,
+        Refusal::OutsideTheGrammar,
+        Refusal::Unbalanced,
+        Refusal::TooDeep,
+        Refusal::StringTooLong,
+        Refusal::NumberTooLarge,
+        Refusal::BadNumber,
+        Refusal::BadEscape,
+        Refusal::TooManyTokens,
+        Refusal::TooManyKeys,
+        Refusal::TooManyItems,
+        Refusal::DuplicateKey,
+        Refusal::NotAValue,
+        Refusal::Trailing,
+        Refusal::NotAnObject,
+        Refusal::UnknownKind,
+        Refusal::UnknownKey,
+        Refusal::MissingKey,
+        Refusal::WrongType,
+        Refusal::UnknownWord,
+    ];
+    ALL.into_iter()
+        .find(|r| u64::from(refusal_code(*r)) == code)
 }
