@@ -68,6 +68,13 @@ Asked, the maintainer, 2026-11-07:
    declared, and the builder computes the `job-run` capability from the declared writes, so a list cannot delete and the capability
    cannot drift from the code.
 
+5b. **The build workload's pod setup is a PodTemplate the catalog applies** (the maintainer, 2026-11-07, "A PodTemplate the catalog
+   applies"): the catalog renders the build workload (multi-instance, decision 3) as a Kubernetes PodTemplate in the build namespace,
+   applied by Flux from the signed deployment like every other manifest, and the orchestrator reads it through its handler (a declared
+   `get podtemplates`) and builds each Job's pod from it: its ServiceAccount, its certificate init container, its volumes, mounts and
+   env. So the facts stay the catalog's and are said once, as the load harness's runs copy its rendered Job, and a new catalog applies
+   without restarting the orchestrator. His read them from JSON in a rendered config file.
+
 Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 
 5. Deployment facts (the build namespace, the clone image, by digest) come from the catalog, and run-time settings (the concurrency cap,
@@ -87,7 +94,10 @@ Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
   for writes (`job-run`, a Role in the build namespace) comes with the agent, in O2, where the build namespace is a catalog fact. O1c2 DONE
   2026-11-07: the backend over those calls (`orchestrator-backend-k8s`, `backend.rs`), one operation for each, with no client or
   credential of its own; a job's log stays in its pod until O4, so the backend trait has no log.
-- **O2** the agent on the builder and in the catalog: 5, 6 and 7.
+- **O2** the agent on the builder and in the catalog: 5, 5b, 6 and 7. In bites: O2a the build namespace, the build workload rendered
+  as a PodTemplate, and the `job-run` capability (a Role in the build namespace, computed from the declared writes); O2b the Job built
+  from the PodTemplate read through the handler; O2c the agent itself (his `agent` crate: supervisor, build registry, a job actor per
+  build, the signed `mappings` and escrowed `credentials` sections), on the builder and in the catalog.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet), the clone image that checks and unpacks it.
 - **O4** the log as a registry blob and its digest in the provenance event (a wire change).
