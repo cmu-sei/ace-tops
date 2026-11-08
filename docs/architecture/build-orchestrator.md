@@ -53,7 +53,8 @@ Asked, the maintainer, 2026-11-07:
    archive in Polar's registry and checks its digest before it builds. ("Orchestrator fetches, pod gets it by digest".)
 2. **A build's pipeline log is a content-addressed blob in the registry**, as evidence bodies are (`evidence-storage`), and its digest
    goes in the build's provenance event. No S3 gateway. ("Registry blobs, by digest".)
-3. **Build pods are one multi-instance workload, each pod its own certificate.** Every build shares the workload's grants; its broker-stamped
+3. **Revised 2026-11-08: build pods hold no Polar identity; the orchestrator judges what a build prints and relays it** ("Build pods
+   hold no Polar identity", below). What it replaced: **Build pods are one multi-instance workload, each pod its own certificate.** Every build shares the workload's grants; its broker-stamped
    identity names the pod, so a build's events are that pod's word, and a `build_id` belongs to the pod that started it (B11's open
    question in `remaining-work.md`). ("One workload, a certificate per pod".)
 4. **A build runs hardened unless its signed mapping says otherwise:** non-root, no privilege escalation, every capability dropped, the
@@ -176,6 +177,128 @@ is deployed, with the visibility to reason about it. A namespace label applies o
 **What remains.** Polar's judge (step 2) acts before the Job exists; the attestation agent (step 4) acts after Kubernetes has started
 the pod. A pod that got past step 2 (only by a compromised orchestrator) would run until it is judged, without a certificate, and be
 reported. That is the window Polar's detection-first threat model accepts for a compromised process anywhere in Polar.
+
+## Build pods hold no Polar identity (revising 3)
+
+Decided by the maintainer, 2026-11-08 ("Approve"), with what was settled below; nothing of it is built yet. On the parsing it adds:
+"I can accept added complexity in this area because we reduced so much complexity with this design already." The build pod loses its
+identity containers, its issuance, its session and the UID question; the complexity that comes back is one small, verified parser in
+one locked-down worker, where foreign bytes meet Polar.
+
+**What 3 decided, and what it costs.** Each build pod is an instance of `build-runner` with its own certificate, so that the pipeline
+can publish what the build did to Cassini as that pod's word. For that, every build pod carries the custody daemon and polar-init, asks
+the credentials agent for a certificate, is attested before it gets one, and opens a Cassini session. And it raised a question that has
+no good answer: the custody daemon signs only for the UIDs it is told (1000 in every pod), so a pipeline that its signed mapping runs as
+root or as another user (decision 4) could not use the certificate at all.
+
+**What that identity proves.** The code holding the pod's certificate is the repository's pipeline: foreign code. A signed event from
+a build pod proves that something running in that pod said it, and nothing more. The orchestrator already knows that much without a
+certificate in the pod: it made the Job, it knows the pod, and it reads the pod's output through its handler (5a, and O4 for the log).
+
+**The decision.**
+
+1. *A build pod holds no Polar identity.* The PodTemplate has no custody daemon, no polar-init, no certificate, no projected token
+   and no Cassini client: the fetch, then the pipeline, and nothing of Polar's in between. `build-runner` is not issued and opens no
+   session.
+2. *The pipeline reports by printing.* `scripts/pipeline/core/events.nu` writes each event to its standard output as one framed JSON
+   line, instead of publishing it with `cassini-client`. The log goes to the registry as a blob as before (O4); the framed lines are
+   also read as reports.
+3. *The orchestrator judges what a build reports, and relays what passes.* For each framed line it reads from the pod it started: it
+   must parse as a build event of a kind a pipeline may report, name this build's `build_id` (the orchestrator's, which it stamps;
+   the line's own is never believed), and be within a size bound and a count bound per build. What passes is published as a claim the
+   build made; what fails is counted, and the build is reported as having said something refused.
+4. *What the orchestrator saw is its own word; what the build said is a claim.* That the build started, ran and ended, when, and how
+   (the Job's and the pod's status) the orchestrator observes itself, and publishes as its observation. What the build produced and
+   found (artifacts, images, binaries, SBOMs, packages, advisories) is the build's claim, relayed. Following B11 ("Split topics by
+   whose word"), the two go on separate topics, each believed for its own kinds only (`build-processor`, `project::whose_word`,
+   `believed_on`): the topic names are for O2c.
+
+**Why this is not a relay whose word is taken** (`proposals.md`, "The parties"). That rule is about a middleman between two Polar
+parties, whose word a receiver must not take in place of checking for itself. Here the orchestrator is the first-hand observer of the
+build's output, as the Jira consumer is of an issue: its word is "build X's pod printed this", which it alone can say, and what was
+printed stays an untrusted claim in the graph, marked as the build's.
+
+**What it gains.**
+
+- Every build pod is simpler: no identity containers, no certificate issuance or attestation at its start, no session, and no UID
+  question, so a mapping may run its pipeline as any user.
+- The most foreign code Polar runs holds no Polar credential of any kind.
+- Polar decides what a build may say before it is said on Cassini, in the orchestrator, with what it knows of the build: the
+  application-layer judgement this design is built on.
+- B11's open question closes: only the orchestrator publishes build reports, and it alone assigns `build_id`, so no publisher can
+  report for a build it did not start.
+
+**What it changes.**
+
+- Decision 3, as above; and 7b's "build pods use custody as every agent does" goes.
+- O2a's template: its identity containers, projected token and client environment go; the `template` kind no longer asks for many
+  instances on the credentials agent (its pods are never issued). Whether `polar-builds` stays attested is open: no certificate is
+  asked for there, but attestation's checks of a pod against its owner (pinned images, no ephemeral container) still detect tampering.
+- 5d's reasoning stands on its own. Its example, the custody daemon's `IPC_LOCK` refused by `baseline`, no longer arises in
+  `polar-builds`, since no custody daemon runs there.
+- O5 becomes "a `build_id` is the orchestrator's", and is mostly done by step 3.
+- `events.nu` changes its transport; the event shapes stay.
+
+**What stays of Vaughn's design.** The orchestrator's structure (the build registry actor, a job actor per build, the backend trait),
+the Job spec and its hardening, the signed mappings and escrowed credentials, the pipeline scripts' events, and build-processor's
+projection. In his branch the orchestrator published the lifecycle events itself, and the pipeline published the rest from the pod:
+under the shared `client-tls` Secret by default, which Polar is removing, or, configured, under an identity per job taken from a pool
+of ServiceAccounts (his `agent/src/config.rs`, `identity`; `k8s/src/job.rs`, `CLIENT_TLS_SECRET_NAME`). This keeps the first, and
+replaces the second with the relay rather than with a certificate per pod.
+
+**Settled with it** (the maintainer, 2026-11-08):
+
+- *A report line is a fixed prefix and one compact JSON line on standard output*: `polar-report {...}`. Any other line is the build's
+  output. Build code may print the prefix, by accident or not; that is no new risk, since any code in the pod can say anything and
+  every report is judged. A runtime's split of a long line (16 KiB) is joined again by the kubelet as it serves the log.
+- *Bounds, Dynamic signed settings with these defaults* (decision 5): a line 16 MiB (an SBOM report carries a project's whole
+  dependency graph, `scripts/pipeline/core/events.nu`, `emit-sbom-analyzed`; Cassini's payload limit is about 64 MiB,
+  `cassini/types/src/lib.rs`, `MAX_PAYLOAD_BYTES`); a build 10,000 reports and 64 MiB relayed; the whole log is bounded already
+  (256 MiB, O1c1b). What exceeds a bound is refused and counted, and the build is reported as having said something refused.
+- *The reports are read after the pod ends*, in the one read that also stores the log (O4): complete, and one read for both.
+  Lifecycle does not wait for it, since the orchestrator observes it from the Job's status as it happens; only findings come as late
+  as the build is long. Reading as the log is written (`follow`) can come later, if lateness matters.
+- *Two topics.* `polar.provenance.events` stays, for the build's relayed claims (stages, artifacts, images, binaries, SBOMs,
+  packages, advisories), so build-processor's subscription stands. `polar.provenance.executions` is new, for what the orchestrator
+  observes: a build started, completed, failed or was cancelled. build-processor believes each kind on its one topic
+  (`whose_word`, `believed_on`), and the orchestrator refuses an execution kind a build prints, since that is not a build's to say.
+- *`polar-builds` stays attested.* No certificate is asked for there, so attestation's check at issuance never runs for a build pod;
+  but the attestation agent watches every pod of the namespaces it attests on its own, holds each to its owner (pinned images, no
+  container added or ephemeral) and reports how each container ended, a crash by signal among them (`runtime-attestation.md`,
+  "Slice B"). For the pods that run the most foreign code, that detection is worth the Role it costs.
+
+**How a report is read, so that no byte a build wrote can hurt Polar** (the maintainer, 2026-11-08: "There needs to be zero risk
+that whatever we've decided to hand to a json parser is of any threat"). No parser is free of risk; what is in our hands is how little
+reaches one, and what a bug in it could do. In layers, the riskiest input meeting the simplest code first:
+
+1. *A gate, before any parser.* Over the raw bytes, with no knowledge of JSON beyond brackets and quotes: the line is within its
+   bound, valid UTF-8, holds no NUL or other control character, nests no deeper than a fixed limit (counted by a state machine that
+   knows only whether it is inside a string), and holds no string or number longer than its bound. No recursion, and no allocation
+   that grows with the input. Deep nesting, huge numbers and giant strings, the usual ways in, end here.
+2. *Polar's own parser, for one restricted grammar, into one closed type.* Not serde, and not Polar's event type, whose internally
+   tagged enum is buffered whole before a variant is chosen. A `Report` type made for this alone: every field named and typed, an
+   unknown field refused, no free-form value anywhere, every list bounded, a duplicate key refused (parsers disagree on which one
+   wins, a classic way to make two readers see different things), and integers only: no reportable event carries a float
+   (`lib/src/events.rs`), so the grammar has none, and with them goes the part of any JSON parser most often wrong. It parses into
+   buffers allocated before it runs, sized by the bounds, and allocates nothing more; that is what lets it run under layer 3, and
+   what makes it small enough to verify.
+3. *The parse runs in a worker process, forked before anything else and locked down.* The orchestrator's builder forks it before it
+   starts its runtime or any thread, since the builder's own lockdown forbids starting a program later (no `execve`, runtime
+   attestation). The worker then enters seccomp's strict mode: it may read its pipe, write its pipe and exit, and nothing else, not
+   even ask for memory; with memory and CPU limits, no file, no network and no credential. It hands back a fixed-layout encoding of
+   what it parsed, which the orchestrator checks again as it reads it (rkyv's validation, made for bytes that are not trusted). A
+   bug in the parser can at worst kill the worker; the build's reports are then refused, and the crash is evidence, reported as
+   any crash by signal is.
+4. *Meaning, on typed values only.* The kind is one a build may report; the `build_id` is the orchestrator's, stamped; purls and
+   digests are well-formed; the counts and sizes are within their bounds.
+5. *What is relayed is what Polar built, never what it read.* The events published are encoded from the validated values. The bytes a
+   build wrote never pass the worker: nothing downstream (Cassini, build-processor, Neo4j) sees one.
+
+Shown by: property tests (every valid report encodes and parses back to itself; no input of any bytes makes the gate or the parser
+panic, allocate or exceed a bound; a change that leaves the grammar is refused); coverage-guided fuzzing of the gate and the parser; a
+model checker's proof of the gate's bounds and the parser's totality (Kani, for Rust), an argument assurance readers can check; and the
+public corpus of parser edge cases behind "Parsing JSON is a Minefield" (JSONTestSuite), to be fetched only with the maintainer's leave.
+The pre-forked, strict-mode worker is a builder facility, so that any agent that must read foreign bytes can use it.
 
 ## Plan, in bites
 
