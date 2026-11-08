@@ -99,6 +99,11 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "its types: `resolver/clippy.toml` forbids its client",
     ),
     (
+        "build-processor",
+        "oci-client",
+        "the manifest types of what the resolver verified: `build-processor/clippy.toml` forbids its client",
+    ),
+    (
         "kube-common",
         "kube",
         "derives the types of Flux's kinds, and never makes a client",

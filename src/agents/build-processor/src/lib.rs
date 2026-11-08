@@ -21,6 +21,8 @@
    DM26-0670
 */
 
+#![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+
 //! Build processor: projects provenance events into the knowledge graph.
 //! See `agent` for what it declares, `supervisor` for the actor and `project` for the projections.
 pub mod agent;
