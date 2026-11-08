@@ -33,6 +33,7 @@ pub mod archive;
 pub mod build;
 pub mod credentials;
 pub mod lines;
+pub mod lock;
 pub mod mappings;
 pub mod observed;
 pub mod publish;

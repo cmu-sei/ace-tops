@@ -724,6 +724,35 @@ I write Rust code"):
     code the fallback is no builds, not open ones. A policy engine on u7c is the maintainer's to approve. A policy is the pod's,
     so its pipeline would still reach the registry its fetch needs; the registry refusing anonymous pushes is
     `registry-gate.md`'s ground, and until then that is the residual risk, recorded.
+  - *Planned 2026-11-08* (the maintainer, "Yes, record it and start D1"), after nixpkgs' `importCargoLock`, the fetching done by
+    the orchestrator through its handlers: **D1** the lock read into what it pins, anything unpinned refused at the build's
+    source; **D2** the dependency step after the source: each crate's blob in `build-dependencies` is the very sha256 the lock
+    pins, so it is fetched from crates.io (a declared HTTP operation at a configured host, no credential), checked and pushed
+    once across every build and repository; each git dependency fetched at its commit through the git handler, archived as
+    O3b archives, pushed; an index of them and a manifest by commit naming every blob (the "blob plus a manifest" rule); a
+    Dynamic bound on their total; **D3** the fetch pulls the index and each dependency by its digest, unpacks the crates into a
+    vendor directory with nixpkgs' `.cargo-checksum.json` (`{"files":{},"package":"<sha256>"}`) and the git dependencies beside
+    them, and writes Cargo's source replacement into the build's own Cargo home, never the repository's `.cargo/config.toml`;
+    `departures` lets it be told the index's digest; **D4** the pipeline offline (`CARGO_NET_OFFLINE`, `--frozen`), taking
+    `CI_COMMIT_SHA` (the orchestrator says `CI_COMMIT_SHORT_SHA` today, which holds the whole commit) and its workspace without
+    `.git`, and a Polar crate built live. Then the network: deny-all, the canary, no build where it is not enforced. Decided by
+    standing rules, for review: a blob per crate, not the dependencies vendored into the source archive (evidence storage keeps
+    bodies content-addressed, each once); git dependencies public for now (a private one fails at the source, with the reason);
+    the pipeline image carries Polar's toolchain, since nothing downloads one offline (the dev image has it).
+  - *D1 DONE 2026-11-08* (`lock.rs`): a lock is foreign input, so it is read as Cargo writes it and nothing else, by Polar's
+    own reader rather than a general TOML parser: a `version` line, then `[[package]]` tables of `name`, `version`, `source`,
+    `checksum` and `dependencies`, each a plain string (no escape, no control character) or a list of them one to a line, at
+    most 16 MiB and 20,000 packages; anything else is refused by its line. A crates.io crate (the git index's name or the sparse
+    one's) must be pinned by a sha256, a git source by a commit at an https address of a host (the git controller's own check);
+    another registry or source is refused; a name or version that could not be a directory's is refused; the workspace's own
+    packages are no dependency. Git packages are grouped by their source (with its query, which Cargo's source replacement is
+    keyed by) and commit. Decided by standing rules, for review: the lock is read in the orchestrator's process and not in the
+    locked-down worker, since it comes from the repository the signed mapping names, while reports come from code that ran.
+    Tested: Polar's own lock read whole, every crates.io checksum in it and every git package; a property that any lock as
+    Cargo writes one reads back as exactly what it pins, in any order of its packages; a property that any one of twelve
+    spoilings is refused, saying where and never what (an unknown key, another registry, a git source with no commit or a commit
+    that is not one, plain http, a login in the address, a name that leaves its directory, an escape, a `[metadata]` table, a
+    carriage return, a list item not quoted, a list not closed); a crate with no sha256 refused; a lock past its bound unread.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
