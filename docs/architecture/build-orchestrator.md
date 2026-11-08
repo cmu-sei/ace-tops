@@ -330,7 +330,15 @@ The pre-forked, strict-mode worker is a builder facility, so that any agent that
   - **O2c** the Job built from the PodTemplate read through the handler (`get podtemplates`), named `build-runner-<build id>`, the
     pipeline's image, command and privileges from the mapping; the builder's judge refusing any pod-bearing create that asks for
     privileged mode, host namespaces, host ports or `hostPath`, for every agent; the orchestrator's check that a Job's pod is its
-    template's, changed only where the mapping signed. Property tests for both.
+    template's, changed only where the mapping signed. Property tests for both. DONE 2026-11-08: O2c1, the judge's floor
+    (`Denial::ReachesTheNode`; `kubernetes::reaches_node` reads the whole object, so no kind, nesting or container list is a way
+    round it, and labels and data are not read for it; `protocol-handlers.md`); O2c2, `orchestrator-backend-k8s`: `build_job`
+    makes a build's Job from the template read through `build.podtemplates.get` for each build, and `departures`, said
+    independently of it, holds the Job to what a build may change before every create (the pod and the fetch as the template
+    says them; the pipeline's image, pinned, command, added plain environment, resources and hardening within what the mapping
+    signs; the scratch volume and mount; the workspace's size and read-only). The identity JSON, the fetch image, pull policy
+    and CA-bundle options are gone, the template's now. A property test makes the Job from any build and finds no departure,
+    and finds each of 21 changes a build may not make whatever the build.
   - **O2d** the report reader ("How a report is read", above): O2d1 the byte gate, the `Report` type and Polar's own parser, with
     property tests, fuzzing and the model checker's proofs; O2d2 the pre-forked worker in seccomp strict mode, a builder facility, and
     its validated hand-back; O2d3 the meaning checks and the re-encoding.
@@ -354,7 +362,7 @@ Found in O2a3b, for O2b and later:
   that a signed mapping runs as root, or as another UID, could not sign through it. Answered by revised 3: a build pod holds no
   identity, so a mapping may run its pipeline as any user.
 - *The Job's name.* `job_name_for_build` names a Job `build-<id>`; the attestation agent takes a Job as `build-runner`'s only when it is
-  named `build-runner-<id>` (7b). O2c renames it.
+  named `build-runner-<id>` (7b). Renamed in O2c: `job_name_for_build(template, build_id)`.
 - *The fetch's registry.* `CYCLOPS_REGISTRY_INSECURE` is not set in the template: whether the fetch reads Polar's registry over plain
   http is the cluster's fact, set with O3, where the archive is first pushed there.
 - *Polar's identity containers and `restricted`.* `polar-init` sets neither `allowPrivilegeEscalation: false` nor a seccomp profile,

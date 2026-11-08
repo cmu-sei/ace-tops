@@ -25,10 +25,10 @@
 //! call an operation that declares what it may do, judged and recorded (docs/architecture/build-orchestrator.md, 5a). It
 //! holds no client of its own and no credential: the protocol goes with the pod's ServiceAccount token.
 
-use crate::job::{JobOptions, build_job_manifest, expired, job_name_for_build};
+use crate::job::{JobOptions, build_job, departures, expired};
 use async_trait::async_trait;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::Event;
+use k8s_openapi::api::core::v1::{Event, PodTemplate};
 use orchestrator_core::backend::{
     BackendJobHandle, BuildBackend, JobGraphIdentity, JobStatus, Retention, SubmittedJob,
 };
@@ -45,6 +45,7 @@ use tracing::{info, instrument, warn};
 
 const JOB: Resource = Resource::of::<Job>();
 const EVENT: Resource = Resource::of::<Event>();
+const POD_TEMPLATE: Resource = Resource::of::<PodTemplate>();
 
 /// The label every Job the orchestrator makes carries (job.rs, `standard_metadata`), by which it finds its own.
 const MANAGED_BY: &str = "app.kubernetes.io/managed-by=build-orchestrator";
@@ -80,6 +81,7 @@ macro_rules! calls {
 }
 
 calls! {
+    GetPodTemplate GET_POD_TEMPLATE "build.podtemplates.get" "the build workload's pod, which each build's Job is made from" [POD_TEMPLATE.access(Verb::Get)],
     CreateJob CREATE_JOB "build.jobs.create" "a build's Job, in the build namespace" [JOB.access(Verb::Create)],
     GetJob GET_JOB "build.jobs.get" "a build's Job, to see how it is doing" [JOB.access(Verb::Get)],
     DeleteJob DELETE_JOB "build.jobs.delete" "a build's Job, cancelled or past its retention" [JOB.access(Verb::Delete)],
@@ -89,7 +91,7 @@ calls! {
 
 pub struct KubernetesBackend {
     protocols: ProtocolHandle,
-    /// Deployment-level job settings: namespace, account, identity, fetch image, resources.
+    /// Deployment-level job settings: namespace, template, resources, retention.
     options: JobOptions,
 }
 
@@ -100,6 +102,31 @@ impl KubernetesBackend {
 
     fn namespace(&self) -> String {
         self.options.namespace.clone()
+    }
+
+    /// The build workload's PodTemplate, read for each build, so that a catalog applied since is the one a build runs in
+    /// (build-orchestrator.md, 5b).
+    async fn template(&self) -> Result<PodTemplate, BackendError> {
+        let call = Call::Get {
+            resource: POD_TEMPLATE,
+            namespace: self.namespace(),
+            name: self.options.template.clone(),
+        };
+        match self.protocols.ask(GetPodTemplate(call)).await {
+            Ok(Answer::Object(object)) => serde_json::from_value(object).map_err(|e| {
+                BackendError::SubmissionFailed(format!(
+                    "the build workload's PodTemplate is not one: {e}"
+                ))
+            }),
+            Ok(Answer::Said(answer)) => Err(BackendError::SubmissionFailed(format!(
+                "the build workload's PodTemplate could not be read: {}",
+                said(&answer)
+            ))),
+            Ok(other) => Err(BackendError::SubmissionFailed(format!(
+                "the API answered a get of the PodTemplate {other:?}"
+            ))),
+            Err(e) => Err(BackendError::SubmissionFailed(e.to_string())),
+        }
     }
 }
 
@@ -116,7 +143,17 @@ fn said(answer: &ApiAnswer) -> String {
 impl BuildBackend for KubernetesBackend {
     #[instrument(skip(self, spec), fields(build_id = %spec.build_id))]
     async fn submit(&self, spec: &BuildSpec) -> Result<SubmittedJob, BackendError> {
-        let manifest = build_job_manifest(spec, &self.options);
+        let template = self.template().await?;
+        let manifest =
+            build_job(&template, spec, &self.options).map_err(BackendError::SubmissionFailed)?;
+        // What the Job may differ from its template in is said once, and held to before it is made.
+        let departed = departures(&template, &manifest, &spec.privileges);
+        if !departed.is_empty() {
+            return Err(BackendError::SubmissionFailed(format!(
+                "the Job departs from the build workload's template: {}",
+                departed.join("; ")
+            )));
+        }
         let call =
             Call::create(self.namespace(), &manifest).map_err(BackendError::SubmissionFailed)?;
         let made = match self.protocols.ask(CreateJob(call)).await {
@@ -139,11 +176,7 @@ impl BuildBackend for KubernetesBackend {
                 "the Job made has no name or uid".into(),
             ));
         };
-        info!(
-            build_id = %spec.build_id,
-            job_name = %job_name_for_build(spec.build_id),
-            "pipeline Job created"
-        );
+        info!(build_id = %spec.build_id, job_name = %name, "pipeline Job created");
         let handle = BackendJobHandle {
             name: name.clone(),
             uid,
@@ -359,7 +392,7 @@ fn interpret_job_status(job: &Job) -> JobStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job::JobIdentity;
+    use crate::job::tests::template;
     use orchestrator_core::types::{Privileges, SourceArchive, SourceRef};
     use polar_agent_builder::protocol::testing::{KubeApi, kubernetes_handle};
     use serde_json::json;
@@ -383,12 +416,7 @@ mod tests {
     }
 
     fn options() -> JobOptions {
-        JobOptions::new(
-            "builds",
-            "build-job",
-            JobIdentity::default(),
-            format!("localhost:30500/build-fetch@sha256:{HEX}"),
-        )
+        JobOptions::new("builds", "build-runner")
     }
 
     async fn backend(api: &KubeApi) -> KubernetesBackend {
@@ -413,10 +441,19 @@ mod tests {
                "message": "the stand-in says so", "reason": "Whatever", "code": code})
     }
 
-    /// A build is its Job made, and nothing else: no Secret, no account to find; what was made is its handle.
+    const TEMPLATE: &str = "/api/v1/namespaces/builds/podtemplates/build-runner";
+
+    /// A build is its Job made from the build workload's PodTemplate, read as the build is submitted, and nothing else:
+    /// no Secret, no account to find; what was made is its handle.
     #[tokio::test]
-    async fn a_build_is_its_job_made_and_nothing_else() {
+    async fn a_build_is_its_job_made_from_the_template_and_nothing_else() {
         let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            TEMPLATE,
+            200,
+            serde_json::to_value(template()).unwrap(),
+        );
         api.answers("POST", JOBS, 201, job(json!({})));
         let submitted = backend(&api).await.submit(&spec()).await.unwrap();
         assert_eq!(
@@ -427,20 +464,67 @@ mod tests {
             ("build-1", "u-1")
         );
         let received = api.received().await;
-        assert_eq!(received.len(), 1, "{received:?}");
-        let (method, path, _, body) = &received[0];
-        assert_eq!((method.as_str(), path.as_str()), ("POST", JOBS));
-        let sent: Value = serde_json::from_slice(body).unwrap();
-        assert_eq!(sent["metadata"]["name"], format!("build-{}", Uuid::nil()));
+        let asked: Vec<(&str, &str)> = received
+            .iter()
+            .map(|(method, path, ..)| (method.as_str(), path.as_str()))
+            .collect();
+        assert_eq!(asked, [("GET", TEMPLATE), ("POST", JOBS)]);
+        let sent: Value = serde_json::from_slice(&received[1].3).unwrap();
+        assert_eq!(
+            sent["metadata"]["name"],
+            format!("build-runner-{}", Uuid::nil())
+        );
         assert_eq!(
             sent["spec"]["template"]["spec"]["serviceAccountName"],
-            "build-job"
+            "build-runner"
+        );
+    }
+
+    /// No Job is made without the build workload's template, or from one that is not the build workload's.
+    #[tokio::test]
+    async fn without_its_template_no_job_is_made_and_the_build_says_why() {
+        let api = KubeApi::start().await;
+        api.answers("GET", TEMPLATE, 404, status(404));
+        let mut not_ours = template();
+        not_ours
+            .template
+            .as_mut()
+            .unwrap()
+            .spec
+            .as_mut()
+            .unwrap()
+            .init_containers = None;
+        api.answers(
+            "GET",
+            TEMPLATE,
+            200,
+            serde_json::to_value(not_ours).unwrap(),
+        );
+        let backend = backend(&api).await;
+        for why in ["404", "fetch"] {
+            match backend.submit(&spec()).await {
+                Err(BackendError::SubmissionFailed(said)) => assert!(said.contains(why), "{said}"),
+                other => panic!("not refused as a submission: {:?}", other.map(|s| s.handle)),
+            }
+        }
+        assert!(
+            api.received()
+                .await
+                .iter()
+                .all(|(method, ..)| method == "GET"),
+            "no Job was asked for"
         );
     }
 
     #[tokio::test]
     async fn a_job_the_api_would_not_make_fails_the_submission_and_says_why() {
         let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            TEMPLATE,
+            200,
+            serde_json::to_value(template()).unwrap(),
+        );
         api.answers("POST", JOBS, 409, status(409));
         let failed = backend(&api).await.submit(&spec()).await;
         match failed {

@@ -21,60 +21,69 @@
    DM26-0670
 */
 
-//! Kubernetes Job manifest construction for a build (docs/architecture/build-orchestrator.md).
+//! A build's Kubernetes Job, made from the build workload's PodTemplate (docs/architecture/build-orchestrator.md, 5b, 5c and
+//! revised 3).
 //!
 //! # Job anatomy
 //!
+//! The catalog renders the build workload as a PodTemplate (`build-runner`, `infra/schema/pod-template.dhall`), and each
+//! build's Job is that pod, changed only where a build differs:
+//!
 //! ```text
 //! initContainers:
-//!   - <the identity's>     ← the pod's own certificate, before anything else runs
-//!   - name: fetch          ← the source archive from Polar's registry, checked against its digest, into /workspace
+//!   - name: fetch          ← told the source archive's blob and digest; it checks the digest and unpacks into /workspace
 //! containers:
-//!   - name: pipeline       ← runs the pipeline image against /workspace
+//!   - name: pipeline       ← the repository's pipeline image, pinned by its signed mapping, in place of the template's
 //! volumes:
-//!   - name: workspace      ← emptyDir shared between the fetch and the pipeline
+//!   - name: workspace      ← the template's, shared by the fetch and the pipeline
+//!   - name: tmp            ← scratch, since root filesystems are read-only
 //! ```
 //!
 //! The fetch runs to completion before the pipeline starts. If it fails, or the archive does not have its digest, the
 //! Job fails and the pipeline never starts: a build that cannot have its source does not proceed.
 //!
-//! # No credential
+//! # Nothing of Polar's, and no credential
 //!
-//! The orchestrator fetched the source from where the request said, through its own protocol handlers, which hold any
-//! credential, and put it in the registry as an archive by digest (decision 1). The pod is told only that blob and its
-//! digest: no Secret, no credential volume, no token in any environment. The certificate the pod is issued is its
-//! own, as an instance of the build workload (decision 3).
+//! A build pod holds no Polar identity: no certificate, no custody daemon, no polar-init, no Cassini client (revised 3).
+//! It reports what it did by printing, and the orchestrator reads its log, judges and relays it. The orchestrator fetched
+//! the source through its own protocol handlers, which hold any credential, and put it in the registry by digest
+//! (decision 1): the pod is told only that blob and its digest. No Secret, no token, no credential in any environment.
 //!
 //! # Security posture
 //!
-//! - Every container hardened: non-root, no privilege escalation, every capability dropped, the default seccomp
-//!   profile, a read-only root filesystem writing only its workspace and /tmp. The pipeline container gets only what
-//!   the repository's signed mapping asks for beyond that (`Privileges`, decision 4), and is never privileged.
-//! - No ServiceAccount token mounted: no container has Kubernetes API access.
+//! - Every container hardened: non-root under the template's user, no privilege escalation, every capability dropped,
+//!   the default seccomp profile, a read-only root filesystem writing only its workspace and /tmp. The pipeline gets
+//!   only what the repository's signed mapping asks for beyond that (`Privileges`, decision 4), and is never privileged.
+//! - What the Job may differ from its template in is said once, here, and checked before every create (`departures`);
+//!   whatever a Job asks of its node, the builder's judge refuses (`Denial::ReachesTheNode`).
 //! - restartPolicy=Never: retries are the orchestrator's decision, not Kubernetes's.
 
 use k8s_openapi::{
     api::{
         batch::v1::{Job, JobSpec},
         core::v1::{
-            Capabilities, Container, EmptyDirVolumeSource, EnvVar, PodSecurityContext, PodSpec,
-            PodTemplateSpec, ResourceRequirements, SeccompProfile, SecretVolumeSource,
-            SecurityContext, Volume, VolumeMount,
+            Capabilities, Container, EmptyDirVolumeSource, EnvVar, PodSpec, PodTemplate,
+            PodTemplateSpec, ResourceRequirements, SeccompProfile, SecurityContext, Volume,
+            VolumeMount,
         },
     },
     apimachinery::pkg::{api::resource::Quantity, apis::meta::v1::ObjectMeta},
 };
 use orchestrator_core::WORKSPACE_PATH;
 use orchestrator_core::backend::Retention;
-use orchestrator_core::types::{BuildSpec, Privileges, SourceRef};
+use orchestrator_core::types::{BuildSpec, Privileges, SourceRef, source_env};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// Name of the emptyDir volume shared between the fetch and the pipeline.
+/// The template's init container that fetches the source, and its one container that runs the pipeline.
+pub const FETCH: &str = "fetch";
+pub const PIPELINE: &str = "pipeline";
+/// The template's volume shared by the fetch and the pipeline.
 const WORKSPACE_VOLUME: &str = "workspace";
-/// Scratch emptyDir mounted at /tmp, since root filesystems are read-only. The cassini daemon's socket and queue live
-/// here.
+/// Scratch emptyDir mounted at /tmp, since root filesystems are read-only.
 const TMP_VOLUME: &str = "tmp";
+const TMP_PATH: &str = "/tmp";
 
 /// How a finished Job ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,62 +129,27 @@ pub fn expired<'a>(jobs: &'a [Job], now: i64, retention: &Retention) -> Vec<&'a 
         .collect()
 }
 
-/// The pod additions that give each job a certificate of its own, as an instance of the build workload: the
-/// `polar-init` init container with its projected token, the volume the certificate is written to, and what the
-/// pipeline container is told. Kubernetes' own camelCase JSON.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JobIdentity {
-    /// Run before the fetch, with the token the pod's ServiceAccount is given.
-    #[serde(default)]
-    pub init_containers: Vec<Container>,
-    #[serde(default)]
-    pub volumes: Vec<Volume>,
-    /// Where the pipeline container finds its certificate.
-    #[serde(default)]
-    pub pipeline_mounts: Vec<VolumeMount>,
-    #[serde(default)]
-    pub pipeline_env: Vec<EnvVar>,
-}
-
-impl JobIdentity {
-    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(text)
-    }
-}
-
-/// Derives a deterministic, DNS-safe Job name from a build ID.
-/// Kubernetes names must be <= 63 chars, lowercase alphanumeric and hyphens.
-/// A UUID is 36 chars; with the prefix "build-" that is 42.
-pub fn job_name_for_build(build_id: Uuid) -> String {
-    format!("build-{}", build_id)
+/// A build's Job name: its template's, then the build's ID, so that the attestation agent takes the Job as the build
+/// workload's (it holds a Job named `<workload>-...` to be its workload's; build-orchestrator.md, 7b). Kubernetes names
+/// are at most 63 characters; `build-runner-` and a UUID are 49.
+pub fn job_name_for_build(template: &str, build_id: Uuid) -> String {
+    format!("{template}-{build_id}")
 }
 
 // ── Pipeline job ──────────────────────────────────────────────────────────────
 
-/// Everything about a job that comes from the deployment rather than from the build request.
+/// Everything about a job that comes from the deployment rather than from the build request or the template.
 #[derive(Debug, Clone)]
 pub struct JobOptions {
-    /// Namespace jobs are created in.
+    /// Namespace jobs are created in: the template's.
     pub namespace: String,
-    /// The build workload's ServiceAccount, which every build pod runs under: one workload of many instances, each
-    /// pod a certificate and a broker session of its own (decision 3).
-    pub account: String,
-    /// The certificate each pod is issued, as an instance of that workload.
-    pub identity: JobIdentity,
-    /// The fetch container's image, pinned by digest: it reads the source archive from the registry, checks its
-    /// digest and unpacks it.
-    pub fetch_image: String,
-    /// Secret whose `ca-bundle.crt` becomes both containers' trust store
-    /// (see `trust_ca_bundle`). For TLS-inspecting proxies.
-    pub ca_bundle_secret: Option<String>,
+    /// The PodTemplate a build's Job is made from: the build workload's name.
+    pub template: String,
     /// Requests and limits for the pipeline container.
     pub resources: PipelineResources,
     /// Size limit of the workspace emptyDir, e.g. "2Gi". None means no limit,
     /// so a large repo or archive can fill the node's disk.
     pub workspace_size_limit: Option<String>,
-    /// `Always`, `IfNotPresent` or `Never` for the fetch and pipeline images.
-    pub image_pull_policy: Option<String>,
     /// How long finished jobs are kept. The orchestrator applies it by outcome (`expired`); Kubernetes' own expiry
     /// on each Job is set to the longest of them, so that jobs are still collected if the orchestrator is not
     /// running to apply it.
@@ -183,22 +157,13 @@ pub struct JobOptions {
 }
 
 impl JobOptions {
-    /// Options with the default pipeline resources and no CA bundle or workspace limit.
-    pub fn new(
-        namespace: impl Into<String>,
-        account: impl Into<String>,
-        identity: JobIdentity,
-        fetch_image: impl Into<String>,
-    ) -> Self {
+    /// Options with the default pipeline resources and no workspace limit.
+    pub fn new(namespace: impl Into<String>, template: impl Into<String>) -> Self {
         Self {
             namespace: namespace.into(),
-            account: account.into(),
-            identity,
-            fetch_image: fetch_image.into(),
-            ca_bundle_secret: None,
+            template: template.into(),
             resources: PipelineResources::default(),
             workspace_size_limit: None,
-            image_pull_policy: None,
             retention: Retention::default(),
         }
     }
@@ -225,171 +190,143 @@ impl Default for PipelineResources {
     }
 }
 
-/// Constructs a batch/v1 Job manifest for a build: the identity's init containers, the fetch of the source archive,
-/// and the pipeline, under the build workload's account.
-pub fn build_job_manifest(spec: &BuildSpec, options: &JobOptions) -> Job {
-    let (labels, annotations) = standard_metadata(spec);
-    let identity = &options.identity;
+/// A build's Job, made from `template`: its pod, with the fetch told the build's blob and digest, the pipeline on the
+/// mapping's image with the build's variables and the hardening its privileges allow, scratch space, resources, and the
+/// Job's name and labels. A template without its `fetch` init container or its `pipeline` container is not the build
+/// workload's, and no Job is made from it.
+pub fn build_job(
+    template: &PodTemplate,
+    spec: &BuildSpec,
+    options: &JobOptions,
+) -> Result<Job, String> {
+    let pod_template = template
+        .template
+        .as_ref()
+        .ok_or("the PodTemplate has no pod")?;
+    let mut pod = pod_template
+        .spec
+        .clone()
+        .ok_or("the PodTemplate has no pod spec")?;
 
-    let mut fetch = fetch_init_container(spec);
-    fetch.image = Some(options.fetch_image.clone());
-    fetch.image_pull_policy = options.image_pull_policy.clone();
-    harden(&mut fetch, &Privileges::default());
+    let fetch = pod
+        .init_containers
+        .iter_mut()
+        .flatten()
+        .find(|c| c.name == FETCH)
+        .ok_or("the PodTemplate has no `fetch` init container")?;
+    fetch.env.get_or_insert_with(Vec::new).extend(
+        spec.archive
+            .fetch_env()
+            .into_iter()
+            .map(|(name, value)| plain(name, value)),
+    );
+    fetch.resources = Some(fetch_resources());
+    harden(fetch, &Privileges::default());
 
-    let mut pipeline = Container {
-        name: "pipeline".to_string(),
-        image: Some(spec.pipeline_image.clone()),
-        image_pull_policy: options.image_pull_policy.clone(),
-        // None runs the image's own CMD/ENTRYPOINT; otherwise it overrides it.
-        command: spec.entrypoint.clone(),
-        env: Some(
-            pipeline_env_vars(spec)
-                .into_iter()
-                .chain(identity.pipeline_env.iter().cloned())
-                .collect(),
-        ),
-        resources: Some(pipeline_resources(&options.resources)),
-        volume_mounts: Some(
-            identity
-                .pipeline_mounts
-                .iter()
-                .cloned()
-                // A git build's pipeline writes beside its source (its artifacts, its build directory); only an
-                // archive, which is third-party code under analysis, gets the source read-only.
-                .chain([workspace_volume_mount(matches!(
-                    spec.source,
-                    SourceRef::RegistryArchive { .. }
-                ))])
-                .collect(),
-        ),
-        ..Default::default()
-    };
-    harden(&mut pipeline, &spec.privileges);
-
-    let mut volumes = vec![
-        workspace_volume(options.workspace_size_limit.as_deref()),
-        tmp_volume(),
-    ];
-    volumes.extend(identity.volumes.iter().cloned());
-    if let Some(secret_name) = options.ca_bundle_secret.as_deref() {
-        volumes.push(ca_bundle_volume(secret_name));
-        for container in [&mut fetch, &mut pipeline] {
-            trust_ca_bundle(container);
+    let pipeline = pod
+        .containers
+        .iter_mut()
+        .find(|c| c.name == PIPELINE)
+        .ok_or("the PodTemplate has no `pipeline` container")?;
+    pipeline.image = Some(spec.pipeline_image.clone());
+    // None runs the image's own CMD/ENTRYPOINT; otherwise it overrides it.
+    pipeline.command = spec.entrypoint.clone();
+    pipeline
+        .env
+        .get_or_insert_with(Vec::new)
+        .extend(pipeline_env_vars(spec));
+    pipeline.resources = Some(pipeline_resources(&options.resources));
+    // A git build's pipeline writes beside its source (its artifacts, its build directory); only an archive, which is
+    // third-party code under analysis, gets the source read-only.
+    if matches!(spec.source, SourceRef::RegistryArchive { .. }) {
+        for mount in pipeline.volume_mounts.iter_mut().flatten() {
+            if mount.name == WORKSPACE_VOLUME {
+                mount.read_only = Some(true);
+            }
         }
     }
+    harden(pipeline, &spec.privileges);
 
-    // The certificate is obtained before anything else runs, and before the source is fetched.
-    let init_containers: Vec<Container> = identity
-        .init_containers
-        .iter()
-        .cloned()
-        .chain([fetch])
-        .collect();
+    let volumes = pod.volumes.get_or_insert_with(Vec::new);
+    if let Some(limit) = &options.workspace_size_limit {
+        for volume in volumes.iter_mut().filter(|v| v.name == WORKSPACE_VOLUME) {
+            if let Some(empty_dir) = volume.empty_dir.as_mut() {
+                empty_dir.size_limit = Some(Quantity(limit.clone()));
+            }
+        }
+    }
+    volumes.push(tmp_volume());
 
-    let pod_spec = PodSpec {
-        init_containers: Some(init_containers),
-        service_account_name: Some(options.account.clone()),
-        containers: vec![pipeline],
-        volumes: Some(volumes),
-        // The fetch runs as non-root, so the workspace it unpacks into is the group's.
-        security_context: Some(PodSecurityContext {
-            fs_group: Some(65532),
+    let (labels, annotations) = standard_metadata(spec);
+    let mut pod_metadata = pod_template.metadata.clone().unwrap_or_default();
+    pod_metadata
+        .labels
+        .get_or_insert_with(BTreeMap::new)
+        .extend(labels.clone());
+    pod_metadata.name = None;
+
+    Ok(Job {
+        metadata: ObjectMeta {
+            name: Some(job_name_for_build(&options.template, spec.build_id)),
+            namespace: Some(options.namespace.clone()),
+            labels: Some(labels),
+            annotations: Some(annotations),
+            ..Default::default()
+        },
+        spec: Some(JobSpec {
+            template: PodTemplateSpec {
+                metadata: Some(pod_metadata),
+                spec: Some(pod),
+            },
+            backoff_limit: Some(0),
+            ttl_seconds_after_finished: Some(
+                i32::try_from(options.retention.longest().as_secs()).unwrap_or(i32::MAX),
+            ),
             ..Default::default()
         }),
-        restart_policy: Some("Never".to_string()),
-        // No ServiceAccount token: no container has Kubernetes API access.
-        automount_service_account_token: Some(false),
         ..Default::default()
-    };
-
-    assemble_job(
-        job_name_for_build(spec.build_id),
-        &options.namespace,
-        labels,
-        annotations,
-        pod_spec,
-        options.retention.longest(),
-    )
+    })
 }
 
-// ── Fetch container ─────────────────────────────────────────────────────────────
-
-/// The source-fetch init container. It reads the source archive from Polar's registry, checks it against its digest
-/// (`CYCLOPS_SOURCE_SHA256`), and only then unpacks it into WORKSPACE_PATH. It is told the blob and its digest and
-/// nothing of where the source came from, and holds no credential: the registry is read anonymously from inside the
-/// cluster.
-fn fetch_init_container(spec: &BuildSpec) -> Container {
-    let env: Vec<EnvVar> = spec
-        .archive
-        .fetch_env()
-        .into_iter()
-        .chain([("CYCLOPS_WORKSPACE".to_string(), WORKSPACE_PATH.to_string())])
-        .map(|(name, value)| EnvVar {
-            name,
-            value: Some(value),
-            ..Default::default()
-        })
-        .collect();
-    Container {
-        name: "fetch".to_string(),
-        env: Some(env),
-        resources: Some(fetch_resources()),
-        volume_mounts: Some(vec![VolumeMount {
-            name: WORKSPACE_VOLUME.to_string(),
-            mount_path: WORKSPACE_PATH.to_string(),
-            read_only: Some(false),
-            ..Default::default()
-        }]),
+fn plain(name: impl Into<String>, value: impl Into<String>) -> EnvVar {
+    EnvVar {
+        name: name.into(),
+        value: Some(value.into()),
         ..Default::default()
     }
 }
 
 fn pipeline_env_vars(spec: &BuildSpec) -> Vec<EnvVar> {
-    let var = |name: &str, value: String| EnvVar {
-        name: name.to_string(),
-        value: Some(value),
-        ..Default::default()
-    };
     [
-        var("POLAR_BUILD_ID", spec.build_id.to_string()),
-        var("BUILD_WORKSPACE", WORKSPACE_PATH.to_string()),
+        plain("POLAR_BUILD_ID", spec.build_id.to_string()),
+        plain("BUILD_WORKSPACE", WORKSPACE_PATH),
     ]
     .into_iter()
     .chain(
         spec.source
             .pipeline_env()
             .into_iter()
-            .map(|(name, value)| var(&name, value)),
+            .map(|(name, value)| plain(name, value)),
     )
-    .chain(spec.env.iter().map(|(k, v)| var(k, v.clone())))
+    .chain(spec.env.iter().map(|(k, v)| plain(k.clone(), v.clone())))
     .collect()
 }
 
-fn workspace_volume(size_limit: Option<&str>) -> Volume {
-    Volume {
-        name: WORKSPACE_VOLUME.to_string(),
-        empty_dir: Some(EmptyDirVolumeSource {
-            medium: None,
-            size_limit: size_limit.map(|q| Quantity(q.to_string())),
-        }),
-        ..Default::default()
-    }
-}
-
-fn workspace_volume_mount(read_only: bool) -> VolumeMount {
-    VolumeMount {
-        name: WORKSPACE_VOLUME.to_string(),
-        mount_path: WORKSPACE_PATH.to_string(),
-        read_only: Some(read_only),
-        ..Default::default()
-    }
-}
-
-/// A container's security context: hardened, with only what `privileges` asks for beyond that, and never privileged.
-fn security_context(privileges: &Privileges) -> SecurityContext {
+/// A container's security context: hardened, with only what `privileges` asks for beyond that, and never privileged. It
+/// runs as the template's user and group, unless its mapping runs it as root, when it runs as its image's.
+fn security_context(
+    template: Option<&SecurityContext>,
+    privileges: &Privileges,
+) -> SecurityContext {
+    let (user, group) = match (privileges.run_as_root, template) {
+        (false, Some(t)) => (t.run_as_user, t.run_as_group),
+        _ => (None, None),
+    };
     SecurityContext {
         privileged: Some(false),
         run_as_non_root: Some(!privileges.run_as_root),
+        run_as_user: user,
+        run_as_group: group,
         read_only_root_filesystem: Some(true),
         allow_privilege_escalation: Some(privileges.allow_privilege_escalation),
         capabilities: Some(Capabilities {
@@ -406,54 +343,14 @@ fn security_context(privileges: &Privileges) -> SecurityContext {
 }
 
 fn harden(container: &mut Container, privileges: &Privileges) {
-    container.security_context = Some(security_context(privileges));
+    container.security_context = Some(security_context(
+        container.security_context.as_ref(),
+        privileges,
+    ));
     container
         .volume_mounts
         .get_or_insert_with(Vec::new)
         .push(tmp_volume_mount());
-}
-
-const CA_BUNDLE_VOLUME: &str = "ca-bundle";
-const CA_BUNDLE_DIR: &str = "/etc/build-orchestrator/ca";
-const CA_BUNDLE_KEY: &str = "ca-bundle.crt";
-
-fn ca_bundle_volume(secret_name: &str) -> Volume {
-    Volume {
-        name: CA_BUNDLE_VOLUME.to_string(),
-        secret: Some(SecretVolumeSource {
-            secret_name: Some(secret_name.to_string()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-/// Points each tool's trust store at the CA bundle: git, curl, Nix and Cargo each read their own variable.
-fn trust_ca_bundle(container: &mut Container) {
-    let bundle = format!("{CA_BUNDLE_DIR}/{CA_BUNDLE_KEY}");
-    let env = container.env.get_or_insert_with(Vec::new);
-    for name in [
-        "SSL_CERT_FILE",
-        "GIT_SSL_CAINFO",
-        "CURL_CA_BUNDLE",
-        "NIX_SSL_CERT_FILE",
-        "CARGO_HTTP_CAINFO",
-    ] {
-        env.push(EnvVar {
-            name: name.to_string(),
-            value: Some(bundle.clone()),
-            ..Default::default()
-        });
-    }
-    container
-        .volume_mounts
-        .get_or_insert_with(Vec::new)
-        .push(VolumeMount {
-            name: CA_BUNDLE_VOLUME.to_string(),
-            mount_path: CA_BUNDLE_DIR.to_string(),
-            read_only: Some(true),
-            ..Default::default()
-        });
 }
 
 fn tmp_volume() -> Volume {
@@ -470,7 +367,7 @@ fn tmp_volume() -> Volume {
 fn tmp_volume_mount() -> VolumeMount {
     VolumeMount {
         name: TMP_VOLUME.to_string(),
-        mount_path: "/tmp".to_string(),
+        mount_path: TMP_PATH.to_string(),
         read_only: Some(false),
         ..Default::default()
     }
@@ -545,49 +442,338 @@ fn standard_metadata(spec: &BuildSpec) -> (BTreeMap<String, String>, BTreeMap<St
     (labels, annotations)
 }
 
-fn assemble_job(
-    job_name: String,
-    namespace: &str,
-    labels: BTreeMap<String, String>,
-    annotations: BTreeMap<String, String>,
-    pod_spec: PodSpec,
-    keep_finished: std::time::Duration,
-) -> Job {
-    let pod_template = PodTemplateSpec {
-        metadata: Some(ObjectMeta {
-            labels: Some(labels.clone()),
-            ..Default::default()
-        }),
-        spec: Some(pod_spec),
+// ── What a Job may differ from its template in ──────────────────────────────────
+
+/// Where a build's Job departs from its template beyond what a build may change, each said in a sentence; none, for a Job
+/// that is its template's pod changed only where a build differs (build-orchestrator.md, O2c). Said independently of
+/// `build_job`, and checked before every create, so that a Job made otherwise, or changed after, is not made. What a
+/// build may change:
+///
+/// - the pod: its volumes, by a scratch volume added and the workspace's size; its labels, by labels added; nothing else;
+/// - the fetch: environment added (the blob and its digest, as plain values), its resources, its hardening, the scratch
+///   mount;
+/// - the pipeline: its image, pinned by digest, and command; environment added, as plain values; its resources; its
+///   hardening, within what `privileges` signs; the scratch mount, and the workspace made read-only.
+///
+/// A hardening is within `privileges` when the container is not privileged, drops every capability and adds only those
+/// signed, escalates or runs as root only if signed, has a read-only root filesystem and the runtime's default seccomp
+/// profile, and sets nothing else.
+pub fn departures(template: &PodTemplate, job: &Job, privileges: &Privileges) -> Vec<String> {
+    let Some(want) = template.template.as_ref() else {
+        return vec!["the template has no pod".into()];
     };
-    Job {
-        metadata: ObjectMeta {
-            name: Some(job_name),
-            namespace: Some(namespace.to_string()),
-            labels: Some(labels),
-            annotations: Some(annotations),
-            ..Default::default()
-        },
-        spec: Some(JobSpec {
-            template: pod_template,
-            backoff_limit: Some(0),
-            ttl_seconds_after_finished: Some(
-                i32::try_from(keep_finished.as_secs()).unwrap_or(i32::MAX),
-            ),
-            ..Default::default()
-        }),
-        ..Default::default()
+    let Some(got) = job.spec.as_ref().map(|s| &s.template) else {
+        return vec!["the Job has no pod".into()];
+    };
+    let (Some(want_pod), Some(got_pod)) = (want.spec.as_ref(), got.spec.as_ref()) else {
+        return vec!["the template or the Job has no pod spec".into()];
+    };
+    let mut found = Vec::new();
+
+    let mut want_meta = to_value(&want.metadata.clone().unwrap_or_default());
+    let mut got_meta = to_value(&got.metadata.clone().unwrap_or_default());
+    let want_labels = take(&mut want_meta, "labels");
+    let got_labels = take(&mut got_meta, "labels");
+    take(&mut want_meta, "name");
+    if want_meta != got_meta {
+        found.push("the pod's metadata is not its template's, beyond its labels".into());
+    }
+    if !extends(&want_labels, &got_labels) {
+        found.push("the pod's labels change or drop one of its template's".into());
+    }
+
+    let mut want_spec = to_value(want_pod);
+    let mut got_spec = to_value(got_pod);
+    for field in ["containers", "initContainers", "volumes"] {
+        take(&mut want_spec, field);
+        take(&mut got_spec, field);
+    }
+    if want_spec != got_spec {
+        found.push(format!(
+            "the pod departs from its template's in {}",
+            differing(&want_spec, &got_spec).join(", ")
+        ));
+    }
+
+    volumes_depart(want_pod, got_pod, &mut found);
+    containers_depart(
+        "init container",
+        want_pod.init_containers.as_deref().unwrap_or_default(),
+        got_pod.init_containers.as_deref().unwrap_or_default(),
+        privileges,
+        &mut found,
+    );
+    containers_depart(
+        "container",
+        &want_pod.containers,
+        &got_pod.containers,
+        privileges,
+        &mut found,
+    );
+    found
+}
+
+fn to_value<T: serde::Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+/// Takes `field` out of an object, as null when it has none.
+fn take(object: &mut Value, field: &str) -> Value {
+    object
+        .as_object_mut()
+        .and_then(|o| o.remove(field))
+        .unwrap_or(Value::Null)
+}
+
+/// The fields two objects differ in, sorted.
+fn differing(a: &Value, b: &Value) -> Vec<String> {
+    let empty = serde_json::Map::new();
+    let (a, b) = (
+        a.as_object().unwrap_or(&empty),
+        b.as_object().unwrap_or(&empty),
+    );
+    let mut fields: Vec<String> = a
+        .keys()
+        .chain(b.keys())
+        .filter(|k| a.get(*k) != b.get(*k))
+        .cloned()
+        .collect();
+    fields.sort();
+    fields.dedup();
+    fields
+}
+
+/// Whether the map `got` holds every entry of `want` unchanged (and may hold more).
+fn extends(want: &Value, got: &Value) -> bool {
+    let empty = serde_json::Map::new();
+    let want = want.as_object().unwrap_or(&empty);
+    let got = got.as_object().unwrap_or(&empty);
+    want.iter().all(|(k, v)| got.get(k) == Some(v))
+}
+
+fn volumes_depart(want: &PodSpec, got: &PodSpec, found: &mut Vec<String>) {
+    let mut expected = want.volumes.clone().unwrap_or_default();
+    expected.push(tmp_volume());
+    let mut got = got.volumes.clone().unwrap_or_default();
+    // The workspace's size is the deployment's to set.
+    for volume in expected.iter_mut().chain(got.iter_mut()) {
+        if volume.name == WORKSPACE_VOLUME
+            && let Some(empty_dir) = volume.empty_dir.as_mut()
+        {
+            empty_dir.size_limit = None;
+        }
+    }
+    if expected != got {
+        found.push("the pod's volumes are not its template's and the scratch volume".into());
     }
 }
 
+fn containers_depart(
+    what: &str,
+    want: &[Container],
+    got: &[Container],
+    privileges: &Privileges,
+    found: &mut Vec<String>,
+) {
+    let names = |list: &[Container]| list.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+    if names(want) != names(got) {
+        found.push(format!(
+            "its {what}s are {:?}, and its template's {:?}",
+            names(got),
+            names(want)
+        ));
+        return;
+    }
+    for (want, got) in want.iter().zip(got) {
+        let name = want.name.as_str();
+        let (may_change, privileges) = match name {
+            FETCH => (
+                &["env", "resources", "securityContext", "volumeMounts"][..],
+                Privileges::default(),
+            ),
+            PIPELINE => (
+                &[
+                    "image",
+                    "command",
+                    "env",
+                    "resources",
+                    "securityContext",
+                    "volumeMounts",
+                ][..],
+                privileges.clone(),
+            ),
+            _ => (&[][..], Privileges::default()),
+        };
+        let mut want_value = to_value(want);
+        let mut got_value = to_value(got);
+        for field in may_change {
+            take(&mut want_value, field);
+            take(&mut got_value, field);
+        }
+        if want_value != got_value {
+            found.push(format!(
+                "{what} {name} departs from its template's in {}",
+                differing(&want_value, &got_value).join(", ")
+            ));
+        }
+        if may_change.is_empty() {
+            continue;
+        }
+        env_departs(name, want, got, found);
+        mounts_depart(name, want, got, found);
+        if let Some(why) = hardening_departs(got.security_context.as_ref(), &privileges) {
+            found.push(format!("{what} {name}: {why}"));
+        }
+        if name == PIPELINE && !got.image.as_deref().is_some_and(|i| i.contains("@sha256:")) {
+            found.push("the pipeline's image is not pinned by digest".into());
+        }
+    }
+}
+
+/// A container's environment may only grow, by plain values: a value read from elsewhere (a Secret, a field) is not one a
+/// build may add, and the fetch is told only its blob and digest.
+fn env_departs(name: &str, want: &Container, got: &Container, found: &mut Vec<String>) {
+    let want_env = want.env.clone().unwrap_or_default();
+    let got_env = got.env.clone().unwrap_or_default();
+    if got_env.len() < want_env.len() || got_env[..want_env.len()] != want_env[..] {
+        found.push(format!(
+            "{name}'s environment changes or drops its template's"
+        ));
+        return;
+    }
+    for added in &got_env[want_env.len()..] {
+        if added.value_from.is_some() {
+            found.push(format!(
+                "{name} is given {} from elsewhere than a value",
+                added.name
+            ));
+        }
+        if name == FETCH
+            && added.name != source_env::SOURCE_BLOB
+            && added.name != source_env::SOURCE_SHA256
+        {
+            found.push(format!(
+                "the fetch is told {}, beyond its blob and digest",
+                added.name
+            ));
+        }
+    }
+}
+
+/// A container's mounts are its template's, the workspace perhaps read-only, then the scratch mount.
+fn mounts_depart(name: &str, want: &Container, got: &Container, found: &mut Vec<String>) {
+    let mut expected = want.volume_mounts.clone().unwrap_or_default();
+    expected.push(tmp_volume_mount());
+    let mut got = got.volume_mounts.clone().unwrap_or_default();
+    // Whether the workspace is read-only is the build's: an archive's source is.
+    for mount in expected.iter_mut().chain(got.iter_mut()) {
+        if mount.name == WORKSPACE_VOLUME {
+            mount.read_only = None;
+        }
+    }
+    if expected != got {
+        found.push(format!(
+            "{name}'s mounts are not its template's and the scratch mount"
+        ));
+    }
+}
+
+/// Why a container's security context is not within `privileges`, if it is not.
+fn hardening_departs(context: Option<&SecurityContext>, privileges: &Privileges) -> Option<String> {
+    let Some(sc) = context else {
+        return Some("it has no security context".into());
+    };
+    if sc.privileged != Some(false) {
+        return Some("it is not said to be unprivileged".into());
+    }
+    let caps = sc.capabilities.clone().unwrap_or_default();
+    if caps.drop != Some(vec!["ALL".to_string()]) {
+        return Some("it does not drop every capability".into());
+    }
+    if let Some(extra) = caps
+        .add
+        .unwrap_or_default()
+        .into_iter()
+        .find(|c| !privileges.add_capabilities.contains(c))
+    {
+        return Some(format!("it adds {extra}, which its mapping does not sign"));
+    }
+    if sc.allow_privilege_escalation != Some(privileges.allow_privilege_escalation) {
+        return Some("its privilege escalation is not what its mapping signs".into());
+    }
+    if sc.run_as_non_root != Some(!privileges.run_as_root)
+        || (!privileges.run_as_root && sc.run_as_user == Some(0))
+    {
+        return Some("it runs as root, which its mapping does not sign".into());
+    }
+    if sc.read_only_root_filesystem != Some(true) {
+        return Some("its root filesystem is writable".into());
+    }
+    if sc.seccomp_profile
+        != Some(SeccompProfile {
+            type_: "RuntimeDefault".to_string(),
+            localhost_profile: None,
+        })
+    {
+        return Some("it is not under the runtime's default seccomp profile".into());
+    }
+    let mut rest = sc.clone();
+    for field in [
+        &mut rest.privileged,
+        &mut rest.run_as_non_root,
+        &mut rest.read_only_root_filesystem,
+        &mut rest.allow_privilege_escalation,
+    ] {
+        *field = None;
+    }
+    rest.capabilities = None;
+    rest.seccomp_profile = None;
+    rest.run_as_user = None;
+    rest.run_as_group = None;
+    (rest != SecurityContext::default()).then(|| "it sets more than its hardening".into())
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use orchestrator_core::types::{SourceArchive, source_env};
+    use orchestrator_core::types::SourceArchive;
     use proptest::prelude::*;
+    use serde_json::json;
 
     const HEX: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const IDENTITY: &str = r#"{"initContainers":[{"name":"polar-init","image":"polar-init:latest","command":["polar-init"],"args":["--cert","client:/home/polar/certs:ecdsa-p256"],"volumeMounts":[{"name":"sa-token","mountPath":"/var/run/polar/token","readOnly":true},{"name":"polar-certs","mountPath":"/home/polar/certs"}]}],"volumes":[{"name":"sa-token","projected":{"sources":[{"serviceAccountToken":{"audience":"a","expirationSeconds":3600,"path":"token"}}]}},{"name":"polar-certs","emptyDir":{}}],"pipelineMounts":[{"name":"polar-certs","mountPath":"/home/polar/certs","readOnly":true}],"pipelineEnv":[{"name":"TLS_CLIENT_CERT","value":"/home/polar/certs/cert.pem"}]}"#;
+    const FETCH_IMAGE: &str = "localhost:30500/build-fetch@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// The build workload's PodTemplate as the catalog renders it (infra/schema/pod-template.dhall).
+    pub(crate) fn template() -> PodTemplate {
+        let hardened = json!({"allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]},
+            "runAsGroup": 1000, "runAsNonRoot": true, "runAsUser": 1000, "seccompProfile": {"type": "RuntimeDefault"}});
+        let workspace = json!([{"mountPath": "/workspace", "name": "workspace"}]);
+        serde_json::from_value(json!({
+            "apiVersion": "v1", "kind": "PodTemplate",
+            "metadata": {"name": "build-runner", "namespace": "polar-builds"},
+            "template": {
+                "metadata": {"labels": {"name": "build-runner"}, "name": "build-runner"},
+                "spec": {
+                    "automountServiceAccountToken": false,
+                    "serviceAccountName": "build-runner",
+                    "restartPolicy": "Never",
+                    "terminationGracePeriodSeconds": 30,
+                    "imagePullSecrets": [],
+                    "nodeSelector": {"polar.dev/pool": "observers"},
+                    "tolerations": [{"effect": "NoSchedule", "key": "polar.dev/pool", "operator": "Equal", "value": "observers"}],
+                    "initContainers": [{"name": "fetch", "image": FETCH_IMAGE, "imagePullPolicy": "Always",
+                        "env": [{"name": "CYCLOPS_WORKSPACE", "value": "/workspace"}],
+                        "securityContext": hardened, "terminationMessagePolicy": "FallbackToLogsOnError",
+                        "volumeMounts": workspace}],
+                    "containers": [{"name": "pipeline", "image": FETCH_IMAGE, "imagePullPolicy": "Always", "env": [],
+                        "securityContext": hardened, "terminationMessagePolicy": "FallbackToLogsOnError",
+                        "volumeMounts": workspace}],
+                    "volumes": [{"emptyDir": {}, "name": "workspace"}]
+                }
+            }
+        }))
+        .unwrap()
+    }
 
     fn git() -> SourceRef {
         SourceRef::Git {
@@ -616,12 +802,11 @@ mod tests {
     }
 
     fn options() -> JobOptions {
-        JobOptions::new(
-            "polar-builds",
-            "build-job",
-            JobIdentity::from_json(IDENTITY).unwrap(),
-            format!("localhost:30500/build-fetch@sha256:{HEX}"),
-        )
+        JobOptions::new("polar-builds", "build-runner")
+    }
+
+    fn built(spec: &BuildSpec) -> Job {
+        build_job(&template(), spec, &options()).unwrap()
     }
 
     fn pod(job: &Job) -> &PodSpec {
@@ -647,13 +832,13 @@ mod tests {
             .collect()
     }
 
-    /// The fetch is told the blob and its digest and where to unpack it, and nothing else: not the origin, and no
-    /// credential (decision 1).
+    /// The fetch is told the blob and its digest, beside where to unpack it, which its template says, and nothing else:
+    /// not the origin, and no credential (decision 1). Its image is the template's.
     #[test]
     fn the_fetch_is_told_the_blob_its_digest_and_where_to_unpack_it() {
         for source in [git(), archive()] {
-            let job = build_job_manifest(&spec(source), &options());
-            let fetch = container(&job, "fetch");
+            let job = built(&spec(source));
+            let fetch = container(&job, FETCH);
             let mut names: Vec<String> = env(fetch).into_iter().map(|(k, _)| k).collect();
             names.sort();
             assert_eq!(
@@ -665,32 +850,30 @@ mod tests {
                 ],
             );
             assert!(env(fetch).contains(&(source_env::SOURCE_SHA256.into(), Some(HEX.into()))));
-            assert_eq!(
-                fetch.image.as_deref(),
-                Some(format!("localhost:30500/build-fetch@sha256:{HEX}").as_str())
-            );
+            assert_eq!(fetch.image.as_deref(), Some(FETCH_IMAGE));
         }
     }
 
-    /// No part of a build's Job holds a credential or a Secret of one: the only Secret a pod mounts is a CA bundle,
-    /// and only when the deployment names one.
+    /// No part of a build's Job holds a credential, a Secret or anything of Polar's identity (revised 3).
     #[test]
-    fn no_part_of_the_job_holds_a_credential() {
+    fn no_part_of_the_job_holds_a_credential_or_an_identity() {
         for source in [git(), archive()] {
-            let job = build_job_manifest(&spec(source), &options());
+            let job = built(&spec(source));
             let pod = pod(&job);
             assert!(
-                pod.volumes.iter().flatten().all(|v| v.secret.is_none()),
-                "{:?}",
                 pod.volumes
+                    .iter()
+                    .flatten()
+                    .all(|v| v.secret.is_none() && v.projected.is_none())
             );
             let manifest = serde_json::to_string(&job).unwrap().to_lowercase();
             for word in [
                 "password",
                 "credential",
-                "git-credentials",
                 "client-tls",
-                "imagepullsecrets",
+                "polar-init",
+                "polar-custody",
+                "tls_client",
             ] {
                 assert!(!manifest.contains(word), "{word} in {manifest}");
             }
@@ -698,59 +881,112 @@ mod tests {
         }
     }
 
-    /// Every build runs under the build workload's account, with the certificate its pod is issued obtained before the
-    /// source is fetched (decision 3).
+    /// A build's Job is its template's pod, under its account and on its node pool, named for the template so that the
+    /// attestation agent takes it as the build workload's; the pipeline runs the mapping's image in place of the
+    /// template's.
     #[test]
-    fn a_build_runs_under_the_build_workload_and_gets_its_certificate_first() {
-        let job = build_job_manifest(&spec(git()), &options());
+    fn a_build_is_its_templates_pod_named_for_it() {
+        let job = built(&spec(git()));
+        assert_eq!(
+            job.metadata.name,
+            Some(format!("build-runner-{}", Uuid::nil()))
+        );
+        assert_eq!(job.metadata.namespace.as_deref(), Some("polar-builds"));
         let pod = pod(&job);
-        assert_eq!(pod.service_account_name.as_deref(), Some("build-job"));
+        assert_eq!(pod.service_account_name.as_deref(), Some("build-runner"));
+        assert_eq!(pod.restart_policy.as_deref(), Some("Never"));
+        assert_eq!(
+            pod.node_selector.clone().unwrap()["polar.dev/pool"],
+            "observers"
+        );
         let inits: Vec<&str> = pod
             .init_containers
             .iter()
             .flatten()
             .map(|c| c.name.as_str())
             .collect();
-        assert_eq!(inits, ["polar-init", "fetch"]);
-        let pipeline = container(&job, "pipeline");
-        assert!(env(pipeline).contains(&(
-            "TLS_CLIENT_CERT".into(),
-            Some("/home/polar/certs/cert.pem".into())
-        )));
-        let mounts = pipeline.volume_mounts.as_ref().unwrap();
-        assert!(
-            mounts
-                .iter()
-                .any(|m| m.name == "polar-certs" && m.read_only == Some(true))
+        assert_eq!(inits, [FETCH]);
+        assert_eq!(
+            container(&job, PIPELINE).image,
+            Some(format!("registry.example.com/pipeline@sha256:{HEX}"))
         );
-        assert!(
-            mounts
-                .iter()
-                .any(|m| m.name == WORKSPACE_VOLUME && m.read_only == Some(false)),
-            "a git build's pipeline writes beside its source"
+        let labels = job
+            .spec
+            .as_ref()
+            .unwrap()
+            .template
+            .metadata
+            .as_ref()
+            .unwrap()
+            .labels
+            .clone()
+            .unwrap();
+        assert_eq!(
+            labels["name"], "build-runner",
+            "the template's own labels stay"
         );
+        assert_eq!(labels["app.kubernetes.io/managed-by"], "build-orchestrator");
+        assert!(departures(&template(), &job, &Privileges::default()).is_empty());
     }
 
     #[test]
-    fn an_archive_build_reads_its_source_read_only() {
-        let job = build_job_manifest(&spec(archive()), &options());
-        let mounts = container(&job, "pipeline").volume_mounts.clone().unwrap();
+    fn a_template_that_is_not_the_build_workloads_makes_no_job() {
+        let mut no_fetch = template();
+        no_fetch
+            .template
+            .as_mut()
+            .unwrap()
+            .spec
+            .as_mut()
+            .unwrap()
+            .init_containers = None;
         assert!(
-            mounts
-                .iter()
-                .any(|m| m.name == WORKSPACE_VOLUME && m.read_only == Some(true))
+            build_job(&no_fetch, &spec(git()), &options())
+                .unwrap_err()
+                .contains("fetch")
         );
+        let mut no_pipeline = template();
+        no_pipeline
+            .template
+            .as_mut()
+            .unwrap()
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers[0]
+            .name = "other".into();
+        assert!(
+            build_job(&no_pipeline, &spec(git()), &options())
+                .unwrap_err()
+                .contains("pipeline")
+        );
+        assert!(build_job(&PodTemplate::default(), &spec(git()), &options()).is_err());
     }
 
-    /// A git build is hardened as an archive build is, the fetch always (decision 4).
     #[test]
-    fn every_container_of_every_build_runs_hardened() {
+    fn a_git_build_writes_beside_its_source_and_an_archive_build_reads_it_only() {
+        for (source, read_only) in [(git(), None), (archive(), Some(true))] {
+            let job = built(&spec(source));
+            let mounts = container(&job, PIPELINE).volume_mounts.clone().unwrap();
+            let workspace = mounts.iter().find(|m| m.name == WORKSPACE_VOLUME).unwrap();
+            assert_eq!(workspace.read_only, read_only);
+        }
+    }
+
+    /// A git build is hardened as an archive build is, the fetch always (decision 4), under the template's user.
+    #[test]
+    fn every_container_of_every_build_runs_hardened_under_the_templates_user() {
         for source in [git(), archive()] {
-            let job = build_job_manifest(&spec(source), &options());
-            for name in ["fetch", "pipeline"] {
+            let job = built(&spec(source));
+            for name in [FETCH, PIPELINE] {
                 let c = container(&job, name);
                 let sc = c.security_context.as_ref().unwrap();
                 assert_eq!(sc.run_as_non_root, Some(true), "{name}");
+                assert_eq!(
+                    (sc.run_as_user, sc.run_as_group),
+                    (Some(1000), Some(1000)),
+                    "{name}"
+                );
                 assert_eq!(sc.allow_privilege_escalation, Some(false), "{name}");
                 assert_eq!(sc.privileged, Some(false), "{name}");
                 assert_eq!(sc.read_only_root_filesystem, Some(true), "{name}");
@@ -765,11 +1001,77 @@ mod tests {
                     c.volume_mounts
                         .iter()
                         .flatten()
-                        .any(|m| m.mount_path == "/tmp"),
+                        .any(|m| m.mount_path == TMP_PATH),
                     "{name} has no scratch space"
                 );
             }
         }
+    }
+
+    #[test]
+    fn configured_resources_and_workspace_limit_apply() {
+        let job = build_job(
+            &template(),
+            &spec(git()),
+            &JobOptions {
+                resources: PipelineResources {
+                    cpu_limit: "1".into(),
+                    memory_limit: "1Gi".into(),
+                    cpu_request: "100m".into(),
+                    memory_request: "128Mi".into(),
+                },
+                workspace_size_limit: Some("2Gi".into()),
+                ..options()
+            },
+        )
+        .unwrap();
+        let limits = container(&job, PIPELINE)
+            .resources
+            .as_ref()
+            .unwrap()
+            .limits
+            .clone()
+            .unwrap();
+        assert_eq!(limits["memory"], Quantity("1Gi".into()));
+        let workspace = pod(&job)
+            .volumes
+            .iter()
+            .flatten()
+            .find(|v| v.name == WORKSPACE_VOLUME)
+            .unwrap();
+        assert_eq!(
+            workspace.empty_dir.as_ref().unwrap().size_limit,
+            Some(Quantity("2Gi".into()))
+        );
+        assert!(departures(&template(), &job, &Privileges::default()).is_empty());
+    }
+
+    #[test]
+    fn an_empty_command_runs_the_images_entrypoint_and_a_configured_one_overrides_it() {
+        assert_eq!(container(&built(&spec(git())), PIPELINE).command, None);
+        let mut build = spec(git());
+        build.entrypoint = Some(vec!["/bin/analyze".into(), "--deep".into()]);
+        assert_eq!(
+            container(&built(&build), PIPELINE).command,
+            Some(vec!["/bin/analyze".to_string(), "--deep".to_string()])
+        );
+    }
+
+    #[test]
+    fn job_env_and_the_source_reach_the_pipeline() {
+        let mut build = spec(git());
+        build.env.insert("EXTRA".into(), "1".into());
+        let job = built(&build);
+        let e = env(container(&job, PIPELINE));
+        assert!(e.contains(&("EXTRA".into(), Some("1".into()))));
+        assert!(e.contains(&("POLAR_BUILD_ID".into(), Some(Uuid::nil().to_string()))));
+        assert!(e.contains(&(source_env::SOURCE_KIND.into(), Some("git".into()))));
+        let annotations = job.metadata.annotations.unwrap();
+        assert_eq!(annotations["cyclops.build/commit"], "a".repeat(40));
+        assert_eq!(
+            annotations["cyclops.build/source-blob"],
+            format!("localhost:30500/build-sources@sha256:{HEX}")
+        );
     }
 
     fn any_privileges() -> impl Strategy<Value = Privileges> {
@@ -787,6 +1089,179 @@ mod tests {
             )
     }
 
+    fn any_build() -> impl Strategy<Value = BuildSpec> {
+        (
+            any_privileges(),
+            any::<bool>(),
+            proptest::collection::hash_map("[A-Z][A-Z_]{0,8}", "[a-z0-9]{0,8}", 0..3),
+            proptest::option::of(proptest::collection::vec("[a-z/]{1,8}", 1..3)),
+        )
+            .prop_map(|(privileges, archived, env, entrypoint)| {
+                let mut build = spec(if archived { archive() } else { git() });
+                build.privileges = privileges;
+                build.env = env;
+                build.entrypoint = entrypoint;
+                build
+            })
+    }
+
+    /// One change to a built Job that no build may make: each is something a template does not say and a mapping does
+    /// not sign.
+    #[derive(Debug, Clone, Copy)]
+    enum Departure {
+        AnotherAccount,
+        TokenMounted,
+        AnotherNode,
+        HostPathVolume,
+        SecretVolume,
+        ExtraContainer,
+        ExtraInitContainer,
+        FetchImage,
+        FetchToldMore,
+        SecretInEnv,
+        TemplateEnvChanged,
+        UnsignedCapability,
+        Privileged,
+        RootFlipped,
+        WritableRoot,
+        UnconfinedSeccomp,
+        ExtraMount,
+        UnpinnedImage,
+        AnnotationAdded,
+        TemplateLabelChanged,
+        ProbeAdded,
+    }
+
+    const DEPARTURES: [Departure; 21] = [
+        Departure::AnotherAccount,
+        Departure::TokenMounted,
+        Departure::AnotherNode,
+        Departure::HostPathVolume,
+        Departure::SecretVolume,
+        Departure::ExtraContainer,
+        Departure::ExtraInitContainer,
+        Departure::FetchImage,
+        Departure::FetchToldMore,
+        Departure::SecretInEnv,
+        Departure::TemplateEnvChanged,
+        Departure::UnsignedCapability,
+        Departure::Privileged,
+        Departure::RootFlipped,
+        Departure::WritableRoot,
+        Departure::UnconfinedSeccomp,
+        Departure::ExtraMount,
+        Departure::UnpinnedImage,
+        Departure::AnnotationAdded,
+        Departure::TemplateLabelChanged,
+        Departure::ProbeAdded,
+    ];
+
+    fn depart(job: &mut Job, how: Departure) {
+        let template = &mut job.spec.as_mut().unwrap().template;
+        let pod = template.spec.as_mut().unwrap();
+        let fetch = pod
+            .init_containers
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c.name == FETCH)
+            .unwrap();
+        match how {
+            Departure::FetchImage => fetch.image = Some("evil@sha256:00".into()),
+            Departure::FetchToldMore => fetch.env.as_mut().unwrap().push(plain("TOKEN", "x")),
+            _ => {}
+        }
+        let pipeline = pod
+            .containers
+            .iter_mut()
+            .find(|c| c.name == PIPELINE)
+            .unwrap();
+        let sc = pipeline.security_context.as_mut().unwrap();
+        match how {
+            Departure::SecretInEnv => pipeline.env.as_mut().unwrap().push(EnvVar {
+                name: "T".into(),
+                value_from: Some(
+                    serde_json::from_value(json!({"secretKeyRef": {"name": "s", "key": "k"}}))
+                        .unwrap(),
+                ),
+                ..Default::default()
+            }),
+            Departure::UnsignedCapability => {
+                sc.capabilities.as_mut().unwrap().add = Some(vec!["SYS_ADMIN_UNSIGNED".into()])
+            }
+            Departure::Privileged => sc.privileged = Some(true),
+            // Whichever the mapping signs, the other.
+            Departure::RootFlipped => {
+                sc.run_as_non_root = sc.run_as_non_root.map(|non_root| !non_root)
+            }
+            Departure::WritableRoot => sc.read_only_root_filesystem = Some(false),
+            Departure::UnconfinedSeccomp => {
+                sc.seccomp_profile = Some(SeccompProfile {
+                    type_: "Unconfined".into(),
+                    localhost_profile: None,
+                })
+            }
+            Departure::ExtraMount => pipeline.volume_mounts.as_mut().unwrap().push(VolumeMount {
+                name: "workspace".into(),
+                mount_path: "/etc".into(),
+                ..Default::default()
+            }),
+            Departure::UnpinnedImage => {
+                pipeline.image = Some("registry.example.com/pipeline:latest".into())
+            }
+            Departure::ProbeAdded => {
+                pipeline.liveness_probe = Some(Default::default());
+            }
+            _ => {}
+        }
+        match how {
+            Departure::TemplateEnvChanged => {
+                pod.init_containers.as_mut().unwrap()[0]
+                    .env
+                    .as_mut()
+                    .unwrap()[0]
+                    .value = Some("/".into())
+            }
+            Departure::AnotherAccount => pod.service_account_name = Some("polar".into()),
+            Departure::TokenMounted => pod.automount_service_account_token = Some(true),
+            Departure::AnotherNode => {
+                pod.node_selector = Some(BTreeMap::from([("pool".into(), "core".into())]))
+            }
+            Departure::HostPathVolume => pod.volumes.as_mut().unwrap().push(
+                serde_json::from_value(json!({"name": "h", "hostPath": {"path": "/"}})).unwrap(),
+            ),
+            Departure::SecretVolume => pod.volumes.as_mut().unwrap().push(
+                serde_json::from_value(json!({"name": "s", "secret": {"secretName": "s"}}))
+                    .unwrap(),
+            ),
+            Departure::ExtraContainer => pod.containers.push(Container {
+                name: "sidecar".into(),
+                ..Default::default()
+            }),
+            Departure::ExtraInitContainer => {
+                pod.init_containers.as_mut().unwrap().push(Container {
+                    name: "first".into(),
+                    ..Default::default()
+                })
+            }
+            Departure::AnnotationAdded => {
+                template.metadata.as_mut().unwrap().annotations =
+                    Some(BTreeMap::from([("a".into(), "b".into())]))
+            }
+            Departure::TemplateLabelChanged => {
+                template
+                    .metadata
+                    .as_mut()
+                    .unwrap()
+                    .labels
+                    .as_mut()
+                    .unwrap()
+                    .insert("name".into(), "other".into());
+            }
+            _ => {}
+        }
+    }
+
     proptest! {
         /// The pipeline gets exactly what its mapping asks beyond hardened, and never a privileged container; the fetch
         /// gets none of it, whatever the mapping asks.
@@ -794,134 +1269,45 @@ mod tests {
         fn a_mappings_privileges_reach_the_pipeline_alone_and_exactly(privileges in any_privileges()) {
             let mut build = spec(git());
             build.privileges = privileges.clone();
-            let job = build_job_manifest(&build, &options());
-            let pipeline = container(&job, "pipeline").security_context.clone().unwrap();
+            let job = built(&build);
+            let pipeline = container(&job, PIPELINE).security_context.clone().unwrap();
             prop_assert_eq!(pipeline.privileged, Some(false));
             prop_assert_eq!(pipeline.run_as_non_root, Some(!privileges.run_as_root));
+            prop_assert_eq!(pipeline.run_as_user, (!privileges.run_as_root).then_some(1000));
             prop_assert_eq!(pipeline.allow_privilege_escalation, Some(privileges.allow_privilege_escalation));
             let caps = pipeline.capabilities.unwrap();
             prop_assert_eq!(caps.drop, Some(vec!["ALL".to_string()]));
             prop_assert_eq!(caps.add.unwrap_or_default(), privileges.add_capabilities);
-            let fetch = container(&job, "fetch").security_context.clone().unwrap();
-            prop_assert_eq!(fetch, security_context(&Privileges::default()));
+            let template_fetch = template().template.unwrap().spec.unwrap().init_containers.unwrap().remove(0);
+            let fetch = container(&job, FETCH).security_context.clone().unwrap();
+            prop_assert_eq!(fetch, security_context(template_fetch.security_context.as_ref(), &Privileges::default()));
         }
-    }
 
-    #[test]
-    fn ca_bundle_secret_becomes_both_containers_trust_store() {
-        let job = build_job_manifest(
-            &spec(git()),
-            &JobOptions {
-                ca_bundle_secret: Some("proxy-ca".into()),
-                ..options()
-            },
-        );
-        assert!(
-            pod(&job)
-                .volumes
-                .iter()
-                .flatten()
-                .any(|v| v.name == CA_BUNDLE_VOLUME
-                    && v.secret.as_ref().unwrap().secret_name.as_deref() == Some("proxy-ca"))
-        );
-        for name in ["fetch", "pipeline"] {
-            let c = container(&job, name);
-            assert!(
-                env(c).contains(&(
-                    "GIT_SSL_CAINFO".into(),
-                    Some("/etc/build-orchestrator/ca/ca-bundle.crt".into())
-                )),
-                "{name}"
-            );
-            assert!(
-                c.volume_mounts
-                    .iter()
-                    .flatten()
-                    .any(|m| m.mount_path == CA_BUNDLE_DIR),
-                "{name}"
-            );
+        /// Whatever a build is (its source, its mapping's privileges, its variables, its command), the Job made from the
+        /// template departs from it nowhere a build may not change it.
+        #[test]
+        fn a_job_made_from_its_template_departs_from_it_nowhere(build in any_build()) {
+            let job = built(&build);
+            prop_assert_eq!(departures(&template(), &job, &build.privileges), Vec::<String>::new());
         }
-    }
 
-    #[test]
-    fn configured_resources_workspace_limit_and_pull_policy_apply() {
-        let job = build_job_manifest(
-            &spec(git()),
-            &JobOptions {
-                resources: PipelineResources {
-                    cpu_limit: "1".into(),
-                    memory_limit: "1Gi".into(),
-                    cpu_request: "100m".into(),
-                    memory_request: "128Mi".into(),
-                },
-                workspace_size_limit: Some("2Gi".into()),
-                image_pull_policy: Some("IfNotPresent".into()),
-                ..options()
-            },
-        );
-        let pipeline = container(&job, "pipeline");
-        let limits = pipeline
-            .resources
-            .as_ref()
-            .unwrap()
-            .limits
-            .as_ref()
-            .unwrap();
-        assert_eq!(limits["memory"], Quantity("1Gi".into()));
-        let workspace = pod(&job)
-            .volumes
-            .iter()
-            .flatten()
-            .find(|v| v.name == WORKSPACE_VOLUME)
-            .unwrap();
-        assert_eq!(
-            workspace.empty_dir.as_ref().unwrap().size_limit,
-            Some(Quantity("2Gi".into()))
-        );
-        for name in ["fetch", "pipeline"] {
-            assert_eq!(
-                container(&job, name).image_pull_policy.as_deref(),
-                Some("IfNotPresent"),
-                "{name}"
-            );
+        /// Any one change a build may not make is found, whatever the build.
+        #[test]
+        fn any_change_a_build_may_not_make_is_found(
+            build in any_build(),
+            how in proptest::sample::select(DEPARTURES.to_vec()),
+        ) {
+            let mut job = built(&build);
+            depart(&mut job, how);
+            prop_assert!(!departures(&template(), &job, &build.privileges).is_empty(), "{how:?} was not found");
         }
-    }
-
-    #[test]
-    fn an_empty_command_runs_the_images_entrypoint_and_a_configured_one_overrides_it() {
-        let job = build_job_manifest(&spec(git()), &options());
-        assert_eq!(container(&job, "pipeline").command, None);
-        let mut build = spec(git());
-        build.entrypoint = Some(vec!["/bin/analyze".into(), "--deep".into()]);
-        let job = build_job_manifest(&build, &options());
-        assert_eq!(
-            container(&job, "pipeline").command,
-            Some(vec!["/bin/analyze".to_string(), "--deep".to_string()])
-        );
-    }
-
-    #[test]
-    fn job_env_and_the_source_reach_the_pipeline() {
-        let mut build = spec(git());
-        build.env.insert("EXTRA".into(), "1".into());
-        let job = build_job_manifest(&build, &options());
-        let e = env(container(&job, "pipeline"));
-        assert!(e.contains(&("EXTRA".into(), Some("1".into()))));
-        assert!(e.contains(&("POLAR_BUILD_ID".into(), Some(Uuid::nil().to_string()))));
-        assert!(e.contains(&(source_env::SOURCE_KIND.into(), Some("git".into()))));
-        let annotations = job.metadata.annotations.unwrap();
-        assert_eq!(annotations["cyclops.build/commit"], "a".repeat(40));
-        assert_eq!(
-            annotations["cyclops.build/source-blob"],
-            format!("localhost:30500/build-sources@sha256:{HEX}")
-        );
     }
 
     /// A Job whose one condition became true at `at` (seconds since the epoch).
     fn a_job_that_ended(condition: &str, status: &str, at: Option<i64>) -> Job {
         use k8s_openapi::api::batch::v1::{JobCondition, JobStatus};
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
-        let mut job = build_job_manifest(&spec(git()), &options());
+        let mut job = built(&spec(git()));
         job.status = Some(JobStatus {
             conditions: Some(vec![JobCondition {
                 type_: condition.to_string(),
@@ -961,7 +1347,7 @@ mod tests {
     #[test]
     fn a_job_that_has_not_finished_is_never_expired() {
         let now = 100 * 24 * HOUR;
-        let running = build_job_manifest(&spec(git()), &options());
+        let running = built(&spec(git()));
         let not_true = a_job_that_ended("Failed", "False", Some(now - 25 * HOUR));
         // A finished one with no time on its condition cannot be shown to be old.
         let untimed = a_job_that_ended("Complete", "True", None);
@@ -975,7 +1361,7 @@ mod tests {
             succeeded: std::time::Duration::from_secs(600),
             failed: std::time::Duration::from_secs(7200),
         };
-        let job = build_job_manifest(&spec(git()), &options);
+        let job = build_job(&template(), &spec(git()), &options).unwrap();
         assert_eq!(job.spec.unwrap().ttl_seconds_after_finished, Some(7200));
     }
 }
