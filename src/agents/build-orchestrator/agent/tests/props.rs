@@ -24,15 +24,17 @@
 //! Properties of what build-orchestrator is told: the `mappings` section read back as written, and refused, naming the
 //! entry and never the value, wherever it is spoiled; the run-time settings' quantities and bounds.
 
+use build_orchestrator::admission::{Admission, Admitted};
 use build_orchestrator::mappings::{Mapping, parse};
 use build_orchestrator::settings::{SECTION, milli, narrowed};
-use orchestrator_core::types::Privileges;
+use orchestrator_core::types::{BuildRequest, Privileges, SourceRef};
 use orchestrator_report::Bounds;
 use polar::graph::nodes::git::RepoId;
 use polar_env::Config;
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use uuid::Uuid;
 
 /// A marker no generated valid value holds, so a problem that echoes a spoiled value is seen.
 const MARK: &str = "zqxmarkzqx";
@@ -222,7 +224,114 @@ fn bounds() -> impl Strategy<Value = Bounds> {
         })
 }
 
+/// What can happen to admission.
+#[derive(Debug, Clone)]
+enum Event {
+    Request,
+    /// One of the running builds ends: which, by its place among them.
+    Finish(prop::sample::Index),
+    SetCap(usize),
+    Adopt,
+    /// A request already running or waiting is made again.
+    Again(prop::sample::Index),
+}
+
+fn event() -> impl Strategy<Value = Event> {
+    prop_oneof![
+        4 => Just(Event::Request),
+        3 => any::<prop::sample::Index>().prop_map(Event::Finish),
+        1 => (0usize..5).prop_map(Event::SetCap),
+        1 => Just(Event::Adopt),
+        1 => any::<prop::sample::Index>().prop_map(Event::Again),
+    ]
+}
+
+fn build(n: u128) -> BuildRequest {
+    BuildRequest {
+        build_id: Uuid::from_u128(n),
+        source: SourceRef::Git {
+            url: "https://git.example.org/a/b.git".into(),
+            commit_sha: "a".repeat(40),
+        },
+        pipeline_image: None,
+        requested_at: chrono::DateTime::UNIX_EPOCH,
+        metadata: Default::default(),
+        command: vec![],
+    }
+}
+
 proptest! {
+    /// Whatever happens, in any order: no place is idle while a build waits, a build starts once, the waiting start in
+    /// the order they came, and what admission counts is what has started and not ended.
+    #[test]
+    fn admission_keeps_its_places_and_its_line(cap in 0usize..4, events in proptest::collection::vec(event(), 0..64)) {
+        let mut admission = Admission::new(cap);
+        let mut next = 0u128;
+        let mut running: Vec<Uuid> = Vec::new();
+        let mut waiting: Vec<Uuid> = Vec::new();
+        let mut started: HashSet<Uuid> = HashSet::new();
+        let start = |ids: Vec<BuildRequest>,
+                     running: &mut Vec<Uuid>,
+                     waiting: &mut Vec<Uuid>,
+                     started: &mut HashSet<Uuid>|
+         -> Result<(), TestCaseError> {
+            for r in ids {
+                prop_assert_eq!(Some(&r.build_id), waiting.first(), "the waiting start in the order they came");
+                waiting.remove(0);
+                prop_assert!(started.insert(r.build_id), "a build starts once");
+                running.push(r.build_id);
+            }
+            Ok(())
+        };
+        for event in events {
+            match event {
+                Event::Request => {
+                    next += 1;
+                    match admission.request(build(next)) {
+                        Admitted::Now(r) => {
+                            prop_assert!(waiting.is_empty(), "none jumps the line");
+                            running.push(r.build_id);
+                            started.insert(r.build_id);
+                        }
+                        Admitted::Waiting(place) => {
+                            waiting.push(Uuid::from_u128(next));
+                            prop_assert_eq!(place, waiting.len());
+                        }
+                        Admitted::Duplicate => prop_assert!(false, "a new build is no duplicate"),
+                    }
+                }
+                Event::Finish(which) if !running.is_empty() => {
+                    let id = running.remove(which.index(running.len()));
+                    let released = admission.finished(id);
+                    start(released, &mut running, &mut waiting, &mut started)?;
+                }
+                Event::Finish(_) => {}
+                Event::SetCap(cap) => {
+                    let released = admission.set_cap(cap);
+                    start(released, &mut running, &mut waiting, &mut started)?;
+                }
+                Event::Adopt => {
+                    next += 1;
+                    prop_assert!(admission.adopt(Uuid::from_u128(next)));
+                    running.push(Uuid::from_u128(next));
+                    started.insert(Uuid::from_u128(next));
+                }
+                Event::Again(which) => {
+                    let known: Vec<Uuid> = running.iter().chain(&waiting).copied().collect();
+                    if !known.is_empty() {
+                        let id = known[which.index(known.len())];
+                        prop_assert!(matches!(admission.request(build(id.as_u128())), Admitted::Duplicate));
+                        prop_assert!(!admission.adopt(id) || !waiting.contains(&id));
+                    }
+                }
+            }
+            prop_assert_eq!(admission.running(), running.len());
+            prop_assert_eq!(admission.waiting(), waiting.len());
+            prop_assert!(waiting.is_empty() || admission.running() >= admission.cap(), "no place idle while a build waits");
+            prop_assert!(admission.cap() >= 1);
+        }
+    }
+
     /// Any mappings, written as an author writes them, read back as themselves, in order.
     #[test]
     fn mappings_read_back_as_written(all in mappings()) {

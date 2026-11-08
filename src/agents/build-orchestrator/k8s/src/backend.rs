@@ -30,10 +30,10 @@ use async_trait::async_trait;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Event, PodTemplate};
 use orchestrator_core::backend::{
-    BackendJobHandle, BuildBackend, JobGraphIdentity, JobStatus, Retention, SubmittedJob,
+    BackendJobHandle, BuildBackend, InFlight, JobGraphIdentity, JobStatus, Retention, SubmittedJob,
 };
 use orchestrator_core::error::BackendError;
-use orchestrator_core::types::BuildSpec;
+use orchestrator_core::types::{BuildSpec, SourceRef};
 use polar_agent_builder::protocol::kubernetes::{
     Answer, ApiAnswer, Call, Kubernetes, Propagation, Resource,
 };
@@ -263,30 +263,24 @@ impl BuildBackend for KubernetesBackend {
     }
 
     #[instrument(skip(self))]
+    async fn in_flight(&self) -> Result<Vec<InFlight>, BackendError> {
+        let mut found = Vec::new();
+        for job in self.own_jobs().await? {
+            match in_flight_of(&job) {
+                Ok(Some(job)) => found.push(job),
+                Ok(None) => {}
+                Err(why) => warn!(
+                    job = ?job.metadata.name,
+                    "a Job of the orchestrator's that has not ended is not adopted: {why}"
+                ),
+            }
+        }
+        Ok(found)
+    }
+
+    #[instrument(skip(self))]
     async fn reap(&self, retention: &Retention) -> Result<Vec<String>, BackendError> {
-        // Only this orchestrator's own jobs: whatever else is in the namespace is not its to remove.
-        let call = Call::List {
-            resource: JOB,
-            namespace: self.namespace(),
-            labels: Some(MANAGED_BY.into()),
-            fields: None,
-        };
-        let listed: Vec<Job> = match self.protocols.ask(ListJobs(call)).await {
-            Ok(Answer::Objects(items)) => items
-                .into_iter()
-                .filter_map(|item| serde_json::from_value(item).ok())
-                .collect(),
-            Ok(other) => {
-                return Err(BackendError::Unreachable(format!(
-                    "the API answered a list {other:?}"
-                )));
-            }
-            Err(e) => {
-                return Err(BackendError::Unreachable(format!(
-                    "could not list the jobs to remove the old ones: {e}"
-                )));
-            }
-        };
+        let listed = self.own_jobs().await?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
@@ -326,6 +320,28 @@ impl BuildBackend for KubernetesBackend {
 }
 
 impl KubernetesBackend {
+    /// This orchestrator's own Jobs: whatever else is in the namespace is not its to adopt or remove.
+    async fn own_jobs(&self) -> Result<Vec<Job>, BackendError> {
+        let call = Call::List {
+            resource: JOB,
+            namespace: self.namespace(),
+            labels: Some(MANAGED_BY.into()),
+            fields: None,
+        };
+        match self.protocols.ask(ListJobs(call)).await {
+            Ok(Answer::Objects(items)) => Ok(items
+                .into_iter()
+                .filter_map(|item| serde_json::from_value(item).ok())
+                .collect()),
+            Ok(other) => Err(BackendError::Unreachable(format!(
+                "the API answered a list {other:?}"
+            ))),
+            Err(e) => Err(BackendError::Unreachable(format!(
+                "could not list the orchestrator's jobs: {e}"
+            ))),
+        }
+    }
+
     /// Messages of the Job's FailedCreate events, oldest first.
     async fn pod_creation_refusals(&self, job_name: &str) -> Result<Vec<String>, String> {
         let call = Call::List {
@@ -363,6 +379,60 @@ fn permanent_refusal(messages: &[String]) -> Option<String> {
 /// Interpret the k8s Job status conditions into our JobStatus enum.
 /// The k8s Job status model is unfortunately not a clean state machine —
 /// conditions are a list of booleans that must be read carefully.
+/// A Job of the orchestrator's that a poll would find pending or running, as a restarted orchestrator adopts it: what it
+/// builds, from the labels and annotations the Job was made with (`job::standard_metadata`), and how to reach it.
+/// `Ok(None)` for one a poll would find ended, by the same reading, so that a Job adopted is one no orchestrator has seen
+/// end; `Err` for one not ended that does not say what it builds.
+fn in_flight_of(job: &Job) -> Result<Option<InFlight>, String> {
+    if !matches!(
+        interpret_job_status(job),
+        JobStatus::Pending | JobStatus::Running
+    ) {
+        return Ok(None);
+    }
+    let metadata = &job.metadata;
+    let (Some(name), Some(uid)) = (&metadata.name, &metadata.uid) else {
+        return Err("it has no name or uid".into());
+    };
+    let label = |key: &str| metadata.labels.as_ref().and_then(|l| l.get(key));
+    let annotation = |key: &str| {
+        metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get(key))
+            .cloned()
+            .ok_or(format!("it has no {key} annotation"))
+    };
+    let build_id = label("cyclops.build/id")
+        .and_then(|id| id.parse().ok())
+        .ok_or("its build id label is missing or not a UUID")?;
+    let source = match annotation("cyclops.build/source-kind")?.as_str() {
+        "git" => SourceRef::Git {
+            url: annotation("cyclops.build/repo")?,
+            commit_sha: annotation("cyclops.build/commit")?,
+        },
+        "archive" => SourceRef::RegistryArchive {
+            purl: annotation("cyclops.build/purl")?,
+            download_url: annotation("cyclops.build/archive")?,
+            sha256: annotation("cyclops.build/archive-sha256")?,
+        },
+        _ => return Err("its source kind is not one".into()),
+    };
+    source.validate().map_err(|e| e.to_string())?;
+    Ok(Some(InFlight {
+        build_id,
+        source,
+        handle: BackendJobHandle {
+            name: name.clone(),
+            uid: uid.clone(),
+        },
+        made_at: metadata
+            .creation_timestamp
+            .as_ref()
+            .map(|t| t.0.as_second()),
+    }))
+}
+
 fn interpret_job_status(job: &Job) -> JobStatus {
     let status = match &job.status {
         Some(s) => s,
@@ -395,6 +465,7 @@ mod tests {
     use crate::job::tests::template;
     use orchestrator_core::types::{Privileges, SourceArchive, SourceRef};
     use polar_agent_builder::protocol::testing::{KubeApi, kubernetes_handle};
+    use proptest::prelude::*;
     use serde_json::json;
     use uuid::Uuid;
 
@@ -610,6 +681,109 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    /// A Job as the API holds it: made from `spec`, with the uid the API gives and `status`.
+    fn held(spec: &BuildSpec, status: Value) -> Value {
+        let job = crate::job::build_job(&template(), spec, &options()).unwrap();
+        let mut job = serde_json::to_value(job).unwrap();
+        job["metadata"]["uid"] = json!(format!("u-{}", spec.build_id));
+        job["metadata"]["creationTimestamp"] = json!("2027-01-15T08:00:00Z");
+        job["status"] = status;
+        job
+    }
+
+    fn any_source() -> impl Strategy<Value = SourceRef> {
+        prop_oneof![
+            ("[a-z]{1,8}", "[a-z0-9/]{1,16}", "[0-9a-f]{40}").prop_map(
+                |(host, path, commit_sha)| {
+                    SourceRef::Git {
+                        url: format!("https://{host}.example/{path}"),
+                        commit_sha,
+                    }
+                }
+            ),
+            ("[a-z]{1,8}", "[0-9a-f]{64}").prop_map(|(name, sha256)| SourceRef::RegistryArchive {
+                purl: format!("pkg:cargo/{name}@1.0.0"),
+                download_url: format!("https://static.example/{name}.crate"),
+                sha256,
+            }),
+        ]
+    }
+
+    proptest! {
+        /// A Job not ended says what it builds and how to reach it, as it was made, whatever the build; one ended, by the
+        /// reading a poll makes, is never adopted.
+        #[test]
+        fn a_job_in_flight_reads_back_as_made_and_an_ended_one_is_not_adopted(
+            id in any::<u128>(),
+            source in any_source(),
+            status in prop_oneof![
+                Just((json!({}), true)),
+                Just((json!({"active": 1}), true)),
+                Just((json!({"active": 1, "failed": 1}), true)),
+                Just((json!({"succeeded": 1}), false)),
+                Just((json!({"failed": 1}), false)),
+                Just((json!({"succeeded": 1, "active": 1}), false)),
+            ],
+        ) {
+            let mut build = spec();
+            build.build_id = Uuid::from_u128(id);
+            build.source = source.clone();
+            let (status, in_flight) = status;
+            let job: Job = serde_json::from_value(held(&build, status)).unwrap();
+            let found = in_flight_of(&job).unwrap();
+            if in_flight {
+                prop_assert_eq!(found, Some(InFlight {
+                    build_id: build.build_id,
+                    source,
+                    handle: BackendJobHandle {
+                        name: crate::job::job_name_for_build("build-runner", build.build_id),
+                        uid: format!("u-{}", build.build_id),
+                    },
+                    made_at: Some(1_800_000_000),
+                }));
+            } else {
+                prop_assert_eq!(found, None);
+            }
+        }
+    }
+
+    /// At start, the orchestrator's own Jobs not ended are found, by the label it makes them with; one ended is not, and
+    /// one that does not say what it builds is passed over, not guessed at.
+    #[tokio::test]
+    async fn the_jobs_in_flight_are_its_own_not_ended() {
+        let api = KubeApi::start().await;
+        let build = |n: u128| {
+            let mut build = spec();
+            build.build_id = Uuid::from_u128(n);
+            build
+        };
+        let mut unsaid = held(&build(4), json!({"active": 1}));
+        unsaid["metadata"]["annotations"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cyclops.build/commit");
+        api.answers(
+            "GET",
+            JOBS,
+            200,
+            json!({"apiVersion": "batch/v1", "kind": "JobList", "metadata": {},
+                   "items": [held(&build(1), json!({"active": 1})), held(&build(2), json!({"succeeded": 1})),
+                             held(&build(3), json!({})), unsaid]}),
+        );
+        let found = backend(&api).await.in_flight().await.unwrap();
+        let ids: Vec<u128> = found.iter().map(|f| f.build_id.as_u128()).collect();
+        assert_eq!(ids, [1, 3]);
+        let received = api.received().await;
+        assert_eq!(received.len(), 1);
+        assert!(
+            received[0]
+                .2
+                .contains("app.kubernetes.io%2Fmanaged-by%3Dbuild-orchestrator"),
+            "{}",
+            received[0].2
+        );
     }
 
     /// Only the orchestrator's own Jobs are looked over, and only those past their retention are removed, each by its uid.

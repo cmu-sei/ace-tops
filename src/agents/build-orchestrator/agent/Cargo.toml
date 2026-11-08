@@ -26,7 +26,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+cassini-client.workspace = true
 cassini-types.workspace = true
+chrono.workspace = true
 git-agent-common.workspace = true
 orchestrator-backend-k8s.workspace = true
 orchestrator-core.workspace = true
@@ -36,11 +38,14 @@ polar-agent-builder.workspace = true
 polar-env.workspace = true
 polar-scudo.workspace = true
 ractor.workspace = true
+rkyv.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 proptest.workspace = true
 
 [[bin]]

@@ -33,7 +33,7 @@ use crate::types::BuildSpec;
 /// Opaque handle returned by a backend after job submission.
 /// The backend is responsible for interpreting it in poll/cancel/log calls.
 /// Stored as a plain string in BuildRecord so it survives serialization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendJobHandle {
     pub name: String,
     pub uid: String,
@@ -75,6 +75,16 @@ pub struct JobGraphIdentity {
 
     /// Human-readable display name for log messages.
     pub display_name: String,
+}
+
+/// A job found running when the orchestrator started: what it builds and how to reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InFlight {
+    pub build_id: uuid::Uuid,
+    pub source: crate::types::SourceRef,
+    pub handle: BackendJobHandle,
+    /// When the job was made, seconds since the epoch, if the backend says: what its duration is counted from.
+    pub made_at: Option<i64>,
 }
 
 /// The status of a submitted backend job as reported by a poll call.
@@ -140,6 +150,13 @@ pub trait BuildBackend: Send + Sync {
     /// Request cancellation. Best-effort — the backend may not guarantee
     /// immediate termination, particularly for running pods.
     async fn cancel(&self, handle: &BackendJobHandle) -> Result<(), BackendError>;
+
+    /// This orchestrator's jobs that have not ended, as a restarted orchestrator adopts them: it watches each to its end
+    /// (build-orchestrator.md, O2e2, "A restarted orchestrator adopts the Jobs still running"). A job that ended is not
+    /// one, whether or not anyone watched it end. A backend whose jobs do not outlive the orchestrator keeps this default.
+    async fn in_flight(&self) -> Result<Vec<InFlight>, BackendError> {
+        Ok(Vec::new())
+    }
 
     /// Remove the finished jobs that are older than `retention` allows, and return their names. A job that has
     /// not finished is never touched. A backend with nothing to clean up keeps this default.

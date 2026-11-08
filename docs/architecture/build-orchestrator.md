@@ -534,6 +534,46 @@ I write Rust code"):
     (`tests/props.rs`): any mappings read back as written, any entry spoiled in any of twelve ways refused naming it and never
     the value, a repository mapped twice refused wherever it is, a quantity read as its number and unit, a request above its
     limit refused exactly when it is, and the bounds read at never wider than the worker's or the signed ones.
+    O2e2 split in two (the maintainer, 2026-11-08, "Yes, split"): O2e2a a build's life without its log (admission with the
+    Dynamic cap, the commits already taken, the registry, a job actor per build making the Job from the template on the
+    mapping's image, command and privileges, polling it to its end and publishing its own execution events on
+    `polar.provenance.executions`, the sweep of Jobs past their retention, and the source step behind a trait whose one
+    implementation refuses until O3, so a build fails at its source and says so); O2e2b the one log read after the pod ends
+    (the handler's streamed `pods/log`, each `polar-report` line through the worker at the narrowed bounds and the relay, out
+    as a `BuildReport`). O4 is left the log as a registry blob. *A restarted orchestrator adopts the Jobs still running*
+    (the maintainer, 2026-11-08, "Adopt running Jobs only"): it lists its own Jobs at start and watches those not ended to
+    their end, reading each one's log then; a Job that ended before it started is never read. A log is so read at most once,
+    by the orchestrator that saw its pod end, and a log that killed the reader cannot kill it again at every restart, which a
+    build could otherwise cause on purpose (a dead worker ends the agent, O2d2). A restarted orchestrator cannot tell a Job
+    its predecessor finished with from one that ended unwatched, so of a Job that ended before it started it says nothing,
+    and build-processor's aging judges a build lost that was never heard to end. What restarts lose: the reports of a build
+    that ends while no orchestrator watches, and the builds waiting for a place. Decided by standing rules, for review: a
+    build takes the settings and the mapping in force when it starts (Vaughn's, "deterministic with respect to the config
+    snapshot"); a read that kills the worker is published as that build's failure, at the stage of reading its reports, before
+    the agent ends: the crash is evidence. O2e2a DONE 2026-11-08: the supervisor turns a moved ref of a mapped repository
+    (`build_for`: the mapping found by the repository's `RepoId`, the commit checked, a ref reported unchanged or a commit
+    discovered no build) into a build, once per commit (`observed`, Vaughn's: a commit whose build did not succeed may be
+    built again), admitted (`admission`, Vaughn's, with the cap a Dynamic setting: a raised cap starts who waits, in order, a
+    lowered one stops nobody; an adopted build holds a place whatever the cap), and recorded (`registry`, Vaughn's, bounded:
+    the records of ended builds kept to 1,024, his never let one go). A build's actor (`build`, his `BuildJobActor` in shape)
+    prepares its source (`Source`, whose one implementation, `NotYet`, refuses until O3), makes its Job from the template
+    on the mapping's image, command (or the default) and privileges, through a backend made with the settings in force when
+    it starts, polls it to its end, and says so on `polar.provenance.executions` in its own word: `ExecutionStarted` (who
+    reported the ref moved, as the broker stamped it, as `triggered_by`), then `ExecutionCompleted` or `ExecutionFailed` at
+    `source`, `scheduling` or `execution`. A build quicker than a poll is recorded as having run. At start the supervisor
+    adopts its Jobs a poll would find pending or running (`BuildBackend::in_flight`, read from the labels and annotations
+    a Job is made with, by the same reading of its status a poll makes, so a Job adopted is one no orchestrator saw end);
+    each is watched to its end, its duration counted from its Job's making. Every five minutes the Jobs past their retention
+    are removed. At `PrepareShutdown` the running builds' Jobs go on, for the next orchestrator to adopt, and the waiting
+    are given up. Of Vaughn's left out: the build-request topic, cancellation (nothing asks for it yet) and his poll's
+    unbounded retries stay as they were (a Job that cannot be polled is asked again; build-processor's aging judges a build
+    lost that is never heard to end). Tested: the build's actor against a stand-in backend, source and broker at each way a
+    build goes (succeeds, quicker than a poll, the default command, its source not had, its Job refused, failed, gone, a
+    poll that fails, adopted); a ref update read into a build or none; the registry's state machine and bound; the
+    backend's adoption against the stand-in API (its own Jobs, not ended, one that does not say what it builds passed over)
+    and a property that any build's Job not ended reads back as made and one ended is never adopted; and a property that
+    whatever happens to admission, in any order, no place is idle while a build waits, a build starts once, the waiting
+    start in the order they came, and its counts are what started and did not end.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports

@@ -25,12 +25,18 @@
 
 //! build-orchestrator: builds a repository at a commit when a ref of it moves and a signed mapping names it, as a Job made
 //! from the build workload's PodTemplate, and relays what the build reports once judged (docs/architecture/build-orchestrator.md).
-//! See `agent` for what it declares, `settings` and `mappings` for what it is told, `reader` for its worker and
-//! `supervisor` for the actor.
+//! See `agent` for what it declares, `settings` and `mappings` for what it is told, `reader` for its worker, `supervisor`
+//! for the actor that admits builds (`admission`, `observed`) and `build` for each build's own.
+pub mod admission;
 pub mod agent;
+pub mod build;
 pub mod mappings;
+pub mod observed;
+pub mod publish;
 pub mod reader;
+pub mod registry;
 pub mod settings;
+pub mod source;
 pub mod supervisor;
 
 /// The workload's name, in the catalog and on its certificate.
