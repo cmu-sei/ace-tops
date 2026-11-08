@@ -158,6 +158,8 @@ pub struct AgentResources {
     /// The agent's way to its own soft state, for an agent with the `soft-state` capability (it declares a graph
     /// read): see [`state::StateClient`].
     pub state: Option<crate::state::StateHandle>,
+    /// The agent's workers, by name, each locked in seccomp's strict mode (`PolarAgent::WORKERS`; [`worker`]).
+    pub workers: crate::worker::Workers,
     /// Every real ClientEvent this agent's own TcpClient produces --
     /// subscribe with your own, real mapping closure, exactly the
     /// same, established pattern as prepare_shutdown_port/
@@ -205,6 +207,8 @@ pub struct AgentBuilder<M: ractor::Message> {
     declared_runtime: &'static [&'static RuntimeSection],
     /// The operations and credentials the agent declared (`PolarAgent::OPERATIONS`, `PolarAgent::CREDENTIALS`).
     declared_protocols: protocol::ProtocolSetup,
+    /// The workers `run` forked, for the infrastructure to supervise.
+    declared_workers: Vec<worker::Forked>,
     /// The agent's judge of a runtime section before it is replaced ([`with_section_judge`](Self::with_section_judge)).
     section_judge: Option<Arc<dyn runtime::SectionJudge>>,
     /// The agent's judge of its settings as a whole (`PolarAgent::SETTINGS_JUDGE`).
@@ -272,6 +276,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
             declared_commands: &[],
             declared_runtime: &[],
             declared_protocols: protocol::ProtocolSetup::default(),
+            declared_workers: Vec::new(),
             section_judge: None,
             settings_judge: None,
             topics: None,
@@ -429,6 +434,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
         self.declared_runtime = configured.runtime;
         self.settings_judge = configured.settings_judge;
         self.declared_protocols = configured.protocols;
+        self.declared_workers = configured.workers;
         self.topics = Some(configured.topics.clone());
         ConfiguredAgent {
             builder: self,
@@ -535,6 +541,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 commands,
                 runtime_sections: this.declared_runtime,
                 protocols: this.declared_protocols,
+                workers: this.declared_workers,
                 section_judge: this.section_judge,
                 settings_judge: this.settings_judge,
             },
@@ -693,6 +700,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 commands: Vec::new(),
                 runtime_sections: &[],
                 protocols: protocol::ProtocolSetup::default(),
+                workers: Vec::new(),
                 section_judge: None,
                 settings_judge: None,
             },
@@ -1084,6 +1092,7 @@ mod tests {
             runtime: &[],
             settings_judge: None,
             protocols: protocol::ProtocolSetup::default(),
+            workers: Vec::new(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
@@ -1127,6 +1136,7 @@ mod tests {
             runtime: &[],
             settings_judge: None,
             protocols: protocol::ProtocolSetup::default(),
+            workers: Vec::new(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
@@ -1160,6 +1170,7 @@ mod tests {
             runtime: &[],
             settings_judge: None,
             protocols: protocol::ProtocolSetup::default(),
+            workers: Vec::new(),
             graph_key_indexes: Vec::new(),
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),

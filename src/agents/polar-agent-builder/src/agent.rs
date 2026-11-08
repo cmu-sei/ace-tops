@@ -151,6 +151,9 @@ pub trait PolarAgent: Sized + 'static {
     /// What the agent asks the outside for: each kind of request, where it may go and what it may use. They appear in the
     /// schema export, so applying the catalog is the sign-off, and a request of a kind not declared here is denied.
     const OPERATIONS: &'static [OperationDecl] = &[];
+    /// The workers the agent asks to do work on bytes it must not trust (`worker`): each forked at start, before the
+    /// runtime, and locked in seccomp's strict mode. One that dies ends the agent.
+    const WORKERS: &'static [crate::worker::WorkerDecl] = &[];
     /// The topics the agent uses itself, each with its access and its purpose (docs/architecture/topics.md).
     /// The topics every agent uses, and those a need brings, are implied and not listed here; the scaffold
     /// prints the whole set, and the agent's client refuses what is outside it unless policy permits it.
@@ -195,6 +198,8 @@ pub struct Configured {
     pub(crate) settings_judge: Option<crate::configuration::SettingsJudge>,
     /// The operations and credentials the agent declared.
     pub(crate) protocols: ProtocolSetup,
+    /// The workers forked at start, for the infrastructure to supervise.
+    pub(crate) workers: Vec<crate::worker::Forked>,
     /// The constraints and indexes for the labels the agent owns ([`graph_key_indexes`]).
     pub(crate) graph_key_indexes: Vec<polar::graph::schema::KeyIndex>,
     /// Every topic the agent uses, its families expanded for the workloads it serves.
@@ -293,6 +298,7 @@ impl Configured {
             runtime: &[],
             settings_judge: None,
             protocols: ProtocolSetup::default(),
+            workers: Vec::new(),
             graph_key_indexes: Vec::new(),
             topics: Arc::new(TopicSet::default()),
             hooks: Hooks {
@@ -1196,6 +1202,14 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         }
     };
     startup.health.expects_cassini = A::DEPENDS_ON_CASSINI;
+    // Before the runtime: a worker is forked only from a process of one thread (`worker`).
+    let workers = match crate::worker::fork_all(A::WORKERS, &startup.config) {
+        Ok(workers) => workers,
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            return 1;
+        }
+    };
     let configured = Configured {
         topics: Arc::new(topic_set_serving::<A>(&served)),
         startup,
@@ -1214,6 +1228,7 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
             operations: A::OPERATIONS,
             credentials: A::CREDENTIALS.is_some(),
         },
+        workers,
         graph_key_indexes: graph_key_indexes::<A>(),
         hooks: Hooks::real(),
     };

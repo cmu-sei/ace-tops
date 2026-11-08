@@ -37,8 +37,16 @@
 //!
 //! The parent holds a worker to its bounds: a request longer than the worker takes is not sent, and an answer longer than it
 //! may give, or none, is not believed. A worker that hangs up has died, and says how.
+//!
+//! In the running agent, a worker is a [`WorkerActor`] under the infrastructure supervisor, asked through a
+//! [`WorkerHandle`] one request at a time, each within its declared time. When it dies, lies or takes too long, the request
+//! is refused and the actor fails, and the supervisor ends the agent as it does for any child of the builder's that ends
+//! unexpectedly (its health says it is draining); the pod restarts it with a fresh worker.
 
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use std::collections::BTreeMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::time::Duration;
 
 /// The work a worker does, on the worker's side of the fork.
 pub trait Work {
@@ -52,7 +60,7 @@ pub trait Work {
 }
 
 /// Why a worker could not be made, or did not answer.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum WorkerError {
     #[error("a worker is forked while the process is one thread, and it has {0}")]
     Threaded(usize),
@@ -64,6 +72,43 @@ pub enum WorkerError {
     Lied(usize),
     #[error("the worker died: {0}")]
     Died(String),
+    #[error("the worker did not answer within {0:?}")]
+    TimedOut(Duration),
+}
+
+/// A worker an agent declares (`PolarAgent::WORKERS`): its name, how it is forked from the agent's configuration, and how
+/// long it has for each answer.
+#[derive(Clone, Copy)]
+pub struct WorkerDecl {
+    pub name: &'static str,
+    /// Forks the worker, with its work made from the configuration the agent was started with.
+    pub fork: fn(&polar_env::Config) -> Result<Worker, WorkerError>,
+    /// How long one answer may take.
+    pub timeout: Duration,
+}
+
+/// A worker forked at start, on its way to its actor.
+pub(crate) struct Forked {
+    pub(crate) decl: WorkerDecl,
+    pub(crate) worker: Worker,
+}
+
+/// Forks every worker `decls` name: called once, in `run`, before the runtime is built.
+pub(crate) fn fork_all(
+    decls: &[WorkerDecl],
+    config: &polar_env::Config,
+) -> Result<Vec<Forked>, String> {
+    decls
+        .iter()
+        .map(|decl| {
+            (decl.fork)(config)
+                .map(|worker| Forked {
+                    decl: *decl,
+                    worker,
+                })
+                .map_err(|e| format!("the worker {} could not be started: {e}", decl.name))
+        })
+        .collect()
 }
 
 /// A worker, on the agent's side: its process and its two pipes.
@@ -291,5 +336,130 @@ impl Drop for Worker {
         let mut status = 0;
         // SAFETY: as in `died`.
         unsafe { libc::waitpid(self.pid, &mut status, 0) };
+    }
+}
+
+// ── The running agent's side ──────────────────────────────────────────────────
+
+/// A worker in the running agent: asks it one request at a time, each within its time.
+pub struct WorkerActor;
+
+pub enum WorkerMsg {
+    Ask(Vec<u8>, RpcReplyPort<Result<Vec<u8>, WorkerError>>),
+}
+
+pub struct WorkerArgs {
+    pub name: &'static str,
+    pub worker: Worker,
+    pub timeout: Duration,
+}
+
+pub struct WorkerState {
+    name: &'static str,
+    pid: libc::pid_t,
+    worker: Option<Worker>,
+    timeout: Duration,
+}
+
+#[ractor::async_trait]
+impl Actor for WorkerActor {
+    type Msg = WorkerMsg;
+    type State = WorkerState;
+    type Arguments = WorkerArgs;
+
+    async fn pre_start(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        args: WorkerArgs,
+    ) -> Result<WorkerState, ActorProcessingErr> {
+        Ok(WorkerState {
+            name: args.name,
+            pid: args.worker.pid(),
+            worker: Some(args.worker),
+            timeout: args.timeout,
+        })
+    }
+
+    async fn handle(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        message: WorkerMsg,
+        state: &mut WorkerState,
+    ) -> Result<(), ActorProcessingErr> {
+        let WorkerMsg::Ask(request, reply) = message;
+        let Some(mut worker) = state.worker.take() else {
+            let _ = reply.send(Err(WorkerError::Died("it was lost".into())));
+            return Err(format!("the worker {} was lost", state.name).into());
+        };
+        // The pipes block, so the request is asked on a thread of the runtime's for blocking work, within its time.
+        let asked = tokio::task::spawn_blocking(move || {
+            let answer = worker.ask(&request);
+            (worker, answer)
+        });
+        let answer = match tokio::time::timeout(state.timeout, asked).await {
+            Ok(Ok((worker, answer))) => {
+                state.worker = Some(worker);
+                answer
+            }
+            Ok(Err(joined)) => Err(WorkerError::Died(format!("its asking failed: {joined}"))),
+            Err(_) => {
+                // SAFETY: kill takes a pid and a signal. The blocking read then ends, and the worker with it.
+                unsafe { libc::kill(state.pid, libc::SIGKILL) };
+                Err(WorkerError::TimedOut(state.timeout))
+            }
+        };
+        match answer {
+            // A request past the worker's bound is the asker's mistake, not the worker's.
+            Ok(_) | Err(WorkerError::TooLong(_)) => {
+                let _ = reply.send(answer);
+                Ok(())
+            }
+            Err(why) => {
+                tracing::error!(
+                    worker = state.name,
+                    "the worker failed, and the agent ends with it: {why}"
+                );
+                let _ = reply.send(Err(why.clone()));
+                Err(format!("the worker {}: {why}", state.name).into())
+            }
+        }
+    }
+}
+
+/// A running worker, as the agent asks it.
+#[derive(Clone)]
+pub struct WorkerHandle {
+    actor: ActorRef<WorkerMsg>,
+}
+
+impl WorkerHandle {
+    pub fn new(actor: ActorRef<WorkerMsg>) -> Self {
+        Self { actor }
+    }
+
+    /// Asks the worker `request` and waits for its answer. An error other than [`WorkerError::TooLong`] ends the agent.
+    pub async fn ask(&self, request: Vec<u8>) -> Result<Vec<u8>, WorkerError> {
+        match ractor::call!(self.actor, WorkerMsg::Ask, request) {
+            Ok(answer) => answer,
+            Err(e) => Err(WorkerError::Died(format!("its actor did not answer: {e}"))),
+        }
+    }
+
+    pub fn as_actor_ref(&self) -> ActorRef<WorkerMsg> {
+        self.actor.clone()
+    }
+}
+
+/// The agent's workers, by name.
+#[derive(Clone, Default)]
+pub struct Workers(BTreeMap<&'static str, WorkerHandle>);
+
+impl Workers {
+    pub fn get(&self, name: &str) -> Option<&WorkerHandle> {
+        self.0.get(name)
+    }
+
+    pub(crate) fn insert(&mut self, name: &'static str, handle: WorkerHandle) {
+        self.0.insert(name, handle);
     }
 }

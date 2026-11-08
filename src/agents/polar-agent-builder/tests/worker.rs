@@ -25,8 +25,13 @@
 //! threads of its own and a worker is forked only from a process of one. Each case runs in order; the one that starts a
 //! thread runs last.
 
-use polar_agent_builder::worker::{Work, Worker, WorkerError, fork};
+use polar_agent_builder::worker::{
+    Work, Worker, WorkerActor, WorkerArgs, WorkerError, WorkerHandle, fork,
+};
+use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// What a test asks a worker to do.
 struct Probe {
@@ -63,6 +68,10 @@ impl Work for Probe {
                 answer[..said.len()].copy_from_slice(said);
                 said.len()
             }
+            // Never answers: a worker that hangs.
+            b"spin" => loop {
+                std::hint::spin_loop();
+            },
             // A worker whose work is not the worker's any more: it writes its own frame on the answer pipe, as the
             // child would, saying it answers more than it may.
             b"lie" => {
@@ -158,6 +167,96 @@ fn main() {
         },
     );
 
+    // The running agent's side: workers forked now, while the process is one thread, then asked from a runtime.
+    let asked = worker(&canary);
+    let killed = worker(&canary);
+    let killed_pid = killed.pid();
+    let hung = worker(&canary);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let failures = Arc::new(Mutex::new(Vec::new()));
+    let (asked, killed, hung) = runtime.block_on(async {
+        let (supervisor, _) = Actor::spawn(None, Watch, failures.clone()).await.unwrap();
+        let mut handles = Vec::new();
+        for (w, timeout) in [
+            (asked, Duration::from_secs(5)),
+            (killed, Duration::from_secs(5)),
+            (hung, Duration::from_millis(300)),
+        ] {
+            let (actor, _) = Actor::spawn_linked(
+                None,
+                WorkerActor,
+                WorkerArgs {
+                    name: "probe",
+                    worker: w,
+                    timeout,
+                },
+                supervisor.get_cell(),
+            )
+            .await
+            .unwrap();
+            handles.push(WorkerHandle::new(actor));
+        }
+        (handles.remove(0), handles.remove(0), handles.remove(0))
+    });
+
+    case(
+        "a worker in the running agent is asked through its handle, and a request past its bound fails nothing",
+        &|| {
+            runtime.block_on(async {
+                assert_eq!(asked.ask(b"abc".to_vec()).await.unwrap(), b"ABC");
+                assert_eq!(asked.ask(vec![0; 65]).await, Err(WorkerError::TooLong(65)));
+                assert_eq!(asked.ask(b"again".to_vec()).await.unwrap(), b"AGAIN");
+            });
+            assert!(
+                failures.lock().unwrap().is_empty(),
+                "{:?}",
+                failures.lock().unwrap()
+            );
+        },
+    );
+
+    case(
+        "a worker that dies fails its actor, which its supervisor sees",
+        &|| {
+            runtime.block_on(async {
+                assert_eq!(killed.ask(b"x".to_vec()).await.unwrap(), b"X");
+                // Killed from outside, as a crash would end it.
+                // SAFETY: kill takes a pid and a signal; the pid is this test's own worker.
+                unsafe { libc::kill(killed_pid, libc::SIGKILL) };
+                assert!(matches!(
+                    killed.ask(b"y".to_vec()).await,
+                    Err(WorkerError::Died(_))
+                ));
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            });
+            let failures = failures.lock().unwrap();
+            assert_eq!(failures.len(), 1, "{failures:?}");
+            assert!(failures[0].contains("the worker probe"), "{failures:?}");
+        },
+    );
+
+    case(
+        "a worker that does not answer in its time is killed, and fails its actor",
+        &|| {
+            runtime.block_on(async {
+                assert_eq!(
+                    hung.ask(b"spin".to_vec()).await,
+                    Err(WorkerError::TimedOut(Duration::from_millis(300)))
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            });
+            assert_eq!(
+                failures.lock().unwrap().len(),
+                2,
+                "{:?}",
+                failures.lock().unwrap()
+            );
+        },
+    );
+
     case(
         "a process that has started a thread forks no worker",
         &|| {
@@ -174,4 +273,34 @@ fn main() {
     );
 
     println!("all {cases} passed");
+}
+
+/// A supervisor that only notes the failures of its children.
+struct Watch;
+
+#[ractor::async_trait]
+impl Actor for Watch {
+    type Msg = ();
+    type State = Arc<Mutex<Vec<String>>>;
+    type Arguments = Arc<Mutex<Vec<String>>>;
+
+    async fn pre_start(
+        &self,
+        _: ActorRef<()>,
+        seen: Self::Arguments,
+    ) -> Result<Self::State, ActorProcessingErr> {
+        Ok(seen)
+    }
+
+    async fn handle_supervisor_evt(
+        &self,
+        _: ActorRef<()>,
+        event: SupervisionEvent,
+        seen: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        if let SupervisionEvent::ActorFailed(_, why) = event {
+            seen.lock().unwrap().push(why.to_string());
+        }
+        Ok(())
+    }
 }

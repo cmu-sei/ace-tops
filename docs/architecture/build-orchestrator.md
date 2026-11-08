@@ -460,8 +460,16 @@ I write Rust code"):
     thread (`tests/worker.rs`): a worker answers within its bounds; a system call strict mode does not allow, or memory asked
     of the kernel, kills it; a descriptor the agent had open is closed in it; a forged answer longer than it may give is
     refused and the worker ended; a process with a second thread forks none. Open until O6: that the container runtime's
-    default seccomp profile lets the pod set strict mode (`prctl`) and close its descriptors (`close_range`). O2d3 the meaning
-    checks and the re-encoding.
+    default seccomp profile lets the pod set strict mode (`prctl`) and close its descriptors (`close_range`). O2d2b DONE
+    2026-11-08: an agent declares `PolarAgent::WORKERS` (`WorkerDecl`: a name, how it is forked from the configuration, how
+    long an answer may take); `run` forks them after judging the configuration and before building the runtime, and the
+    infrastructure supervisor spawns a `WorkerActor` for each, which the domain asks through `AgentResources::workers`. A
+    worker that dies, lies or takes too long refuses the request, is killed, and fails its actor; the supervisor ends the agent
+    as it does for any child of the builder's that ends unexpectedly (`shutdown::on_child_death`; its health says it is
+    draining). Decided by that precedent, for review: the agent ends through its supervisor's orderly shutdown, not a verdict
+    of the health actor's, which has no message for it. Tested in the same binary: a handle's round trip, a request past the
+    bound failing nothing, a worker killed from outside and one that spins past its time each failing its actor. O2d3 the
+    meaning checks and the re-encoding.
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
     `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
     `polar.provenance.executions`, and build-processor's `whose_word` split to it.

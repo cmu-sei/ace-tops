@@ -239,6 +239,8 @@ pub struct InfrastructureSupervisorArgs {
     pub(crate) runtime_sections: &'static [&'static crate::runtime::RuntimeSection],
     /// The operations and credentials the agent declared: what its protocol handler serves.
     pub(crate) protocols: crate::protocol::ProtocolSetup,
+    /// The workers `run` forked before the runtime: each becomes an actor under this supervisor.
+    pub(crate) workers: Vec<crate::worker::Forked>,
     /// The agent's judge of a runtime section before it is replaced, if it has one.
     pub(crate) section_judge: Option<Arc<dyn crate::runtime::SectionJudge>>,
     /// The agent's judge of its settings as a whole, if it has one.
@@ -354,6 +356,8 @@ pub(crate) async fn catch_up<M: ractor::Message>(
 }
 
 pub struct InfrastructureSupervisorState {
+    /// The agent's workers, each an actor of this supervisor's: one that fails ends the agent.
+    workers: crate::worker::Workers,
     config: Arc<polar_env::Config>,
     configuration: ConfigurationHandle,
     commands: crate::command_actor::CommandHandle,
@@ -932,6 +936,22 @@ impl Actor for InfrastructureSupervisor {
         }
 
         let healthcheck = HealthHandle::new(healthcheck);
+        let mut workers = crate::worker::Workers::default();
+        for forked in args.workers {
+            let (actor, _) = Actor::spawn_linked(
+                Some(format!("{}.worker.{}", args.service_name, forked.decl.name)),
+                crate::worker::WorkerActor,
+                crate::worker::WorkerArgs {
+                    name: forked.decl.name,
+                    worker: forked.worker,
+                    timeout: forked.decl.timeout,
+                },
+                myself.get_cell(),
+            )
+            .await
+            .map_err(ActorProcessingErr::from)?;
+            workers.insert(forked.decl.name, crate::worker::WorkerHandle::new(actor));
+        }
         if let Some(client) = &mut client {
             client.protocols = crate::protocol::start(
                 myself.get_cell(),
@@ -965,6 +985,7 @@ impl Actor for InfrastructureSupervisor {
         });
 
         Ok(InfrastructureSupervisorState {
+            workers,
             config: args.config,
             configuration,
             commands,
@@ -1216,6 +1237,7 @@ impl Actor for InfrastructureSupervisor {
                         crypto: client.crypto.clone(),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
+                        workers: state.workers.clone(),
                         events_output: client.events_output.clone(),
                         infrastructure_events: state.infrastructure_events.clone(),
                         infrastructure: myself.clone(),
@@ -1665,6 +1687,7 @@ mod tests {
                     commands,
                     runtime_sections: runtime,
                     protocols: crate::protocol::ProtocolSetup::default(),
+                    workers: Vec::new(),
                     section_judge: None,
                     settings_judge: None,
                     self_test: self_test.is_some(),
@@ -3530,6 +3553,7 @@ mod service_tests {
                     commands: vec![],
                     runtime_sections: &[],
                     protocols: crate::protocol::ProtocolSetup::default(),
+                    workers: Vec::new(),
                     section_judge: None,
                     settings_judge: None,
                     self_test: false,
