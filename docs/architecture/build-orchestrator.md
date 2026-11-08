@@ -137,9 +137,12 @@ dangerous build pod would come to exist:
 3. The orchestrator's own process is locked down by the builder (seccomp and Landlock) and attested (`runtime-attestation.md`, the
    table of what an attacker does and what catches it). A blocked call or a crash is evidence, reported. *The attestation of its pod is
    built; the lockdown is designed, not built yet (`key-custody.md`: no pod carries a seccomp profile yet).*
-4. Every build pod is judged by the attestation agent against the signed record before the credentials agent issues it a certificate
-   (`attestation/common/src/verdict.rs:135`, `judge`: its owner, its ServiceAccount, every container's pinned image). A pod that is not
-   what was signed gets no certificate, so it cannot speak on Cassini: it can neither report a build nor publish anything.
+4. Every build pod is judged by the attestation agent before the credentials agent issues it a certificate
+   (`attestation/common/src/verdict.rs:135`, `judge`): against its owner, every container must run the image its Job pins by digest,
+   with no container added and no ephemeral one (`against_owner`); against the signed record, its owner must be the build workload's
+   Job and its ServiceAccount the workload's (`against_record`). A pod that fails gets no certificate, so it cannot speak on Cassini: it
+   can neither report a build nor publish anything. *Not yet judged: the pod's security settings against what its template and mapping
+   allow; that is step 2's rule, held before the Job exists.*
 
 A dangerous pod therefore needs signed inputs that ask for it, which a reviewer signed and the record shows, or code running inside a
 compromised orchestrator that goes around its own handler. The first is refused by step 2 whatever was signed. The second is the
