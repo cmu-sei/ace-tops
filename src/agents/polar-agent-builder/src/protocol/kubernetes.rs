@@ -21,8 +21,9 @@
    DM26-0670
 */
 
-//! The Kubernetes API, as a stream: a watch of one kind of object, and one change at a time (docs/architecture/protocol-handlers.md,
-//! "The protocols"). `kube`'s own watcher stays. There is one protocol for every kind, so what it hands on is the object as
+//! The Kubernetes API: a watch of one kind of object, one change at a time, and the calls an agent that runs work makes
+//! (create, get, delete and list an object, read a pod's log), each a request of this protocol, declared with what it may do,
+//! judged and recorded (docs/architecture/protocol-handlers.md, "The protocols"; build-orchestrator.md, 5a). `kube`'s own watcher stays. There is one protocol for every kind, so what it hands on is the object as
 //! JSON, and the type it is read as is the operation's. It goes with the pod's service account token, which `kube` reads and
 //! renews from its file: no section holds it, the capability declares it, and the file stays readable in the pod, which no
 //! handler changes, since Kubernetes is the trust base.
@@ -32,12 +33,16 @@
 //! as an API server closes a watch every few minutes as a matter of course.
 
 use super::{
-    Access, CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
-    Verb, http,
+    Access, CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, ReadFailure,
+    Started, Target, Verb, http,
 };
 use async_trait::async_trait;
-use futures::StreamExt;
-use kube::api::{Api, ApiResource, DynamicObject, GroupVersionKind};
+use futures::{AsyncReadExt, StreamExt};
+use k8s_openapi::api::core::v1::Pod;
+use kube::api::{
+    Api, ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, LogParams,
+    PostParams, Preconditions, PropagationPolicy,
+};
 use kube::runtime::watcher::{self, Event, watcher};
 use kube::{Client, Config};
 use polar_crypto::CryptoError;
@@ -48,6 +53,13 @@ use std::time::Duration;
 
 /// How long an operation's `read` has with one object.
 const READ_BUDGET: Duration = Duration::from_secs(30);
+/// How long a call (not a watch or a log) has for the API to answer.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// The most of a log handed on at once.
+const MAX_LOG_PIECE: usize = 64 * 1024;
+/// The most of one log read: past it the read ends as a failure, since a log nothing bounds could fill what holds it. As
+/// `http`'s body, to review.
+const MAX_LOG: usize = 256 * 1024 * 1024;
 
 /// What kind of object a watch is of, as the API names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +137,148 @@ pub enum Change {
     Deleted(Value),
 }
 
+/// How a delete reaches what the object owns, as the API names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Propagation {
+    Foreground,
+    Background,
+    Orphan,
+}
+
+/// A request of the Kubernetes API: a watch, or one call. Its object, when it has one, is JSON, as a watch's are.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Call {
+    Watch(Watch),
+    /// Make `object`, of `resource`, in `namespace`.
+    Create {
+        resource: Resource,
+        namespace: String,
+        object: Value,
+    },
+    Get {
+        resource: Resource,
+        namespace: String,
+        name: String,
+    },
+    /// Delete `name`, if its uid is still `uid` when one is given, so that what was made again under the name is not the
+    /// one removed.
+    Delete {
+        resource: Resource,
+        namespace: String,
+        name: String,
+        propagation: Propagation,
+        uid: Option<String>,
+    },
+    /// What `namespace` holds of `resource`, by label and field selector.
+    List {
+        resource: Resource,
+        namespace: String,
+        labels: Option<String>,
+        fields: Option<String>,
+    },
+    /// A pod's log, a piece at a time, to its end or, with `follow`, to the container's.
+    Log {
+        namespace: String,
+        pod: String,
+        container: Option<String>,
+        follow: bool,
+    },
+}
+
+impl From<Watch> for Call {
+    fn from(watch: Watch) -> Self {
+        Call::Watch(watch)
+    }
+}
+
+/// What reading a pod's log is, as RBAC names it.
+pub const POD_LOG: Access = Access::new(Verb::Get, "", "pods/log");
+
+impl Call {
+    /// Make `object`, a type the API defines, in `namespace`.
+    pub fn create<K: k8s_openapi::Resource + serde::Serialize>(
+        namespace: impl Into<String>,
+        object: &K,
+    ) -> Result<Self, String> {
+        Ok(Call::Create {
+            resource: Resource::of::<K>(),
+            namespace: namespace.into(),
+            object: serde_json::to_value(object)
+                .map_err(|e| format!("the object does not write as JSON: {e}"))?,
+        })
+    }
+
+    /// What it does, as an operation declares it and RBAC names it.
+    pub fn access(&self) -> Access {
+        match self {
+            Call::Watch(watch) => watch.access(),
+            Call::Create { resource, .. } => resource.access(Verb::Create),
+            Call::Get { resource, .. } => resource.access(Verb::Get),
+            Call::Delete { resource, .. } => resource.access(Verb::Delete),
+            Call::List { resource, .. } => resource.access(Verb::List),
+            Call::Log { .. } => POD_LOG,
+        }
+    }
+}
+
+/// The API's own answer to a call it did not do, for the operation's `read` to judge, as `http` hands it a status: what
+/// was asked for is not there (404), is there already or was changed (409), or is not a valid object (422).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiAnswer {
+    pub code: u16,
+    pub reason: String,
+    pub message: String,
+}
+
+/// What the API said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    /// A watch's.
+    Change(Change),
+    /// What was got or made (with its uid), or a deleted object still being finalised.
+    Object(Value),
+    /// A list's, each with its `apiVersion` and `kind`.
+    Objects(Vec<Value>),
+    /// A delete the API says is done.
+    Gone,
+    Said(ApiAnswer),
+    /// A piece of a log, at most `MAX_LOG_PIECE` bytes.
+    Log(Vec<u8>),
+    /// The log's end.
+    LogEnded,
+}
+
+impl Answer {
+    /// A watch's change, which is all a watch is answered.
+    pub fn change(&self) -> Result<&Change, ReadFailure> {
+        match self {
+            Answer::Change(change) => Ok(change),
+            other => Err(ReadFailure::Malformed(format!(
+                "a watch was answered {other:?}"
+            ))),
+        }
+    }
+}
+
+/// What a call's error means: the API's own answer to it, for the domain; a refusal, which is the configuration's; or a
+/// failure that may pass.
+fn answer_of(error: kube::Error, what: &str) -> Result<Answer, Failure> {
+    match error {
+        kube::Error::Api(status) if matches!(status.code, 404 | 409 | 422) => {
+            Ok(Answer::Said(ApiAnswer {
+                code: status.code,
+                reason: status.reason.clone(),
+                message: status.message.clone(),
+            }))
+        }
+        kube::Error::Api(status) if status.code == 403 => Err(Failure::Configuration(format!(
+            "the service account may not {what}: {}",
+            status.message
+        ))),
+        other => Err(Failure::Transient(format!("{what} lost the API: {other}"))),
+    }
+}
+
 /// The Kubernetes protocol, with its client: one, shared, for the agent.
 pub struct Kubernetes {
     client: Client,
@@ -196,20 +350,21 @@ impl super::sealed::Sealed for Kubernetes {}
 impl Protocol for Kubernetes {
     const KIND: ProtocolKind = ProtocolKind::KUBERNETES;
     const BUDGET: Duration = READ_BUDGET;
-    type Request = Watch;
+    type Request = Call;
     /// No credential of the CryptoActor's goes this way.
     type Credential = std::convert::Infallible;
-    type Reply = Change;
+    type Reply = Answer;
 
     fn own_location(&self) -> Option<String> {
         Some(self.address.clone())
     }
 
     fn configured_host(base: &str) -> Result<String, String> {
-        Self::target(&Watch::cluster_wide(NOTHING), Some(base)).map(|target| target.host)
+        Self::target(&Call::Watch(Watch::cluster_wide(NOTHING)), Some(base))
+            .map(|target| target.host)
     }
 
-    fn target(request: &Watch, base: Option<&str>) -> Result<Target, String> {
+    fn target(request: &Call, base: Option<&str>) -> Result<Target, String> {
         let base = base.ok_or("the Kubernetes protocol was not given the API's address")?;
         let url = Url::parse(base).map_err(|_| "the API's address cannot be read".to_string())?;
         Ok(Target {
@@ -228,11 +383,35 @@ impl Protocol for Kubernetes {
 
     async fn perform(
         &self,
-        request: Watch,
+        request: Call,
         _: Option<String>,
         _: Option<Self::Credential>,
         exchange: &mut Exchange<Self>,
     ) -> Result<(), Failure> {
+        match request {
+            Call::Watch(watch) => self.watch(watch, exchange).await,
+            Call::Log {
+                namespace,
+                pod,
+                container,
+                follow,
+            } => {
+                self.log(&namespace, &pod, container, follow, exchange)
+                    .await
+            }
+            call => {
+                let answer = tokio::time::timeout(REQUEST_TIMEOUT, self.call(call))
+                    .await
+                    .map_err(|_| Failure::Transient("the API did not answer in time".into()))??;
+                exchange.reply(answer).await;
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Kubernetes {
+    async fn watch(&self, request: Watch, exchange: &mut Exchange<Self>) -> Result<(), Failure> {
         let resource = request.resource.api_resource();
         let api: Api<DynamicObject> = match &request.namespace {
             Some(namespace) => Api::namespaced_with(self.client.clone(), namespace, &resource),
@@ -250,7 +429,7 @@ impl Protocol for Kubernetes {
                 Ok(Event::Delete(object)) => Change::Deleted(object_of(object, &resource)?),
                 Err(error) => return Err(failure_of(&error, &request.resource)),
             };
-            if !exchange.reply(change).await {
+            if !exchange.reply(Answer::Change(change)).await {
                 return Ok(());
             }
         }
@@ -258,6 +437,143 @@ impl Protocol for Kubernetes {
             "the watch of {} ended",
             request.resource.plural
         )))
+    }
+
+    /// One call that is not a watch or a log: its answer, or the API's own answer to it.
+    async fn call(&self, call: Call) -> Result<Answer, Failure> {
+        let api = |resource: &Resource, namespace: &str| -> (Api<DynamicObject>, ApiResource) {
+            let resource = resource.api_resource();
+            (
+                Api::namespaced_with(self.client.clone(), namespace, &resource),
+                resource,
+            )
+        };
+        match call {
+            Call::Create {
+                resource,
+                namespace,
+                object,
+            } => {
+                let (api, of) = api(&resource, &namespace);
+                let object: DynamicObject = serde_json::from_value(object)
+                    .map_err(|e| Failure::Read(format!("the object to make is not one: {e}")))?;
+                match api.create(&PostParams::default(), &object).await {
+                    Ok(made) => Ok(Answer::Object(object_of(made, &of)?)),
+                    Err(e) => answer_of(e, &format!("create {}", resource.plural)),
+                }
+            }
+            Call::Get {
+                resource,
+                namespace,
+                name,
+            } => {
+                let (api, of) = api(&resource, &namespace);
+                match api.get(&name).await {
+                    Ok(got) => Ok(Answer::Object(object_of(got, &of)?)),
+                    Err(e) => answer_of(e, &format!("get {}", resource.plural)),
+                }
+            }
+            Call::Delete {
+                resource,
+                namespace,
+                name,
+                propagation,
+                uid,
+            } => {
+                let (api, of) = api(&resource, &namespace);
+                let params = DeleteParams {
+                    propagation_policy: Some(match propagation {
+                        Propagation::Foreground => PropagationPolicy::Foreground,
+                        Propagation::Background => PropagationPolicy::Background,
+                        Propagation::Orphan => PropagationPolicy::Orphan,
+                    }),
+                    preconditions: uid.map(|uid| Preconditions {
+                        uid: Some(uid),
+                        resource_version: None,
+                    }),
+                    ..DeleteParams::default()
+                };
+                match api.delete(&name, &params).await {
+                    // The object, still being finalised; or the API's status, that it is gone.
+                    Ok(deleted) => match deleted.left() {
+                        Some(finalising) => Ok(Answer::Object(object_of(finalising, &of)?)),
+                        None => Ok(Answer::Gone),
+                    },
+                    Err(e) => answer_of(e, &format!("delete {}", resource.plural)),
+                }
+            }
+            Call::List {
+                resource,
+                namespace,
+                labels,
+                fields,
+            } => {
+                let (api, of) = api(&resource, &namespace);
+                let mut params = ListParams::default();
+                if let Some(labels) = &labels {
+                    params = params.labels(labels);
+                }
+                if let Some(fields) = &fields {
+                    params = params.fields(fields);
+                }
+                match api.list(&params).await {
+                    Ok(list) => Ok(Answer::Objects(
+                        list.items
+                            .into_iter()
+                            .map(|item| object_of(item, &of))
+                            .collect::<Result<_, _>>()?,
+                    )),
+                    Err(e) => answer_of(e, &format!("list {}", resource.plural)),
+                }
+            }
+            Call::Watch(_) | Call::Log { .. } => unreachable!("a watch and a log are streams"),
+        }
+    }
+
+    /// A pod's log, a piece at a time, paced by the domain as a watch is, to its end or past its bound.
+    async fn log(
+        &self,
+        namespace: &str,
+        pod: &str,
+        container: Option<String>,
+        follow: bool,
+        exchange: &mut Exchange<Self>,
+    ) -> Result<(), Failure> {
+        let api: Api<Pod> = Api::namespaced(self.client.clone(), namespace);
+        let params = LogParams {
+            follow,
+            container,
+            ..LogParams::default()
+        };
+        let mut reader = match api.log_stream(pod, &params).await {
+            Ok(reader) => reader,
+            Err(e) => {
+                let said = answer_of(e, "read a pod's log")?;
+                exchange.reply(said).await;
+                return Ok(());
+            }
+        };
+        let mut piece = vec![0u8; MAX_LOG_PIECE];
+        let mut read = 0usize;
+        loop {
+            let n = reader
+                .read(&mut piece)
+                .await
+                .map_err(|e| Failure::Transient(format!("the log was lost: {e}")))?;
+            if n == 0 {
+                exchange.reply(Answer::LogEnded).await;
+                return Ok(());
+            }
+            read += n;
+            if read > MAX_LOG {
+                return Err(Failure::Transient(format!(
+                    "the log passed its bound of {MAX_LOG} bytes"
+                )));
+            }
+            if !exchange.reply(Answer::Log(piece[..n].to_vec())).await {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -310,11 +626,11 @@ mod tests {
         type Protocol = Kubernetes;
         type Output = Change;
         const DECL: OperationDecl = WATCHING;
-        fn request(&self) -> Watch {
-            self.0.clone()
+        fn request(&self) -> Call {
+            self.0.clone().into()
         }
-        fn read(&self, reply: &Change) -> Result<Change, ReadFailure> {
-            Ok(reply.clone())
+        fn read(&self, reply: &Answer) -> Result<Change, ReadFailure> {
+            reply.change().cloned()
         }
     }
 
@@ -491,7 +807,7 @@ mod tests {
     #[test]
     fn a_watchs_target_says_what_it_does() {
         let target = Kubernetes::target(
-            &Watch::in_namespace(CUSTOM, "flux"),
+            &Watch::in_namespace(CUSTOM, "flux").into(),
             Some("https://10.96.0.1/"),
         )
         .unwrap();
@@ -553,11 +869,11 @@ mod tests {
             type Protocol = Kubernetes;
             type Output = Change;
             const DECL: OperationDecl = FUSSY;
-            fn request(&self) -> Watch {
-                self.0.clone()
+            fn request(&self) -> Call {
+                self.0.clone().into()
             }
-            fn read(&self, reply: &Change) -> Result<Change, ReadFailure> {
-                match reply {
+            fn read(&self, reply: &Answer) -> Result<Change, ReadFailure> {
+                match reply.change()? {
                     Change::Applied(object) if object["metadata"]["name"] == "unreadable" => {
                         Err(ReadFailure::Malformed("no".to_string()))
                     }
@@ -631,8 +947,399 @@ mod tests {
             host("https://KUBERNETES.default.svc/").unwrap(),
             "kubernetes.default.svc"
         );
-        let target = Kubernetes::target(&Watch::cluster_wide(POD), Some("http://site")).unwrap();
+        let target =
+            Kubernetes::target(&Watch::cluster_wide(POD).into(), Some("http://site")).unwrap();
         assert!(!target.encrypted);
-        assert!(Kubernetes::target(&Watch::cluster_wide(POD), None).is_err());
+        assert!(Kubernetes::target(&Watch::cluster_wide(POD).into(), None).is_err());
+    }
+
+    // -- the calls ----------------------------------------------------------------------------------------------------
+
+    const JOB: Resource = Resource::of::<k8s_openapi::api::batch::v1::Job>();
+    const EVENT: Resource = Resource::of::<k8s_openapi::api::core::v1::Event>();
+
+    /// One call, answered as the API answered it.
+    struct Calling(Call);
+
+    const CALLING: OperationDecl = OperationDecl {
+        name: "a.call",
+        doc: "",
+        protocol: ProtocolKind::KUBERNETES,
+        location: Location::Cluster {
+            access: &[
+                JOB.access(Verb::Create),
+                JOB.access(Verb::Get),
+                JOB.access(Verb::Delete),
+                JOB.access(Verb::List),
+                EVENT.access(Verb::List),
+                POD.access(Verb::List),
+                POD_LOG,
+            ],
+        },
+    };
+    const CALLS: [OperationDecl; 1] = [CALLING];
+
+    impl Operation for Calling {
+        type Protocol = Kubernetes;
+        type Output = Answer;
+        const DECL: OperationDecl = CALLING;
+        fn request(&self) -> Call {
+            self.0.clone()
+        }
+        fn read(&self, reply: &Answer) -> Result<Answer, ReadFailure> {
+            Ok(reply.clone())
+        }
+    }
+
+    const JOBS: &str = "/apis/batch/v1/namespaces/builds/jobs";
+
+    fn job(name: &str, uid: &str) -> Value {
+        json!({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": name, "namespace": "builds", "uid": uid}})
+    }
+
+    fn status(code: u16, reason: &str) -> Value {
+        json!({"kind": "Status", "apiVersion": "v1", "metadata": {}, "status": "Failure",
+               "message": format!("the stand-in says {reason}"), "reason": reason, "code": code})
+    }
+
+    fn body_of(received: &[(String, String, String, Vec<u8>)], method: &str) -> Value {
+        let (_, _, _, body) = received
+            .iter()
+            .find(|(m, ..)| m == method)
+            .unwrap_or_else(|| panic!("no {method}: {received:?}"));
+        serde_json::from_slice(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_job_is_made_in_its_namespace_and_what_was_made_comes_back() {
+        let api = KubeApi::start().await;
+        api.answers("POST", JOBS, 201, job("build-1", "u-1"));
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let made = site
+            .handle
+            .ask(Calling(Call::Create {
+                resource: JOB,
+                namespace: "builds".into(),
+                object: job("build-1", ""),
+            }))
+            .await
+            .unwrap();
+        let Answer::Object(made) = made else {
+            panic!("{made:?}")
+        };
+        assert_eq!(made["metadata"]["uid"], "u-1");
+        assert_eq!(made["kind"], "Job");
+        let received = api.received().await;
+        assert_eq!(body_of(&received, "POST")["metadata"]["name"], "build-1");
+        assert!(
+            received.iter().all(|(_, path, ..)| path == JOBS),
+            "{received:?}"
+        );
+    }
+
+    /// What the API refuses to do, it says why, and that is the operation's to judge, as a status is to an HTTP one's:
+    /// a Job that is there already, one that is not, one that is not valid.
+    #[tokio::test]
+    async fn the_apis_own_answer_to_a_call_it_did_not_do_is_for_read_to_judge() {
+        for (method, code, reason) in [("POST", 409, "AlreadyExists"), ("POST", 422, "Invalid")] {
+            let api = KubeApi::start().await;
+            api.answers(method, JOBS, code, status(code, reason));
+            let site = kubernetes_handle(&CALLS, &api).await;
+            let said = site
+                .handle
+                .ask(Calling(Call::Create {
+                    resource: JOB,
+                    namespace: "builds".into(),
+                    object: job("build-1", ""),
+                }))
+                .await
+                .unwrap();
+            assert!(
+                matches!(&said, Answer::Said(ApiAnswer { code: c, reason: r, .. }) if *c == code && r == reason),
+                "{said:?}"
+            );
+        }
+        let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            &format!("{JOBS}/build-9"),
+            404,
+            status(404, "NotFound"),
+        );
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let said = site
+            .handle
+            .ask(Calling(Call::Get {
+                resource: JOB,
+                namespace: "builds".into(),
+                name: "build-9".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(
+            matches!(said, Answer::Said(ApiAnswer { code: 404, .. })),
+            "{said:?}"
+        );
+    }
+
+    /// A delete says how what the Job owns goes, and that it is of this Job and not one made again under its name.
+    #[tokio::test]
+    async fn a_delete_sends_its_propagation_and_its_uid_and_says_when_it_is_done() {
+        let api = KubeApi::start().await;
+        let path = format!("{JOBS}/build-1");
+        api.answers(
+            "DELETE",
+            &path,
+            200,
+            json!({"kind": "Status", "apiVersion": "v1", "metadata": {}, "status": "Success"}),
+        );
+        api.answers("DELETE", &path, 200, job("build-1", "u-1"));
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let delete = || {
+            Calling(Call::Delete {
+                resource: JOB,
+                namespace: "builds".into(),
+                name: "build-1".into(),
+                propagation: Propagation::Background,
+                uid: Some("u-1".into()),
+            })
+        };
+        assert_eq!(site.handle.ask(delete()).await.unwrap(), Answer::Gone);
+        let finalising = site.handle.ask(delete()).await.unwrap();
+        assert!(
+            matches!(&finalising, Answer::Object(o) if o["metadata"]["uid"] == "u-1"),
+            "{finalising:?}"
+        );
+        let sent = body_of(&api.received().await, "DELETE");
+        assert_eq!(sent["propagationPolicy"], "Background");
+        assert_eq!(sent["preconditions"]["uid"], "u-1");
+    }
+
+    #[tokio::test]
+    async fn a_list_is_by_its_selectors_and_each_item_says_its_kind() {
+        let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            JOBS,
+            200,
+            json!({"apiVersion": "batch/v1", "kind": "JobList", "metadata": {"resourceVersion": "1"},
+                   "items": [{"metadata": {"name": "build-1", "uid": "u-1"}}]}),
+        );
+        api.answers(
+            "GET",
+            "/api/v1/namespaces/builds/events",
+            200,
+            json!({"apiVersion": "v1", "kind": "EventList", "metadata": {}, "items": []}),
+        );
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let listed = site
+            .handle
+            .ask(Calling(Call::List {
+                resource: JOB,
+                namespace: "builds".into(),
+                labels: Some("app.kubernetes.io/managed-by=build-orchestrator".into()),
+                fields: None,
+            }))
+            .await
+            .unwrap();
+        let Answer::Objects(items) = listed else {
+            panic!("{listed:?}")
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (items[0]["apiVersion"].as_str(), items[0]["kind"].as_str()),
+            (Some("batch/v1"), Some("Job"))
+        );
+        let events = site
+            .handle
+            .ask(Calling(Call::List {
+                resource: EVENT,
+                namespace: "builds".into(),
+                labels: None,
+                fields: Some("involvedObject.name=build-1".into()),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(events, Answer::Objects(vec![]));
+        let queries: Vec<String> = api
+            .received()
+            .await
+            .into_iter()
+            .map(|(_, _, q, _)| q)
+            .collect();
+        assert!(
+            queries[0]
+                .contains("labelSelector=app.kubernetes.io%2Fmanaged-by%3Dbuild-orchestrator"),
+            "{queries:?}"
+        );
+        assert!(
+            queries[1].contains("fieldSelector=involvedObject.name%3Dbuild-1"),
+            "{queries:?}"
+        );
+    }
+
+    /// A log comes a piece at a time, as the domain takes each, and says once that it has ended.
+    #[tokio::test]
+    async fn a_log_comes_piece_by_piece_and_ends_once() {
+        struct Reading;
+        #[async_trait]
+        impl Actor for Reading {
+            type Msg = Delivery<Answer>;
+            type State = Arc<Mutex<Vec<Result<Answer, Failure>>>>;
+            type Arguments = Self::State;
+            async fn pre_start(
+                &self,
+                _: ActorRef<Self::Msg>,
+                said: Self::State,
+            ) -> Result<Self::State, ActorProcessingErr> {
+                Ok(said)
+            }
+            async fn handle(
+                &self,
+                _: ActorRef<Self::Msg>,
+                delivery: Self::Msg,
+                said: &mut Self::State,
+            ) -> Result<(), ActorProcessingErr> {
+                said.lock().unwrap().push(delivery.result.clone());
+                Ok(())
+            }
+        }
+        let api = KubeApi::start().await;
+        let log: Vec<u8> = (0..200_000u32).map(|i| b'a' + (i % 26) as u8).collect();
+        api.logs(
+            "/api/v1/namespaces/builds/pods/build-1-abc/log",
+            log.clone(),
+        );
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let said = Arc::new(Mutex::new(Vec::new()));
+        let (domain, _) = Actor::spawn(None, Reading, said.clone()).await.unwrap();
+        let _stream = site
+            .handle
+            .stream(
+                Calling(Call::Log {
+                    namespace: "builds".into(),
+                    pod: "build-1-abc".into(),
+                    container: Some("pipeline".into()),
+                    follow: true,
+                }),
+                domain,
+                |delivery| delivery,
+            )
+            .unwrap();
+        for _ in 0..1000 {
+            if said
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|a| matches!(a, Ok(Answer::LogEnded)))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let said = said.lock().unwrap().clone();
+        let mut read = Vec::new();
+        let mut ends = 0;
+        for answer in &said {
+            match answer {
+                Ok(Answer::Log(piece)) => {
+                    assert!(piece.len() <= MAX_LOG_PIECE);
+                    read.extend_from_slice(piece);
+                }
+                Ok(Answer::LogEnded) => ends += 1,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!((read.len(), ends), (log.len(), 1));
+        assert_eq!(read, log);
+        let query = &api.received().await[0].2;
+        assert!(
+            query.contains("follow=true") && query.contains("container=pipeline"),
+            "{query}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_the_api_refuses_the_account_is_configuration() {
+        let api = KubeApi::start().await;
+        api.answers("POST", JOBS, 403, status(403, "Forbidden"));
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let refused = site
+            .handle
+            .ask(Calling(Call::Create {
+                resource: JOB,
+                namespace: "builds".into(),
+                object: job("build-1", ""),
+            }))
+            .await;
+        assert!(
+            matches!(refused, Err(Failure::Configuration(_))),
+            "{refused:?}"
+        );
+    }
+
+    /// A call its operation does not declare is refused before anything is sent: a list of Jobs cannot delete one.
+    #[tokio::test]
+    async fn a_call_its_operation_does_not_declare_is_refused_and_nothing_is_sent() {
+        struct Listing(Call);
+        const LISTING: OperationDecl = OperationDecl {
+            name: "a.list",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: &[JOB.access(Verb::List)],
+            },
+        };
+        static LISTS: [OperationDecl; 1] = [LISTING];
+        impl Operation for Listing {
+            type Protocol = Kubernetes;
+            type Output = Answer;
+            const DECL: OperationDecl = LISTING;
+            fn request(&self) -> Call {
+                self.0.clone()
+            }
+            fn read(&self, reply: &Answer) -> Result<Answer, ReadFailure> {
+                Ok(reply.clone())
+            }
+        }
+        let api = KubeApi::start().await;
+        let site = kubernetes_handle(&LISTS, &api).await;
+        let refused = site
+            .handle
+            .ask(Listing(Call::Delete {
+                resource: JOB,
+                namespace: "builds".into(),
+                name: "build-1".into(),
+                propagation: Propagation::Background,
+                uid: None,
+            }))
+            .await;
+        assert_eq!(refused, Err(Failure::Denied(Denial::AccessUndeclared)));
+        assert!(api.received().await.is_empty());
+    }
+
+    /// The record of a call says which operation it was and where it went, as every other request's, and nothing of the
+    /// namespace, the object or its spec.
+    #[tokio::test]
+    async fn a_calls_record_holds_no_namespace_name_or_spec() {
+        let api = KubeApi::start().await;
+        api.answers("POST", JOBS, 201, job("build-secretive", "u-1"));
+        let site = kubernetes_handle(&CALLS, &api).await;
+        site.handle
+            .ask(Calling(Call::Create {
+                resource: JOB,
+                namespace: "builds".into(),
+                object: job("build-secretive", ""),
+            }))
+            .await
+            .unwrap();
+        let records = format!("{:?}", site.records.lock().unwrap());
+        assert!(
+            records.contains("a.call") && records.contains(SERVICE_ACCOUNT),
+            "{records}"
+        );
+        for word in ["builds", "build-secretive", "batch", "jobs"] {
+            assert!(!records.contains(word), "{word} in {records}");
+        }
     }
 }

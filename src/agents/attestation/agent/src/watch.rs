@@ -94,13 +94,13 @@ impl Operation for Watching {
     type Output = Change;
     const DECL: OperationDecl = WATCH;
 
-    fn request(&self) -> kubernetes::Watch {
-        kubernetes::Watch::in_namespace(resource_of(self.0.kind), self.0.namespace.clone())
+    fn request(&self) -> kubernetes::Call {
+        kubernetes::Watch::in_namespace(resource_of(self.0.kind), self.0.namespace.clone()).into()
     }
 
-    fn read(&self, said: &kubernetes::Change) -> Result<Change, ReadFailure> {
+    fn read(&self, said: &kubernetes::Answer) -> Result<Change, ReadFailure> {
         let watch = self.0.clone();
-        Ok(match said {
+        Ok(match said.change()? {
             kubernetes::Change::Listing => Change::Relisting { watch },
             kubernetes::Change::Listed => Change::Listed { watch },
             kubernetes::Change::Applied(value) => Change::Applied(object_of(watch.kind, value)?),
@@ -139,7 +139,7 @@ mod tests {
     }
 
     fn read(kind: Kind, said: kubernetes::Change) -> Result<Change, ReadFailure> {
-        Watching(watch(kind)).read(&said)
+        Watching(watch(kind)).read(&kubernetes::Answer::Change(said))
     }
 
     #[test]

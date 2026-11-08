@@ -81,7 +81,10 @@ Decided by standing rules, for review (`AGENTS.md`, "Design Principles"):
 
 - **O1** the core and Kubernetes crates (types, backend, the Job spec), with decisions 1 and 4 in the Job and no Secret path; tests first
   for what changes. O1a (the core types) and O1b (the Job spec) DONE 2026-11-07.
-- **O1c** the Kubernetes protocol's request operations in `polar-agent-builder` (O1c1), then the backend over them (O1c2).
+- **O1c** the Kubernetes protocol's request operations in `polar-agent-builder` (O1c1), then the backend over them (O1c2). O1c1 DONE
+  2026-11-07: a cluster operation declares what it may do and the judge holds it to that (O1c1a); create, get, delete and list, and a
+  pod's log, a piece at a time to a 256 MiB bound, with the API's own 404, 409 and 422 for the domain to judge (O1c1b). The capability
+  for writes (`job-run`, a Role in the build namespace) comes with the agent, in O2, where the build namespace is a catalog fact.
 - **O2** the agent on the builder and in the catalog: 5, 6 and 7.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet), the clone image that checks and unpacks it.

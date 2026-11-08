@@ -148,17 +148,18 @@ impl Operation for Watching {
     type Output = Seen;
     const DECL: OperationDecl = WATCH;
 
-    fn request(&self) -> kubernetes::Watch {
+    fn request(&self) -> kubernetes::Call {
         let resource = self.0.kind.resource();
         match &self.0.namespace {
             Some(namespace) => kubernetes::Watch::in_namespace(resource, namespace.clone()),
             None => kubernetes::Watch::cluster_wide(resource),
         }
+        .into()
     }
 
-    fn read(&self, said: &kubernetes::Change) -> Result<Seen, ReadFailure> {
+    fn read(&self, said: &kubernetes::Answer) -> Result<Seen, ReadFailure> {
         let kind = self.0.kind;
-        Ok(match said {
+        Ok(match said.change()? {
             kubernetes::Change::Listing => Seen::Listing,
             kubernetes::Change::Listed => Seen::Listed,
             kubernetes::Change::Applied(object) => {
@@ -531,17 +532,17 @@ mod tests {
             kind: Kind::Pod,
             namespace: Some("polar".to_string()),
         });
-        let Ok(Seen::Applied(applied)) =
-            watching.read(&kubernetes::Change::Applied(object.clone()))
-        else {
+        let Ok(Seen::Applied(applied)) = watching.read(&kubernetes::Answer::Change(
+            kubernetes::Change::Applied(object.clone()),
+        )) else {
             panic!("applied");
         };
         assert_eq!(applied.kind, "Pod");
         assert_eq!(applied.action, RESOURCE_APPLIED_ACTION);
         assert_eq!(applied.object, object);
-        let Ok(Seen::Deleted(deleted)) =
-            watching.read(&kubernetes::Change::Deleted(object.clone()))
-        else {
+        let Ok(Seen::Deleted(deleted)) = watching.read(&kubernetes::Answer::Change(
+            kubernetes::Change::Deleted(object.clone()),
+        )) else {
             panic!("deleted");
         };
         assert_eq!(deleted.action, RESOURCE_DELETED_ACTION);

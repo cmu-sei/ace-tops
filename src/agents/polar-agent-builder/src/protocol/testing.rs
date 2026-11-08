@@ -280,9 +280,16 @@ pub struct KubeApi {
     token_file: PathBuf,
 }
 
+/// What a method and a path are answered, the next first: a status and a body.
+type Answers = std::collections::VecDeque<(u16, serde_json::Value)>;
+
 #[derive(Default)]
 struct ApiState {
     paths: Mutex<HashMap<String, ApiPath>>,
+    /// What a request of a method and a path is answered, the next first: a status and a body.
+    answers: Mutex<HashMap<(String, String), Answers>>,
+    /// A pod's log, by the path it is read at.
+    logs: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -418,6 +425,44 @@ impl KubeApi {
             .count()
     }
 
+    /// The next `method` request of `path` is answered with this status and body (as JSON).
+    pub fn answers(&self, method: &str, path: &str, status: u16, body: serde_json::Value) {
+        self.state
+            .answers
+            .lock()
+            .unwrap()
+            .entry((method.to_string(), path.to_string()))
+            .or_default()
+            .push_back((status, body));
+    }
+
+    /// A read of the log at `path` gives these bytes, and then ends.
+    pub fn logs(&self, path: &str, body: Vec<u8>) {
+        self.state
+            .logs
+            .lock()
+            .unwrap()
+            .insert(path.to_string(), body);
+    }
+
+    /// Each request, in order: its method, path, query and body.
+    pub async fn received(&self) -> Vec<(String, String, String, Vec<u8>)> {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|request| {
+                (
+                    request.method.to_string(),
+                    request.url.path().to_string(),
+                    request.url.query().unwrap_or_default().to_string(),
+                    request.body.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Each request's query, in order.
     pub async fn queries(&self) -> Vec<String> {
         self.server
@@ -447,6 +492,20 @@ struct ApiResponder(Arc<ApiState>);
 
 impl Respond for ApiResponder {
     fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let asked = (request.method.to_string(), request.url.path().to_string());
+        if let Some((status, body)) = self
+            .0
+            .answers
+            .lock()
+            .unwrap()
+            .get_mut(&asked)
+            .and_then(|answers| answers.pop_front())
+        {
+            return ResponseTemplate::new(status).set_body_json(body);
+        }
+        if let Some(log) = self.0.logs.lock().unwrap().get(request.url.path()) {
+            return ResponseTemplate::new(200).set_body_bytes(log.clone());
+        }
         let mut paths = self.0.paths.lock().unwrap();
         let Some(path) = paths.get_mut(request.url.path()) else {
             return ResponseTemplate::new(404).set_body_json(api_status(404));
