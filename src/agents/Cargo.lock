@@ -944,6 +944,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-orchestrator"
+version = "1.0.0"
+dependencies = [
+ "cassini-types",
+ "git-agent-common",
+ "orchestrator-backend-k8s",
+ "orchestrator-core",
+ "orchestrator-report",
+ "polar",
+ "polar-agent-builder",
+ "polar-env",
+ "polar-scudo",
+ "proptest",
+ "ractor",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "build-processor"
 version = "1.0.0"
 dependencies = [

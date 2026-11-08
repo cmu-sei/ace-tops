@@ -1,0 +1,292 @@
+/*
+   ACE Tool
+
+   Copyright 2026 Carnegie Mellon University.
+
+   NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+   FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+   EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+   PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+   MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+   TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+   Licensed under a MIT (SEI)-style license, please see license.txt or contact
+   permission@sei.cmu.edu for full terms.
+
+   [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+   distribution.  Please see Copyright notice for non-US Government use and distribution.
+
+   This Software includes and/or makes use of Third-Party Software each subject to its own license.
+
+   DM26-0670
+*/
+
+//! Properties of what build-orchestrator is told: the `mappings` section read back as written, and refused, naming the
+//! entry and never the value, wherever it is spoiled; the run-time settings' quantities and bounds.
+
+use build_orchestrator::mappings::{Mapping, parse};
+use build_orchestrator::settings::{SECTION, milli, narrowed};
+use orchestrator_core::types::Privileges;
+use orchestrator_report::Bounds;
+use polar::graph::nodes::git::RepoId;
+use polar_env::Config;
+use proptest::prelude::*;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+
+/// A marker no generated valid value holds, so a problem that echoes a spoiled value is seen.
+const MARK: &str = "zqxmarkzqx";
+
+fn mapping() -> impl Strategy<Value = Mapping> {
+    (
+        "[a-z]{1,8}",
+        proptest::collection::vec("[a-z0-9-]{1,8}", 1..4),
+        "[0-9a-f]{64}",
+        proptest::option::of(proptest::collection::vec("[ -~]{1,12}", 1..5)),
+        any::<bool>(),
+        any::<bool>(),
+        proptest::collection::vec("[A-Z][A-Z_]{0,10}", 0..4),
+        proptest::collection::vec("[a-z0-9-]{1,12}", 0..4),
+    )
+        .prop_map(
+            |(host, path, digest, command, root, escalate, caps, credentials)| {
+                let url = format!("https://{host}.example/{}", path.join("/"));
+                Mapping {
+                    repo: RepoId::from_url(&url),
+                    url,
+                    pipeline_image: format!("registry.polar/pipelines/ci@sha256:{digest}"),
+                    command,
+                    privileges: Privileges {
+                        run_as_root: root,
+                        allow_privilege_escalation: escalate,
+                        add_capabilities: caps,
+                    },
+                    credentials,
+                }
+            },
+        )
+}
+
+/// Mappings of distinct repositories.
+fn mappings() -> impl Strategy<Value = Vec<Mapping>> {
+    proptest::collection::vec(mapping(), 0..6).prop_map(|mut all| {
+        let mut seen = Vec::new();
+        all.retain(|m| {
+            let new = !seen.contains(&m.repo);
+            seen.push(m.repo.clone());
+            new
+        });
+        all
+    })
+}
+
+/// A mapping as an author writes it: what is left at its default, left out.
+fn written(m: &Mapping) -> Value {
+    let mut entry = json!({"url": m.url, "pipeline_image": m.pipeline_image});
+    if let Some(command) = &m.command {
+        entry["command"] = json!(command);
+    }
+    if m.privileges != Privileges::default() {
+        entry["privileges"] = json!({
+            "run_as_root": m.privileges.run_as_root,
+            "allow_privilege_escalation": m.privileges.allow_privilege_escalation,
+            "add_capabilities": m.privileges.add_capabilities,
+        });
+    }
+    if !m.credentials.is_empty() {
+        entry["credentials"] = json!(m.credentials);
+    }
+    entry
+}
+
+fn body(all: &[Mapping]) -> Value {
+    json!({"repositories": all.iter().map(written).collect::<Vec<_>>()})
+}
+
+/// One way to spoil an entry: the field a problem must name, and the entry spoiled.
+fn spoil(entry: &mut Value, how: usize) -> &'static str {
+    let object = entry.as_object_mut().unwrap();
+    match how {
+        0 => {
+            object.insert("url".into(), json!(format!("http://{MARK}.example/x")));
+            "`url`"
+        }
+        1 => {
+            object.insert(
+                "url".into(),
+                json!(format!("https://{MARK}:pw@x.example/x")),
+            );
+            "`url`"
+        }
+        2 => {
+            object.remove("url");
+            "`url` is required"
+        }
+        3 => {
+            object.insert("pipeline_image".into(), json!(format!("reg/{MARK}:latest")));
+            "`pipeline_image`"
+        }
+        4 => {
+            object.remove("pipeline_image");
+            "`pipeline_image` is required"
+        }
+        5 => {
+            object.insert("command".into(), json!([MARK, ""]));
+            "`command`"
+        }
+        6 => {
+            object.insert("command".into(), json!(MARK));
+            "`command`"
+        }
+        7 => {
+            object.insert(
+                "privileges".into(),
+                json!({"add_capabilities": [format!("CAP_{MARK}")]}),
+            );
+            "`privileges.add_capabilities`"
+        }
+        8 => {
+            object.insert("privileges".into(), json!({"privileged": true}));
+            "`privileges.privileged`"
+        }
+        9 => {
+            object.insert("privileges".into(), json!({"run_as_root": MARK}));
+            "`privileges.run_as_root`"
+        }
+        10 => {
+            object.insert("credentials".into(), json!([format!("{MARK}_UPPER")]));
+            "`credentials`"
+        }
+        _ => {
+            object.insert(format!("{MARK}-Key"), json!(1));
+            "is not a field of an entry"
+        }
+    }
+}
+
+fn config(pairs: &[(&str, String)]) -> Config {
+    let mut env: HashMap<String, String> = HashMap::from([
+        (
+            "POLAR_ORCHESTRATOR_NAMESPACE".to_string(),
+            "polar-builds".to_string(),
+        ),
+        (
+            "POLAR_ORCHESTRATOR_TEMPLATE".to_string(),
+            "build-runner".to_string(),
+        ),
+    ]);
+    for (k, v) in pairs {
+        env.insert(k.to_string(), v.clone());
+    }
+    Config::builder(&env).register(&SECTION).build()
+}
+
+const SUFFIXES: [(&str, u128); 14] = [
+    ("", 1000),
+    ("m", 1),
+    ("k", 1_000_000),
+    ("M", 1_000_000_000),
+    ("G", 1_000_000_000_000),
+    ("T", 1_000_000_000_000_000),
+    ("P", 1_000_000_000_000_000_000),
+    ("E", 1_000_000_000_000_000_000_000),
+    ("Ki", 1024 * 1000),
+    ("Mi", (1 << 20) * 1000),
+    ("Gi", (1 << 30) * 1000),
+    ("Ti", (1 << 40) * 1000),
+    ("Pi", (1 << 50) * 1000),
+    ("Ei", (1 << 60) * 1000),
+];
+
+fn quantity() -> impl Strategy<Value = (String, u128)> {
+    (0u64..1_000_000, 0..SUFFIXES.len()).prop_map(|(n, s)| {
+        let (suffix, unit) = SUFFIXES[s];
+        (format!("{n}{suffix}"), u128::from(n) * unit)
+    })
+}
+
+fn bounds() -> impl Strategy<Value = Bounds> {
+    (
+        1usize..1 << 24,
+        1usize..1 << 16,
+        1usize..64,
+        1usize..1 << 20,
+        1usize..1 << 17,
+    )
+        .prop_map(|(line, string, depth, tokens, items)| Bounds {
+            line,
+            string,
+            depth,
+            tokens,
+            items,
+        })
+}
+
+proptest! {
+    /// Any mappings, written as an author writes them, read back as themselves, in order.
+    #[test]
+    fn mappings_read_back_as_written(all in mappings()) {
+        prop_assert_eq!(parse(&body(&all)), Ok(all));
+    }
+
+    /// Spoil any one entry in any one way: the section is refused, a problem names that entry and the field, and no
+    /// problem echoes the value.
+    #[test]
+    fn a_spoiled_entry_is_named_and_never_echoed(all in mappings().prop_filter("one at least", |a| !a.is_empty()),
+                                                 which in any::<prop::sample::Index>(), how in 0usize..12) {
+        let i = which.index(all.len());
+        let mut written = body(&all);
+        let field = spoil(&mut written["repositories"][i], how);
+        let problems = parse(&written).unwrap_err();
+        prop_assert!(
+            problems.iter().any(|p| p.starts_with(&format!("entry {i}: ")) && p.contains(field)),
+            "entry {} {}: {:?}", i, field, problems
+        );
+        prop_assert!(!problems.iter().any(|p| p.contains(MARK)), "{:?}", problems);
+    }
+
+    /// A repository named twice is refused, wherever the second is.
+    #[test]
+    fn a_repository_is_mapped_once(all in mappings().prop_filter("one at least", |a| !a.is_empty()),
+                                   which in any::<prop::sample::Index>(), at in any::<prop::sample::Index>()) {
+        let again = all[which.index(all.len())].clone();
+        let mut twice = all.clone();
+        twice.insert(at.index(all.len() + 1), again);
+        let problems = parse(&body(&twice)).unwrap_err();
+        prop_assert!(problems.iter().any(|p| p.contains("mapped more than once")), "{:?}", problems);
+    }
+
+    /// A quantity reads as its number times its unit, in thousandths.
+    #[test]
+    fn a_quantity_reads_as_its_number_and_unit((text, value) in quantity()) {
+        prop_assert_eq!(milli(&text), Some(value));
+    }
+
+    /// A request above its limit is refused, and one at or below it is not, whatever the units.
+    #[test]
+    fn a_request_is_no_more_than_its_limit((request, r) in quantity(), (limit, l) in quantity()) {
+        let problems = config(&[
+            ("POLAR_ORCHESTRATOR_MEMORY_REQUEST", request),
+            ("POLAR_ORCHESTRATOR_MEMORY_LIMIT", limit),
+        ])
+        .check();
+        let refused = problems.iter().any(|p| p.contains("POLAR_ORCHESTRATOR_MEMORY_REQUEST must be no more than"));
+        prop_assert_eq!(refused, r > l, "{:?}", problems);
+    }
+
+    /// The bounds a line is read at are never wider than the worker's, nor than what is signed, and are what is signed
+    /// whenever that is no wider than the worker's.
+    #[test]
+    fn a_signed_bound_narrows_and_never_widens(forked in bounds(), signed in bounds()) {
+        let at = narrowed(&forked, &signed);
+        let fields = |b: &Bounds| [b.line, b.string, b.depth, b.tokens, b.items];
+        for ((a, f), s) in fields(&at).into_iter().zip(fields(&forked)).zip(fields(&signed)) {
+            prop_assert!(a <= f && a <= s);
+            prop_assert!(a == f || a == s);
+        }
+        prop_assert_eq!(narrowed(&forked, &at), at);
+        if fields(&signed).into_iter().zip(fields(&forked)).all(|(s, f)| s <= f) {
+            prop_assert_eq!(at, signed);
+        }
+    }
+}

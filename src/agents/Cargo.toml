@@ -23,6 +23,7 @@
 resolver = "2"
 
 members = [
+    "build-orchestrator/agent",
     "build-orchestrator/core",
     "build-orchestrator/fetch",
     "build-orchestrator/k8s",

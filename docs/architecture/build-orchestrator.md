@@ -494,7 +494,46 @@ I write Rust code"):
   - **O2e** the agent itself (his `agent` crate: supervisor, build registry, a job actor per build) on the builder as
     `Role::Controller`, its signed `mappings` and escrowed `credentials` sections, its catalog entry and `job-run`;
     `polar.provenance.executions`, and build-processor's `whose_word` split to it; build-processor reading the relayed
-    claims as `BuildReport` envelopes, believing the envelope's `build_id`.
+    claims as `BuildReport` envelopes, believing the envelope's `build_id`. Planned 2026-11-08 (the maintainer, "Yes, record it and start O2e1"), in
+    four: O2e1 the agent on the builder (`Role::Controller`, the backend's operations, the report reader as its worker, Dynamic
+    settings for the concurrency cap, the pipeline's resources, retention and the reader's and relay's bounds, the signed
+    `mappings` section with decision 4's privileges, its topics), running and building nothing; O2e2 the actors (supervisor,
+    admission, the commits already built, the registry, a job actor per build: the Job from the template, its log read once
+    the pod ends and its reports relayed through the worker and the relay, its own execution events published), the source
+    step behind a trait until O3; O2e3 `polar.provenance.executions` and build-processor reading the envelope and believing
+    each kind on its own topic, the pipeline no longer printing execution events; O2e4 the catalog entry, the `job-run` Role in
+    `polar-builds`, the render, a live start on u7c. Of Vaughn's crate, kept in shape: the supervisor, admission, the commits
+    seen, the registry and the job actor; gone, main having another way: the configuration file (Dynamic settings and catalog
+    facts), the object store (the registry, O4), the identity JSON and account pools (no identity in a build pod), the clone
+    image (the fetch image), the pipeline-image bootstrap (a mapping pins its image), `KubeApiRead` (`job-run`, computed).
+    Decided by standing rules, for review: no build-request topic until something requests builds (a ref update is the one
+    trigger now; a requester, when there is one, is the broker-stamped publisher); the `credentials` section comes with the
+    git handler that uses it, in O3. O2e1 DONE 2026-11-08: the `build-orchestrator` crate (`build-orchestrator/agent`), a
+    `Role::Controller` whose needs are computed (Cassini and `job-run`, from the backend's six operations; no
+    `kube-api-read`), with the report reader as its one worker (`reader::DECL`) and a supervisor that holds its configuration
+    and builds nothing (a ref update is noted and dropped). Its settings (`settings.rs`): the build namespace and the template,
+    Static and with no default, the catalog's to say; and, Dynamic and followed as one group, the concurrency cap (1), the
+    pipeline's CPU and memory requests and limits (`PipelineResources`' defaults, each a Kubernetes quantity, a request no more
+    than its limit), the workspace's size (8Gi), how long a finished Job is kept (an hour, a day; at least a minute, room for
+    the one read after the pod ends), the relay's bounds and the reader's (the crates' defaults), and the default command
+    (empty, the image's own). Its `mappings` section (`mappings.rs`, Vaughn's, adapted): an entry's URL is checked as the git
+    controller checks one and keyed as the git observer names the repository (`RepoId::from_url`); its image is required and
+    pinned by digest; its `privileges` are decision 4's, `Privileges::problems` holding the capabilities; its credentials are
+    named as the git observer names one; an empty command is refused (leaving it out means the default), every list bounded,
+    and a problem names the entry and the field and never a value, an unknown key included. `polar.provenance.executions` is
+    declared in `lib/src/topics.rs` and published `.waiting` until O2e3. Found while writing it: `Report::read_answer` holds an
+    answer to the token bound only, so a signed narrowing of the line, string, depth or item bound would not have reached a
+    worker that allocated at start. A request to the reader now carries the bounds it is to be read at, ahead of the line; the
+    worker reads at the narrower of those and its own (`settings::narrowed`), lowering its tape's limit within what it
+    allocated, so a signed update narrows the reader while the agent runs and no request widens it. Decided by standing rules,
+    for review: the workspace bound and its default (an unbounded `emptyDir` lets a build fill the node's disk); retention's
+    least of a minute. Tested: the settings' defaults, each bad setting named; the mappings, read and refused by example; the
+    agent's declaration (`polar_agent_tests!`, its needs exactly Cassini and `job-run`); the reader forked from the
+    configuration in a real worker in strict mode (`tests/reader.rs`), reading each line as directly, a narrowed bound
+    refusing what it should, a request asking wider read at the worker's own, one without its bounds refused; and properties
+    (`tests/props.rs`): any mappings read back as written, any entry spoiled in any of twelve ways refused naming it and never
+    the value, a repository mapped twice refused wherever it is, a quantity read as its number and unit, a request above its
+    limit refused exactly when it is, and the bounds read at never wider than the worker's or the signed ones.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports

@@ -51,6 +51,12 @@
 /// - JSON-serialized [`ProvenanceEvent`] (nushell pipeline stages)
 pub const PROVENANCE_EVENTS: &str = "polar.provenance.events";
 
+/// What the build orchestrator observed of a build it ran: that it started, completed, failed or was cancelled. Its own
+/// word, not a build's claim, so its own topic: the orchestrator alone declares it, and a build that prints an execution
+/// event has it refused (docs/architecture/build-orchestrator.md, "Settled with it", two topics). build-processor is to
+/// believe executions only here (O2e3).
+pub const PROVENANCE_EXECUTIONS: &str = "polar.provenance.executions";
+
 /// Provenance discovery requests.
 ///
 /// Observer agents publish [`ProvenanceEvent::OCIArtifactDiscovered`] and
