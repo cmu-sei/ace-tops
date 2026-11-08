@@ -266,14 +266,15 @@ pub fn transaction(
     Ok((!ops.is_empty()).then_some(GraphOp::Transaction { ops }))
 }
 
-/// When the reporter says an event happened, as the graph keeps a time: RFC 3339 in UTC. A time that is not RFC 3339
+/// When the reporter says an event happened, as the graph keeps a time: RFC 3339 in UTC with all nine digits of the
+/// fraction, so that the text sorts as the instants do (the graph orders states by it). A time that is not RFC 3339
 /// with its offset is refused, and the event with it.
 fn reported(at: &str) -> Result<String, ActorProcessingErr> {
     let time = chrono::DateTime::parse_from_rfc3339(at)
         .map_err(|e| format!("the event's time {at:?} is not RFC 3339: {e}"))?;
     Ok(time
         .with_timezone(&chrono::Utc)
-        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
 }
 
 // ── Shared op builders ─────────────────────────────────────────────────────────
@@ -803,11 +804,11 @@ mod tests {
         };
         let first = started("2026-11-01T00:00:00Z");
         assert!(
-            first.contains(r#"valid_from: "2026-10-16T00:00:00Z""#),
+            first.contains(r#"valid_from: "2026-10-16T00:00:00.000000000Z""#),
             "{first}"
         );
         assert!(
-            first.contains(r#"Property("at", String("2026-10-16T00:00:00Z"))"#),
+            first.contains(r#"Property("at", String("2026-10-16T00:00:00.000000000Z"))"#),
             "{first}"
         );
         // Seen again a day later: the same writes, but for when it was seen.
@@ -938,6 +939,29 @@ mod tests {
             status(None, Some("")),
         ] {
             assert!(!cypher.contains("FOUND_IN"), "{cypher}");
+        }
+    }
+
+    proptest::proptest! {
+        /// The graph orders a build's states by their time as text (`ORDER BY s.valid_from`), so a time kept is in
+        /// the same order as the instants: whatever the offsets and the fractions they were reported with.
+        #[test]
+        fn times_kept_sort_as_the_instants_do(
+            a in 0i64..4_000_000_000,
+            a_nanos in proptest::prop_oneof![proptest::strategy::Just(0u32), 0u32..1_000_000_000],
+            apart in 0i64..3,
+            b_nanos in proptest::prop_oneof![proptest::strategy::Just(0u32), 0u32..1_000_000_000],
+            offset in -12i32..14,
+        ) {
+            // Neighbours, within a second or two, as two events of one build are: where a fraction's digits matter.
+            let b = a + apart;
+            let zone = chrono::FixedOffset::east_opt(offset * 3600).unwrap();
+            let at = |secs: i64, nanos: u32| {
+                chrono::DateTime::from_timestamp(secs, nanos).unwrap().with_timezone(&zone)
+            };
+            let (x, y) = (at(a, a_nanos), at(b, b_nanos));
+            let kept = |t: chrono::DateTime<chrono::FixedOffset>| reported(&t.to_rfc3339()).unwrap();
+            proptest::prop_assert_eq!(x.cmp(&y), kept(x).cmp(&kept(y)), "{} {}", kept(x), kept(y));
         }
     }
 }
