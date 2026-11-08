@@ -70,6 +70,50 @@ Each step is taken in bites, each reported before the next.
 - [ ] **Asking for an agent's health as a person** (found 2026-11-05). `health-readers` is seeded and grants nothing: the question topic is per agent, and Cedar names a topic exactly. Decide the shape (a shared topic, as the configuration question has?) before a tool or a rule.
 - [ ] **An administrator's restart and quarantine of an agent** (the maintainer asked, 2026-11-05: should there be one, perhaps by revoking its certificate? Recommended, not decided or built). Revoking is the forceful route and needs nothing from the agent: the connection closes, its custody daemon destroys its keys, and it restarts, but the renewal rule then admits it again after five minutes (`sequences/general/revocation.mmd`), so revoking alone is a hard restart and not a quarantine. Quarantine also needs issuance refused: a policy that cuts it off, which `authority-model.md` allows on purpose, and that has not been tried. A graceful restart suits a signed command to a healthy agent, by the shutdown pipeline, where revoking would throw away work. Only the broker and custody daemons act on the revoked set, so a revoked workload keeps what the git server, cert-issuer and Neo4j accept until the certificate ends.
 
+## The agent builder: tests its agent-wide rules lack
+
+Found by the agentic-control-plane session's review of what the builder promises every agent built on it, handed over
+2026-11-08; the maintainer: record now, work after the build orchestrator (O6), unless one blocks it. Each is a test, or a
+gap, in `polar-agent-builder` or the crate named; one landing closes its rule for every agent at once, so each commit goes
+back to that session (polar-cc), which re-runs its review. Its rule files and the evidence drafts are pre-release, named
+only.
+
+- [ ] **Timeouts and ending.** (1) No test of the Kubernetes call's timeout (`protocol/kubernetes.rs`, `REQUEST_TIMEOUT`),
+  nor of the crypto and state replies'; git's (`protocol/git.rs`) and HTTP's (`protocol/http.rs`) are tested. (2) An agent's
+  ending: no test that the reason is logged before exit 1, that a natural rejuvenation never exits 137, or that the
+  termination message is written. (3) The shutdown watchdog: no test that each infrastructure stop step is bounded, or that
+  the reason is logged before the watchdog's exit. (4) Hard deadlines: untested that the clock runs from start or disconnect
+  to the next connect, that a reconnect resets it, that the actor judges nothing after its verdict, and that the verdict names
+  the deadline. (5) Rejuvenation before expiry: untested that it waits while a dependency's certificate is unhealthy, its
+  random jitter, and that the slowest rejuvenation gives its verdict before the floor. (6) Untested that the health actor ends
+  the agent as its shortest-lived certificate nears expiry. (7) Restarts: no test that any exit code restarts, that no pod is
+  left Failed, or that the termination message carries the last logs (likely the render's and Kubernetes', not the builder's).
+- [ ] **Health.** (8) Each contradiction of the health settings alone (a deadline under 1 s, rejuvenation not above expiry,
+  too small a window, probe staleness not above two ticks): tested only together, by example. (9) A hold: untested that it is
+  logged at error, and the version range or migration it names is not asserted in the report. (10) A held agent: untested
+  that it still rejuvenates, and that its domain stops retrying. (11) Nothing shows that no agent runs a heartbeat of its own
+  (health is asked for). (12) Unhealthy until the first snapshot: no test, and perhaps no code; the bootstrap exemption
+  untested too.
+- [ ] **Configuration and environment.** (13) No test that a configuration problem's message gives the variable's purpose,
+  or that a mistyped variable name is an error. (14) No test asserts history version 0 for an update refused before its
+  payload is trusted (`configuration.rs`, recorded there). (15) Override, then environment, then default: tested only in
+  `polar-env` (`config.rs`); no builder test sets an override and an environment value on one variable. (16) The environment
+  after start: untested that later changes go unseen and that an undeclared read is refused (likely `polar-env`'s).
+  (17) Facts computed once: only the floor and the topics are tested; not causes, groups, operations, graph labels,
+  configuration requirements, the startup check or the shutdown budget. The `ProcessEnv` lint is opt-in, with about 90
+  direct reads not yet moved. (18) The default trace filter, `warn` (`lib/src/logging.rs`, `DEFAULT_TRACE_FILTER`), is
+  untested.
+- [ ] **Authority.** (19) The pinned publisher: key pinning, the incident on a different key, and keeping the policy in force
+  when a new one fails to load live in `credentials_agent_common::authority_leaf`, with no builder test; only a wrong
+  publisher changing nothing is tested. (20) Degraded authority is not built: `POLAR_AUTHORITY_MAX_AGE_SECS` is in no code
+  (already noted under the authority distribution: the 90-minute bound, the health failure naming its cause, a cache never
+  persisted, the credentials agent's exemption).
+- [ ] **Mutants that survived** (the builder's own run over `signed.rs`, `configuration.rs` and `policy_authority.rs`):
+  `ConfigurationState::submit`, `>` to `>=`; `ConfigurationState::migration_applied`, the `!` deleted;
+  `ConfigurationHandle::followed_by` always `Ok(())`; `Opened::payload`; the `Display` of `ConfigurationError` and
+  `FollowError`. A test that kills each.
+- Updates being all or nothing needs no new test: `polar-env` (`config.rs`) meets it; naming it is that session's.
+
 ## The Cassini broker and client
 
 - [ ] FOUND 2026-11-01 (the sixth set, `broker-baseline.md`, "The sixth set: pressure"): a publisher's messages are
