@@ -952,6 +952,36 @@ I write Rust code"):
     superseded images, ReplicaSets and the like accumulate, now the Reaper's (`pod-reaper.md`, "Every kind of stale
     object"). And `str downcase` (deprecated in nu 0.114) printed a warning at the head of every build's log; it is `str
     lowercase` now. Next: the network step.
+  - *The network step, planned 2026-11-09* (the maintainer: Canal on u7c, "I want it to work unprivileged, using
+    nftables, and no requirement for ipv6"). Today a build pod reaches anything; u7c's CNI (`ptp`, `host-local`, `tuning`,
+    `portmap`, `nix-usernetes/flake.nix`) enforces no NetworkPolicy and the API server accepts one silently
+    (`cert-issuer-isolation.md`, "Does the dev cluster enforce NetworkPolicy? No."). The shape is that document's layer 4:
+    the policy rendered, enforcement proved by a canary, and no builds where it is not proved. In three:
+    **N1** the policy, rendered from the catalog for the build namespace: no ingress, and egress only to the registry's
+    pods on its port. No DNS (decided by the trust model, for review): CoreDNS forwards upstream, which would be a way out
+    for foreign code; the registry's Service gets a fixed cluster IP in its manifest (a deployment fact from the catalog),
+    and the build template maps the registry's name to it (`hostAliases`), so nothing in the pod resolves a name. Recorded
+    residual: a policy is the pod's, so the pipeline reaches the registry too, which takes pushes from anyone
+    (`registry-gate.md`); image pulls are the kubelet's and unaffected.
+    **N2** the canary, run by the orchestrator in the build namespace under the builds' own policy, not by the installer
+    (Polar's own checks are the guard): a short Job of the fetch's image in a probe mode that must reach the registry (the
+    pod's network works) and must fail to reach the Kubernetes API's service address and an address outside the cluster.
+    Run when the orchestrator starts and before admitting a build when the last proof is older than a Dynamic bound; where
+    enforcement is not proved, a build is refused at admission with the reason, and the result is published.
+    **N3** enforcement on u7c, then live: Canal (Flannel for the pod network, VXLAN; Calico for policy, its nftables
+    dataplane, GA since Calico 3.31, `nftablesMode: Enabled`), in `nix-usernetes`, rootless, IPv4 only (Felix's IPv6
+    support off), with kube-proxy in nftables mode as it is. Unproven and so a spike first: Flannel's own nftables mode is
+    still experimental, and nothing published says either way whether Canal runs in a user namespace; the host must have
+    the modules a user namespace cannot load (`vxlan`; `nf_tables` is loaded already, since kube-proxy's nftables mode
+    works in the node containers). Polar keeps to standard NetworkPolicy, so the policy and the canary carry to any
+    enforcing cluster (Calico, Cilium, EKS's VPC CNI, kube-router in k3s, RKE2's Canal by default); the engine only has to
+    make the canary pass. *Deferred 2026-11-09* (the maintainer, to finish Vaughn's port first): not in the way while the
+    only code a build runs is Polar's own. **Until N1 to N3 are done, no mapping names a repository Polar does not
+    control, and no registry archive is built:** a build pod reaches every service in the cluster and the internet, and a
+    build is offline only because Cargo has no reason to go out, not because anything stops it. Decided while N1 was
+    being read: the orchestrator resolves the registry's name itself when it makes a Job and gives the pod the address in
+    `hostAliases`, in place of a fixed cluster IP on the registry's Service (which cannot be changed on a Service that
+    exists, so every cluster would need its Service recreated).
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
