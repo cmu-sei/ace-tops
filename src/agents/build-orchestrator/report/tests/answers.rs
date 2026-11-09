@@ -111,6 +111,23 @@ fn an_answer_not_shaped_as_a_worker_makes_one_is_refused() {
     );
 }
 
+/// A count of records past what a length counts, under a bound that allows it, is refused, never an overflow: found by
+/// a Kani harness on another branch, where the answer's length was its header and records multiplied out unchecked.
+#[test]
+fn a_count_past_what_a_length_counts_is_refused_never_an_overflow() {
+    let unbounded = Bounds {
+        tokens: usize::MAX,
+        ..small()
+    };
+    // 2^60 + 1 records: sixteen times that wraps to 16, so the unchecked length was this answer's own 32.
+    let mut forged = vec![0u8; HEADER + RECORD];
+    forged[8..16].copy_from_slice(&((1u64 << 60) + 1).to_le_bytes());
+    assert_eq!(
+        Report::read_answer(b"", &forged, &unbounded),
+        Err(Refusal::NotAValue)
+    );
+}
+
 proptest! {
     /// Whatever the bytes, an answer gives the agent exactly what reading them directly would.
     #[test]

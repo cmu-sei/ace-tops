@@ -295,7 +295,11 @@ impl Report {
         }
         let kind = word(4, 4)?;
         let count = usize::try_from(word(8, 8)?).map_err(|_| Refusal::TooManyTokens)?;
-        if count > bounds.tokens || answer.len() != HEADER + RECORD * count {
+        // Multiplied out checked: under a bound past what a length counts, a forged count must not wrap to a short one.
+        let shaped = RECORD
+            .checked_mul(count)
+            .and_then(|n| n.checked_add(HEADER));
+        if count > bounds.tokens || shaped != Some(answer.len()) {
             return Err(Refusal::NotAValue);
         }
         let mut tape = Tape::new(&Bounds {
