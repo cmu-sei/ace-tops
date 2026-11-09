@@ -47,6 +47,30 @@ Each step is taken in bites, each reported before the next.
     document and its reader (where the Rust `polar` CLI starts), the agents deriving from it, then the catalog's split (where a downstream
     project's workloads get their layer), then the GitOps controller around phases. Where the port's area 5 lands in it: the review on
     Vaughn's branch, `docs/requests/public-polar-port-deployment-review.md` (`bdf2f096`).
+11. **The polar package** (the maintainer, 2026-11-09; the plan, nothing built): a package manager's feel for building an agent and
+    installing it into a Polar cluster, what Vaughn's `polar` CLI reached for.
+    - Commands: `polar new|init` (a skeleton crate on `AgentBuilder` and its Nix package), `polar add <git>#<rev>` (fetch and build
+      pinned source, flake-like), `polar check` (what the package still lacks against this cluster), `polar install` (a lifecycle move
+      to under test), `polar promote` (the owner's signed move to deployed). Rust libraries, with `polar` as the binary.
+    - Builder agents only; adapters later. The builder is the abstraction point (a Python builder is possible); a language without
+      rkyv talks through the Cassini client on the domain socket. The scaffold is the package's contract, versioned and kept stable.
+    - A package carries no deployment decisions: source at a rev, its build, the scaffold the build prints, its ELIDE intent and
+      evidence. Pool, phase, runtime sections and secrets are the cluster's intent, the downstream layer of the catalog's split.
+    - Offline first, then live. Offline, `check` reads a cluster profile (the capability vocabulary, services, pools, kinds, the
+      platform version, the CA) signed at publish beside `deployment-record.json` with the pipeline's certificate; live adds what
+      exists only after bring-up (`cluster_uid`).
+    - Evidence is polar-eden's (`.elide.dhall` intent, signed records in `polar-evidence`, computed debt), agreed with polar-cc:
+      promotion counts only records whose signer's certificate carries a new evidence capability (`c:record-evidence`: granted to
+      admins, computed from the scaffold for collector workloads), not anyone the cluster CA issued; the author's records, under a CA
+      the package brings, are shown beside the debt as claims and never meet a binding. Records name the rev and the source digest,
+      not the image: `promote` rebuilds from the rev and checks the image's digest, only the cluster's under-test records name the
+      image, a record made with changes beside its commit (`changed_beside_it`) is refused, and `promote` signs the debt's figures
+      with the digests of the records they came from. The capability is main's (`polar-signing`, the capability list), the trust
+      check in `polar-eden records` is polar-cc's.
+    - Migration: records signed by admin certificates without the capability stop counting when the check lands (about 15 on u7c),
+      until admins hold it and the collectors re-run; a customer cluster after 3.0.0 needs that in its migration notes.
+    - Order: the cluster profile, `new`/`init`, `check` (useful before lifecycle, and what Blitz needs), then `add`, then `install` and
+      `promote` after step 10's lifecycle and catalog split. Not yet placed in this order of work.
 
 ## Runtime attestation
 
