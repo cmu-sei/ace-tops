@@ -67,7 +67,7 @@ use ./core *
 use ./core/oci.nu *
 use ./core/logging.nu *
 use ./core/events.nu *
-use ./core/cargo.nu workspace-root
+use ./core/cargo.nu [workspace-root source-commit]
 use ./core/hashing.nu *
 use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
@@ -790,7 +790,7 @@ def main [
 ] {
     let ws_root = (workspace-root)
     let ws_manifest = $ws_root | path join "Cargo.toml"
-    let commit_sha = ($env.CI_COMMIT_SHA? | default (^git rev-parse HEAD | str trim))
+    let commit_sha = (source-commit)
 
     # Initialize pipeline-scoped singleton state. All emit-* functions that
     # need build_id (artifact domain events) read it from here rather than

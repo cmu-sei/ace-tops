@@ -838,6 +838,43 @@ I write Rust code"):
     test's own Cargo building a project that depends on both, `--locked`, with the Cargo home the fetch wrote; the built program
     prints what the two dependencies give. The git source names a host under `.invalid`, so a build that reached for it would
     have failed: Cargo built from what was laid out and nothing else. D3 DONE.
+  - *D4 planned 2026-11-08* (the maintainer chose the source, "Public ace-tops"). The pipeline image is Polar's CI image
+    (`polar-ci`, `src/flake/ci-container.nix`: nightly Rust, nu, cargo-cyclonedx, cargo-deny), not the dev image. Found reading
+    it: the image points `CARGO_TARGET_DIR` (`/var/cache/cargo-target`) and `HOME` (`/root`) at its root, which a build pod
+    mounts read-only and runs as the template's user; `scripts/pipeline/core/cargo.nu` asks git where the workspace is, and an
+    archive has no `.git`; the orchestrator says `CI_COMMIT_SHORT_SHA` (holding the whole commit) where `ci.nu` reads
+    `CI_COMMIT_SHA`; `ci.nu` already builds `--locked` (D3: not `--offline`, which refuses a `file://` git source). Found, for
+    later: cargo-deny downloads its advisory database, another input from outside the record; the watched build skips the scan
+    (`--skip-audit`), and the database is to be fetched by the orchestrator by digest as the crates are. In two: **D4a** the
+    orchestrator says `CI_COMMIT_SHA`; `workspace-root` finds the workspace from where the script itself sits, not from git (the
+    script lives in the repository it builds); the template gives the pipeline `CARGO_TARGET_DIR` and `HOME` where it may write;
+    `polar-ci` a row in `images.nuon`; rehearsed locally, the real `ci.nu` in `polar-ci` under podman with no network, a
+    read-only root and a non-root user, before it runs live. **D4b** live on u7c: `polar-ci` in its registry, pinned by
+    digest; main pushed to the public `cmu-sei/ace-tops` and the git controller's `repositories` section and the orchestrator's
+    `mappings` naming it (`locks: ["src/agents/Cargo.lock"]`, the command `nu scripts/pipeline/ci.nu $(POLAR_BUILD_ID) --package
+    logger --skip-analysis --skip-audit --skip-images --skip-upload`, Kubernetes filling in the build's id so its reports carry
+    the orchestrator's own), signed by the maintainer; the build watched through tails of the orchestrator, the build pod,
+    build-processor, Cassini and the registry. Decided by standing rules, for review: `logger` as the crate (the smallest agent);
+    the target directory and home are the template's, beside `CARGO_HOME`, since where a build may write is the pod's fact.
+    *D4a DONE 2026-11-08*: the orchestrator says `CI_COMMIT_SHA`; `workspace-root` finds the workspace three up from its own
+    file (`path self`), and `source-commit` takes the orchestrator's commit and asks git only when none is named (nu's
+    `default (…)` runs its argument even when the value is there, so `ci.nu` asked git anyway); the template gives the pipeline
+    `CARGO_TARGET_DIR=/workspace/.build/target` and `HOME=/workspace/.build/home`; `polar-ci` has its row. Rehearsed: `ci.nu
+    <id> --package logger --skip-analysis --skip-audit --skip-images --skip-upload` in `polar-ci` (1.4 GB compressed) under
+    podman with no network, a read-only root, uid 1000, every capability dropped, 2 CPUs and 4 GiB, a 256 MiB `/tmp`, and Polar's
+    dependencies vendored into a Cargo home of their own: an SBOM for each of the 80 workspace packages, `event-logger` built
+    `--release --locked` in about two minutes from cold, 559 MB written to `.build`. Two faults found there and fixed, both older
+    than the orchestrator: (1) `emit-binary-linked` declared its record with `binding_digest: null`, and nu keeps that type, so
+    the digest put there later was refused and every binary's link was lost; the record is built whole now. (2) A report on
+    stdout was spoiled by a log line on stderr landing inside it (1 of 162, an SBOM report of 131 KB; 57 of them pass 64 KiB):
+    the runtime reads a container's two streams apart, in pieces, and its log splices them, a piece of one between pieces of
+    the other, as Kubernetes' does (16 KiB records, each stream's in order). So the pipeline's log lines go to stdout with its
+    reports (`core/logging.nu`, no longer `std/log`, which writes only to stderr): nu is the one writer of stdout, and each
+    line arrives whole; five rehearsals since, every report read. Found, for later: a subprocess's stderr (Cargo's warnings) is
+    still a second stream, so a line of it left partial as a report is read could spoil that report; the reader refuses and
+    counts it. Reading stdout alone (Kubernetes' split log streams, alpha) would close it. Tested: nu tests for the workspace
+    and commit found with no `.git` and no git, a binary's link with and without its digest, and every log level on stdout and
+    none on stderr; the template test pins the pipeline's three variables.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

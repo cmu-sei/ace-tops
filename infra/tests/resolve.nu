@@ -602,7 +602,13 @@ def main [] {
                 assert equal $c.securityContext.allowPrivilegeEscalation false $c.name
                 assert equal $c.securityContext.seccompProfile.type "RuntimeDefault" $c.name
             }
-            assert equal ($pipeline.env? | default []) [{ name: "CARGO_HOME", value: "/dependencies/cargo" }] "the pipeline is told where its Cargo home is, and nothing else of Polar's"
+            # Its root is read-only: Cargo's home is the dependencies laid out for it, and what it builds and its own home are
+            # in the workspace, beside the source, whatever its image says (polar-ci points both at its root).
+            assert equal ($pipeline.env? | default []) [
+                { name: "CARGO_HOME", value: "/dependencies/cargo" }
+                { name: "CARGO_TARGET_DIR", value: "/workspace/.build/target" }
+                { name: "HOME", value: "/workspace/.build/home" }
+            ] "the pipeline is told where its Cargo home is and where it may write, and nothing else of Polar's"
             assert equal ($pod.volumes | get name) ["workspace" "dependencies"]
             assert equal ($pipeline.livenessProbe? | default null) null "no polar-healthcheck in a pipeline image"
             assert equal ($pipeline.restartPolicy? | default null) null

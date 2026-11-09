@@ -96,6 +96,11 @@
   # (`nu infra/images.nu publish dev --to docker.io/<account>` makes polar-dev:latest-<arch>).
   {image: "dev", tag: "latest", kind: "nix", attr: "devContainer"}
 
+  # ── Build pipelines (not deployed by any target) ─────────────────────────
+  # Polar's CI image, the pipeline a signed mapping names for Polar's own builds (docs/architecture/build-orchestrator.md,
+  # D4): pushed to a target's registry and named there by its digest.
+  {image: "polar-ci", tag: "latest", kind: "nix", attr: "ciContainer"}
+
   # ── Cassini load harness (run as Jobs by infra/load-harness.nu on a target that enables it) ──
   {image: "harness-producer", tag: "latest", kind: "nix", attr: "polarPkgs.cassini.producerImage"}
   {image: "harness-sink",     tag: "latest", kind: "nix", attr: "polarPkgs.cassini.sinkImage"}

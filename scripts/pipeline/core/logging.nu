@@ -21,70 +21,53 @@
 
 # Logging module for CI/CD pipeline scripts.
 #
-# Thin wrapper around nushell's `std/log`, kept so the rest of the pipeline
-# can keep calling `log-info` / `log-warn` / `log-error` / `log-debug` with
-# the same `--component` flag as before. All level-filtering, formatting,
-# and stream handling is now delegated to `std/log`; we just tighten
-# NU_LOG_FORMAT / NU_LOG_DATE_FORMAT and fold --component into the message
-# body (std/log's format string has no slot for a component tag).
+# `log-info` / `log-warn` / `log-error` / `log-debug`, each with an optional --component folded into the message, one line
+# each: `<date> [<level>] <message>`, coloured by level.
 #
-# Behavioral changes vs. the old hand-rolled implementation:
+# To stdout, where the pipeline's reports go (core/events.nu), and not to stderr as nushell's `std/log` writes: a build's pod
+# log is the container's two streams spliced together as the runtime reads them, a piece of one between pieces of the other,
+# so a log line on stderr could land inside a long report on stdout and spoil it (found 2026-11-08 rehearsing the watched
+# build, docs/architecture/build-orchestrator.md, D4a). On one stream, nu its one writer, each line arrives whole.
 #
-#   - std/log writes to STDERR (via `print --stderr`), not stdout. If
-#     anything downstream was capturing stdout expecting log lines mixed
-#     in, that breaks now (this is the correct direction to break in).
-#
-#   - `log-debug` is now silenced unless $env.NU_LOG_LEVEL is "debug" (or
-#     a numeric value <= 10). The old log-debug always printed. Set
-#     NU_LOG_LEVEL=debug in CI when you need verbose output.
-#
-#   - The level tags change from the old literal INFO/WARN/ERROR/DEBUG
-#     strings to whatever std/log's built-in %LEVEL% prefixes are for your
-#     nushell version (commonly INF/WRN/ERR/DBG/CRT). If any downstream
-#     tooling greps log output for "[WARN]" etc., update those patterns —
-#     and pin/verify this against your actual nushell version, since
-#     NU_LOG_FORMAT internals have changed across releases (see
-#     nushell/nushell#14412).
-#
-# The env vars below are set via `export-env`, so they take effect globally
-# for the whole script/session the first time any module does
-# `use logging.nu` — not just within this module's scope. That's intentional:
-# every script in the pipeline that touches std/log, directly or through this
-# wrapper, gets the same wire format. Note also that std/log does not honor
-# $env.config.use_ansi_coloring (nushell/nushell#13317), so if you pipe
-# output to a plain-text file for archival you'll get raw ANSI escapes in it
-# unless you strip %ANSI_START%/%ANSI_STOP% from NU_LOG_FORMAT yourself.
+# `log-debug` is silent unless $env.NU_LOG_LEVEL is "debug" or a number no more than 10, as with `std/log`: its names
+# (debug, info, warning, error, critical) or numbers (10 to 50); unset or unknown, info.
 
-use std/log
-
-export-env {
-    # %DATE%, %LEVEL%, %MSG%, %ANSI_START%, %ANSI_STOP% are the only
-    # placeholders std/log understands.
-    $env.NU_LOG_FORMAT = "%ANSI_START%%DATE% [%LEVEL%] %MSG%%ANSI_STOP%"
-    $env.NU_LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S%.3f"
+const LEVELS = {
+    DBG: { rank: 10, colour: "dark_gray" }
+    INF: { rank: 20, colour: "default" }
+    WRN: { rank: 30, colour: "yellow" }
+    ERR: { rank: 40, colour: "red" }
 }
 
-# Fold an optional --component tag into the message body.
-def tag-component [msg: string, component: string] {
-    if ($component | is-empty) {
-        $msg
+def threshold []: nothing -> int {
+    let asked = ($env.NU_LOG_LEVEL? | default "" | into string | str trim | str lowercase)
+    let named = { debug: 10, info: 20, warning: 30, warn: 30, error: 40, critical: 50 }
+    if ($asked in $named) {
+        $named | get $asked
     } else {
-        $"($component) — ($msg)"
+        try { $asked | into int } catch { 20 }
     }
 }
 
+def write [level: string, msg: string, component: string] {
+    let at = $LEVELS | get $level
+    if $at.rank < (threshold) { return }
+    let body = if ($component | is-empty) { $msg } else { $"($component) — ($msg)" }
+    print $"(ansi $at.colour)(date now | format date '%Y-%m-%d %H:%M:%S%.3f') [($level)] ($body)(ansi reset)"
+}
+
 export def log-info [msg: string, --component: string = ""] {
-    log info (tag-component $msg $component)
+    write INF $msg $component
 }
 
 export def log-warn [msg: string, --component: string = ""] {
-    log warning (tag-component $msg $component)
+    write WRN $msg $component
 }
 
 export def log-error [msg: string, --component: string = ""] {
-    log error (tag-component $msg $component)
+    write ERR $msg $component
 }
 
 export def log-debug [msg: string, --component: string = ""] {
-    log debug (tag-component $msg $component)
+    write DBG $msg $component
 }

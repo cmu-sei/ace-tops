@@ -163,7 +163,8 @@ impl SourceRef {
         let mut env = vec![(source_env::SOURCE_KIND.to_string(), self.kind().to_string())];
         match self {
             SourceRef::Git { commit_sha, .. } => {
-                env.push(("CI_COMMIT_SHORT_SHA".to_string(), commit_sha.clone()));
+                // The whole commit, as `scripts/pipeline/ci.nu` reads it.
+                env.push(("CI_COMMIT_SHA".to_string(), commit_sha.clone()));
             }
             SourceRef::RegistryArchive { purl, sha256, .. } => {
                 env.push((source_env::SOURCE_PURL.to_string(), purl.clone()));
@@ -676,7 +677,8 @@ mod source_ref_tests {
             env_value(&env, source_env::SOURCE_KIND).as_deref(),
             Some("git")
         );
-        assert_eq!(env_value(&env, "CI_COMMIT_SHORT_SHA"), Some("a".repeat(40)));
+        assert_eq!(env_value(&env, "CI_COMMIT_SHA"), Some("a".repeat(40)));
+        assert_eq!(env_value(&env, "CI_COMMIT_SHORT_SHA"), None);
         let env = archive().pipeline_env();
         assert_eq!(
             env_value(&env, source_env::SOURCE_PURL).as_deref(),

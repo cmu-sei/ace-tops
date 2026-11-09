@@ -109,6 +109,16 @@ let render =
                         , name = "CARGO_HOME"
                         , value = Some "${v.dependencies}/cargo"
                         }
+                      -- Its root is read-only: what it builds and its own home are in the workspace, beside the source,
+                      -- whatever its image says (Polar's CI image points both at its root).
+                      , kubernetes.EnvVar::{
+                        , name = "CARGO_TARGET_DIR"
+                        , value = Some "${v.workspace}/.build/target"
+                        }
+                      , kubernetes.EnvVar::{
+                        , name = "HOME"
+                        , value = Some "${v.workspace}/.build/home"
+                        }
                       ]
                   )
               , volumeMounts = Some (pod.mounts # [ workspaceMount, dependenciesMount ])

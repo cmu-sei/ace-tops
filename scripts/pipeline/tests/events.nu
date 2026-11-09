@@ -26,6 +26,8 @@
 use std/assert
 use ../core/events.nu [reported-now, report-line, REPORT_PREFIX]
 
+const EVENTS = path self ../core/events.nu
+
 def main [] {
     let tests = [
         {
@@ -48,6 +50,24 @@ def main [] {
                 assert ($line | str starts-with $REPORT_PREFIX) $line
                 assert equal ($line | lines | length) 1 "a newline in a string stays escaped"
                 assert equal ($line | str substring ($REPORT_PREFIX | str length).. | from json) $event "it reads back as the event"
+            }
+        }
+        {
+            # A record declared with a `null` field keeps that type: a later string there is refused, which lost every binary's
+            # link (found 2026-11-08 rehearsing the watched build, docs/architecture/build-orchestrator.md, D4a).
+            name: "a binary's link carries its binding digest when it has one, and null when it has none"
+            body: {
+                let reported = {|...args: string|
+                    ^$nu.current-exe --no-config-file --commands $"use '($EVENTS)' emit-binary-linked; emit-binary-linked ($args | str join ' ')"
+                    | complete
+                }
+                let with = (do $reported "sha256:b" "event-logger" "pkg:cargo/logger@1.0.0" "sha256:s" "--binding_digest" "sha256:d")
+                assert equal $with.exit_code 0 $with.stderr
+                let event = ($with.stdout | str trim | str substring ($REPORT_PREFIX | str length).. | from json)
+                assert equal $event { type: "binary_linked", binary_content_hash: "sha256:b", binary_name: "event-logger", root_purl: "pkg:cargo/logger@1.0.0", sbom_content_hash: "sha256:s", binding_digest: "sha256:d" }
+                let without = (do $reported "sha256:b" "event-logger" "pkg:cargo/logger@1.0.0" "sha256:s")
+                assert equal $without.exit_code 0 $without.stderr
+                assert equal ($without.stdout | str trim | str substring ($REPORT_PREFIX | str length).. | from json | get binding_digest) null
             }
         }
     ]

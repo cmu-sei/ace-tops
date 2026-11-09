@@ -252,16 +252,13 @@ export def emit-binary-linked [
     sbom_content_hash: string
     --binding_digest: string = ""
 ]: nothing -> nothing {
-    mut payload = {
+    # Built whole: a record declared with a `null` field keeps that type, and a string put there later is refused.
+    emit {
         type: "binary_linked"
         binary_content_hash: $binary_content_hash
         binary_name: $binary_name
         root_purl: $root_purl
         sbom_content_hash: $sbom_content_hash
-        binding_digest: null
+        binding_digest: (if ($binding_digest | is-not-empty) { $binding_digest })
     }
-    if ($binding_digest | is-not-empty) {
-        $payload = ($payload | upsert binding_digest $binding_digest)
-    }
-    emit $payload
 }
