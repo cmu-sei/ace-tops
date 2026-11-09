@@ -98,19 +98,36 @@ pub(crate) fn real_process_exit() -> ProcessExit {
     Arc::new(|code| std::process::exit(code))
 }
 
-/// Exits the process once the infrastructure has ended, however it ended: at the end of the shutdown handshake, by a
-/// failure, or killed outright, when no `post_stop` runs. Its spawn's join handle sees all three, so the domain
-/// supervisor need not watch for it. Non-zero, so the pod starts afresh.
-pub(crate) fn exit_when_ended(
+/// How long the domain supervisor has to end once its infrastructure has, before the process exits without it.
+pub(crate) const DOMAIN_END_GRACE: Duration = Duration::from_secs(10);
+
+/// Ends the agent once the infrastructure has ended, however it ended: at the end of the shutdown handshake, by a
+/// failure, or killed outright, when no `post_stop` runs; its spawn's join handle sees all three, so the domain
+/// supervisor need not watch for it. The domain supervisor is stopped, so `run` returns non-zero as for any agent
+/// that ends and the pod starts afresh; one that has not ended after [`DOMAIN_END_GRACE`] (stuck in a handler) does
+/// not keep the process alive: it exits 1.
+pub(crate) fn end_with_infrastructure(
     ended: ractor::concurrency::JoinHandle<()>,
+    domain: ractor::ActorCell,
     process_exit: ProcessExit,
 ) {
     tokio::spawn(async move {
         let how = ended.await;
-        tracing::info!(
-            "the infrastructure has ended ({how:?}); exiting 1 so the pod starts afresh"
-        );
-        process_exit(1);
+        tracing::info!("the infrastructure has ended ({how:?}); ending the agent");
+        domain.stop(Some("the infrastructure has ended".to_string()));
+        let deadline = tokio::time::Instant::now() + DOMAIN_END_GRACE;
+        while domain.get_status() != ractor::ActorStatus::Stopped
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if domain.get_status() != ractor::ActorStatus::Stopped {
+            tracing::error!(
+                "the domain supervisor has not ended {}s after its infrastructure; exiting 1",
+                DOMAIN_END_GRACE.as_secs()
+            );
+            process_exit(1);
+        }
     });
 }
 

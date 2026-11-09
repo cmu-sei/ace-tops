@@ -28,8 +28,7 @@ mod support;
 use cassini_types::BrokerMessage;
 use std::time::Duration;
 use support::{
-    TestBroker, TestClient, pause, with_broker, with_broker_guarded,
-    with_broker_shutting_down_within,
+    TestClient, pause, with_broker, with_broker_guarded, with_broker_shutting_down_within,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -91,9 +90,9 @@ async fn a_shutdown_that_overruns_its_budget_ends_the_process() {
             .cast(BrokerMessage::PrepareForShutdown { auth_token: None })
             .unwrap();
 
-        // The sequence needs longer than the budget; the watchdog does not wait for it. The infrastructure's own exit,
-        // when it ends after the sequence, follows: in the pod the first is the last.
-        assert_eq!(both_exits(&broker).await, vec![1, 1]);
+        // The sequence needs longer than the budget; the watchdog does not wait for it.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(*broker.exits.lock().unwrap(), vec![1]);
     })
     .await;
 }
@@ -121,16 +120,10 @@ async fn a_shutdown_that_finishes_within_its_budget_lets_the_infrastructure_come
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        // One exit, the infrastructure's own as it ends (the builder's, 2026-11-09): the watchdog's 20 s have not run
-        // out, so it is not the watchdog's.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while broker.exits.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
         assert_eq!(
             *broker.exits.lock().unwrap(),
-            vec![1],
-            "the infrastructure's end, well inside the budget"
+            Vec::<i32>::new(),
+            "well inside the budget"
         );
     })
     .await;
@@ -148,8 +141,8 @@ async fn a_shutdown_requested_over_the_wire_is_under_the_same_budget() {
             .expect("the broker has a control manager")
             .send_message(BrokerMessage::PrepareForShutdown { auth_token: None })
             .unwrap();
-        // The watchdog's, at its budget, then the infrastructure's own as it ends.
-        assert_eq!(both_exits(&broker).await, vec![1, 1]);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(*broker.exits.lock().unwrap(), vec![1]);
     })
     .await;
 }
@@ -212,14 +205,4 @@ async fn a_shutdown_request_with_the_right_token_is_acknowledged_and_carried_out
         );
     })
     .await;
-}
-
-/// The codes the broker's process was asked to exit with once there are two, the watchdog's and then the
-/// infrastructure's as it ends, or what there is after ten seconds.
-async fn both_exits(broker: &TestBroker) -> Vec<i32> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while broker.exits.lock().unwrap().len() < 2 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    broker.exits.lock().unwrap().clone()
 }

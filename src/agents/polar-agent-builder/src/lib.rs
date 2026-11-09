@@ -577,7 +577,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
         )
         .await
         .map_err(ActorProcessingErr::from)?;
-        shutdown::exit_when_ended(ended, process_exit);
+        shutdown::end_with_infrastructure(ended, this.myself.get_cell(), process_exit);
 
         let resources: AgentResources = ractor::call!(infrastructure, |reply| {
             InfrastructureSupervisorMessage::GetResources { reply }
@@ -738,7 +738,11 @@ impl<M: ractor::Message> ConfiguredService<M> {
         )
         .await
         .map_err(ActorProcessingErr::from)?;
-        shutdown::exit_when_ended(ended, hooks.process_exit.clone());
+        shutdown::end_with_infrastructure(
+            ended,
+            this.myself.get_cell(),
+            hooks.process_exit.clone(),
+        );
 
         let resources: ServiceResources = ractor::call!(infrastructure, |reply| {
             InfrastructureSupervisorMessage::GetService { reply }
@@ -1280,19 +1284,23 @@ mod the_infrastructure_ending {
     use std::sync::Mutex;
     use std::time::Duration;
 
-    /// A service's domain supervisor that does nothing when its infrastructure ends: whatever exits the process then
-    /// is the builder's doing.
+    /// A service's domain supervisor that does nothing when its infrastructure ends: whatever ends it then is the
+    /// builder's doing. Told to `Hang`, it is busy for good, as a domain stuck in a handler is.
     struct Indifferent;
+
+    enum Domain {
+        Hang,
+    }
 
     #[ractor::async_trait]
     impl Actor for Indifferent {
-        type Msg = ();
+        type Msg = Domain;
         type State = ();
         type Arguments = crate::Configured;
 
         async fn pre_start(
             &self,
-            myself: ActorRef<()>,
+            myself: ActorRef<Domain>,
             configured: crate::Configured,
         ) -> Result<(), ActorProcessingErr> {
             ServiceBuilder::new(myself, "indifferent")
@@ -1302,9 +1310,21 @@ mod the_infrastructure_ending {
             Ok(())
         }
 
+        async fn handle(
+            &self,
+            _myself: ActorRef<Domain>,
+            message: Domain,
+            _state: &mut (),
+        ) -> Result<(), ActorProcessingErr> {
+            match message {
+                Domain::Hang => std::future::pending::<()>().await,
+            }
+            Ok(())
+        }
+
         async fn handle_supervisor_evt(
             &self,
-            _myself: ActorRef<()>,
+            _myself: ActorRef<Domain>,
             _event: SupervisionEvent,
             _state: &mut (),
         ) -> Result<(), ActorProcessingErr> {
@@ -1314,7 +1334,15 @@ mod the_infrastructure_ending {
 
     type Exits = Arc<Mutex<Vec<i32>>>;
 
-    async fn service() -> (ServiceResources, Exits, tempfile::TempDir) {
+    struct Service {
+        domain: ActorRef<Domain>,
+        domain_ended: ractor::concurrency::JoinHandle<()>,
+        resources: ServiceResources,
+        exits: Exits,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn service() -> Service {
         let dir = tempfile::tempdir().unwrap();
         let env: HashMap<String, String> = [(
             "POLAR_HEALTH_FILE".to_string(),
@@ -1327,43 +1355,64 @@ mod the_infrastructure_ending {
         let exits = Arc::new(Mutex::new(Vec::new()));
         let (configured, out) =
             crate::Configured::for_service_test(&env, Duration::from_secs(20), exits.clone());
-        Actor::spawn(None, Indifferent, configured).await.unwrap();
+        let (domain, domain_ended) = Actor::spawn(None, Indifferent, configured).await.unwrap();
         let resources = out.lock().unwrap().clone().expect("the service was built");
-        (resources, exits, dir)
-    }
-
-    /// The codes the process was asked to exit with, once there is one, or none after `within`.
-    async fn exited(exits: &Exits, within: Duration) -> Vec<i32> {
-        let deadline = tokio::time::Instant::now() + within;
-        while exits.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        Service {
+            domain,
+            domain_ended,
+            resources,
+            exits,
+            _dir: dir,
         }
-        exits.lock().unwrap().clone()
     }
 
-    /// The end of the shutdown handshake ends the process, with no help from the domain supervisor, and well before
-    /// the watchdog's budget.
+    /// The end of the shutdown handshake ends the domain supervisor, with no help from it, so `run` returns non-zero
+    /// as it does for any agent that ends; the process is not exited from under it.
     #[tokio::test]
-    async fn the_end_of_the_handshake_exits_the_process() {
-        let (resources, exits, _dir) = service().await;
-        resources
+    async fn the_end_of_the_handshake_ends_the_domain_supervisor() {
+        let service = service().await;
+        service
+            .resources
             .infrastructure
             .cast(InfrastructureSupervisorMessage::BeginShutdown {
                 reason: "test".to_string(),
             })
             .unwrap();
-        resources
+        service
+            .resources
             .infrastructure
             .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
             .unwrap();
-        assert_eq!(exited(&exits, Duration::from_secs(15)).await, [1]);
+        let ended = tokio::time::timeout(Duration::from_secs(15), service.domain_ended).await;
+        assert!(
+            ended.is_ok(),
+            "the domain supervisor outlived its infrastructure"
+        );
+        assert!(service.exits.lock().unwrap().is_empty());
     }
 
-    /// An infrastructure that ends without a handshake, killed outright (no `post_stop` runs), ends the process too.
+    /// An infrastructure that ends without a handshake, killed outright (no `post_stop` runs), ends the domain
+    /// supervisor too.
     #[tokio::test]
-    async fn an_infrastructure_killed_outright_exits_the_process() {
-        let (resources, exits, _dir) = service().await;
-        resources.infrastructure.kill();
-        assert_eq!(exited(&exits, Duration::from_secs(15)).await, [1]);
+    async fn an_infrastructure_killed_outright_ends_the_domain_supervisor() {
+        let service = service().await;
+        service.resources.infrastructure.kill();
+        let ended = tokio::time::timeout(Duration::from_secs(15), service.domain_ended).await;
+        assert!(
+            ended.is_ok(),
+            "the domain supervisor outlived its infrastructure"
+        );
+        assert!(service.exits.lock().unwrap().is_empty());
+    }
+
+    /// A domain supervisor that cannot end, stuck in a handler, does not keep the process alive without its
+    /// infrastructure: after the grace the process exits 1.
+    #[tokio::test(start_paused = true)]
+    async fn a_domain_supervisor_that_cannot_end_is_ended_by_the_exit() {
+        let service = service().await;
+        service.domain.cast(Domain::Hang).unwrap();
+        service.resources.infrastructure.kill();
+        tokio::time::sleep(crate::shutdown::DOMAIN_END_GRACE + Duration::from_secs(1)).await;
+        assert_eq!(*service.exits.lock().unwrap(), [1]);
     }
 }
