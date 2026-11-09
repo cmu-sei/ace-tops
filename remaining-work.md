@@ -805,7 +805,8 @@ only.
   is taken; (2) build-processor and the build orchestrator together, his port the starting point, moved onto the builder and into the catalog, the
   failure findings re-read on that code (merging and migrating one step per area); (3) the kube agents' cluster-scoped identity and discovery, its
   own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide;
-  (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design; (5) the `polar` CLI
+  (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design (DONE 2026-11-09:
+  written there, "From Vaughn's operator", what to take and not, and three questions for when the controller is designed); (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
   against lifecycle's decisions first. (6) DONE 2026-11-09 (the maintainer, "Take it, with the push fix"): `polar-sign next` built, with a sealed secret
   never carried (bound to its version) and `push`'s stale clone fixed (`docs/architecture/polar-sign-next.md`). (1) DONE 2026-11-07: taken from `2cce4722`/`5189c650`, Docker's rule for the registry host (a tag's dots

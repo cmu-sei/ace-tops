@@ -111,6 +111,54 @@ releases (decision 4), so nobody signs a fact the build computed (`AGENTS.md`, "
 The state agent's `schema` and `agents` would not be seeded once, nor kept by hand: they would follow from the cluster's lifecycle, and the
 GitLab pair would appear in both as under test. Until a lifecycle document exists, any interim answer is a stand-in for that derivation.
 
+## From Vaughn's operator (the port's area 4, read 2026-11-09)
+
+Decided 2026-11-07 (`remaining-work.md`, the port's area 4): the operator is not merged; its phases and back-off are taken into this
+design. Read on his branch (`ace-remote/port/public-polar-blitz-deploy`, `src/agents/polar-operator/`, commit `0339cc89`, a prototype run
+from a laptop with that kubeconfig's rights): a `PolarAgent` resource and a controller that keeps one deployment of an agent alive, a
+processor that projects what it saw into the graph. What follows is for this design, not decided.
+
+**It works one level below this document's phases.** Its phases (`crd.rs`, `Phase`: Pending, Starting, Running, Replacing, Ending,
+BackingOff, CrashLoop, Suspended) are a deployment's running state, not where a workload is in its life: a workload under test or deployed
+is, at any moment, in one of them. They fill this document's "how it is watched" and give "to move on" its measures.
+
+**What is worth taking**, each against what main has:
+
+- *The instance policy as a pure decision* (`lifecycle.rs`, `decide`: what is wanted, the instances seen, what is remembered, the time, in;
+  the actions and the status to write, out; tested without a cluster). Its five rules: one instance, never two, a replacement only when no
+  pod of the agent exists, terminating ones included; every ending recorded once, then its pod removed; an ending within 30 s of the start
+  a failure, failures in a row backing off (2 s, doubling, to 5 min), an ending after a long run (a rejuvenation) replaced at once; five
+  failures in a row held (`CrashLoop`), a new spec releasing it; a new spec stopping the instance and starting the next once it is gone.
+  Main has part of this from Kubernetes: every agent is a Deployment of one whose pod restarts in place at every ending
+  (`deployments.md`, step 4), and an agent ends by its HealthCheckActor's verdict. What main has not: a held state (Kubernetes backs off and
+  retries forever), the distinction between a failure and a rejuvenation, and any record of either. Proposed: the controller this document
+  plans holds this policy per phase (a workload under test held sooner than one deployed, say), as a pure function in the same shape.
+- *Every ending, recorded, with the instance's own account* (`crd.rs`, `Ending`: kind, exit code, Kubernetes' reason, the instance's
+  termination message or its last log lines, how long it ran; its contract, every builder agent writing `/dev/termination-log`). This is
+  the observable this document's promotion rules need ("its invariants for a stated time, no attestation finding", decision 2) and what the
+  attestation threat model calls gold (crash events). Proposed: recorded in the graph by the attestation agent, which holds the pod
+  observer's role (`pod-reaper.md`, update 2026-10-26), with his query's shape as an invariant: endings soon after a start, and why.
+- *Three levels in the graph* (agent, deployment, instance: `(:PolarAgent {name})`, a target's deployment node, `(:Pod)`, with the phase
+  history on the deployment and each ending on its instance). It is decision 1's two levels (a kind; a workload on a cluster) with the
+  instance under them. Proposed: the kind and the workload on a cluster as this document names them, the phase history as states keyed on
+  the reporter's time, as build-processor's are (B5).
+- *A crash loop as a reason to move*: decision 2's rule-driven moves (deployed back to under test, or under test into retiring) can name
+  "held in a crash loop" as a measure that broke, so a hold is not only the controller's state but a signed rule's evidence.
+- *Its boundary*, already Polar's: "the operator starts processes, the scheduler configures them at runtime ... the operator never delivers
+  configuration" (his README) is `AGENTS.md`'s "control travels signed, at run time".
+
+**What is not taken:** the `PolarAgent` resource and a second controller making pods beside Flux and the catalog (two deployment systems);
+its own ServiceAccount per agent and its `pod` overlay (the catalog's facts); capabilities in a spec by hand (the builder computes them);
+lifecycle events published as a broker client with no identity of its own (`BROKER_ADDR` and a client certificate from the environment);
+a controller run from a laptop with that kubeconfig's rights.
+
+**Open, for the maintainer, when the controller is designed:**
+- Does the controller hold the instance policy, or is Kubernetes' restart with the HealthCheckActor's verdict enough, the controller
+  only recording endings and holding (a held workload scaled to zero) when a signed rule says so?
+- The thresholds (30 s to a failure, 2 s to 5 min back-off, 5 failures to a hold): per phase, signed in the lifecycle document, or the
+  controller's Dynamic settings?
+- Is a hold released by a new signed version of the workload's release (his "a new spec releases it"), by a person's move, or both?
+
 ## Open, for the maintainer
 
 1. *Decided* (the maintainer, 2026-11-07, "Two levels"): a kind has declared and released, whatever cluster it is on; a workload on a
