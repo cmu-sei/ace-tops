@@ -1065,7 +1065,14 @@ only.
     `fbbcfd60`; jira's copy had found it); and agents sent `GraphConnected` on every Cassini registration, where it means the controller
     started. Budgets stay what they rendered, but the soft-state pair's, 20 s to 45 s (they gave their controller 10 s). Left out, for review:
     the credentials agent, whose graph is a best-effort projection of its ledger and never its health (`credentials-agent/consume/src/
-    supervisor.rs`, "Declaring the graph section here rather than requiring the graph-write capability is deliberate"). Not yet seen live.
+    supervisor.rs`, "Declaring the graph section here rather than requiring the graph-write capability is deliberate"). Seen live on u7c
+    the same day (`5f31018f`): each agent's controller runs as `<agent>.graph_controller`; kube-consumer restarted twice in order
+    (SIGTERM, PrepareShutdown, proceed, "graph controller stopped cleanly", exit) in 22 and 27 ms of its 45 s, logging nothing lost, and
+    every pod running in `polar` had `Running` as its newest state in the graph, the restarted consumer's own replacement included; with
+    Neo4j scaled to 0 (Flux restored it after about 2.5 min), each writer reached its verdict once, 140-160 s in, and soft-state-observer
+    stayed up, its health saying "graph disconnected" each tick. Seen on the way: 13 pods deleted while kube-observer was itself evicted
+    (a full /home, my workspace build) are still `Running` in the graph, K5 live; and a `kubectl rollout restart` of a Flux-managed
+    workload is undone by Flux at its next reconcile, a second rollout (delete the pod instead).
   - **The handshake: open.** With the controller the builder's, most of these agents have no children of their own left, and their half is
     "proceed at once"; whether the builder then proceeds by itself is the next question.
   Since 2026-10-12 the graph start, stop and drain are shared in polar-agent-builder (`graph.rs`).
