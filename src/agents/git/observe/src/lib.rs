@@ -971,7 +971,7 @@ mod tests {
                     kind: polar_crypto::registry::SecretKind::Token,
                     username: username.to_string(),
                     secret: Zeroizing::new(secret.to_vec()),
-                    host_key: None,
+                    host_keys: Vec::new(),
                 }),
                 Answer::NotRegistered => Err(CryptoError::SecretNotRegistered(name)),
                 Answer::HostNotBound => Err(CryptoError::Use(UseRefusal::HostNotBound)),

@@ -1418,7 +1418,7 @@ pub(crate) mod tests {
                 kind: polar_crypto::registry::SecretKind::Token,
                 username: "oauth2".to_string(),
                 secret: Zeroizing::new(self.secret.clone()),
-                host_key: None,
+                host_keys: Vec::new(),
             })
         }
         async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {

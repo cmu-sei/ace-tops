@@ -911,6 +911,16 @@ I write Rust code"):
     the controller takes over ssh the handler judges for the same host. `russh` (ring) is a dev-dependency of the builder only,
     with 594 lines of `Cargo.lock`. The gitea's key as libssh2 sees it, probed with libgit2 (the server offers three; libssh2
     takes its Ed25519 one): `SHA256:YFLdJcQIVfrVsL4igdbFhIjYNMuGwNDejlBfkfBM5Lw`.
+    *Found live 2026-11-08, and the shape reworked* (the maintainer, "Fix the shape first"): in the cluster the gitea showed
+    its ECDSA key, and the Ed25519 pin refused it, nothing offered. The probe had run with a `known_hosts` that lists the
+    host, and libgit2 asks libssh2 to prefer a type that file names; with none, as in a pod, libssh2's own order gives ECDSA
+    (probed both ways). Which key a server shows is negotiated, so a pin of one is a guess about the negotiation: a binding
+    now pins the server's keys, each by its fingerprint, separated by commas (at most 8), any one of which may be shown, and
+    the refusal names the type and fingerprint it was shown (a host key is public). Found too: the deploy key was deleted
+    once sealed, before a fetch had used it, and a sealed copy is bound to its section's version, so the next version needed a
+    new key (`docs`' own rule: leave what is replaced in place until the transition is tested). And the observer polled the
+    dropped `ace-tops` entry for ten minutes after the repositories changed: by design, the controller's sets are incomplete
+    during its warm-up after a start (`POLAR_GIT_CONTROLLER_WARMUP_SECS`, 600 s), and an incomplete set stops no worker.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

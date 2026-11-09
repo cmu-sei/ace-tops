@@ -160,8 +160,9 @@ pub struct SecretBinding {
     pub host_pattern: String,
     pub kind: SecretKind,
     pub username: Option<String>,
-    /// For an ssh key, and only for one: the server's host key, by its SHA-256 fingerprint as `ssh-keygen -l` writes it
-    /// (`SHA256:` and 43 characters of base64). The key is offered to no server that shows another.
+    /// For an ssh key, and only for one: the server's host keys, each by its SHA-256 fingerprint as `ssh-keygen -l` writes
+    /// it (`SHA256:` and 43 characters of base64), separated by commas. A server has a key of each type and which it shows
+    /// is negotiated, so any of these may be shown; the key is offered to no server that shows another.
     pub host_key: Option<String>,
 }
 
@@ -175,9 +176,10 @@ impl SecretBinding {
             (SecretKind::SshKey, None) => {
                 return bad("an ssh key names the host key of its server");
             }
-            (SecretKind::SshKey, Some(pin)) if !is_fingerprint(pin) => {
+            (SecretKind::SshKey, Some(pins)) if !are_fingerprints(pins) => {
                 return bad(
-                    "a host key is `SHA256:` and 43 characters of base64, as `ssh-keygen -l` writes it",
+                    "a host key is `SHA256:` and 43 characters of base64, as `ssh-keygen -l` writes it; several are \
+                     separated by commas, at most 8",
                 );
             }
             (SecretKind::Token | SecretKind::UserPassword, Some(_)) => {
@@ -204,6 +206,15 @@ impl SecretBinding {
     }
 }
 
+/// The most host keys one binding pins: one of each type a server could have, and room to spare.
+const MAX_PINS: usize = 8;
+
+/// Whether `pins` is one to eight SHA-256 fingerprints, separated by commas and nothing else.
+fn are_fingerprints(pins: &str) -> bool {
+    let parts: Vec<&str> = pins.split(',').collect();
+    parts.len() <= MAX_PINS && parts.iter().all(|pin| is_fingerprint(pin))
+}
+
 /// Whether `pin` is a SHA-256 fingerprint as `ssh-keygen -l` writes it: `SHA256:` and the base64 of 32 bytes without its
 /// padding, in its one canonical spelling (the last character carries two bits that must be zero).
 fn is_fingerprint(pin: &str) -> bool {
@@ -225,8 +236,8 @@ pub struct GitCredential {
     pub kind: SecretKind,
     pub username: String,
     pub secret: zeroize::Zeroizing<Vec<u8>>,
-    /// For an ssh key: the host key the server must show before the key is offered.
-    pub host_key: Option<String>,
+    /// For an ssh key: the host keys, any one of which the server must show before the key is offered.
+    pub host_keys: Vec<String>,
 }
 
 impl std::fmt::Debug for GitCredential {
@@ -235,7 +246,7 @@ impl std::fmt::Debug for GitCredential {
             .field("kind", &self.kind)
             .field("username", &self.username)
             .field("secret", &"<redacted>")
-            .field("host_key", &self.host_key)
+            .field("host_keys", &self.host_keys)
             .finish()
     }
 }
@@ -281,7 +292,11 @@ pub fn git_credential(
         kind: binding.kind,
         username,
         secret: zeroize::Zeroizing::new(secret.to_vec()),
-        host_key: binding.host_key.clone(),
+        host_keys: binding
+            .host_key
+            .as_deref()
+            .map(|pins| pins.split(',').map(str::to_string).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -956,7 +971,7 @@ mod tests {
             git_credential(&b, b"-----BEGIN OPENSSH PRIVATE KEY-----", "52.235.181.217").unwrap();
         assert_eq!(got.kind, SecretKind::SshKey);
         assert_eq!(got.username, "git");
-        assert_eq!(got.host_key.as_deref(), Some(PIN));
+        assert_eq!(got.host_keys, vec![PIN.to_string()]);
         let named = ssh_binding("git.example.org", Some(PIN), Some("gitea"));
         assert_eq!(
             git_credential(&named, b"k", "git.example.org")
@@ -971,7 +986,10 @@ mod tests {
             "github.com",
         )
         .unwrap();
-        assert_eq!((token.kind, token.host_key), (SecretKind::Token, None));
+        assert_eq!(
+            (token.kind, token.host_keys),
+            (SecretKind::Token, Vec::new())
+        );
     }
 
     #[test]
@@ -1017,6 +1035,32 @@ mod tests {
             assert!(
                 ssh_binding("git.example.org", pin, None).check().is_err(),
                 "{pin:?}"
+            );
+        }
+    }
+
+    /// A server has a key of each type, and which it shows depends on what the client negotiates (libgit2 even reads a
+    /// `known_hosts` file to choose), so a binding pins the server's keys, any of which may be shown.
+    #[test]
+    fn an_ssh_key_may_pin_each_of_its_servers_keys() {
+        const OTHER: &str = "SHA256:C+my1p42LhQCfEkpg/LnFvSSI2NK+p/vU4O6maXD3jo";
+        let both = ssh_binding("52.235.181.217", Some(&format!("{PIN},{OTHER}")), None);
+        assert_eq!(both.check(), Ok(()));
+        let got = git_credential(&both, b"k", "52.235.181.217").unwrap();
+        assert_eq!(got.host_keys, vec![PIN.to_string(), OTHER.to_string()]);
+        for pins in [
+            format!("{PIN},"),
+            format!(",{PIN}"),
+            format!("{PIN},,{OTHER}"),
+            format!("{PIN}, {OTHER}"),
+            format!("{PIN},SHA256:short"),
+            [PIN; 9].join(","),
+        ] {
+            assert!(
+                ssh_binding("52.235.181.217", Some(&pins), None)
+                    .check()
+                    .is_err(),
+                "{pins:?}"
             );
         }
     }
@@ -1126,7 +1170,7 @@ mod tests {
                 proptest::prop_assert!(got.is_err());
             } else {
                 let got = got.unwrap();
-                proptest::prop_assert_eq!(got.host_key.as_deref(), Some(PIN));
+                proptest::prop_assert_eq!(got.host_keys, vec![PIN.to_string()]);
                 proptest::prop_assert_eq!(got.username, username.unwrap_or_else(|| "git".to_string()));
             }
         }

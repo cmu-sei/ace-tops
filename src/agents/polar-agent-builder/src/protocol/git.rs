@@ -142,6 +142,20 @@ fn ssh_target(url: &Url) -> Result<Target, String> {
     })
 }
 
+/// A host key's type by its name in ssh, as `known_hosts` and `ssh-keygen -l` write it.
+fn key_type(kind: Option<git2::cert::SshHostKeyType>) -> &'static str {
+    use git2::cert::SshHostKeyType;
+    match kind {
+        Some(SshHostKeyType::Rsa) => "ssh-rsa",
+        Some(SshHostKeyType::Dss) => "ssh-dss",
+        Some(SshHostKeyType::Ecdsa256) => "ecdsa-sha2-nistp256",
+        Some(SshHostKeyType::Ecdsa384) => "ecdsa-sha2-nistp384",
+        Some(SshHostKeyType::Ecdsa521) => "ecdsa-sha2-nistp521",
+        Some(SshHostKeyType::Ed255219) => "ssh-ed25519",
+        _ => "unknown",
+    }
+}
+
 /// The host key a server presented, as `ssh-keygen -l` writes its fingerprint and a binding pins it.
 fn fingerprint_of(sha256: &[u8; 32]) -> String {
     format!(
@@ -232,20 +246,25 @@ impl<'a> Fetching<'a> {
         let (credential, host, told) = (self.credential, self.host.to_string(), self.told);
         let mut presented = false;
         let mut callbacks = RemoteCallbacks::new();
-        // Over ssh, the server's host key against the pin, before anything is offered; over https, libgit2's own check of
-        // the certificate.
-        let pin = credential.and_then(|credential| credential.host_key.clone());
+        // Over ssh, the server's host key against the pins, before anything is offered; over https, libgit2's own check of
+        // the certificate. Which of its keys a server shows is negotiated (libgit2 even prefers a type a `known_hosts` file
+        // lists), so the binding pins each of them, and the refusal says which was shown: a host key is public.
+        let pins = credential
+            .map(|credential| credential.host_keys.clone())
+            .unwrap_or_default();
         callbacks.certificate_check(move |cert, _| {
             let Some(hostkey) = cert.as_hostkey() else {
                 return Ok(CertificateCheckStatus::CertificatePassthrough);
             };
             let shown = hostkey.hash_sha256().map(fingerprint_of);
-            if pin.is_some() && shown == pin {
+            if shown.as_ref().is_some_and(|shown| pins.contains(shown)) {
                 return Ok(CertificateCheckStatus::CertificateOk);
             }
-            told.set(Some(Failure::Configuration(
-                "the server's host key is not the one its credential pins".to_string(),
-            )));
+            told.set(Some(Failure::Configuration(format!(
+                "the server's host key is not one its credential pins: it showed its {} key {}",
+                key_type(hostkey.hostkey_type()),
+                shown.as_deref().unwrap_or("with no SHA-256 fingerprint"),
+            ))));
             Err(git2::Error::from_str("host key"))
         });
         callbacks.credentials(move |url, _, allowed| {
@@ -1377,13 +1396,31 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&failure, Failure::Configuration(why) if why.contains("host key")),
+            matches!(&failure, Failure::Configuration(why) if why.contains("host key") && why.contains(&fingerprint(&key(1))) && why.contains("ssh-ed25519")),
             "{failure:?}"
         );
         let seen = origin.seen();
         assert_eq!(seen.connections, 1, "it connected, to see the host key");
         assert!(seen.offered.is_empty(), "a key was offered: {seen:?}");
         assert!(!r.cloned());
+    }
+
+    /// A binding pins each key the server has, since which it shows is negotiated: the one shown being among them is enough.
+    #[tokio::test]
+    async fn a_server_showing_any_one_of_the_keys_its_binding_pins_is_fetched_from() {
+        let (r, origin) = over_ssh().await;
+        let secret = openssh(&key(2));
+        let pins = format!("{},{}", fingerprint(&key(9)), fingerprint(&key(1)));
+        let site =
+            git_handle_for(DECLARED, Some(("gh", &secret, pinned("127.0.0.1", &pins)))).await;
+        let tip = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&origin.url()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(tip, r.tip);
     }
 
     #[tokio::test]
