@@ -236,3 +236,25 @@ so they wait with `remote-observers.md`; Vaughn's commit stays the reference for
 resource only where C needs it. The kube consumer's open findings (`remaining-work.md`, K2 to K16) are not this area's, but
 C touches the same projections, so it is read against them as it is written. Tests first, then live on u7c.
 
+**Bite C, built (2026-11-09).** Decided for it (the maintainer): `Namespace` keeps main's key, `(name, cluster_uid)`, and the
+observer says the cluster, the uid of `kube-system`, read once before it watches anything (its operation `kube.cluster`, a get
+of that namespace) and stamped on every `RawKubeEvent` (`cluster_uid`; an event without one, from an older observer, is not
+projected). What was built:
+- *The observer* watches nodes across the cluster beside namespaces and Flux, and asks again for the cluster when the get
+  fails, watching nothing until it has it (`kubernetes/observe/src/watches.rs`, `Identifying`, `WatcherMsg::Identify`).
+  Found doing it: the Kubernetes handler made every call at a namespaced path, so a get of anything across the cluster went
+  to a path that does not exist; a call with no namespace is now of an object across the cluster
+  (`polar-agent-builder/src/protocol/kubernetes.rs`, `call`).
+- *The consumer* projects `Namespace` with its phase as `NamespaceState` (Active from its `creationTimestamp`, Terminating
+  from its `deletionTimestamp`, both the API's own times) and `Node`, by uid as before, with its conditions and cordon as
+  `NodeState` (from the latest condition's `lastTransitionTime`, never the heartbeat; a change no condition attests, a
+  cordon, from when it was observed, so it does not overwrite the state before it, finding K6). Both write a state only when
+  it changed, through the `ProjectionCache` nothing used before (finding K7, not repeated here; the other kinds still have
+  it). Every namespaced kind is `IN_NAMESPACE` its namespace, and a pod is `RUNNING_ON` the node it names, joined by the uid
+  the node was seen with: a pod seen before its node waits for it, a deleted node's name joins nothing, and a node made
+  again under the name is another node. The `todo!("Nodes")` panic (finding K12) is gone (`kubernetes/consume/src/lib.rs`,
+  `supervisor.rs`, `handle_kube_event`).
+- *Not done, by the order of work:* the nodes and edges are new, so nothing already in a graph changes and no migration is
+  needed. The cache lives in memory: a consumer that restarts writes each namespace's and node's current state once more,
+  and a pod whose node it has not seen since waits for the node's next event.
+

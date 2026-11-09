@@ -49,6 +49,12 @@ pub struct RawKubeEvent {
     pub object: Value,
 
     pub resource_version: Option<String>,
+
+    /// The cluster it is of: the uid of the cluster's `kube-system` namespace, which the observer reads before it watches
+    /// anything (docs/architecture/kubernetes/kubernetes.md, "Cluster-scoped identity and discovery"). Absent from an
+    /// observer older than it, whose events the consumer does not project.
+    #[serde(default)]
+    pub cluster_uid: Option<String>,
 }
 
 /// Messages intended to be serialized and set across the broker boundary to consumers for processing

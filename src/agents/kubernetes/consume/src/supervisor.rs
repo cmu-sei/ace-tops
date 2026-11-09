@@ -22,11 +22,11 @@
 */
 
 use crate::BROKER_CLIENT_NAME;
-use crate::GraphOperable;
+use crate::{GraphOperable, Scope};
 use cassini_types::ClientEvent;
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
 use kube_common::{
     KIND_KUSTOMIZATION, KIND_OCI_REPOSITORY, RESOURCE_APPLIED_ACTION, RESOURCE_DELETED_ACTION,
     flux::{kustomization::Kustomization, oci_repositories::OciRepository},
@@ -56,7 +56,7 @@ use ractor::concurrency::Duration;
 use ractor::{Actor, OutputPort};
 use serde::de::DeserializeOwned;
 use serde_json::from_value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use tracing::debug;
 use tracing::error;
@@ -101,6 +101,10 @@ pub struct StateFingerprint {
 #[derive(Default)]
 pub struct ProjectionCache {
     entries: HashMap<(String, String), StateFingerprint>,
+    /// Each node seen, by name: the uid it was seen with.
+    nodes: HashMap<String, String>,
+    /// The pods each node not yet seen runs, by its name, to be joined to it when it is.
+    waiting: HashMap<String, BTreeSet<String>>,
 }
 
 pub enum EmitDecision {
@@ -161,6 +165,50 @@ impl ProjectionCache {
     pub fn evict(&mut self, kind: String, uid: &str) {
         self.entries.remove(&(kind, uid.to_string()));
     }
+
+    /// When the state last written for this resource began.
+    pub fn valid_from_of(&self, kind: &str, uid: &str) -> Option<String> {
+        self.entries
+            .get(&(kind.to_string(), uid.to_string()))
+            .map(|entry| entry.valid_from.clone())
+    }
+
+    /// The uid of the node seen under `name`.
+    pub fn node_uid(&self, name: &str) -> Option<&str> {
+        self.nodes.get(name).map(String::as_str)
+    }
+
+    /// A node seen under `name`, with `uid`. The answer is the pods that were waiting for it.
+    pub fn record_node(&mut self, name: &str, uid: &str) -> Vec<String> {
+        self.nodes.insert(name.to_string(), uid.to_string());
+        self.waiting
+            .remove(name)
+            .map(|pods| pods.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// The node `uid` has gone, so its name joins no pod to it; a node seen under the name since keeps it.
+    pub fn forget_node(&mut self, name: &str, uid: &str) {
+        if self.nodes.get(name).is_some_and(|seen| seen == uid) {
+            self.nodes.remove(name);
+        }
+    }
+
+    /// A pod runs on the node `name`, which has not been seen.
+    pub fn wait_for_node(&mut self, name: &str, pod_uid: &str) {
+        self.waiting
+            .entry(name.to_string())
+            .or_default()
+            .insert(pod_uid.to_string());
+    }
+
+    /// The pod has gone, so it waits for no node.
+    pub fn forget_pod(&mut self, pod_uid: &str) {
+        self.waiting.retain(|_, pods| {
+            pods.remove(pod_uid);
+            !pods.is_empty()
+        });
+    }
 }
 
 pub struct ClusterConsumerSupervisor;
@@ -196,26 +244,95 @@ pub struct ClusterConsumerSupervisorState {
 impl ClusterConsumerSupervisor {
     pub fn handle_event<T>(
         ev: RawKubeEvent,
-        _cache: &mut ProjectionCache,
+        cluster_uid: &str,
+        cache: &mut ProjectionCache,
         graph_controller: &GraphController,
-        tcp_client: &TcpClient,
+        tcp_client: &dyn CassiniClient,
     ) -> Result<(), ActorProcessingErr>
     where
         T: DeserializeOwned + GraphOperable,
     {
         debug!("Handling event for resource {}", ev.kind);
         let obj = from_value::<T>(ev.object)?;
+        let mut scope = Scope { cluster_uid, cache };
 
         match ev.action.as_str() {
             RESOURCE_APPLIED_ACTION => {
                 debug!("handling RESOURCE_APPLIED_ACTION.");
-                obj.project_into_graph(graph_controller, tcp_client)?
+                obj.project_into_graph(graph_controller, tcp_client, &mut scope)?
             }
             RESOURCE_DELETED_ACTION => {
                 debug!("handling RESOURCE_DELETED_ACTION.");
-                obj.project_delete(graph_controller)?;
+                obj.project_delete(graph_controller, &mut scope)?;
             }
             _ => warn!("Unexpected action received!! {}", ev.action),
+        }
+        Ok(())
+    }
+
+    /// One of the observer's events, projected by its kind. An event that does not say which cluster it is of (from an
+    /// observer older than that) is not projected: its namespace could not be named.
+    pub fn handle_kube_event(
+        ev: RawKubeEvent,
+        cache: &mut ProjectionCache,
+        graph_controller: &GraphController,
+        tcp_client: &dyn CassiniClient,
+    ) -> Result<(), ActorProcessingErr> {
+        let Some(cluster_uid) = ev.cluster_uid.clone() else {
+            warn!(
+                kind = ev.kind,
+                "an event that does not say which cluster it is of, not projected"
+            );
+            return Ok(());
+        };
+        let cluster_uid = cluster_uid.as_str();
+        // TODO: Define constants for these and match on them instead, these literals are also used in the marco calls to define their watchers
+        match ev.kind.as_str() {
+            "Namespace" => Self::handle_event::<Namespace>(
+                ev,
+                cluster_uid,
+                cache,
+                graph_controller,
+                tcp_client,
+            )?,
+            "Node" => {
+                Self::handle_event::<Node>(ev, cluster_uid, cache, graph_controller, tcp_client)?
+            }
+            "Pod" => {
+                Self::handle_event::<Pod>(ev, cluster_uid, cache, graph_controller, tcp_client)?
+            }
+            "Deployment" => Self::handle_event::<Deployment>(
+                ev,
+                cluster_uid,
+                cache,
+                graph_controller,
+                tcp_client,
+            )?,
+            "ReplicaSet" => Self::handle_event::<ReplicaSet>(
+                ev,
+                cluster_uid,
+                cache,
+                graph_controller,
+                tcp_client,
+            )?,
+            "Job" => {
+                Self::handle_event::<Job>(ev, cluster_uid, cache, graph_controller, tcp_client)?
+            }
+            KIND_OCI_REPOSITORY => Self::handle_event::<OciRepository>(
+                ev,
+                cluster_uid,
+                cache,
+                graph_controller,
+                tcp_client,
+            )?,
+            KIND_KUSTOMIZATION => Self::handle_event::<Kustomization>(
+                ev,
+                cluster_uid,
+                cache,
+                graph_controller,
+                tcp_client,
+            )?,
+            _ => warn!("Unexpected resource type {}", ev.kind),
         }
         Ok(())
     }
@@ -234,31 +351,7 @@ impl ClusterConsumerSupervisor {
                 // 1) Parse the raw message into your RawKubeEvent
                 let ev: RawKubeEvent = serde_json::from_slice(&payload)?;
 
-                // TODO: Define constants for these and match on them instead, these literals are also used in the marco calls to define their watchers
-                match ev.kind.as_str() {
-                    "Pod" => Self::handle_event::<Pod>(ev, cache, graph_controller, tcp_client)?,
-                    "Deployment" => {
-                        Self::handle_event::<Deployment>(ev, cache, graph_controller, tcp_client)?
-                    }
-                    "ReplicaSet" => {
-                        Self::handle_event::<ReplicaSet>(ev, cache, graph_controller, tcp_client)?
-                    }
-                    "Job" => Self::handle_event::<Job>(ev, cache, graph_controller, tcp_client)?,
-                    "Node" => todo!("Nodes"),
-                    KIND_OCI_REPOSITORY => Self::handle_event::<OciRepository>(
-                        ev,
-                        cache,
-                        graph_controller,
-                        tcp_client,
-                    )?,
-                    KIND_KUSTOMIZATION => Self::handle_event::<Kustomization>(
-                        ev,
-                        cache,
-                        graph_controller,
-                        tcp_client,
-                    )?,
-                    _ => warn!("Unexpected resource type {}", ev.kind),
-                }
+                Self::handle_kube_event(ev, cache, graph_controller, tcp_client)?;
             }
             KUBERNETES_RESOLUTION_EVENTS => {
                 let ev = rkyv::from_bytes::<ProvenanceEvent, RkyvError>(&payload)?;
@@ -460,9 +553,7 @@ impl Actor for ClusterConsumerSupervisor {
         Ok(ClusterConsumerSupervisorState {
             broker_client: resources.tcp_client,
             graph_controller: Some(graph_controller),
-            projection_cache: ProjectionCache {
-                entries: HashMap::new(),
-            },
+            projection_cache: ProjectionCache::default(),
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             draining: false,

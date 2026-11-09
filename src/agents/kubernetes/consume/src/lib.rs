@@ -91,7 +91,7 @@ use std::collections::HashMap;
 use chrono::Utc;
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::ContainerStatus;
+use k8s_openapi::api::core::v1::{ContainerStatus, Namespace, Node};
 use k8s_openapi::{api::core::v1::Pod, apimachinery::pkg::apis::meta::v1::OwnerReference};
 use kube_common::flux::{kustomization::Kustomization, oci_repositories::OciRepository};
 use neo4rs::BoltType;
@@ -108,6 +108,8 @@ use polar::{
     },
 };
 use ractor::{ActorProcessingErr, ActorRef};
+
+use crate::supervisor::{EmitDecision, ProjectionCache};
 
 pub mod agent;
 pub mod supervisor;
@@ -197,12 +199,49 @@ pub trait GraphOperable {
         self,
         graph: &GraphController,
         tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr>;
 
     /// Record the resource's deletion as a terminal state transition.
     /// Deletion is a state, not an erasure — anchor nodes and history are
     /// never removed, per the append-only provenance model.
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr>;
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr>;
+}
+
+/// What a projection is given beside the graph: the cluster the event is of, as its observer said, and what the consumer
+/// keeps between events.
+pub struct Scope<'a> {
+    pub cluster_uid: &'a str,
+    pub cache: &'a mut ProjectionCache,
+}
+
+impl Scope<'_> {
+    /// The namespace `name`, in this cluster.
+    fn namespace(&self, name: &str) -> KubeNodeKey {
+        KubeNodeKey::Namespace {
+            name: name.to_string(),
+            cluster_uid: self.cluster_uid.to_string(),
+        }
+    }
+}
+
+/// A namespaced resource is in its namespace.
+fn in_namespace(
+    graph: &GraphController,
+    resource: &KubeNodeKey,
+    namespace: KubeNodeKey,
+) -> Result<(), ActorProcessingErr> {
+    graph.cast(GraphControllerMsg::Op(GraphOp::EnsureEdge {
+        from: resource.clone().into_key(),
+        rel_type: "IN_NAMESPACE".into(),
+        to: namespace.into_key(),
+        props: Vec::new(),
+    }))?;
+    Ok(())
 }
 
 fn handle_owner_refs(
@@ -275,6 +314,7 @@ impl GraphOperable for Job {
         self,
         graph: &GraphController,
         _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr> {
         // A resource without a uid has no identity to project. Defaulting to
         // "" would merge every uid-less resource into one node keyed on the
@@ -303,6 +343,7 @@ impl GraphOperable for Job {
             .unwrap_or_default();
 
         let job_key = KubeNodeKey::Job { uid: uid.clone() };
+        let namespace_key = scope.namespace(&namespace);
 
         // ---- Anchor node ----
 
@@ -318,6 +359,7 @@ impl GraphOperable for Job {
                 ts("observed_at", now_ms()),
             ],
         }))?;
+        in_namespace(graph, &job_key, namespace_key)?;
 
         // ---- Owner refs (e.g. CronJob owns Job) ----
 
@@ -384,7 +426,11 @@ impl GraphOperable for Job {
         Ok(())
     }
 
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr> {
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        _scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
         };
@@ -519,6 +565,7 @@ impl GraphOperable for Pod {
         self,
         graph: &GraphController,
         tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
@@ -538,6 +585,7 @@ impl GraphOperable for Pod {
             .unwrap_or_default();
 
         let pod_key = KubeNodeKey::Pod { uid: uid.clone() };
+        let namespace_key = scope.namespace(&namespace);
 
         // ---- Anchor node ----
         //
@@ -554,6 +602,19 @@ impl GraphOperable for Pod {
                 ts("observed_at", now_ms()),
             ],
         }))?;
+        in_namespace(graph, &pod_key, namespace_key)?;
+
+        // ---- RUNNING_ON ----
+        //
+        // A pod names its node by name, and a name is not a node's identity: one made again under it is another node. So
+        // the edge is to the uid the node itself was seen with, and a pod whose node has not been seen yet waits for it,
+        // never joined from the name alone.
+        if let Some(node_name) = self.spec.as_ref().and_then(|s| s.node_name.clone()) {
+            match scope.cache.node_uid(&node_name) {
+                Some(node_uid) => running_on(graph, &uid, node_uid)?,
+                None => scope.cache.wait_for_node(&node_name, &uid),
+            }
+        }
 
         // ---- Owner refs ----
 
@@ -1031,11 +1092,16 @@ impl GraphOperable for Pod {
         Ok(())
     }
 
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr> {
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
         };
         let now = now_ms();
+        scope.cache.forget_pod(&uid);
 
         // Goes through UpdateState (via the shared helper) rather than the
         // previous hand-rolled UpsertNode + EnsureEdge — the manual path
@@ -1069,6 +1135,7 @@ impl GraphOperable for Deployment {
         self,
         graph: &GraphController,
         _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
@@ -1123,6 +1190,7 @@ impl GraphOperable for Deployment {
             .unwrap_or_else(now_ms);
 
         let deployment_key = KubeNodeKey::Deployment { uid: uid.clone() };
+        let namespace_key = scope.namespace(&namespace);
 
         // ---- Anchor node ----
 
@@ -1134,6 +1202,7 @@ impl GraphOperable for Deployment {
                 ts("observed_at", now_ms()),
             ],
         }))?;
+        in_namespace(graph, &deployment_key, namespace_key)?;
 
         // ---- Owner refs ----
 
@@ -1178,7 +1247,11 @@ impl GraphOperable for Deployment {
         Ok(())
     }
 
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr> {
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        _scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
         };
@@ -1210,6 +1283,7 @@ impl GraphOperable for ReplicaSet {
         self,
         graph: &GraphController,
         _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
@@ -1242,6 +1316,7 @@ impl GraphOperable for ReplicaSet {
             .unwrap_or_else(now_ms);
 
         let rs_key = KubeNodeKey::ReplicaSet { uid: uid.clone() };
+        let namespace_key = scope.namespace(&namespace);
 
         // ---- Anchor node ----
 
@@ -1253,6 +1328,7 @@ impl GraphOperable for ReplicaSet {
                 ts("observed_at", now_ms()),
             ],
         }))?;
+        in_namespace(graph, &rs_key, namespace_key)?;
 
         // ---- Owner refs ----
 
@@ -1292,7 +1368,11 @@ impl GraphOperable for ReplicaSet {
         Ok(())
     }
 
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr> {
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        _scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
         };
@@ -1324,6 +1404,7 @@ impl GraphOperable for OciRepository {
         self,
         graph: &GraphController,
         _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
@@ -1336,6 +1417,7 @@ impl GraphOperable for OciRepository {
             .unwrap_or_else(|| "default".into());
 
         let repo_key = KubeNodeKey::FluxOciRepository { uid: uid.clone() };
+        let namespace_key = scope.namespace(&namespace);
 
         // ---- Anchor node ----
         //
@@ -1351,6 +1433,7 @@ impl GraphOperable for OciRepository {
                 ts("observed_at", now_ms()),
             ],
         }))?;
+        in_namespace(graph, &repo_key, namespace_key)?;
 
         // ---- State ----
         //
@@ -1441,7 +1524,11 @@ impl GraphOperable for OciRepository {
         Ok(())
     }
 
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr> {
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        _scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
         };
@@ -1468,6 +1555,7 @@ impl GraphOperable for Kustomization {
         self,
         graph: &GraphController,
         _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
     ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
@@ -1480,6 +1568,7 @@ impl GraphOperable for Kustomization {
             .unwrap_or_else(|| "default".into());
 
         let ks_key = KubeNodeKey::FluxKustomization { uid: uid.clone() };
+        let namespace_key = scope.namespace(&namespace);
 
         // ---- Anchor node ----
         //
@@ -1504,6 +1593,7 @@ impl GraphOperable for Kustomization {
                 ts("observed_at", now_ms()),
             ],
         }))?;
+        in_namespace(graph, &ks_key, namespace_key)?;
 
         // ---- RECONCILES_FROM edge: honest TODO, not dead code ----
         //
@@ -1615,7 +1705,11 @@ impl GraphOperable for Kustomization {
         Ok(())
     }
 
-    fn project_delete(self, graph: &GraphController) -> Result<(), ActorProcessingErr> {
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        _scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
         let Some(uid) = self.metadata.uid.clone() else {
             return Ok(());
         };
@@ -1625,6 +1719,248 @@ impl GraphOperable for Kustomization {
             graph,
             KubeNodeKey::FluxKustomization { uid: uid.clone() },
             KubeNodeKey::FluxKustomizationState {
+                uid,
+                valid_from: now,
+            },
+            now,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Namespace
+// ---------------------------------------------------------------------------
+//
+// Keyed by its name in its cluster, as everything namespaced names it. Its phase is its state, and each phase has a time the
+// API attests: Active from when it was made, Terminating from when its deletion began.
+
+impl GraphOperable for Namespace {
+    fn project_into_graph(
+        self,
+        graph: &GraphController,
+        _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
+        let Some(name) = self.metadata.name.clone() else {
+            return Ok(());
+        };
+        let namespace_key = scope.namespace(&name);
+
+        // ---- Anchor node ----
+
+        graph.cast(GraphControllerMsg::Op(GraphOp::UpsertNode {
+            key: namespace_key.clone().into_key(),
+            props: vec![
+                Property("name".into(), GraphValue::String(name.clone())),
+                Property("uid".into(), opt_string(&self.metadata.uid)),
+                ts("observed_at", now_ms()),
+            ],
+        }))?;
+
+        // ---- State ----
+
+        let phase = self
+            .status
+            .as_ref()
+            .and_then(|s| s.phase.clone())
+            .unwrap_or_else(|| "Unknown".into());
+        let attested = if phase == "Terminating" {
+            self.metadata.deletion_timestamp.as_ref()
+        } else {
+            self.metadata.creation_timestamp.as_ref()
+        };
+        // Neither is missing from what the API serves; observation time only if one were.
+        let valid_from_ms = attested.map(k8s_time_ms).unwrap_or_else(now_ms);
+        let meaningful = vec![Property("phase".into(), GraphValue::String(phase))];
+
+        if let EmitDecision::Emit { .. } = scope.cache.should_emit(
+            "Namespace".into(),
+            name.clone(),
+            format!("{meaningful:?}"),
+            valid_from_ms.to_string(),
+        ) {
+            let mut props = meaningful;
+            props.push(ts("valid_from", valid_from_ms));
+            props.push(ts("observed_at", now_ms()));
+            graph.cast(GraphControllerMsg::Op(GraphOp::UpdateState {
+                resource_key: namespace_key.into_key(),
+                state_type_key: KubeNodeKey::State.into_key(),
+                state_instance_key: KubeNodeKey::NamespaceState {
+                    name,
+                    cluster_uid: scope.cluster_uid.to_string(),
+                    valid_from: valid_from_ms,
+                }
+                .into_key(),
+                state_instance_props: props,
+            }))?;
+        }
+
+        Ok(())
+    }
+
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
+        let Some(name) = self.metadata.name.clone() else {
+            return Ok(());
+        };
+        let now = now_ms();
+        scope.cache.evict("Namespace".into(), &name);
+        project_deletion_state(
+            graph,
+            scope.namespace(&name),
+            KubeNodeKey::NamespaceState {
+                name,
+                cluster_uid: scope.cluster_uid.to_string(),
+                valid_from: now,
+            },
+            now,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Node
+// ---------------------------------------------------------------------------
+//
+// Keyed by its uid. A pod names its node only by name, so the consumer keeps each node's name and uid as it sees them, and
+// joins a pod to the uid (`RUNNING_ON`).
+
+/// A pod runs on a node.
+fn running_on(
+    graph: &GraphController,
+    pod_uid: &str,
+    node_uid: &str,
+) -> Result<(), ActorProcessingErr> {
+    graph.cast(GraphControllerMsg::Op(GraphOp::EnsureEdge {
+        from: KubeNodeKey::Pod {
+            uid: pod_uid.to_string(),
+        }
+        .into_key(),
+        rel_type: "RUNNING_ON".into(),
+        to: KubeNodeKey::Node {
+            uid: node_uid.to_string(),
+        }
+        .into_key(),
+        props: Vec::new(),
+    }))?;
+    Ok(())
+}
+
+impl GraphOperable for Node {
+    fn project_into_graph(
+        self,
+        graph: &GraphController,
+        _tcp_client: &dyn CassiniClient,
+        scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
+        let Some(uid) = self.metadata.uid.clone() else {
+            return Ok(());
+        };
+        let name = self.metadata.name.clone().unwrap_or_default();
+        let node_key = KubeNodeKey::Node { uid: uid.clone() };
+
+        // ---- Anchor node ----
+
+        graph.cast(GraphControllerMsg::Op(GraphOp::UpsertNode {
+            key: node_key.clone().into_key(),
+            props: vec![
+                Property("name".into(), GraphValue::String(name.clone())),
+                ts("observed_at", now_ms()),
+            ],
+        }))?;
+
+        // ---- RUNNING_ON, for the pods that were waiting for it ----
+
+        for pod_uid in scope.cache.record_node(&name, &uid) {
+            running_on(graph, &pod_uid, &uid)?;
+        }
+
+        // ---- State ----
+        //
+        // Its conditions, and its cordon, which is in its spec but as much its state. Each condition says when it last
+        // changed; never its heartbeat, which the kubelet renews whether or not anything changed.
+
+        let conditions = self
+            .status
+            .as_ref()
+            .and_then(|s| s.conditions.clone())
+            .unwrap_or_default();
+        let holds = |kind: &str| {
+            GraphValue::Bool(
+                conditions
+                    .iter()
+                    .any(|c| c.type_ == kind && c.status == "True"),
+            )
+        };
+        let unschedulable = self
+            .spec
+            .as_ref()
+            .and_then(|s| s.unschedulable)
+            .unwrap_or(false);
+        let meaningful = vec![
+            Property("ready".into(), holds("Ready")),
+            Property("memory_pressure".into(), holds("MemoryPressure")),
+            Property("disk_pressure".into(), holds("DiskPressure")),
+            Property("pid_pressure".into(), holds("PIDPressure")),
+            Property("network_unavailable".into(), holds("NetworkUnavailable")),
+            Property("unschedulable".into(), GraphValue::Bool(unschedulable)),
+        ];
+        let attested = conditions
+            .iter()
+            .filter_map(|c| c.last_transition_time.as_ref().map(k8s_time_ms))
+            .max();
+        // A change no condition attests (a cordon, say) has the time it was observed: keyed on the last transition, its
+        // state would be written over the state before it.
+        let previous = scope.cache.valid_from_of("Node", &uid);
+        let valid_from_ms = match attested {
+            Some(at) if previous != Some(at.to_string()) => at,
+            _ => now_ms(),
+        };
+
+        if let EmitDecision::Emit { .. } = scope.cache.should_emit(
+            "Node".into(),
+            uid.clone(),
+            format!("{meaningful:?}"),
+            valid_from_ms.to_string(),
+        ) {
+            let mut props = meaningful;
+            props.push(ts("valid_from", valid_from_ms));
+            props.push(ts("observed_at", now_ms()));
+            graph.cast(GraphControllerMsg::Op(GraphOp::UpdateState {
+                resource_key: node_key.into_key(),
+                state_type_key: KubeNodeKey::State.into_key(),
+                state_instance_key: KubeNodeKey::NodeState {
+                    uid,
+                    valid_from: valid_from_ms,
+                }
+                .into_key(),
+                state_instance_props: props,
+            }))?;
+        }
+
+        Ok(())
+    }
+
+    fn project_delete(
+        self,
+        graph: &GraphController,
+        scope: &mut Scope<'_>,
+    ) -> Result<(), ActorProcessingErr> {
+        let Some(uid) = self.metadata.uid.clone() else {
+            return Ok(());
+        };
+        let name = self.metadata.name.clone().unwrap_or_default();
+        let now = now_ms();
+        scope.cache.evict("Node".into(), &uid);
+        // Its name no longer joins a pod to it: a node made again under the name is another node.
+        scope.cache.forget_node(&name, &uid);
+        project_deletion_state(
+            graph,
+            KubeNodeKey::Node { uid: uid.clone() },
+            KubeNodeKey::NodeState {
                 uid,
                 valid_from: now,
             },
@@ -1659,7 +1995,7 @@ mod owner_edge_tests {
     use std::sync::{Arc, Mutex};
 
     /// Stands in for the graph controller and keeps what it is sent, as text.
-    struct Recorder;
+    pub(super) struct Recorder;
 
     #[ractor::async_trait]
     impl Actor for Recorder {
@@ -1736,6 +2072,323 @@ mod owner_edge_tests {
     #[tokio::test]
     async fn an_owner_of_a_kind_the_graph_has_no_node_for_writes_nothing() {
         let sent = sent_for(owner("Widget", "w")).await;
+        assert!(sent.is_empty(), "{sent:?}");
+    }
+}
+
+#[cfg(test)]
+mod namespace_and_node_tests {
+    use super::owner_edge_tests::Recorder;
+    use super::*;
+    use crate::supervisor::{ClusterConsumerSupervisor, ProjectionCache};
+    use kube_common::{RESOURCE_APPLIED_ACTION, RESOURCE_DELETED_ACTION, RawKubeEvent};
+    use polar::cassini::{
+        CassiniClientError, ControlRequest, PublishRequest, SubscribeRequest, UnsubscribeRequest,
+    };
+    use ractor::Actor;
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
+
+    const CLUSTER: &str = "the-cluster";
+    const MADE: &str = "2026-11-09T12:00:00Z";
+    const LATER: &str = "2026-11-09T13:00:00Z";
+
+    /// A client for a projection that publishes nothing, or whose publishing is not under test.
+    struct Quiet;
+
+    impl CassiniClient for Quiet {
+        fn register(&self) -> Result<String, CassiniClientError> {
+            Ok(String::new())
+        }
+        fn publish(&self, _: PublishRequest) -> Result<(), CassiniClientError> {
+            Ok(())
+        }
+        fn subscribe(&self, _: SubscribeRequest) -> Result<(), CassiniClientError> {
+            Ok(())
+        }
+        fn unsubscribe(&self, _: UnsubscribeRequest) -> Result<(), CassiniClientError> {
+            Ok(())
+        }
+        fn control(&self, _: ControlRequest) -> Result<(), CassiniClientError> {
+            Ok(())
+        }
+        fn disconnect(
+            &self,
+            _: Option<cassini_types::WireTraceCtx>,
+        ) -> Result<(), CassiniClientError> {
+            Ok(())
+        }
+        fn list_sessions(
+            &self,
+            _: Option<cassini_types::WireTraceCtx>,
+        ) -> Result<Vec<String>, CassiniClientError> {
+            Ok(Vec::new())
+        }
+        fn list_topics(
+            &self,
+            _: Option<cassini_types::WireTraceCtx>,
+        ) -> Result<Vec<String>, CassiniClientError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn ms(rfc3339: &str) -> i64 {
+        rfc3339_ms(rfc3339).unwrap()
+    }
+
+    fn applied(kind: &str, object: Value) -> RawKubeEvent {
+        RawKubeEvent {
+            kind: kind.into(),
+            action: RESOURCE_APPLIED_ACTION.into(),
+            object,
+            resource_version: None,
+            cluster_uid: Some(CLUSTER.into()),
+        }
+    }
+
+    fn deleted(kind: &str, object: Value) -> RawKubeEvent {
+        RawKubeEvent {
+            action: RESOURCE_DELETED_ACTION.into(),
+            ..applied(kind, object)
+        }
+    }
+
+    fn namespace(name: &str, phase: &str, deleting: Option<&str>) -> Value {
+        let mut metadata =
+            json!({"name": name, "uid": format!("ns-{name}"), "creationTimestamp": MADE});
+        if let Some(at) = deleting {
+            metadata["deletionTimestamp"] = json!(at);
+        }
+        json!({"apiVersion": "v1", "kind": "Namespace", "metadata": metadata, "status": {"phase": phase}})
+    }
+
+    fn node(name: &str, uid: &str, ready_since: &str, cordoned: bool) -> Value {
+        json!({"apiVersion": "v1", "kind": "Node",
+               "metadata": {"name": name, "uid": uid},
+               "spec": {"unschedulable": cordoned},
+               "status": {"conditions": [
+                   {"type": "Ready", "status": "True", "lastTransitionTime": ready_since,
+                    "lastHeartbeatTime": LATER},
+                   {"type": "MemoryPressure", "status": "False", "lastTransitionTime": MADE}]}})
+    }
+
+    fn pod(name: &str, on: &str) -> Value {
+        json!({"apiVersion": "v1", "kind": "Pod",
+               "metadata": {"name": name, "uid": format!("pod-{name}"), "namespace": "polar"},
+               "spec": {"nodeName": on, "containers": []}})
+    }
+
+    /// What the graph is sent for these events, in order, through the consumer's own handling of each.
+    async fn sent_for(events: Vec<RawKubeEvent>) -> Vec<String> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (graph, handle) = Actor::spawn(None, Recorder, seen.clone()).await.unwrap();
+        let mut cache = ProjectionCache::default();
+        for event in events {
+            ClusterConsumerSupervisor::handle_kube_event(event, &mut cache, &graph, &Quiet)
+                .unwrap();
+        }
+        graph.drain().unwrap();
+        handle.await.unwrap();
+        seen.lock().unwrap().clone()
+    }
+
+    fn with<'a>(sent: &'a [String], what: &str) -> Vec<&'a String> {
+        sent.iter().filter(|op| op.contains(what)).collect()
+    }
+
+    fn states(sent: &[String]) -> Vec<&String> {
+        with(sent, "UpdateState")
+    }
+
+    #[tokio::test]
+    async fn a_namespace_is_projected_in_its_cluster_with_its_phase_from_when_it_was_made() {
+        let sent = sent_for(vec![applied(
+            "Namespace",
+            namespace("polar", "Active", None),
+        )])
+        .await;
+        assert_eq!(
+            with(
+                &sent,
+                r#"Namespace { name: "polar", cluster_uid: "the-cluster" }"#
+            )
+            .len(),
+            2,
+            "its node, and the state's resource: {sent:?}"
+        );
+        let states = states(&sent);
+        assert_eq!(states.len(), 1, "{sent:?}");
+        assert!(
+            states[0].contains(&format!(
+                r#"NamespaceState {{ name: "polar", cluster_uid: "the-cluster", valid_from: {} }}"#,
+                ms(MADE)
+            )) && states[0].contains("Active"),
+            "{states:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_namespace_seen_again_unchanged_writes_no_new_state() {
+        let sent = sent_for(vec![
+            applied("Namespace", namespace("polar", "Active", None)),
+            applied("Namespace", namespace("polar", "Active", None)),
+        ])
+        .await;
+        assert_eq!(states(&sent).len(), 1, "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn a_terminating_namespace_is_a_state_from_when_its_deletion_began() {
+        let sent = sent_for(vec![
+            applied("Namespace", namespace("going", "Active", None)),
+            applied("Namespace", namespace("going", "Terminating", Some(LATER))),
+            deleted("Namespace", namespace("going", "Terminating", Some(LATER))),
+        ])
+        .await;
+        let states = states(&sent);
+        assert_eq!(states.len(), 3, "{sent:?}");
+        assert!(
+            states[1].contains(&format!("valid_from: {}", ms(LATER)))
+                && states[1].contains("Terminating"),
+            "{states:?}"
+        );
+        assert!(states[2].contains("Deleted"), "{states:?}");
+    }
+
+    #[tokio::test]
+    async fn a_node_is_projected_with_its_conditions_from_when_they_last_changed() {
+        let sent = sent_for(vec![applied("Node", node("worker", "n-1", LATER, false))]).await;
+        assert!(
+            !with(&sent, r#"Node { uid: "n-1" }"#).is_empty(),
+            "{sent:?}"
+        );
+        let states = states(&sent);
+        assert_eq!(states.len(), 1, "{sent:?}");
+        assert!(
+            states[0].contains(&format!(
+                r#"NodeState {{ uid: "n-1", valid_from: {} }}"#,
+                ms(LATER)
+            )),
+            "the latest transition, never the heartbeat: {states:?}"
+        );
+        assert!(states[0].contains(r#""ready", Bool(true)"#), "{states:?}");
+    }
+
+    #[tokio::test]
+    async fn a_node_seen_again_unchanged_writes_no_new_state() {
+        let sent = sent_for(vec![
+            applied("Node", node("worker", "n-1", MADE, false)),
+            applied("Node", node("worker", "n-1", MADE, false)),
+        ])
+        .await;
+        assert_eq!(states(&sent).len(), 1, "{sent:?}");
+    }
+
+    /// A cordon moves no condition, so its state cannot be keyed on the last transition, which would overwrite the
+    /// state before it.
+    #[tokio::test]
+    async fn a_cordon_is_a_new_state_though_no_condition_moved() {
+        let sent = sent_for(vec![
+            applied("Node", node("worker", "n-1", MADE, false)),
+            applied("Node", node("worker", "n-1", MADE, true)),
+        ])
+        .await;
+        let states = states(&sent);
+        assert_eq!(states.len(), 2, "{sent:?}");
+        assert!(
+            !states[1].contains(&format!("valid_from: {} }}", ms(MADE))),
+            "a key of its own: {states:?}"
+        );
+        assert!(
+            states[1].contains(r#""unschedulable", Bool(true)"#),
+            "{states:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pod_runs_on_the_node_its_spec_names() {
+        let sent = sent_for(vec![
+            applied("Node", node("worker", "n-1", MADE, false)),
+            applied("Pod", pod("a", "worker")),
+        ])
+        .await;
+        let running = with(&sent, "RUNNING_ON");
+        assert_eq!(running.len(), 1, "{sent:?}");
+        assert!(
+            running[0].contains(r#"Pod { uid: "pod-a" }"#)
+                && running[0].contains(r#"Node { uid: "n-1" }"#)
+        );
+    }
+
+    /// The node a pod names may not have been seen yet; the pod is joined to it when it is, and not from the name alone.
+    #[tokio::test]
+    async fn a_pod_seen_before_its_node_is_joined_to_it_when_the_node_comes() {
+        let sent = sent_for(vec![
+            applied("Pod", pod("a", "worker")),
+            applied("Node", node("worker", "n-1", MADE, false)),
+            applied("Node", node("worker", "n-1", MADE, false)),
+        ])
+        .await;
+        let running = with(&sent, "RUNNING_ON");
+        assert_eq!(running.len(), 1, "once, when the node came: {sent:?}");
+        assert!(running[0].contains(r#"Node { uid: "n-1" }"#), "{running:?}");
+    }
+
+    /// A node's name is not its identity: a node made again under the name is another node.
+    #[tokio::test]
+    async fn a_deleted_nodes_name_does_not_join_a_pod_to_it() {
+        let sent = sent_for(vec![
+            applied("Node", node("worker", "n-1", MADE, false)),
+            deleted("Node", node("worker", "n-1", MADE, false)),
+            applied("Pod", pod("a", "worker")),
+            applied("Node", node("worker", "n-2", MADE, false)),
+        ])
+        .await;
+        let running = with(&sent, "RUNNING_ON");
+        assert_eq!(running.len(), 1, "{sent:?}");
+        assert!(running[0].contains(r#"Node { uid: "n-2" }"#), "{running:?}");
+    }
+
+    /// A pod deleted while it waited for its node is not joined to the node when it comes.
+    #[tokio::test]
+    async fn a_pod_deleted_while_it_waited_is_not_joined() {
+        let sent = sent_for(vec![
+            applied("Pod", pod("a", "worker")),
+            deleted("Pod", pod("a", "worker")),
+            applied("Node", node("worker", "n-1", MADE, false)),
+        ])
+        .await;
+        assert!(with(&sent, "RUNNING_ON").is_empty(), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn every_namespaced_resource_is_in_its_namespace() {
+        let meta =
+            |kind: &str| json!({"name": "x", "uid": format!("{kind}-1"), "namespace": "polar"});
+        let sent = sent_for(vec![
+            applied("Pod", pod("a", "worker")),
+            applied("Job", json!({"metadata": meta("job")})),
+            applied("Deployment", json!({"metadata": meta("deployment")})),
+            applied("ReplicaSet", json!({"metadata": meta("replicaset")})),
+        ])
+        .await;
+        let within = with(&sent, "IN_NAMESPACE");
+        assert_eq!(within.len(), 4, "{sent:?}");
+        assert!(
+            within
+                .iter()
+                .all(|op| op.contains(r#"Namespace { name: "polar", cluster_uid: "the-cluster" }"#)),
+            "{within:?}"
+        );
+    }
+
+    /// An event from an observer that does not say which cluster it is of is not projected: its namespace could not be
+    /// named.
+    #[tokio::test]
+    async fn an_event_that_does_not_say_its_cluster_is_not_projected() {
+        let mut event = applied("Namespace", namespace("polar", "Active", None));
+        event.cluster_uid = None;
+        let sent = sent_for(vec![event]).await;
         assert!(sent.is_empty(), "{sent:?}");
     }
 }

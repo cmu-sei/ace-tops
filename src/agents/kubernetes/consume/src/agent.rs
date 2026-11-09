@@ -73,7 +73,10 @@ impl PolarAgent for KubeConsumer {
         GraphDecl::owns("KubernetesJobState", "each state a job was seen in"),
         GraphDecl::owns("StatefulSet", "the stateful sets that own pods, as anchors"),
         GraphDecl::owns("DaemonSet", "the daemon sets that own pods, as anchors"),
-        GraphDecl::owns("Node", "the nodes pods run on, as anchors"),
+        GraphDecl::owns("Namespace", "the cluster's namespaces, by name"),
+        GraphDecl::owns("NamespaceState", "each phase a namespace was seen in"),
+        GraphDecl::owns("Node", "the cluster's nodes, which pods run on"),
+        GraphDecl::owns("NodeState", "each state a node was seen in"),
         GraphDecl::owns("FluxOCIRepository", "Flux's OCI repositories"),
         GraphDecl::owns(
             "FluxOCIRepositoryState",

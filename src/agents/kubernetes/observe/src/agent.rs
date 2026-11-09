@@ -38,7 +38,7 @@ impl PolarAgent for KubeObserver {
         "Watches the Kubernetes API and publishes what it sees to Cassini";
     const NEEDS: &'static [Capability] = &[Capability::KubeApiRead];
     const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
-    const OPERATIONS: &'static [OperationDecl] = &[crate::watches::WATCH];
+    const OPERATIONS: &'static [OperationDecl] = &[crate::watches::IDENTIFY, crate::watches::WATCH];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
         kube_common::KUBERNETES_CONSUMER,
@@ -83,8 +83,10 @@ mod tests {
     #[test]
     fn it_says_it_reads_the_cluster() {
         let scaffold = polar_agent_builder::agent::scaffold_document::<KubeObserver>();
-        assert_eq!(scaffold.operations.len(), 1);
-        assert_eq!(scaffold.operations[0].protocol, "kubernetes");
-        assert_eq!(scaffold.operations[0].location, "cluster");
+        assert_eq!(scaffold.operations.len(), 2);
+        for operation in &scaffold.operations {
+            assert_eq!(operation.protocol, "kubernetes");
+            assert_eq!(operation.location, "cluster");
+        }
     }
 }

@@ -30,7 +30,7 @@
 use cassini_client::{OfflineBehavior, PublishRequest};
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Namespace, Pod};
+use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
 use kube_common::{
     KIND_KUSTOMIZATION, KIND_OCI_REPOSITORY, KUBERNETES_CONSUMER, RESOURCE_APPLIED_ACTION,
     RESOURCE_DELETED_ACTION, RawKubeEvent,
@@ -52,14 +52,15 @@ use tracing::{debug, error, info, warn};
 /// What the agent asks of the Kubernetes API.
 pub const WATCH: OperationDecl = OperationDecl {
     name: "kube.watch",
-    doc: "every change to the cluster's namespaces, their workloads and pods, and Flux's sources and kustomizations",
+    doc: "every change to the cluster's namespaces and nodes, the namespaces' workloads and pods, and Flux's sources and kustomizations",
     protocol: ProtocolKind::KUBERNETES,
     location: Location::Cluster { access: &WATCHED },
 };
 
 /// What it may do: watch each kind it watches, and nothing else.
-const WATCHED: [Access; 7] = [
+const WATCHED: [Access; 8] = [
     Kind::Namespace.resource().access(Verb::Watch),
+    Kind::Node.resource().access(Verb::Watch),
     Kind::OciRepository.resource().access(Verb::Watch),
     Kind::Kustomization.resource().access(Verb::Watch),
     Kind::Deployment.resource().access(Verb::Watch),
@@ -72,6 +73,7 @@ const WATCHED: [Access; 7] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Namespace,
+    Node,
     OciRepository,
     Kustomization,
     Deployment,
@@ -81,7 +83,12 @@ pub enum Kind {
 }
 
 /// Watched across the cluster.
-const CLUSTER_WIDE: [Kind; 3] = [Kind::Namespace, Kind::OciRepository, Kind::Kustomization];
+const CLUSTER_WIDE: [Kind; 4] = [
+    Kind::Namespace,
+    Kind::Node,
+    Kind::OciRepository,
+    Kind::Kustomization,
+];
 
 /// Watched in each namespace.
 const IN_EACH_NAMESPACE: [Kind; 4] = [Kind::Deployment, Kind::ReplicaSet, Kind::Pod, Kind::Job];
@@ -104,6 +111,7 @@ impl Kind {
     const fn resource(self) -> Resource {
         match self {
             Kind::Namespace => Resource::of::<Namespace>(),
+            Kind::Node => Resource::of::<Node>(),
             Kind::OciRepository => OCI_REPOSITORY,
             Kind::Kustomization => KUSTOMIZATION,
             Kind::Deployment => Resource::of::<Deployment>(),
@@ -133,6 +141,23 @@ pub enum Seen {
 /// A watch, as a request of the handler's.
 pub struct Watching(pub Watched);
 
+/// What the agent reads of the cluster before it watches anything: which cluster it is.
+pub const IDENTIFY: OperationDecl = OperationDecl {
+    name: "kube.cluster",
+    doc: "which cluster it watches: the uid of its kube-system namespace, read once before anything is watched",
+    protocol: ProtocolKind::KUBERNETES,
+    location: Location::Cluster {
+        access: &[Kind::Namespace.resource().access(Verb::Get)],
+    },
+};
+
+/// The namespace whose uid stands for the cluster's: Kubernetes has no cluster id of its own, and kube-system is in every
+/// cluster for its whole life.
+const KUBE_SYSTEM: &str = "kube-system";
+
+/// A get of the cluster's kube-system namespace, whose answer is its uid.
+pub struct Identifying;
+
 fn event(kind: Kind, action: &str, object: &Value) -> RawKubeEvent {
     RawKubeEvent {
         kind: kind.resource().kind.to_string(),
@@ -140,6 +165,39 @@ fn event(kind: Kind, action: &str, object: &Value) -> RawKubeEvent {
         object: object.clone(),
         // The watcher keeps it, and the consumer does not read it.
         resource_version: None,
+        // The watcher's, said as it publishes.
+        cluster_uid: None,
+    }
+}
+
+impl Operation for Identifying {
+    type Protocol = Kubernetes;
+    type Output = String;
+    const DECL: OperationDecl = IDENTIFY;
+
+    fn request(&self) -> kubernetes::Call {
+        kubernetes::Call::Get {
+            resource: Kind::Namespace.resource(),
+            namespace: String::new(),
+            name: KUBE_SYSTEM.to_string(),
+        }
+    }
+
+    fn read(&self, said: &kubernetes::Answer) -> Result<String, ReadFailure> {
+        match said {
+            kubernetes::Answer::Object(object) => object["metadata"]["uid"]
+                .as_str()
+                .filter(|uid| !uid.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| ReadFailure::Malformed("kube-system has no uid".into())),
+            kubernetes::Answer::Said(answer) => Err(ReadFailure::Malformed(format!(
+                "a get of kube-system was answered {} {}: {}",
+                answer.code, answer.reason, answer.message
+            ))),
+            other => Err(ReadFailure::Malformed(format!(
+                "a get of kube-system was answered {other:?}"
+            ))),
+        }
     }
 }
 
@@ -259,6 +317,8 @@ pub enum WatcherMsg {
     WaitsChanged(Waits),
     /// Time to ask for a watch again.
     Again(Watched),
+    /// Time to ask which cluster this is, before anything is watched.
+    Identify,
 }
 
 pub struct ClusterWatcherArgs {
@@ -278,6 +338,8 @@ pub enum WaitsFrom {
 pub struct ClusterWatcherState {
     protocols: ProtocolHandle,
     publisher: Arc<dyn Publisher>,
+    /// The cluster every change it publishes is of, once it has read it; nothing is watched before.
+    cluster_uid: Option<String>,
     waits: Waits,
     namespaces: Namespaces,
     /// Each watch in progress, which ends when it is dropped from here.
@@ -350,7 +412,11 @@ impl ClusterWatcherState {
     /// Publishes, and a publish that is refused goes no further. There are two ways to be refused, a client that has gone, whose agent is
     /// ending, and an object over what a frame carries, which will not fit next time either.
     async fn publish(&self, event: &RawKubeEvent) {
-        if let Err(why) = self.publisher.publish(event).await {
+        let event = RawKubeEvent {
+            cluster_uid: self.cluster_uid.clone(),
+            ..event.clone()
+        };
+        if let Err(why) = self.publisher.publish(&event).await {
             error!(kind = event.kind, "a change was not published: {why}");
         }
     }
@@ -434,23 +500,16 @@ impl Actor for ClusterWatcher {
             WaitsFrom::Followed(configuration) => follow_waits(configuration, &myself).await?,
             WaitsFrom::Fixed(waits) => *waits,
         };
-        let mut state = ClusterWatcherState {
+        let state = ClusterWatcherState {
             protocols: args.protocols,
             publisher: args.publisher,
+            cluster_uid: None,
             waits,
             namespaces: Namespaces::default(),
             streams: BTreeMap::new(),
         };
-        for kind in CLUSTER_WIDE {
-            state.start(
-                &myself,
-                Watched {
-                    kind,
-                    namespace: None,
-                },
-            )?;
-        }
-        info!("watching the cluster");
+        // Asked as the first message, so that a get that fails is made again rather than failing the start.
+        myself.cast(WatcherMsg::Identify)?;
         Ok(state)
     }
 
@@ -472,6 +531,31 @@ impl Actor for ClusterWatcher {
                     state.start(&myself, watched)?;
                 }
             }
+            WatcherMsg::Identify => match state.protocols.ask(Identifying).await {
+                Ok(cluster_uid) => {
+                    info!(cluster_uid, "watching the cluster");
+                    state.cluster_uid = Some(cluster_uid);
+                    for kind in CLUSTER_WIDE {
+                        state.start(
+                            &myself,
+                            Watched {
+                                kind,
+                                namespace: None,
+                            },
+                        )?;
+                    }
+                }
+                Err(why) => {
+                    warn!(
+                        "which cluster this is could not be read, and will be asked again: {why}"
+                    );
+                    let wait = match why {
+                        Failure::Configuration(_) => state.waits.refused,
+                        _ => state.waits.lost,
+                    };
+                    myself.send_after(wait, || WatcherMsg::Identify);
+                }
+            },
         }
         Ok(())
     }
@@ -492,6 +576,35 @@ mod tests {
             );
         }
         assert_eq!(WATCHED.len(), CLUSTER_WIDE.len() + IN_EACH_NAMESPACE.len());
+    }
+
+    /// What it reads of the cluster before it watches is a get of one namespace, and its operation says so.
+    #[test]
+    fn what_it_reads_of_the_cluster_is_declared() {
+        let identifying = Identifying;
+        assert_eq!(
+            identifying.request().access(),
+            Kind::Namespace.resource().access(Verb::Get)
+        );
+        let polar_agent_builder::protocol::Location::Cluster { access } = IDENTIFY.location else {
+            panic!("in the cluster");
+        };
+        assert_eq!(access, [Kind::Namespace.resource().access(Verb::Get)]);
+    }
+
+    #[test]
+    fn the_cluster_is_the_uid_of_its_kube_system_namespace() {
+        let said = kubernetes::Answer::Object(
+            json!({"metadata": {"name": "kube-system", "uid": "the-cluster"}}),
+        );
+        assert_eq!(Identifying.read(&said), Ok("the-cluster".to_string()));
+        for said in [
+            kubernetes::Answer::Object(json!({"metadata": {"name": "kube-system"}})),
+            kubernetes::Answer::Object(json!({"metadata": {"name": "kube-system", "uid": ""}})),
+            kubernetes::Answer::Objects(vec![]),
+        ] {
+            assert!(Identifying.read(&said).is_err(), "{said:?}");
+        }
     }
     use kube_common::flux::kustomization::Kustomization;
     use kube_common::flux::oci_repositories::OciRepository;
@@ -548,6 +661,7 @@ mod tests {
         assert_eq!(deleted.action, RESOURCE_DELETED_ACTION);
         for (kind, name) in [
             (Kind::Namespace, "Namespace"),
+            (Kind::Node, "Node"),
             (Kind::Deployment, "Deployment"),
             (Kind::ReplicaSet, "ReplicaSet"),
             (Kind::Job, "Job"),
@@ -682,6 +796,7 @@ mod tests {
     };
 
     const NAMESPACES: &str = "/api/v1/namespaces";
+    const NODES: &str = "/api/v1/nodes";
     const POLAR_PODS: &str = "/api/v1/namespaces/polar/pods";
 
     /// The namespaced paths of `namespace`, each holding nothing.
@@ -700,8 +815,31 @@ mod tests {
         watching_with(api, FAST).await
     }
 
+    const KUBE_SYSTEM: &str = "/api/v1/namespaces/kube-system";
+    const THE_CLUSTER: &str = "the-cluster";
+
+    /// The cluster's kube-system namespace, as a get of it answers.
+    fn kube_system(api: &KubeApi) {
+        api.answers(
+            "GET",
+            KUBE_SYSTEM,
+            200,
+            json!({"apiVersion": "v1", "kind": "Namespace",
+                   "metadata": {"name": "kube-system", "uid": THE_CLUSTER}}),
+        );
+    }
+
     async fn watching_with(api: &KubeApi, waits: Waits) -> (Site, Arc<Kept>, ActorRef<WatcherMsg>) {
-        static OPERATIONS: [OperationDecl; 1] = [WATCH];
+        kube_system(api);
+        watching_unidentified(api, waits).await
+    }
+
+    /// Watching, with nothing said yet of the cluster's kube-system namespace.
+    async fn watching_unidentified(
+        api: &KubeApi,
+        waits: Waits,
+    ) -> (Site, Arc<Kept>, ActorRef<WatcherMsg>) {
+        static OPERATIONS: [OperationDecl; 2] = [IDENTIFY, WATCH];
         let site = kubernetes_handle(&OPERATIONS, api).await;
         let kept = Arc::new(Kept::default());
         let (actor, _) = Actor::spawn(
@@ -771,11 +909,13 @@ mod tests {
         );
         api.holds(POLAR_PODS, vec![named("a-pod")]);
         api.holds("/apis/batch/v1/namespaces/polar/jobs", vec![named("a-job")]);
+        api.holds(NODES, vec![named("a-node")]);
         let (site, kept, _actor) = watching(&api).await;
-        kept.until("every kind", |kept| kept.events.lock().unwrap().len() >= 7)
+        kept.until("every kind", |kept| kept.events.lock().unwrap().len() >= 8)
             .await;
         for (kind, name) in [
             ("Namespace", "polar"),
+            ("Node", "a-node"),
             (KIND_OCI_REPOSITORY, "a-source"),
             (KIND_KUSTOMIZATION, "a-kustomization"),
             ("Deployment", "a-deployment"),
@@ -792,9 +932,42 @@ mod tests {
                 .iter()
                 .all(|event| event.action == RESOURCE_APPLIED_ACTION)
         );
+        assert!(
+            kept.events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| event.cluster_uid.as_deref() == Some(THE_CLUSTER)),
+            "every change says the cluster it is of"
+        );
         let records = site.records.lock().unwrap().clone();
-        assert_eq!(records.len(), 7, "one line for each watch: {records:?}");
+        assert_eq!(
+            records.len(),
+            9,
+            "one line for the get of the cluster, and one for each watch: {records:?}"
+        );
         assert!(records.iter().all(|record| record.verdict == "allowed"));
+    }
+
+    /// Nothing is watched, so nothing is published, until the cluster is known; a get of it that fails is made again.
+    #[tokio::test]
+    async fn nothing_is_watched_until_the_cluster_is_known() {
+        let api = KubeApi::start().await;
+        api.answers("GET", KUBE_SYSTEM, 500, json!({}));
+        kube_system(&api);
+        api.holds(NAMESPACES, vec![named("polar")]);
+        empty_namespace(&api, "polar");
+        let (_site, kept, _actor) = watching_unidentified(&api, FAST).await;
+        kept.until("the namespace", |kept| !kept.names("Namespace").is_empty())
+            .await;
+        assert_eq!(api.asked_of(KUBE_SYSTEM).await, 2, "asked again");
+        assert!(
+            kept.events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| event.cluster_uid.as_deref() == Some(THE_CLUSTER))
+        );
     }
 
     /// A kind the cluster does not serve (Flux's, say) costs its own watch and nothing else, and it is asked for again in case it comes.
@@ -816,7 +989,7 @@ mod tests {
             !kept.names(KIND_KUSTOMIZATION).is_empty()
         })
         .await;
-        assert!(site.records.lock().unwrap().len() > 7);
+        assert!(site.records.lock().unwrap().len() > 9);
     }
 
     #[tokio::test]
@@ -927,6 +1100,7 @@ mod tests {
         let state = ClusterWatcherState {
             protocols: site.handle.clone(),
             publisher: Arc::new(Kept::default()),
+            cluster_uid: Some(THE_CLUSTER.to_string()),
             waits: FAST,
             namespaces: Namespaces::default(),
             streams: BTreeMap::new(),

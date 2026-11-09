@@ -420,7 +420,7 @@ only.
   schedule.
   - HIGH K1 [4]: one message the consumer cannot handle ends the agent: `kubernetes/consume/src/supervisor.rs` ~587-593 `deserialize_and_dispatch(...)?`
     returns from the root's handle any error of serde_json (~235), `from_value::<T>` (~207), `rkyv::from_bytes` (~264), the `todo!("Nodes")` panic (~247,
-    K12) and the `?` on `emit_provenance_event` and `graph.cast` in `lib.rs`; what was in the mailbox was acknowledged and is lost. Triggers: a newer Flux
+    K12, gone 2026-11-09 with area 3's bite C: nodes are projected) and the `?` on `emit_provenance_event` and `graph.cast` in `lib.rs`; what was in the mailbox was acknowledged and is lost. Triggers: a newer Flux
     adding a value to a closed kopium enum (`common/src/flux/kustomization.rs` ~582-588 `KustomizationSourceRefKind`, `oci_repositories.rs` ~182
     provider) crashes it on every status update of that object; resolver/consumer rkyv skew on `ProvenanceEvent` does the same. Log and skip the one message.
   - HIGH K18 [2]: that failure logs no reason: the root has no parent (`consume/src/agent.rs` ~96-101), ractor 0.15.13 does not log a handler error, and
@@ -811,7 +811,8 @@ only.
   own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide
   (PLANNED 2026-11-09, `docs/architecture/kubernetes/kubernetes.md`, "Cluster-scoped identity and discovery"; DECIDED 2026-11-09, the
   maintainer: one cluster for now, observers that run anywhere written up and deferred in `docs/architecture/remote-observers.md`; so area 3
-  is bite C only, Namespace and Node states and a pod `RUNNING_ON` its node, and A, B and D wait with remote observers);
+  is bite C only, Namespace and Node states and a pod `RUNNING_ON` its node, and A, B and D wait with remote observers; C BUILT 2026-11-09,
+  the observer stamping the cluster's uid, K12's panic gone, K6 and K7 not repeated in the new projections; live on u7c to see);
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design (DONE 2026-11-09:
   written there, "From Vaughn's operator", what to take and not, and three questions for when the controller is designed); (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read

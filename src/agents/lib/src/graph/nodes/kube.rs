@@ -38,6 +38,11 @@ pub enum KubeNodeKey {
         name: String,
         cluster_uid: String,
     },
+    NamespaceState {
+        name: String,
+        cluster_uid: String,
+        valid_from: i64,
+    },
     Deployment {
         uid: String,
     },
@@ -96,8 +101,13 @@ pub enum KubeNodeKey {
     DaemonSet {
         uid: String,
     },
+    /// A cluster node, which the observer watches; a mirror pod's owner reference names it too.
     Node {
         uid: String,
+    },
+    NodeState {
+        uid: String,
+        valid_from: i64,
     },
     JobState {
         uid: String,
@@ -139,6 +149,18 @@ impl GraphNodeKey for KubeNodeKey {
                 &["Namespace"],
                 vec![("name", s(name)), ("cluster_uid", s(cluster_uid))],
             ),
+            KubeNodeKey::NamespaceState {
+                name,
+                cluster_uid,
+                valid_from,
+            } => NodeIdentity::fixed(
+                &["NamespaceState"],
+                vec![
+                    ("name", s(name)),
+                    ("cluster_uid", s(cluster_uid)),
+                    ("valid_from", ms(*valid_from)),
+                ],
+            ),
             KubeNodeKey::Deployment { uid } => {
                 NodeIdentity::fixed(&["KubernetesDeployment"], vec![("uid", s(uid))])
             }
@@ -161,6 +183,10 @@ impl GraphNodeKey for KubeNodeKey {
                 NodeIdentity::fixed(&["DaemonSet"], vec![("uid", s(uid))])
             }
             KubeNodeKey::Node { uid } => NodeIdentity::fixed(&["Node"], vec![("uid", s(uid))]),
+            KubeNodeKey::NodeState { uid, valid_from } => NodeIdentity::fixed(
+                &["NodeState"],
+                vec![("uid", s(uid)), ("valid_from", ms(*valid_from))],
+            ),
             KubeNodeKey::Job { uid } => {
                 NodeIdentity::fixed(&["KubernetesJob"], vec![("uid", s(uid))])
             }
@@ -270,6 +296,11 @@ impl NodeKeyVocabulary for KubeNodeKey {
                 name: s(),
                 cluster_uid: s(),
             },
+            KubeNodeKey::NamespaceState {
+                name: s(),
+                cluster_uid: s(),
+                valid_from: 0,
+            },
             KubeNodeKey::Deployment { uid: s() },
             KubeNodeKey::DeploymentState {
                 uid: s(),
@@ -314,6 +345,10 @@ impl NodeKeyVocabulary for KubeNodeKey {
             KubeNodeKey::StatefulSet { uid: s() },
             KubeNodeKey::DaemonSet { uid: s() },
             KubeNodeKey::Node { uid: s() },
+            KubeNodeKey::NodeState {
+                uid: s(),
+                valid_from: 0,
+            },
             KubeNodeKey::JobState {
                 uid: s(),
                 valid_from: 0,
@@ -339,6 +374,7 @@ impl NodeKeyVocabulary for KubeNodeKey {
                 KubeNodeKey::State
                 | KubeNodeKey::Cluster { .. }
                 | KubeNodeKey::Namespace { .. }
+                | KubeNodeKey::NamespaceState { .. }
                 | KubeNodeKey::Deployment { .. }
                 | KubeNodeKey::DeploymentState { .. }
                 | KubeNodeKey::ReplicaSet { .. }
@@ -355,6 +391,7 @@ impl NodeKeyVocabulary for KubeNodeKey {
                 | KubeNodeKey::StatefulSet { .. }
                 | KubeNodeKey::DaemonSet { .. }
                 | KubeNodeKey::Node { .. }
+                | KubeNodeKey::NodeState { .. }
                 | KubeNodeKey::JobState { .. }
                 | KubeNodeKey::FluxOciRepository { .. }
                 | KubeNodeKey::FluxOciRepositoryState { .. }
@@ -373,9 +410,7 @@ impl KubeNodeKey {
     pub fn is_anchor_only(&self) -> bool {
         matches!(
             self,
-            KubeNodeKey::StatefulSet { .. }
-                | KubeNodeKey::DaemonSet { .. }
-                | KubeNodeKey::Node { .. }
+            KubeNodeKey::StatefulSet { .. } | KubeNodeKey::DaemonSet { .. }
         )
     }
 
@@ -452,12 +487,8 @@ mod owner_reference_tests {
     }
 
     #[test]
-    fn statefulsets_daemonsets_and_nodes_get_anchors_named_for_their_kind() {
-        for (kind, label) in [
-            ("StatefulSet", "StatefulSet"),
-            ("DaemonSet", "DaemonSet"),
-            ("Node", "Node"),
-        ] {
+    fn statefulsets_and_daemonsets_get_anchors_named_for_their_kind() {
+        for (kind, label) in [("StatefulSet", "StatefulSet"), ("DaemonSet", "DaemonSet")] {
             let key = KubeNodeKey::from_owner_reference(&owner(kind))
                 .unwrap_or_else(|| panic!("{kind} should map"));
             let (pattern, params) = key.cypher_match("n");
@@ -467,15 +498,52 @@ mod owner_reference_tests {
         }
     }
 
+    /// A node is projected by its own handler since the observer watches nodes; a mirror pod's owner reference
+    /// names the same node, by its uid.
+    #[test]
+    fn a_node_owner_is_the_node_the_consumer_projects() {
+        let key = KubeNodeKey::from_owner_reference(&owner("Node")).expect("Node");
+        assert_eq!(key, KubeNodeKey::Node { uid: "u-1".into() });
+        let (pattern, _) = key.cypher_match("n");
+        assert_eq!(pattern, "(n:Node { uid: $n_uid })");
+    }
+
     #[test]
     fn only_owners_nothing_else_projects_are_anchor_only() {
-        for kind in ["ReplicaSet", "Deployment", "Job"] {
+        for kind in ["ReplicaSet", "Deployment", "Job", "Node"] {
             let key = KubeNodeKey::from_owner_reference(&owner(kind)).expect(kind);
             assert!(
                 !key.is_anchor_only(),
                 "{kind} is projected by its own handler"
             );
         }
+    }
+
+    /// A namespace's states are keyed as the namespace is, by name in its cluster, and by when each began; a node's by
+    /// its uid. Each is merged on all of its key, so two states of one resource are two nodes.
+    #[test]
+    fn namespace_and_node_states_are_keyed_by_their_resource_and_time() {
+        let (pattern, params) = KubeNodeKey::NamespaceState {
+            name: "polar".into(),
+            cluster_uid: "c-1".into(),
+            valid_from: 7,
+        }
+        .cypher_match("s");
+        assert_eq!(
+            pattern,
+            "(s:NamespaceState { name: $s_name, cluster_uid: $s_cluster_uid, valid_from: $s_valid_from })"
+        );
+        assert_eq!(params.len(), 3);
+        let (pattern, params) = KubeNodeKey::NodeState {
+            uid: "n-1".into(),
+            valid_from: 7,
+        }
+        .cypher_match("s");
+        assert_eq!(
+            pattern,
+            "(s:NodeState { uid: $s_uid, valid_from: $s_valid_from })"
+        );
+        assert_eq!(params.len(), 2);
     }
 
     #[test]
