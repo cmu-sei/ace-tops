@@ -75,8 +75,6 @@ impl PolarAgent for OpenApiProcessor {
     const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str = "Writes the applications and endpoints the OpenAPI documents describe into the graph, by a signed projection";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = polar_http_processor::SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
         OBSERVATIONS_TOPIC,
@@ -105,6 +103,14 @@ mod tests {
     use serde_json::json;
 
     polar_agent_builder::polar_agent_tests!(OpenApiProcessor);
+
+    /// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as
+    /// the pod's grace, is what it was when the processor drained the controller itself: 45 s.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<OpenApiProcessor>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 
     polar_http_testkit::polar_http_tests! {
         observer: openapi_observer::agent::OpenApiObserver,

@@ -30,22 +30,17 @@
 pub mod processing;
 
 use cert_issuer_common::identity::workload_of;
-use polar::graph::controller::{
-    GraphControllerActor, GraphControllerArgs, GraphControllerMsg, GraphSignal, NodeShape,
-};
+use polar::graph::controller::NodeShape;
 use polar_agent_builder::{
-    AgentBuilder, ConfigurationHandle, Configured, Drain, HealthClient, HealthHandle,
+    AgentBuilder, ConfigurationHandle, Configured, GraphHandle, HealthClient, HealthHandle,
     InfrastructureEvent, InfrastructureSupervisorMessage, StartError, Subscription,
-    stop_graph_controller,
 };
 use polar_http_observer::Observation;
 use polar_projection::{Bounds, Projection, graph};
 use processing::{Event, Processing, Step};
-use ractor::concurrency::Duration;
-use ractor::{Actor, ActorProcessingErr, ActorRef, OutputPort, SupervisionEvent, async_trait};
+use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use serde_json::Value;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// What the section is called in a document.
@@ -53,11 +48,9 @@ pub const SECTION_NAME: &str = "projection";
 /// What describes the section's body, for `--scaffold` and its template.
 pub const SECTION_BODY: &str = r#"{"rules": {"type": "a projection: polar-projection/projection.dhall, signed with polar-sign runtime --projection", "required": true, "doc": "how a document becomes nodes and edges, inside this workload's schema"}}"#;
 
-const DRAIN_WINDOW_SECS: u64 = 5;
-const GRAPH_STOP_SECS: u64 = 30;
-/// The drain window and the graph controller's stop, plus a margin.
-pub const SHUTDOWN_BUDGET: std::time::Duration =
-    std::time::Duration::from_secs(DRAIN_WINDOW_SECS + GRAPH_STOP_SECS + 10);
+/// What a processor needs to drain beyond the graph controller, whose drain the builder counts: the infrastructure's own
+/// children stopping, and a margin.
+pub const SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What is particular to one kind of processor. Fixed when it is built: a signed mapping chooses data inside `BOUNDS`.
 pub trait Kind: Send + Sync + 'static {
@@ -154,11 +147,9 @@ pub fn from_its_observer(published_by: Option<&str>, observer: &str) -> bool {
 pub enum ProcessorMessage {
     ClientEvent { event: cassini_types::ClientEvent },
     Observed(Observation),
-    GraphSignal(GraphSignal),
     ProjectionChanged,
     ProjectionRead(Result<Option<(u64, Projection)>, Vec<String>>),
     PrepareShutdown,
-    DrainElapsed,
 }
 
 pub struct Processor<K>(PhantomData<fn() -> K>);
@@ -167,9 +158,11 @@ pub struct ProcessorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     configuration: ConfigurationHandle,
-    graph_controller: Option<ActorRef<GraphControllerMsg>>,
+    /// The builder's: it reports the graph's health and drains it at the end.
+    graph: GraphHandle,
     processing: Processing,
-    drain: Drain,
+    /// From `PrepareShutdown` on: what is observed then is not written, and its next read is.
+    shutting_down: bool,
 }
 
 #[async_trait]
@@ -184,7 +177,6 @@ impl<K: Kind> Actor for Processor<K> {
         configured: Configured,
     ) -> Result<Self::State, ActorProcessingErr> {
         debug!("{myself:?} starting");
-        let key_indexes = configured.graph_key_indexes();
         let to = myself.clone();
         let observed = Subscription::new(K::TOPIC, move |incoming| {
             if !from_its_observer(incoming.published_by.as_deref(), K::OBSERVER) {
@@ -222,33 +214,17 @@ impl<K: Kind> Actor for Processor<K> {
             .subscribe(myself.clone(), |changed| {
                 (changed.section == SECTION_NAME).then_some(ProcessorMessage::ProjectionChanged)
             });
-        let signals = Arc::new(OutputPort::<GraphSignal>::default());
-        signals.subscribe(myself.clone(), |signal| {
-            Some(ProcessorMessage::GraphSignal(signal))
-        });
-        let (graph_controller, _) = GraphControllerActor::spawn_linked(
-            Some(format!("{}.graph_controller", K::NAME)),
-            GraphControllerActor,
-            GraphControllerArgs::new(signals)
-                .with_settings(
-                    polar::graph::environment::GraphSettings::from_env(&*resources.config)
-                        .map_err(ActorProcessingErr::from)?,
-                )
-                .with_key_indexes(key_indexes),
-            myself.get_cell(),
-        )
-        .await
-        .map_err(ActorProcessingErr::from)?;
-
         let mut processing = Processing::new(K::NAME);
         let steps = processing.on(Event::Started);
         let state = ProcessorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             configuration: resources.configuration,
-            graph_controller: Some(graph_controller),
+            graph: resources
+                .graph
+                .ok_or("the builder started no graph controller for a graph-write agent")?,
             processing,
-            drain: Drain::default(),
+            shutting_down: false,
         };
         carry_out(&state, steps)?;
         myself.cast(ProcessorMessage::ProjectionChanged)?;
@@ -262,18 +238,9 @@ impl<K: Kind> Actor for Processor<K> {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            ProcessorMessage::GraphSignal(signal) => match signal {
-                GraphSignal::Available => {
-                    let _ = state.healthcheck.graph_available();
-                }
-                GraphSignal::OpFailed(reason) => {
-                    let _ = state.healthcheck.graph_op_failed(reason);
-                }
-            },
             ProcessorMessage::ClientEvent { event } => match event {
                 cassini_types::ClientEvent::Registered { .. } => {
                     let _ = state.healthcheck.cassini_connected();
-                    let _ = state.healthcheck.graph_connected();
                 }
                 cassini_types::ClientEvent::TransportError { reason } => {
                     warn!("Transport error (non-fatal, awaiting reconnect): {reason}");
@@ -299,9 +266,9 @@ impl<K: Kind> Actor for Processor<K> {
                 carry_out(state, steps)?;
             }
             ProcessorMessage::Observed(observation) => {
-                if state.drain.is_draining() {
+                if state.shutting_down {
                     warn!(
-                        "draining -- what `{}` said is not written; its next read is",
+                        "ending -- what `{}` said is not written; its next read is",
                         observation.source
                     );
                     return Ok(());
@@ -310,20 +277,15 @@ impl<K: Kind> Actor for Processor<K> {
                 carry_out(state, steps)?;
             }
             ProcessorMessage::PrepareShutdown => {
-                if state.drain.begin(
-                    &myself,
-                    Duration::from_secs(DRAIN_WINDOW_SECS),
-                    true,
-                    || ProcessorMessage::DrainElapsed,
-                ) {
-                    info!("PrepareShutdown received; entering the drain window");
+                info!("PrepareShutdown received; proceeding: the infrastructure drains the graph");
+                state.shutting_down = true;
+                if let Err(e) = state
+                    .infrastructure
+                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
+                {
+                    error!("could not tell the infrastructure to proceed ({e}); exiting now");
+                    std::process::exit(1);
                 }
-            }
-            ProcessorMessage::DrainElapsed => {
-                if let Some(controller) = state.graph_controller.take() {
-                    stop_graph_controller(controller, Duration::from_secs(GRAPH_STOP_SECS)).await;
-                }
-                state.drain.complete(&state.infrastructure);
             }
         }
         Ok(())
@@ -331,41 +293,24 @@ impl<K: Kind> Actor for Processor<K> {
 
     async fn handle_supervisor_evt(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
+            // Its one child is the infrastructure: its ending is the end of the handshake, or a failure, and either way
+            // the process exits non-zero so the pod starts afresh.
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 info!("{actor:?} terminated: {reason:?}");
                 if actor.get_id() == state.infrastructure.get_id() {
                     std::process::exit(1);
                 }
-                if state
-                    .graph_controller
-                    .as_ref()
-                    .is_some_and(|c| c.get_id() == actor.get_id())
-                    && state.drain.begin(
-                        &myself,
-                        Duration::from_secs(DRAIN_WINDOW_SECS),
-                        false,
-                        || ProcessorMessage::DrainElapsed,
-                    )
-                {
-                    state.graph_controller = None;
-                    warn!("the graph controller ended; draining before exit");
-                }
             }
             SupervisionEvent::ActorFailed(actor, reason) => {
                 error!("{actor:?} failed: {reason:?}");
-                if !state.drain.begin(
-                    &myself,
-                    Duration::from_secs(DRAIN_WINDOW_SECS),
-                    false,
-                    || ProcessorMessage::DrainElapsed,
-                ) {
-                    warn!("already draining");
+                if actor.get_id() == state.infrastructure.get_id() {
+                    std::process::exit(1);
                 }
             }
             _ => {}
@@ -379,12 +324,10 @@ fn carry_out(state: &ProcessorState, steps: Vec<Step>) -> Result<(), ActorProces
     for step in steps {
         match step {
             Step::Write { source, writes } => {
-                if let (Some(op), Some(controller)) =
-                    (graph::operation(writes), &state.graph_controller)
+                if let Some(op) = graph::operation(writes)
+                    && let Err(e) = state.graph.write(op)
                 {
-                    controller.cast(GraphControllerMsg::Op(op)).map_err(|e| {
-                        format!("could not hand what `{source}` said to the graph: {e}")
-                    })?;
+                    warn!("{e}: what `{source}` said is lost; its next read is written");
                 }
             }
             Step::Health(change) => change.apply(&state.healthcheck),

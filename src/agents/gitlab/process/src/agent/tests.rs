@@ -38,6 +38,14 @@ use std::sync::OnceLock;
 
 polar_agent_builder::polar_agent_tests!(GitlabProcessor);
 
+/// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as the
+/// pod's grace, is what it was when the processor drained the controller itself: 45 s.
+#[test]
+fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+    let scaffold = polar_agent_builder::agent::scaffold_document::<GitlabProcessor>();
+    assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+}
+
 polar_http_testkit::polar_http_tests! {
     observer: GitlabObserver,
     processor: GitlabProcessor,

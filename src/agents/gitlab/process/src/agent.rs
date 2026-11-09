@@ -90,8 +90,6 @@ impl PolarAgent for GitlabProcessor {
     const PURPOSE: &'static str =
         "Writes what GitLab's pages say into the graph, by a signed projection";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = polar_http_processor::SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
         OBSERVATIONS_TOPIC,
