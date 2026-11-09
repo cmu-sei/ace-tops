@@ -831,6 +831,13 @@ I write Rust code"):
     them; no index, no dependencies; a crate reaching past its own directory refused, nothing of it beside; nine things an
     index may not say refused; an index that is not its digest refused; the Job told the index, departing nowhere, in the
     departures property too; the template rendered with the volume, mounts and settings, and its test pinned to that shape.
+    *D3c DONE 2026-11-08* (`tests/cargo.rs`): end to end, what the orchestrator makes of a build's dependencies (a crate by
+    the digest its lock pins; a git dependency, a member of its own workspace whose `Cargo.toml` inherits its version and
+    edition, as a shallow repository of its commit, `shallow.rs`; the index of both, `deps::index`), served by the stand-in
+    registry by digest (which now gives a blob to a GET, as distribution does), laid out by the fetch's own `lay_out`, and the
+    test's own Cargo building a project that depends on both, `--locked`, with the Cargo home the fetch wrote; the built program
+    prints what the two dependencies give. The git source names a host under `.invalid`, so a build that reached for it would
+    have failed: Cargo built from what was laid out and nothing else. D3 DONE.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

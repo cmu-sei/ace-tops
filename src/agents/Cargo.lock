@@ -967,6 +967,7 @@ dependencies = [
  "polar-scudo",
  "proptest",
  "ractor",
+ "reqwest 0.12.28",
  "rkyv",
  "serde_json",
  "sha2 0.10.9",

@@ -67,6 +67,13 @@ impl Respond for Registry {
                     None => ResponseTemplate::new(404),
                 }
             }
+            // A blob, as a build's fetch reads it.
+            "GET" if !repository.is_empty() && !blob_rest.starts_with("uploads/") => {
+                match held.blobs.get(blob_rest) {
+                    Some(bytes) => ResponseTemplate::new(200).set_body_bytes(bytes.clone()),
+                    None => ResponseTemplate::new(404),
+                }
+            }
             // Whatever it is given, a POST only opens an upload: the body is not kept.
             "POST" if !repository.is_empty() && blob_rest == "uploads/" => {
                 held.uploads += 1;

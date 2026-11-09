@@ -53,6 +53,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# The fetch's own client, as the build's pod reads the registry (tests/cargo.rs).
+reqwest.workspace = true
 # The fetch's own unpacking, which a build's pod runs on the archive.
 build-fetch = { path = "../fetch" }
 tempfile.workspace = true
