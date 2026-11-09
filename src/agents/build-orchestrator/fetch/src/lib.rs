@@ -28,8 +28,10 @@
 //! as it is written, and only then unpacked into the workspace, every entry inside it. The pod holds no credential and never
 //! reaches the source's origin.
 
+pub mod dependencies;
+
 use futures::StreamExt;
-use polar_env::{Config, Defaulted, Described, Required, Section};
+use polar_env::{Config, Defaulted, Described, Optional, Required, Section};
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -60,7 +62,25 @@ pub static INSECURE: Defaulted<bool> = Defaulted::flag(
     "false",
 );
 
-static VARIABLES: &[&dyn Described] = &[&SOURCE_BLOB, &SOURCE_SHA256, &WORKSPACE, &INSECURE];
+pub static DEPENDENCIES: Optional<String> = Optional::text(
+    "CYCLOPS_DEPENDENCIES",
+    "the index of the source's dependencies: a blob in Polar's registry, `host/repository@sha256:<hex>`; unset, the build is \
+     given none",
+);
+
+pub static DEPENDENCY_ROOT: Required<String> = Required::text(
+    "CYCLOPS_DEPENDENCY_ROOT",
+    "where the dependencies are laid out, and Cargo's configuration for them: the build's own volume, its Cargo home under it",
+);
+
+static VARIABLES: &[&dyn Described] = &[
+    &SOURCE_BLOB,
+    &SOURCE_SHA256,
+    &WORKSPACE,
+    &INSECURE,
+    &DEPENDENCIES,
+    &DEPENDENCY_ROOT,
+];
 
 /// The section build-fetch reads.
 pub static SECTION: Section = Section {
@@ -85,6 +105,8 @@ pub enum FetchError {
         "the archive's entry `{0}` is not inside the workspace, or not a file, directory or link: nothing more was unpacked"
     )]
     Escapes(String),
+    #[error("the build's dependencies are refused: {0}")]
+    Dependencies(String),
     #[error("the archive could not be written or read: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -162,6 +184,12 @@ async fn fetch_into(
 /// Unpacks the gzipped tar at `archive` into `into`. Every entry is a file, a directory or a link, and goes inside `into`:
 /// an absolute path, a `..`, or a link that would take a later entry outside it is refused, and the unpacking stops.
 pub fn unpack(archive: &Path, into: &Path) -> Result<(), FetchError> {
+    unpack_under(archive, into, None)
+}
+
+/// As [`unpack`], and with `under` given, every entry is in the one directory `under` of `into`, and so is whatever a link
+/// in it names: a crate holds itself to `<name>-<version>/` and reaches no other crate beside it.
+pub fn unpack_under(archive: &Path, into: &Path, under: Option<&str>) -> Result<(), FetchError> {
     let file = std::fs::File::open(archive)?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     tar.set_preserve_permissions(false);
@@ -178,8 +206,16 @@ pub fn unpack(archive: &Path, into: &Path) -> Result<(), FetchError> {
         if !allowed || !inside {
             return Err(FetchError::Escapes(shown));
         }
+        // Where the entry is, and its links are judged from: the archive's top, or the one directory it must stay in.
+        let within = match under {
+            None => path.clone(),
+            Some(top) => match path.strip_prefix(top) {
+                Ok(rest) => rest.to_path_buf(),
+                Err(_) => return Err(FetchError::Escapes(shown)),
+            },
+        };
         if let Some(target) = entry.link_name()? {
-            let base = path.parent().unwrap_or(Path::new(""));
+            let base = within.parent().unwrap_or(Path::new(""));
             if !stays_inside(&base.join(&target)) || target.is_absolute() {
                 return Err(FetchError::Escapes(shown));
             }
@@ -211,7 +247,8 @@ fn stays_inside(path: &Path) -> bool {
     true
 }
 
-/// What the binary does: reads its section, fetches the archive into the workspace, checks it, unpacks it, removes it.
+/// What the binary does: reads its section, fetches the archive into the workspace, checks it, unpacks it, removes it; then
+/// lays out the source's dependencies, each by its digest, and Cargo's configuration for them (`dependencies`).
 pub async fn run(config: &Config) -> Result<(), FetchError> {
     let reference = config
         .read(&SOURCE_BLOB)
@@ -247,7 +284,22 @@ pub async fn run(config: &Config) -> Result<(), FetchError> {
     fetch(&client, &url, &sha256, MAX_ARCHIVE, &archive).await?;
     let unpacked = unpack(&archive, &workspace);
     let _ = std::fs::remove_file(&archive);
-    unpacked
+    unpacked?;
+    let index = config
+        .read(&DEPENDENCIES)
+        .map_err(|e| FetchError::Unread(e.to_string()))?;
+    let root = PathBuf::from(
+        config
+            .read(&DEPENDENCY_ROOT)
+            .map_err(|e| FetchError::Unread(e.to_string()))?,
+    );
+    let laid = dependencies::lay_out(&client, index.as_deref(), insecure, &root).await?;
+    tracing::info!(
+        crates = laid.crates,
+        git = laid.git,
+        "the dependencies are laid out"
+    );
+    Ok(())
 }
 
 #[cfg(test)]

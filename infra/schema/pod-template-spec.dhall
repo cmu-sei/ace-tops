@@ -41,6 +41,9 @@ let Spec =
         , needs : List Text
         -- Where the fetch unpacks the source and the pipeline builds: orchestrator_core::WORKSPACE_PATH.
         , workspace : Text
+        -- Where the fetch lays out the build's dependencies and Cargo's configuration for them, the pipeline's Cargo home
+        -- under it (docs/architecture/build-orchestrator.md, D3b).
+        , dependencies : Text
         , memory : Optional { request : Text, limit : Text }
         }
 

@@ -67,6 +67,13 @@ let render =
         let workspaceMount =
               kubernetes.VolumeMount::{ name = workspace, mountPath = v.workspace }
 
+        -- Shared by the fetch, which lays out the build's dependencies there, each by its digest, with Cargo's configuration for
+        -- them, and the pipeline, whose Cargo home it is: Cargo checks a git dependency out there (D3b).
+        let dependencies = "dependencies"
+
+        let dependenciesMount =
+              kubernetes.VolumeMount::{ name = dependencies, mountPath = v.dependencies }
+
         -- It speaks to nobody: no certificate, no socket, only the registry and the workspace.
         let fetch =
               kubernetes.Container::{
@@ -80,8 +87,12 @@ let render =
                   , name = "CYCLOPS_WORKSPACE"
                   , value = Some v.workspace
                   }
+                , kubernetes.EnvVar::{
+                  , name = "CYCLOPS_DEPENDENCY_ROOT"
+                  , value = Some v.dependencies
+                  }
                 ]
-              , volumeMounts = Some [ workspaceMount ]
+              , volumeMounts = Some [ workspaceMount, dependenciesMount ]
               }
 
         let pipeline =
@@ -92,8 +103,15 @@ let render =
               , terminationMessagePolicy = Some Constants.TerminationMessageFromLogs
               , securityContext = Some hardened
               , resources = functions.memoryOf v.memory
-              , env = Some pod.env
-              , volumeMounts = Some (pod.mounts # [ workspaceMount ])
+              , env = Some
+                  (   pod.env
+                    # [ kubernetes.EnvVar::{
+                        , name = "CARGO_HOME"
+                        , value = Some "${v.dependencies}/cargo"
+                        }
+                      ]
+                  )
+              , volumeMounts = Some (pod.mounts # [ workspaceMount, dependenciesMount ])
               }
 
         let podSpec =
@@ -102,6 +120,10 @@ let render =
                   (   pod.volumes
                     # [ kubernetes.Volume::{
                         , name = workspace
+                        , emptyDir = Some kubernetes.EmptyDirVolumeSource::{=}
+                        }
+                      , kubernetes.Volume::{
+                        , name = dependencies
                         , emptyDir = Some kubernetes.EmptyDirVolumeSource::{=}
                         }
                       ]

@@ -813,6 +813,24 @@ I write Rust code"):
     shallow repository whose ref and `HEAD` are the commit, which it holds with its whole tree, and the parent is not there;
     made twice it is the same bytes; past its bound, or for a commit the repository lacks, refused, the clone left as it was;
     and the source step's test now finds the dependency as that repository.
+    *D3b DONE 2026-11-08*: the build workload's template gains a `dependencies` emptyDir (`build.nuon`, `dependencies:
+    "/dependencies"`, through resolve to `pod-template.dhall`), mounted in the fetch, which is told it
+    (`CYCLOPS_DEPENDENCY_ROOT`), and in the pipeline, whose `CARGO_HOME` is `/dependencies/cargo`, the one thing of Polar's
+    the pipeline is told; Cargo checks a git dependency out there, so it is written by both. The orchestrator tells the fetch
+    the index (`CYCLOPS_DEPENDENCIES`, emitted by `SourceArchive::fetch_env` when the source has dependencies), and
+    `departures` lets the fetch be told it only pinned by a digest. The fetch (`build-fetch`, `dependencies::lay_out`) reads
+    the index by its digest, and holds every value in it to what it may be before it becomes a path or a line of TOML: a crate's
+    name and version as the lock reader holds them, a sha256 that is one, a git dependency pinned by its digest and to a commit,
+    its source an https address with no login and a query of one `branch`, `tag` or `rev` at most, agreeing with its address.
+    Each crate is fetched by its digest and unpacked under `vendor/<name>-<version>/` and nowhere else (`unpack_under`: every
+    entry, and whatever a link in it names, inside that one directory, so a crate reaches no other beside it), with nixpkgs'
+    `.cargo-checksum.json`; each git dependency into `git/<n>.git`; then `cargo/config.toml` replaces crates.io by the vendor
+    directory and each git source, keyed as the lock names it, by its repository. With no index the configuration alone is
+    written, crates.io replaced by an empty vendor directory: a build given no dependencies has none to reach. Tested: a
+    crate and a git dependency laid out from a stand-in registry, the checksum file and the configuration as Cargo reads
+    them; no index, no dependencies; a crate reaching past its own directory refused, nothing of it beside; nine things an
+    index may not say refused; an index that is not its digest refused; the Job told the index, departing nowhere, in the
+    departures property too; the template rendered with the volume, mounts and settings, and its test pinned to that shape.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

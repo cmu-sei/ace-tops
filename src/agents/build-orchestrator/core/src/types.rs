@@ -45,6 +45,9 @@ pub mod source_env {
     /// For the fetch: `true` when the archive's registry is spoken to over plain http (the registry in the cluster, as a pod
     /// reaches it); left out, https. The fetch's own name for it (build-orchestrator/fetch, `INSECURE`).
     pub const REGISTRY_INSECURE: &str = "CYCLOPS_REGISTRY_INSECURE";
+    /// For the fetch: the index of the source's dependencies, `host/repository@sha256:<hex>`, if it has any
+    /// (docs/architecture/build-orchestrator.md, D3).
+    pub const DEPENDENCIES: &str = "CYCLOPS_DEPENDENCIES";
     /// For the pipeline: "git" or "archive", what the source was.
     pub const SOURCE_KIND: &str = "CYCLOPS_SOURCE_KIND";
     pub const ARCHIVE_SHA256: &str = "CYCLOPS_ARCHIVE_SHA256";
@@ -253,8 +256,8 @@ impl SourceArchive {
             .unwrap_or_default()
     }
 
-    /// Env vars for the source-fetch init container: the blob and its digest, whether its registry is plain http, and nothing
-    /// of where the source came from.
+    /// Env vars for the source-fetch init container: the blob and its digest, whether its registry is plain http, its
+    /// dependencies' index if it has one, and nothing of where the source came from.
     pub fn fetch_env(&self) -> Vec<(String, String)> {
         let mut env = vec![
             (source_env::SOURCE_BLOB.to_string(), self.reference.clone()),
@@ -268,6 +271,9 @@ impl SourceArchive {
                 source_env::REGISTRY_INSECURE.to_string(),
                 "true".to_string(),
             ));
+        }
+        if let Some(index) = &self.dependencies {
+            env.push((source_env::DEPENDENCIES.to_string(), index.clone()));
         }
         env
     }

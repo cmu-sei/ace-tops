@@ -474,6 +474,14 @@ def main [] {
             }
         }
 
+        # docs/architecture/build-orchestrator.md, D3b: the build workload's pod lays its dependencies out where the template says,
+        # its pipeline's Cargo home under it.
+        "the build workload's pod has a place for its dependencies": {
+            let r = (resolve "build-runner")
+            assert equal $r.dependencies "/dependencies"
+            assert equal $r.workspace "/workspace"
+        }
+
         # docs/architecture/build-orchestrator.md, decision 5 and O2e4: where its builds are is the catalog's to say, the
         # namespace by the cluster's name for its key; and it may run Jobs there and do nothing else in the API.
         "the build orchestrator is told where its builds are, and given a Role there alone": {
@@ -582,19 +590,20 @@ def main [] {
             assert equal $pipeline.image $fetch.image "decision 5c: the pipeline runs the fetch image until the orchestrator replaces it"
             assert equal ($fetch.restartPolicy? | default null) null "the fetch runs once, before the pipeline, not as a sidecar"
             assert equal ($fetch.env | where name == "CYCLOPS_WORKSPACE" | get value) ["/workspace"]
+            # D3b: where it lays out the build's dependencies, which the pipeline's Cargo home is under.
+            assert equal ($fetch.env | where name == "CYCLOPS_DEPENDENCY_ROOT" | get value) ["/dependencies"]
             # Decision 4: a build runs hardened, non-root, with no privilege escalation, every capability dropped and the default
             # seccomp profile, until its signed mapping says otherwise (the orchestrator, O2c).
             for c in [$fetch $pipeline] {
-                assert equal ($c.volumeMounts | get name) ["workspace"] $"($c.name) mounts the workspace alone"
-                assert equal ($c.volumeMounts | first | get mountPath) "/workspace" $c.name
+                assert equal ($c.volumeMounts | select name mountPath) [{ name: "workspace", mountPath: "/workspace" } { name: "dependencies", mountPath: "/dependencies" }] $"($c.name) mounts the workspace and the dependencies alone"
                 assert equal $c.securityContext.capabilities.drop ["ALL"] $c.name
                 assert equal ($c.securityContext.capabilities.add? | default null) null $c.name
                 assert equal $c.securityContext.runAsNonRoot true $c.name
                 assert equal $c.securityContext.allowPrivilegeEscalation false $c.name
                 assert equal $c.securityContext.seccompProfile.type "RuntimeDefault" $c.name
             }
-            assert equal ($pipeline.env? | default []) [] "the pipeline is told nothing of Polar's"
-            assert equal ($pod.volumes | get name) ["workspace"]
+            assert equal ($pipeline.env? | default []) [{ name: "CARGO_HOME", value: "/dependencies/cargo" }] "the pipeline is told where its Cargo home is, and nothing else of Polar's"
+            assert equal ($pod.volumes | get name) ["workspace" "dependencies"]
             assert equal ($pipeline.livenessProbe? | default null) null "no polar-healthcheck in a pipeline image"
             assert equal ($pipeline.restartPolicy? | default null) null
         }

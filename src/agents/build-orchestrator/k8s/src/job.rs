@@ -71,7 +71,7 @@ use k8s_openapi::{
 };
 use orchestrator_core::WORKSPACE_PATH;
 use orchestrator_core::backend::Retention;
-use orchestrator_core::types::{BuildSpec, Privileges, SourceRef, source_env};
+use orchestrator_core::types::{BuildSpec, Privileges, SourceRef, pinned_by_digest, source_env};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -653,9 +653,12 @@ fn env_departs(name: &str, want: &Container, got: &Container, found: &mut Vec<St
             && added.name != source_env::SOURCE_SHA256
             && !(added.name == source_env::REGISTRY_INSECURE
                 && added.value.as_deref() == Some("true"))
+            && !(added.name == source_env::DEPENDENCIES
+                && added.value.as_deref().is_some_and(pinned_by_digest))
         {
             found.push(format!(
-                "the fetch is told {}, beyond its blob, its digest and whether its registry is plain http",
+                "the fetch is told {}, beyond its blob, its digest, whether its registry is plain http and its \
+                 dependencies' index",
                 added.name
             ));
         }
@@ -865,6 +868,27 @@ pub(crate) mod tests {
         let job = built(&build);
         let fetch = container(&job, FETCH);
         assert!(env(fetch).contains(&(source_env::REGISTRY_INSECURE.into(), Some("true".into()))));
+        assert_eq!(env(fetch).len(), 4, "{:?}", env(fetch));
+        assert_eq!(
+            departures(&template(), &job, &build.privileges),
+            Vec::<String>::new()
+        );
+    }
+
+    /// An archive with dependencies tells the fetch where their index is, pinned by its digest, and nothing else is added
+    /// (D3b).
+    #[test]
+    fn an_archive_with_dependencies_tells_the_fetch_their_index() {
+        let mut build = spec(git());
+        let index = format!("registry.polar:5000/build-dependencies@sha256:{HEX}");
+        build.archive = build
+            .archive
+            .clone()
+            .with_dependencies(index.clone())
+            .unwrap();
+        let job = built(&build);
+        let fetch = container(&job, FETCH);
+        assert!(env(fetch).contains(&(source_env::DEPENDENCIES.into(), Some(index))));
         assert_eq!(env(fetch).len(), 4, "{:?}", env(fetch));
         assert_eq!(
             departures(&template(), &job, &build.privileges),
@@ -1114,17 +1138,29 @@ pub(crate) mod tests {
             proptest::collection::hash_map("[A-Z][A-Z_]{0,8}", "[a-z0-9]{0,8}", 0..3),
             proptest::option::of(proptest::collection::vec("[a-z/]{1,8}", 1..3)),
             any::<bool>(),
+            any::<bool>(),
         )
-            .prop_map(|(privileges, archived, env, entrypoint, over_http)| {
-                let mut build = spec(if archived { archive() } else { git() });
-                if over_http {
-                    build.archive = build.archive.clone().over_http();
-                }
-                build.privileges = privileges;
-                build.env = env;
-                build.entrypoint = entrypoint;
-                build
-            })
+            .prop_map(
+                |(privileges, archived, env, entrypoint, over_http, with_dependencies)| {
+                    let mut build = spec(if archived { archive() } else { git() });
+                    if over_http {
+                        build.archive = build.archive.clone().over_http();
+                    }
+                    if with_dependencies {
+                        build.archive = build
+                            .archive
+                            .clone()
+                            .with_dependencies(format!(
+                                "registry.polar:5000/build-dependencies@sha256:{HEX}"
+                            ))
+                            .unwrap();
+                    }
+                    build.privileges = privileges;
+                    build.env = env;
+                    build.entrypoint = entrypoint;
+                    build
+                },
+            )
     }
 
     /// One change to a built Job that no build may make: each is something a template does not say and a mapping does

@@ -794,7 +794,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         _origin: $origin
         _settings: { issuer: $issuer, bootstrap: $spec.bootstrap, health: $h, shutdown: ($sd | insert termination_grace_secs $grace) }
         _from: { roles: $cluster_roles, env: $entries, volumes: $volumes, mounts: $mounts, deps: $deps, certs: $certs }
-    } | merge (if $template { { workspace: $spec.workspace } } else { {} })
+    } | merge (if $template { { workspace: $spec.workspace, dependencies: $spec.dependencies } } else { {} })
 }
 
 # What the template takes: the resolved record without provenance. The agent template has polar-init and no pod group
@@ -813,7 +813,7 @@ def for_template [r: record] {
         $common | reject polar_init_image cert_issuer_url init_mounts init_env dep_checks certs custody
     } else if $r.kind == "template" {
         # schema/pod-template-spec.dhall: the base every pod has, and what a PodTemplate adds; no identity.
-        $common | select pull_secrets sa_token_expiration_secs service_account automount_sa_token restart_policy termination_grace_secs env volumes mounts placement name kind namespace image pull_policy needs workspace memory | update volumes { reject mode }
+        $common | select pull_secrets sa_token_expiration_secs service_account automount_sa_token restart_policy termination_grace_secs env volumes mounts placement name kind namespace image pull_policy needs workspace dependencies memory | update volumes { reject mode }
     } else {
         $common | reject fs_group | update volumes { reject mode }
     }
