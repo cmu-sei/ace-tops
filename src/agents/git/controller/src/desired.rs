@@ -29,8 +29,7 @@
 //! credentials, finds out whether it has it.
 
 use git_agent_common::RepoObservationConfig;
-use git_agent_common::remote::{credential_name_problem, repository_host};
-use polar::graph::nodes::git::RepoId;
+use git_agent_common::remote::{credential_name_problem, repo_id_of, repository_host};
 use polar_agent_builder::RuntimeSection;
 use polar_agent_builder::runtime::SectionAuthority;
 use serde_json::Value;
@@ -245,7 +244,7 @@ fn entry(i: usize, item: &Value) -> Result<RepoObservationConfig, Vec<String>> {
         return Err(problems);
     }
     let mut config = RepoObservationConfig::new(
-        RepoId::from_url(&RepoId::normalize_repo_url(&url)),
+        repo_id_of(&url),
         url,
         vec![REMOTE.to_string()],
         shallow_depth.map(|d| d as usize),

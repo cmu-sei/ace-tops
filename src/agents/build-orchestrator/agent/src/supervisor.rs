@@ -680,6 +680,31 @@ mod tests {
         );
     }
 
+    /// A repository as the controller tells the observer of it, and so as the observer reports it, is the one a mapping
+    /// for the same URL names, `.git` and all (found live 2026-11-08: the gitea's `…/SEI/ACE.git` was never built, the
+    /// mapping keyed on its URL as written and the observer reporting its normalised id).
+    #[test]
+    fn an_update_as_the_observer_reports_it_is_a_build_of_the_mapping_for_that_url() {
+        let url = "ssh://52.235.181.217/SEI/ACE.git";
+        let mappings = crate::mappings::parse(&serde_json::json!({"repositories": [
+            {"url": url, "credential": "gitea",
+             "pipeline_image": format!("registry.polar/ci@sha256:{}", "c".repeat(64))}
+        ]}))
+        .unwrap();
+        let reported = rkyv::to_bytes::<rkyv::rancor::Error>(&GitRepositoryMessage::RefUpdated {
+            repo: git_agent_common::remote::repo_id_of(url),
+            ref_name: "refs/heads/main".into(),
+            old: None,
+            new: "b".repeat(40),
+            observed_at: "2026-11-08T00:00:00Z".into(),
+        })
+        .unwrap()
+        .to_vec();
+        let (request, mapping, _) = build_for(&reported, &mappings).unwrap().expect("a build");
+        assert_eq!(mapping.url, url);
+        assert_eq!(request.source.locator(), url);
+    }
+
     #[test]
     fn what_is_no_build_is_none_and_what_cannot_be_read_says_why() {
         let a = "a".repeat(40);

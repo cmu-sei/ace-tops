@@ -918,9 +918,15 @@ I write Rust code"):
     now pins the server's keys, each by its fingerprint, separated by commas (at most 8), any one of which may be shown, and
     the refusal names the type and fingerprint it was shown (a host key is public). Found too: the deploy key was deleted
     once sealed, before a fetch had used it, and a sealed copy is bound to its section's version, so the next version needed a
-    new key (`docs`' own rule: leave what is replaced in place until the transition is tested). And the observer polled the
+    new key (what is replaced stays in place until the transition is tested). And the observer polled the
     dropped `ace-tops` entry for ten minutes after the repositories changed: by design, the controller's sets are incomplete
     during its warm-up after a start (`POLAR_GIT_CONTROLLER_WARMUP_SECS`, 600 s), and an incomplete set stops no worker.
+    *Found live next, older than E* (since O2e): the gitea fetched over ssh, and no build came. The controller names a
+    repository to the observer by its URL normalised (`RepoId::normalize_repo_url`: no `.git`, no trailing slash), and the
+    mapping keyed on its URL as written, so `…/SEI/ACE.git` was waited for under an id no update ever carries, and every
+    update was taken as unmapped, without a word. Hello-World's URL had no `.git`, which hid it. One function now gives the
+    id both use (`git_agent_common::remote::repo_id_of`); a test builds from an update carrying the id the controller gives,
+    for a mapping parsed as signed, where the old tests made both sides with the same raw call and agreed with each other.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

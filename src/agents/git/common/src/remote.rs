@@ -120,6 +120,14 @@ pub fn repository_host(repo_url: &str, with_credential: bool) -> Result<String, 
     }
 }
 
+/// The id a repository is known by to the git agents and to whatever keys on what they report (the orchestrator's
+/// mappings): its URL normalised, so `.git` or not, a trailing slash or not, and the case of the scheme and host make no
+/// difference. One function, so that what the controller tells the observer and what a mapping waits for cannot differ.
+pub fn repo_id_of(url: &str) -> polar::graph::nodes::git::RepoId {
+    use polar::graph::nodes::git::RepoId;
+    RepoId::from_url(&RepoId::normalize_repo_url(url))
+}
+
 /// Longest repository URL taken from anywhere.
 pub const MAX_REPO_URL: usize = 2048;
 

@@ -29,7 +29,7 @@
 //! is in it: a mapping names the credential its source is fetched with, if it needs one, and the `credentials` section holds
 //! it. No credential reaches a build's pod (decision 1), so the fetch is all a mapping names one for.
 
-use git_agent_common::remote::{credential_name_problem, repository_host};
+use git_agent_common::remote::{credential_name_problem, repo_id_of, repository_host};
 use orchestrator_core::types::{Privileges, pinned_by_digest};
 use polar::graph::nodes::git::RepoId;
 use polar_agent_builder::RuntimeSection;
@@ -349,7 +349,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
     }
     if problems.is_empty() {
         Ok(Mapping {
-            repo: RepoId::from_url(&url),
+            repo: repo_id_of(&url),
             url,
             pipeline_image,
             command,
@@ -380,7 +380,8 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.len(), 1);
         let m = &parsed[0];
-        assert_eq!(m.repo, RepoId::from_url("https://git.example.org/a/b.git"));
+        // Known by the id the controller gives the observer, `.git` and all.
+        assert_eq!(m.repo, RepoId::from_url("https://git.example.org/a/b"));
         assert_eq!(m.credential.as_deref(), Some("git-a"));
         assert!(m.command.is_none());
         assert!(m.privileges.run_as_root);
