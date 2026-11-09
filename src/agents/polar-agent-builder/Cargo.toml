@@ -95,6 +95,8 @@ proptest.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# An ssh server for the git handler's fetch over ssh.
+russh.workspace = true
 
 # A worker is forked only from a process of one thread, and libtest runs tests on threads of its own: its tests are one
 # binary with a main of its own.

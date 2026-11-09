@@ -165,6 +165,9 @@ rkyv = "0.8.15"
 rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2.0"
 rustls-webpki = { version = "0.103", default-features = false, features = ["ring"] }
+# An ssh server in the git handler's tests, so a fetch over ssh is tested against a real one (dev-dependency only); ring,
+# the crypto Polar already carries.
+russh = { version = "0.65", default-features = false, features = ["ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_dhall = { git = "https://github.com/daveman1010221/dhall-rust", branch = "modernize-rkyv" }
 serde_json = "1.0"

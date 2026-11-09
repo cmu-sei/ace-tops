@@ -875,6 +875,42 @@ I write Rust code"):
     counts it. Reading stdout alone (Kubernetes' split log streams, alpha) would close it. Tested: nu tests for the workspace
     and commit found with no `.git` and no git, a binary's link with and without its digest, and every log level on stdout and
     none on stderr; the template test pins the pipeline's three variables.
+  - *Revised 2026-11-08, the source*: the maintainer, "Why are you pushing there? We are working on the private gitea." The
+    watched build fetches Polar from the private gitea (`SEI/ACE`), not the public ace-tops (nothing was pushed there: the
+    push was refused). No way reaches the gitea today: it serves plain http on a port only a tunnel reaches, and over ssh
+    (port 22, open) Polar's git handler goes nowhere. Chosen, "Git over ssh in Polar", and for the gitea's want of a name,
+    "IP allowed, key pinned". **E1** the git handler takes `ssh://host[:port]/path` (no login in it; the user name is the
+    binding's), and a credential of a new kind, `SshKey`: an Ed25519 private key escrowed to the agent as a token is, its
+    binding naming the user and the server's host key by its SHA-256 fingerprint. libgit2's `certificate_check` compares the
+    key the server shows against that pin, and nothing is offered to another; an ssh fetch without such a credential is
+    refused (no trust on first use), and so is one the egress settings would send through a proxy, since libgit2's proxy is
+    http only. An `SshKey` binding may name an IP address, since its pin is the server's identity; a token or a password
+    still goes only to a host name, which a certificate vouches for. **E2** the git agents read an ssh URL when a credential
+    is named (`git/common/src/remote.rs`), and the controller's `repositories` and the orchestrator's `mappings` say so; the
+    git dependencies a lock names stay https. **E3** live: a read-only deploy key on `SEI/ACE` (the maintainer's to add),
+    sealed and signed into the credentials sections, and the mapping and repositories naming
+    `ssh://52.235.181.217/SEI/ACE.git`; then the watched build. Decided by standing rules, for review: the pin in the
+    signed credential, not a render-time known-hosts setting; tested against an ssh server in the test (`russh`, a
+    dev-dependency) running `git upload-pack`.
+    *E1 and E2 DONE 2026-11-08*. `polar-crypto/src/registry.rs`: `SecretKind::SshKey` (`ssh-key`) and
+    `SecretBinding.host_key`, kept in the escrowed record only when there is one (a token's record is the bytes it was);
+    `check` requires an ssh key's pin in `ssh-keygen -l`'s one canonical spelling and refuses a pin on any other kind, and an
+    address as a token's or a password's host; an ssh key bound to an address is given for that address however it is written,
+    to git only (`UseRefusal::NotForHttp`), with the user `git` unless named. The credentials section takes `kind: ssh-key`
+    and `host_key`, judged by the registry's own `check`. The git handler (`protocol/git.rs`): an ssh address is a host name
+    or a plain IPv4 address, no login, no escape, no IPv6 in brackets; libgit2's `certificate_check` compares the server's
+    key with the pin and stops the fetch before anything is offered; the key goes to libssh2 from memory; an ssh fetch with
+    no credential, with a token, or where the egress settings would send it through a proxy, is refused before it connects,
+    and an ssh key never goes over https. `git/common/src/remote.rs`: `ssh_host`, and `repository_host(url, credential)`
+    taking ssh only with a credential, which the controller's `repositories` and the orchestrator's `mappings` read with;
+    `canonical_repository` reads ssh too. Found doing it: the egress settings' `proxy_for` matches http and https only, so an
+    ssh fetch would have gone around a configured proxy without a word; it is refused instead. Tested: the registry's rules
+    as examples and a property over bindings and hosts; the section's; the handler against an ssh server in the test (a
+    fetch with the pinned key, twice, the key in no file of the clone; a server showing another host key offered nothing;
+    no credential or a token not even connected to; an ssh key not sent over https; a proxy refused); a property that what
+    the controller takes over ssh the handler judges for the same host. `russh` (ring) is a dev-dependency of the builder only,
+    with 594 lines of `Cargo.lock`. The gitea's key as libssh2 sees it, probed with libgit2 (the server offers three; libssh2
+    takes its Ed25519 one): `SHA256:YFLdJcQIVfrVsL4igdbFhIjYNMuGwNDejlBfkfBM5Lw`.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

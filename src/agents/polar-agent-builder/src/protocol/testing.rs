@@ -226,6 +226,23 @@ pub async fn git_handle(
     .await
 }
 
+/// A handler over git as [`git_handle_for`] makes one, going out the way `egress` says.
+#[cfg(test)]
+pub(crate) async fn git_handle_through(
+    egress: Egress,
+    operations: &'static [OperationDecl],
+    secret: Option<(&str, &str, SecretBinding)>,
+) -> Site {
+    git_ca();
+    handle_of(
+        Instances::of(Git::with_egress(egress, super::git::MAX_FETCH)),
+        operations,
+        Vec::new(),
+        secret.map(one_secret),
+    )
+    .await
+}
+
 /// A handler over git and HTTP at once, as an agent that fetches a repository and pushes what it made of it has: git going
 /// out directly and trusting the CA of [`git_ca`], HTTP trusting `ca_pem` as well, `operations` declared and `variables` in
 /// force, its credentials answered by `credentials`.
@@ -705,9 +722,16 @@ fn pkt(line: &str) -> String {
     format!("{:04x}{line}", line.len() + 4)
 }
 
-/// The refs of `repository`, as a server first says them. It offers none of the protocol's capabilities it can do without,
-/// so what follows is a plain pack.
+/// The refs of `repository`, as a server first says them over HTTP: the service named, then the refs.
 fn advertisement(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
+    let mut said = format!("{}0000", pkt("# service=git-upload-pack\n")).into_bytes();
+    said.extend(refs_advertised(repository)?);
+    Ok(said)
+}
+
+/// The refs of `repository`, as `git-upload-pack` first says them (over ssh, this is all it says before the client asks).
+/// It offers none of the protocol's capabilities it can do without, so what follows is a plain pack.
+pub(crate) fn refs_advertised(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
     let mut refs = Vec::new();
     for reference in repository.references()? {
         let reference = reference?;
@@ -724,7 +748,7 @@ fn advertisement(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
         Some((name, _)) => format!("symref=HEAD:{name}"),
         None => String::new(),
     };
-    let mut lines = vec![pkt("# service=git-upload-pack\n"), "0000".to_string()];
+    let mut lines = Vec::new();
     let mut listed = Vec::new();
     if let Some((_, target)) = &head {
         listed.push((*target, "HEAD".to_string()));
@@ -745,7 +769,7 @@ fn advertisement(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
 }
 
 /// All of `repository`, whatever was asked for: a client takes what it already has without harm.
-fn pack_reply(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
+pub(crate) fn pack_reply(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
     let mut walk = repository.revwalk()?;
     for reference in repository.references()? {
         if let Some(target) = reference?.target() {

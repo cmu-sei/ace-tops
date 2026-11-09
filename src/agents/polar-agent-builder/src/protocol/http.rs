@@ -645,6 +645,7 @@ mod tests {
             host_pattern: "localhost".to_string(),
             kind,
             username: (kind == SecretKind::UserPassword).then(|| "me@example.org".to_string()),
+            host_key: None,
         }
     }
 

@@ -29,7 +29,7 @@
 //! is in it: a mapping names the credential its source is fetched with, if it needs one, and the `credentials` section holds
 //! it. No credential reaches a build's pod (decision 1), so the fetch is all a mapping names one for.
 
-use git_agent_common::remote::{credential_name_problem, https_host};
+use git_agent_common::remote::{credential_name_problem, repository_host};
 use orchestrator_core::types::{Privileges, pinned_by_digest};
 use polar::graph::nodes::git::RepoId;
 use polar_agent_builder::RuntimeSection;
@@ -68,7 +68,7 @@ pub static MAPPINGS: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: "The repositories build-orchestrator builds, and with what. Replaced whole by each version.",
-    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}}}}"#,
+    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name, or an ssh URL of a host name or an address with a credential", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it; over ssh only with a credential, an ssh key that pins the server's host key"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}}}}"#,
     validate,
 };
 
@@ -288,6 +288,8 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
         .map(|k| format!("{label}: `{}` is not a field of an entry", shown(k)))
         .collect();
 
+    // Over ssh a source is fetched only with a credential: whether the entry names one is what the URL is read with.
+    let names_a_credential = object.get("credential").is_some_and(|c| !c.is_null());
     let url = match object.get("url").and_then(Value::as_str) {
         None => {
             problems.push(format!("{label}: `url` is required, as text"));
@@ -301,7 +303,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             problems.push(format!("{label}: `url` has a space or a control character"));
             String::new()
         }
-        Some(url) => match https_host(url) {
+        Some(url) => match repository_host(url, names_a_credential) {
             Ok(_) => url.to_string(),
             Err(why) => {
                 problems.push(format!("{label}: `url`: {why}"));
@@ -384,6 +386,27 @@ mod tests {
         assert!(m.privileges.run_as_root);
         assert!(!m.privileges.allow_privilege_escalation);
         assert_eq!(m.privileges.add_capabilities, ["SETUID", "SETGID"]);
+    }
+
+    /// The private gitea over ssh: a mapping names it with the credential its source is fetched with, and is refused
+    /// without one.
+    #[test]
+    fn a_repository_over_ssh_is_mapped_with_a_credential_and_refused_without_one() {
+        let parsed = parse(&json!({"repositories": [
+            {"url": "ssh://52.235.181.217/SEI/ACE.git", "pipeline_image": image(), "credential": "gitea"}
+        ]}))
+        .unwrap();
+        assert_eq!(parsed[0].url, "ssh://52.235.181.217/SEI/ACE.git");
+        assert_eq!(parsed[0].credential.as_deref(), Some("gitea"));
+        let problems = parse(&json!({"repositories": [
+            {"url": "ssh://52.235.181.217/SEI/ACE.git", "pipeline_image": image()}
+        ]}))
+        .unwrap_err()
+        .join(" | ");
+        assert!(
+            problems.contains("`url`") && problems.contains("credential"),
+            "{problems}"
+        );
     }
 
     #[test]

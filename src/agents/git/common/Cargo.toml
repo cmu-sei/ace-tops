@@ -32,3 +32,7 @@ polar.workspace = true
 serde_yaml.workspace = true
 serde.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+# A property of what an ssh URL is taken for (remote.rs).
+proptest.workspace = true

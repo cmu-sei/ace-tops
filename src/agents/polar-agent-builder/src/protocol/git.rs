@@ -27,15 +27,24 @@
 //! a redirect within a host by itself and cannot ask about one to another, which would go unjudged and unrecorded, so it is
 //! told to refuse those. libgit2's options are global to the process, so the CA and the timeouts are set once, here, when
 //! the agent starts (docs/architecture/protocol-handlers.md, "The protocols").
+//!
+//! Over ssh (docs/architecture/build-orchestrator.md, "Revised 2026-11-08, the source"), a repository is fetched only with
+//! a credential that is an ssh key, whose signed binding pins the server's host key: libgit2 shows the handler the key the
+//! server presents before anything is offered, and the fetch ends there if it is not the pinned one. There is no trust on
+//! first use, no known-hosts file, and no ssh through the egress proxy, which carries http only.
 
 use super::{
     CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
 };
 use async_trait::async_trait;
-use git2::{Cred, FetchOptions, ProxyOptions, RemoteCallbacks, RemoteRedirect, Repository};
+use base64::Engine;
+use git2::{
+    CertificateCheckStatus, Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks,
+    RemoteRedirect, Repository,
+};
 use polar::egress::Egress;
 use polar_crypto::CryptoError;
-use polar_crypto::registry::GitCredential;
+use polar_crypto::registry::{GitCredential, SecretKind};
 use reqwest::Url;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -90,7 +99,10 @@ pub struct Fetched {
 /// and a port and nothing else, not a backslash, an `@` or an empty port that two parsers could take differently.
 fn target_of(address: &str) -> Result<Target, String> {
     let url = Url::parse(address).map_err(|_| "the address cannot be read".to_string())?;
-    let target = super::http::target_of(&url)?;
+    let target = match url.scheme() {
+        "ssh" => ssh_target(&url)?,
+        _ => super::http::target_of(&url)?,
+    };
     let authority = address
         .split_once("://")
         .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
@@ -104,6 +116,38 @@ fn target_of(address: &str) -> Result<Target, String> {
         return Err("the address is not one git and this agent are sure to read alike".to_string());
     }
     Ok(target)
+}
+
+/// What a judgment reads of an ssh address: its host, a host name or an IPv4 address written plainly (an ssh address's host
+/// is not read as an HTTP one's is, so nothing that could be read two ways is taken: no escape, no IPv6 in brackets), and
+/// no login, since the user is the credential's. The connection is encrypted.
+fn ssh_target(url: &Url) -> Result<Target, String> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("the address carries a login of its own".to_string());
+    }
+    let host = url
+        .host_str()
+        .filter(|host| {
+            !host.is_empty()
+                && host
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        })
+        .ok_or_else(|| "an ssh address names a host name or an IPv4 address".to_string())?;
+    Ok(Target {
+        host: host.to_ascii_lowercase(),
+        encrypted: true,
+        access: None,
+        reaches_node: Vec::new(),
+    })
+}
+
+/// The host key a server presented, as `ssh-keygen -l` writes its fingerprint and a binding pins it.
+fn fingerprint_of(sha256: &[u8; 32]) -> String {
+    format!(
+        "SHA256:{}",
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(sha256)
+    )
 }
 
 /// What the handler needs from `config`: a CA that cannot be used stops the agent, before it does anything, with the
@@ -188,7 +232,23 @@ impl<'a> Fetching<'a> {
         let (credential, host, told) = (self.credential, self.host.to_string(), self.told);
         let mut presented = false;
         let mut callbacks = RemoteCallbacks::new();
-        callbacks.credentials(move |url, _, _| {
+        // Over ssh, the server's host key against the pin, before anything is offered; over https, libgit2's own check of
+        // the certificate.
+        let pin = credential.and_then(|credential| credential.host_key.clone());
+        callbacks.certificate_check(move |cert, _| {
+            let Some(hostkey) = cert.as_hostkey() else {
+                return Ok(CertificateCheckStatus::CertificatePassthrough);
+            };
+            let shown = hostkey.hash_sha256().map(fingerprint_of);
+            if pin.is_some() && shown == pin {
+                return Ok(CertificateCheckStatus::CertificateOk);
+            }
+            told.set(Some(Failure::Configuration(
+                "the server's host key is not the one its credential pins".to_string(),
+            )));
+            Err(git2::Error::from_str("host key"))
+        });
+        callbacks.credentials(move |url, _, allowed| {
             let Some(credential) = credential else {
                 told.set(Some(Failure::Transient(
                     "the repository asks for a credential, and names none".to_string(),
@@ -203,6 +263,10 @@ impl<'a> Fetching<'a> {
                 )));
                 return Err(git2::Error::from_str("another host"));
             }
+            // Over ssh libgit2 first asks for the user alone, when the address names none; that presents nothing.
+            if allowed == CredentialType::USERNAME {
+                return Cred::username(&credential.username);
+            }
             // libgit2 asks again only when what it was given was refused, and would go on asking.
             if presented {
                 told.set(Some(Failure::CredentialRefused(
@@ -211,9 +275,17 @@ impl<'a> Fetching<'a> {
                 return Err(git2::Error::from_str("refused"));
             }
             presented = true;
-            let password = std::str::from_utf8(&credential.secret)
+            let secret = std::str::from_utf8(&credential.secret)
                 .map_err(|_| git2::Error::from_str("the credential is not text"))?;
-            Cred::userpass_plaintext(&credential.username, password)
+            match credential.kind {
+                // From memory: the key is never written to a file.
+                SecretKind::SshKey => {
+                    Cred::ssh_key_from_memory(&credential.username, None, secret, None)
+                }
+                SecretKind::Token | SecretKind::UserPassword => {
+                    Cred::userpass_plaintext(&credential.username, secret)
+                }
+            }
         });
         let max_fetch = self.max_fetch;
         callbacks.transfer_progress(move |progress| {
@@ -290,7 +362,38 @@ impl Protocol for Git {
         exchange: &mut Exchange<Self>,
     ) -> Result<(), Failure> {
         let target = target_of(&request.url).map_err(Failure::Configuration)?;
-        let proxy = self.egress.proxy_for(&request.url);
+        // Read as `target_of` read it, so a scheme written in capitals is ssh all the same.
+        let over_ssh = Url::parse(&request.url).is_ok_and(|url| url.scheme() == "ssh");
+        let ssh_key = credential.as_ref().map(|c| c.kind == SecretKind::SshKey);
+        match (over_ssh, ssh_key) {
+            (true, None | Some(false)) => {
+                return Err(Failure::Configuration(
+                    "a repository over ssh is fetched only with an ssh key, whose binding pins its server's host key"
+                        .to_string(),
+                ));
+            }
+            (false, Some(true)) => {
+                return Err(Failure::Configuration(
+                    "an ssh key goes only over ssh".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        // libgit2's proxy carries http only: where the way out is through one, ssh would go around it, so it does not go.
+        let proxy = if over_ssh {
+            if self
+                .egress
+                .proxy_for(&format!("https://{}/", target.host))
+                .is_some()
+            {
+                return Err(Failure::Configuration(
+                    "the way out is through a proxy, which carries no ssh".to_string(),
+                ));
+            }
+            None
+        } else {
+            self.egress.proxy_for(&request.url)
+        };
         let max_fetch = self.max_fetch;
         // libgit2 blocks for as long as the fetch takes: on a thread of its own, it holds up no other request.
         let fetched = tokio::task::spawn_blocking(move || {
@@ -435,6 +538,7 @@ mod tests {
             host_pattern: host.to_string(),
             kind: SecretKind::UserPassword,
             username: Some("svc".to_string()),
+            host_key: None,
         }
     }
 
@@ -1153,5 +1257,223 @@ mod tests {
             .err()
             .expect("it should refuse");
         assert!(why.contains("POLAR_EGRESS_CA_CERT"), "{why}");
+    }
+
+    // -- over ssh ---------------------------------------------------------------------------------------------------
+
+    use crate::protocol::ssh_origin::{SshOrigin, fingerprint, key, openssh};
+    use crate::protocol::testing::git_handle_through;
+
+    #[test]
+    fn an_ssh_address_is_read_for_its_host_and_is_encrypted_and_carries_no_login() {
+        for (address, host) in [
+            ("ssh://52.235.181.217/SEI/ACE.git", "52.235.181.217"),
+            ("ssh://Git.Example.org:2222/o/r.git", "git.example.org"),
+            ("SSH://git.example.org/o/r.git", "git.example.org"),
+        ] {
+            let target = target_of(address).unwrap();
+            assert_eq!(
+                (target.host.as_str(), target.encrypted),
+                (host, true),
+                "{address}"
+            );
+        }
+        for address in [
+            "ssh://git@52.235.181.217/SEI/ACE.git",
+            "ssh://u:p@git.example.org/o/r.git",
+            "ssh://git.example.org:/o/r.git",
+            "ssh://git%2eexample.org/o/r.git",
+            "ssh://[2001:db8::1]/o/r.git",
+            "ssh:///o/r.git",
+        ] {
+            assert!(target_of(address).is_err(), "{address}");
+        }
+    }
+
+    fn pinned(host: &str, pin: &str) -> SecretBinding {
+        SecretBinding {
+            host_pattern: host.to_string(),
+            kind: SecretKind::SshKey,
+            username: None,
+            host_key: Some(pin.to_string()),
+        }
+    }
+
+    /// The rig, its repository also served over ssh with the host key of `key(1)`, letting in `key(2)` as `git`.
+    async fn over_ssh() -> (Rig, SshOrigin) {
+        let r = rig().await;
+        let origin =
+            SshOrigin::serving(r._origin_dir.path(), key(1), key(2).public_key().clone()).await;
+        (r, origin)
+    }
+
+    #[tokio::test]
+    async fn a_repository_over_ssh_is_fetched_with_its_key_from_the_server_its_binding_pins_and_the_key_is_left_nowhere()
+     {
+        let (r, origin) = over_ssh().await;
+        let secret = openssh(&key(2));
+        let site = git_handle_for(
+            DECLARED,
+            Some(("gh", &secret, pinned("127.0.0.1", &fingerprint(&key(1))))),
+        )
+        .await;
+        let tip = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&origin.url()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(tip, r.tip);
+        let second = commit(&r.repository, "second");
+        let fetched = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&origin.url()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(fetched, second, "the same clone, brought up to date");
+
+        let seen = origin.seen();
+        assert_eq!(seen.connections, 2);
+        assert!(
+            seen.offered
+                .iter()
+                .all(|offered| *offered == fingerprint(&key(2))),
+            "{seen:?}"
+        );
+        assert!(
+            seen.commands
+                .iter()
+                .all(|command| command.starts_with("git-upload-pack ")),
+            "{seen:?}"
+        );
+        let mut found = Vec::new();
+        files_holding(r.cache.path(), b"OPENSSH PRIVATE KEY", &mut found);
+        assert_eq!(found, Vec::<PathBuf>::new(), "the key is in the clone");
+        let records = site.records.lock().unwrap();
+        assert!(records.iter().all(|record| {
+            record.credential.as_deref() == Some("gh")
+                && record.host == "127.0.0.1"
+                && record.verdict == "allowed"
+        }));
+    }
+
+    #[tokio::test]
+    async fn a_server_showing_another_host_key_is_offered_nothing() {
+        let (r, origin) = over_ssh().await;
+        let secret = openssh(&key(2));
+        let site = git_handle_for(
+            DECLARED,
+            Some(("gh", &secret, pinned("127.0.0.1", &fingerprint(&key(9))))),
+        )
+        .await;
+        let failure = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&origin.url()),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Configuration(why) if why.contains("host key")),
+            "{failure:?}"
+        );
+        let seen = origin.seen();
+        assert_eq!(seen.connections, 1, "it connected, to see the host key");
+        assert!(seen.offered.is_empty(), "a key was offered: {seen:?}");
+        assert!(!r.cloned());
+    }
+
+    #[tokio::test]
+    async fn a_repository_over_ssh_without_an_ssh_key_is_not_even_connected_to() {
+        let (r, origin) = over_ssh().await;
+        // No credential at all.
+        let site = git_handle_for(DECLARED, None).await;
+        let failure = site
+            .handle
+            .ask(Fetch::<false> {
+                request: r.request(&origin.url()),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Configuration(why) if why.contains("ssh key")),
+            "{failure:?}"
+        );
+        // A token, which goes only to a host name, bound to the name the server is reached by.
+        let site = git_handle_for(DECLARED, Some(("gh", TOKEN, bound_to("localhost")))).await;
+        let failure = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&origin.url_by_name()),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Configuration(why) if why.contains("ssh key")),
+            "{failure:?}"
+        );
+        assert_eq!(origin.seen().connections, 0);
+        assert!(!r.cloned());
+    }
+
+    #[tokio::test]
+    async fn an_ssh_key_never_goes_over_https() {
+        let r = rig().await;
+        r.origin.asks_for("git", "anything");
+        let secret = openssh(&key(2));
+        let site = git_handle_for(
+            DECLARED,
+            Some(("gh", &secret, pinned("localhost", &fingerprint(&key(1))))),
+        )
+        .await;
+        let url = r.origin.url_over_tls().await;
+        let failure = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&url),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Configuration(why) if why.contains("only over ssh")),
+            "{failure:?}"
+        );
+        assert!(
+            r.origin.presented().await.is_empty(),
+            "the origin was asked"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ssh_fetch_the_way_out_would_send_through_a_proxy_is_refused_not_sent_around_it() {
+        let (r, origin) = over_ssh().await;
+        let secret = openssh(&key(2));
+        let egress = Egress {
+            proxy: Some("http://127.0.0.1:9".to_string()),
+            no_proxy: None,
+            ca_cert: None,
+            cluster_ca: None,
+        };
+        let site = git_handle_through(
+            egress,
+            DECLARED,
+            Some(("gh", &secret, pinned("127.0.0.1", &fingerprint(&key(1))))),
+        )
+        .await;
+        let failure = site
+            .handle
+            .ask(Fetch::<true> {
+                request: r.request(&origin.url()),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Configuration(why) if why.contains("proxy")),
+            "{failure:?}"
+        );
+        assert_eq!(origin.seen().connections, 0);
     }
 }

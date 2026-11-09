@@ -64,6 +64,62 @@ pub fn https_host(repo_url: &str) -> Result<String, String> {
     Ok(host)
 }
 
+/// The host of an `ssh` URL (docs/architecture/build-orchestrator.md, "Revised 2026-11-08, the source"): a host name or an
+/// IPv4 address written plainly, in lower case, with no login (the user is the credential's) and nothing in the authority
+/// two parsers could take differently, as the git handler reads it. Only an ssh key goes over ssh, and its binding pins
+/// the server's host key, which is why an address is taken here and never for https.
+pub fn ssh_host(repo_url: &str) -> Result<String, String> {
+    let url =
+        url::Url::parse(repo_url).map_err(|_| "the repository URL cannot be read".to_string())?;
+    if url.scheme() != "ssh" {
+        return Err("the repository URL is not ssh".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("the repository URL carries a login of its own".to_string());
+    }
+    let host = url
+        .host_str()
+        .filter(|host| {
+            !host.is_empty()
+                && host
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        })
+        .ok_or_else(|| "an ssh repository names a host name or an IPv4 address".to_string())?
+        .to_ascii_lowercase();
+    let authority = repo_url
+        .get(6..)
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .unwrap_or_default();
+    let (name, port) = match authority.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (authority, None),
+    };
+    let plain = port.is_none_or(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    if !plain || !name.eq_ignore_ascii_case(&host) {
+        return Err("the repository URL is not one a credential may be used for".to_string());
+    }
+    Ok(host)
+}
+
+/// The host of a repository a signed entry names: an `https` URL's ([`https_host`]) whether or not the entry names a
+/// credential, an `ssh` URL's ([`ssh_host`]) only when it does, since nothing is fetched over ssh without an ssh key.
+pub fn repository_host(repo_url: &str, with_credential: bool) -> Result<String, String> {
+    let scheme = repo_url.split_once("://").map(|(scheme, _)| scheme);
+    match scheme {
+        Some(scheme) if scheme.eq_ignore_ascii_case("ssh") => {
+            if !with_credential {
+                return Err(
+                    "a repository over ssh is fetched only with a credential, an ssh key that pins its server"
+                        .to_string(),
+                );
+            }
+            ssh_host(&format!("ssh://{}", &repo_url[6..]))
+        }
+        _ => https_host(repo_url),
+    }
+}
+
 /// Longest repository URL taken from anywhere.
 pub const MAX_REPO_URL: usize = 2048;
 
@@ -88,8 +144,8 @@ impl CanonicalRepository {
     }
 }
 
-/// Reads untrusted text as the URL of a repository, or says why it is not one. Only `https`, only a host name
-/// (never an address), no login, no query, no `%` in the path (a way to hide a `/`, a `\` or a dot segment),
+/// Reads untrusted text as the URL of a repository, or says why it is not one. Only `https` with a host name (never
+/// an address), or `ssh` with a host name or an IPv4 address ([`ssh_host`]); no login, no query, no `%` in the path (a way to hide a `/`, a `\` or a dot segment),
 /// no empty path segment, at least one segment, no space or control character, no trailing dot on the host.
 /// What comes out is re-serialised, and that, not the original text, is what is ever passed on.
 pub fn canonical_repository(raw: &str) -> Result<CanonicalRepository, String> {
@@ -105,14 +161,24 @@ pub fn canonical_repository(raw: &str) -> Result<CanonicalRepository, String> {
                 .to_string(),
         );
     }
-    // A scheme is case-insensitive; `https_host` compares the prefix exactly, so it is put in lower case first.
-    let text = match raw.get(..8) {
-        Some(prefix) if prefix.eq_ignore_ascii_case("https://") => format!("https://{}", &raw[8..]),
+    // A scheme is case-insensitive; `https_host` and `ssh_host` compare the prefix exactly, so it is put in lower case
+    // first.
+    let text = match (raw.get(..8), raw.get(..6)) {
+        (Some(prefix), _) if prefix.eq_ignore_ascii_case("https://") => {
+            format!("https://{}", &raw[8..])
+        }
+        (_, Some(prefix)) if prefix.eq_ignore_ascii_case("ssh://") => {
+            format!("ssh://{}", &raw[6..])
+        }
         _ => raw.to_string(),
     };
-    // The same reading of the authority the observer uses for a credential: https, a host name, no login, and
-    // nothing in the authority that two parsers could take differently.
-    let host = https_host(&text)?;
+    // The same reading of the authority the observer uses for a credential: https and a host name, or ssh and a host
+    // name or an address, no login, and nothing in the authority that two parsers could take differently.
+    let host = if text.starts_with("ssh://") {
+        ssh_host(&text)?
+    } else {
+        https_host(&text)?
+    };
     if host.ends_with('.') {
         return Err("the host has a trailing dot".to_string());
     }
@@ -379,5 +445,92 @@ mod tests {
             id("https://github.com/o/r.git").to_string(),
             "https_github.com_o_r"
         );
+    }
+
+    // -- over ssh -----------------------------------------------------------------------------------------------------
+
+    #[test]
+    fn an_ssh_repository_is_read_for_its_host_a_name_or_a_plain_ipv4_address() {
+        assert_eq!(
+            ssh_host("ssh://52.235.181.217/SEI/ACE.git").unwrap(),
+            "52.235.181.217"
+        );
+        assert_eq!(
+            ssh_host("ssh://Git.Example.org:2222/o/r.git").unwrap(),
+            "git.example.org"
+        );
+        for refused in [
+            "ssh://git@52.235.181.217/SEI/ACE.git",
+            "ssh://u:p@git.example.org/o/r",
+            "ssh://git.example.org:/o/r",
+            "ssh://git%2eexample.org/o/r",
+            "ssh://[2001:db8::1]/o/r",
+            "ssh:///o/r",
+            "https://git.example.org/o/r",
+            "git@git.example.org:o/r.git",
+        ] {
+            assert!(ssh_host(refused).is_err(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_repository_over_ssh_is_taken_only_with_a_credential_and_https_either_way() {
+        let ssh = "ssh://52.235.181.217/SEI/ACE.git";
+        assert!(
+            repository_host(ssh, false)
+                .unwrap_err()
+                .contains("credential")
+        );
+        assert_eq!(repository_host(ssh, true).unwrap(), "52.235.181.217");
+        for with_credential in [false, true] {
+            assert_eq!(
+                repository_host("https://github.com/o/r", with_credential).unwrap(),
+                "github.com"
+            );
+            assert!(repository_host("http://github.com/o/r", with_credential).is_err());
+            assert!(
+                repository_host("https://127.0.0.1/o/r", with_credential).is_err(),
+                "an address over https"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ssh_repository_has_one_canonical_form() {
+        let c = |raw: &str| canonical_repository(raw).unwrap();
+        let gitea = c("SSH://52.235.181.217/SEI/ACE.git");
+        assert_eq!(gitea.url, "ssh://52.235.181.217/SEI/ACE.git");
+        assert_eq!(gitea.host, "52.235.181.217");
+        assert_eq!(gitea.path, vec!["SEI".to_string(), "ACE.git".to_string()]);
+        assert_eq!(
+            gitea.repo_id(),
+            c("ssh://52.235.181.217/SEI/ACE/").repo_id()
+        );
+        assert_ne!(gitea.repo_id(), c("https://github.com/SEI/ACE").repo_id());
+        assert!(
+            canonical_repository("ssh://git@52.235.181.217/SEI/ACE.git")
+                .unwrap_err()
+                .contains("login")
+        );
+    }
+
+    proptest::proptest! {
+        /// Whatever the authority, an ssh URL taken names the host it was taken for, in lower case, a name or an address
+        /// written plainly, and the canonical form keeps that host.
+        #[test]
+        fn what_is_taken_over_ssh_names_only_its_host(
+            authority in "[a-zA-Z0-9.:@\\\\%\\[\\]-]{0,24}",
+            rest in "(/[a-zA-Z.]{1,8}){1,2}",
+        ) {
+            let url = format!("ssh://{authority}{rest}");
+            if let Ok(host) = ssh_host(&url) {
+                proptest::prop_assert!(!authority.contains('@') && !authority.contains('%'));
+                proptest::prop_assert_eq!(&host, &authority.split(':').next().unwrap().to_ascii_lowercase());
+                proptest::prop_assert!(host.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'));
+                if let Ok(canonical) = canonical_repository(&url) {
+                    proptest::prop_assert_eq!(canonical.host, host);
+                }
+            }
+        }
     }
 }

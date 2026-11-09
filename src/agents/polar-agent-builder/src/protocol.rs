@@ -34,6 +34,8 @@ pub mod git;
 pub mod http;
 pub mod judge;
 pub mod kubernetes;
+#[cfg(test)]
+mod ssh_origin;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub use credentials::CredentialsApplied;
@@ -1413,8 +1415,10 @@ pub(crate) mod tests {
                 return Err(CryptoError::Use(UseRefusal::HostNotBound));
             }
             Ok(GitCredential {
+                kind: polar_crypto::registry::SecretKind::Token,
                 username: "oauth2".to_string(),
                 secret: Zeroizing::new(self.secret.clone()),
+                host_key: None,
             })
         }
         async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {

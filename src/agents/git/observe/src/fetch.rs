@@ -189,6 +189,28 @@ mod tests {
         }
     }
 
+    proptest! {
+        /// Over ssh too: what the controller takes for a host, the handler judges for that host, as encrypted.
+        #[test]
+        fn what_the_controller_takes_over_ssh_the_handler_reads_the_same_way(
+            authority in "[a-zA-Z0-9.:@\\\\%\\[\\]-]{0,24}",
+            rest in "(/[a-z.]{1,8}){1,2}",
+        ) {
+            let url = format!("ssh://{authority}{rest}");
+            if let Ok(host) = git_agent_common::remote::ssh_host(&url) {
+                prop_assert_eq!(
+                    handler_reads(&url),
+                    Ok(Target {
+                        host,
+                        encrypted: true,
+                        access: None,
+                        reaches_node: Vec::new(),
+                    })
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_address_of_a_repository_is_read_alike_for_the_ones_that_have_one() {
         for url in [

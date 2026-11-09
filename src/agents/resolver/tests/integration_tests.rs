@@ -278,6 +278,7 @@ async fn the_handler_logs_in_to_a_real_registry_that_asks_for_it() {
                         host_pattern: pattern.to_string(),
                         kind: SecretKind::UserPassword,
                         username: Some(USER.to_string()),
+                        host_key: None,
                     },
                 )),
             )

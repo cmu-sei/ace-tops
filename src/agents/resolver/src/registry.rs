@@ -331,6 +331,7 @@ mod tests {
                     host_pattern: pattern.to_string(),
                     kind: SecretKind::UserPassword,
                     username: Some("me".to_string()),
+                    host_key: None,
                 },
             )),
         )

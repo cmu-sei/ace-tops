@@ -339,6 +339,7 @@ impl<O: polar_http_observer::Kind + PolarAgent> Pair<O> {
             host_pattern: "localhost".to_string(),
             kind: SecretKind::Token,
             username: None,
+            host_key: None,
         };
         let site = polar_agent_builder::protocol::testing::http_handle_for(
             &ca.pem,

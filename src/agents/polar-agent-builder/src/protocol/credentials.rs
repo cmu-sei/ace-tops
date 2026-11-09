@@ -45,7 +45,7 @@ pub const MAX_NAME: usize = 64;
 pub const MAX_USERNAME: usize = 128;
 
 /// What the section's body may hold: `polar-sign` checks a document against this, and makes each secret from what is typed.
-const BODY: &str = r#"{"credentials": {"list_of": {"name": {"type": "text of lowercase letters, digits and hyphens", "required": true, "doc": "what the credential is called"}, "host_pattern": {"type": "host pattern", "required": true, "doc": "the only hosts this credential is ever sent to: a host name, or *. and a domain, or several of those separated by commas"}, "kind": {"type": "token | user-password", "required": true, "doc": "token: a bearer token; user-password: a user name and a secret"}, "username": {"type": "text", "required": false, "doc": "required for a user-password"}, "secret": {"type": "ciphertext", "required": true, "secret": true, "doc": "the secret itself. In the signed document it is base64 of an EscrowedSecret for this agent, bound to <agent>|credentials|<version>|<name>|secret; polar-sign makes that from what you type"}}}}"#;
+const BODY: &str = r#"{"credentials": {"list_of": {"name": {"type": "text of lowercase letters, digits and hyphens", "required": true, "doc": "what the credential is called"}, "host_pattern": {"type": "host pattern", "required": true, "doc": "the only hosts this credential is ever sent to: a host name, or *. and a domain, or several of those separated by commas; for an ssh-key, also one address"}, "kind": {"type": "token | user-password | ssh-key", "required": true, "doc": "token: a bearer token; user-password: a user name and a secret; ssh-key: an ssh private key, for git over ssh"}, "username": {"type": "text", "required": false, "doc": "required for a user-password; for an ssh-key, git unless named"}, "host_key": {"type": "text: a SHA-256 fingerprint", "required": false, "doc": "required for an ssh-key, and only for one: the server's host key as ssh-keygen -l writes it (SHA256:...); the key is offered to no server that shows another"}, "secret": {"type": "ciphertext", "required": true, "secret": true, "doc": "the secret itself. In the signed document it is base64 of an EscrowedSecret for this agent, bound to <agent>|credentials|<version>|<name>|secret; polar-sign makes that from what you type"}}}}"#;
 
 /// The section of an agent that takes at most `MAX` credentials, `doc` saying what they are for. Replaced whole by each
 /// version, so an entry left out is withdrawn.
@@ -70,6 +70,7 @@ pub(crate) struct Entry {
     pub(crate) host_pattern: String,
     pub(crate) kind: SecretKind,
     pub(crate) username: Option<String>,
+    pub(crate) host_key: Option<String>,
     pub(crate) secret: String,
 }
 
@@ -135,7 +136,16 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
     };
     let mut problems = Vec::new();
     for key in object.keys() {
-        if !["name", "host_pattern", "kind", "username", "secret"].contains(&key.as_str()) {
+        if ![
+            "name",
+            "host_pattern",
+            "kind",
+            "username",
+            "host_key",
+            "secret",
+        ]
+        .contains(&key.as_str())
+        {
             problems.push(format!("entry {i}: `{key}` is not a field of an entry"));
         }
     }
@@ -164,13 +174,8 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
     };
 
     let host_pattern = text("host_pattern").unwrap_or_default().to_string();
-    match text("host_pattern") {
-        None => problems.push(format!("{label}: `host_pattern` must be text")),
-        Some(p) => {
-            if let Some(why) = pattern_problem(p) {
-                problems.push(format!("{label}: `host_pattern`: {why}"));
-            }
-        }
+    if text("host_pattern").is_none() {
+        problems.push(format!("{label}: `host_pattern` must be text"));
     }
 
     let kind = match object
@@ -180,7 +185,7 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
         Some(Ok(kind)) => Some(kind),
         _ => {
             problems.push(format!(
-                "{label}: `kind` must be `token` or `user-password`"
+                "{label}: `kind` must be `token`, `user-password` or `ssh-key`"
             ));
             None
         }
@@ -206,6 +211,41 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
         ));
     }
 
+    let host_key = match object.get("host_key") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(pin)) => Some(pin.clone()),
+        Some(_) => {
+            problems.push(format!("{label}: `host_key` must be text"));
+            None
+        }
+    };
+    // The rules for where a credential may go are the registry's, judged here as the CryptoActor will judge them: an ssh
+    // key pins a host key and may name an address; nothing else does either. Its messages hold no value.
+    match kind {
+        Some(kind) if text("host_pattern").is_some() => {
+            let binding = SecretBinding {
+                host_pattern: host_pattern.clone(),
+                kind,
+                username: username.clone(),
+                host_key: host_key.clone(),
+            };
+            if let Err(e) = binding.check() {
+                let field = if host_key.is_some() || kind == SecretKind::SshKey {
+                    "`host_key` or `host_pattern`"
+                } else {
+                    "`host_pattern`"
+                };
+                problems.push(format!("{label}: {field}: {e}"));
+            }
+        }
+        None => {
+            if let Some(why) = text("host_pattern").and_then(pattern_problem) {
+                problems.push(format!("{label}: `host_pattern`: {why}"));
+            }
+        }
+        Some(_) => {}
+    }
+
     let secret = text("secret").unwrap_or_default().to_string();
     match text("secret") {
         None => problems.push(format!("{label}: `secret` must be text")),
@@ -222,6 +262,7 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
             host_pattern,
             kind,
             username,
+            host_key,
             secret,
         }),
         _ => Err(problems),
@@ -293,6 +334,7 @@ pub(crate) async fn apply(
             host_pattern: entry.host_pattern.clone(),
             kind: entry.kind,
             username: entry.username.clone(),
+            host_key: entry.host_key.clone(),
         };
         match crypto
             .register_secret(
@@ -421,7 +463,14 @@ mod tests {
         assert_eq!(ONE.name, "credentials");
         let body: Value = serde_json::from_str(ONE.body).unwrap();
         let fields = &body["credentials"]["list_of"];
-        for field in ["name", "host_pattern", "kind", "username", "secret"] {
+        for field in [
+            "name",
+            "host_pattern",
+            "kind",
+            "username",
+            "host_key",
+            "secret",
+        ] {
             assert!(fields.get(field).is_some(), "{field}");
         }
         assert_eq!(fields["secret"]["secret"], true);
@@ -557,13 +606,89 @@ mod tests {
         assert_eq!(crypto.kept.lock().unwrap()[0], Vec::<String>::new());
     }
 
+    /// The fingerprint of a host key, as `ssh-keygen -l` writes it.
+    const PIN: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn ssh_entry(host_pattern: &str, host_key: Option<&str>) -> Value {
+        let mut entry = json!({
+            "name": "gitea",
+            "host_pattern": host_pattern,
+            "kind": "ssh-key",
+            "secret": ciphertext(b"-----BEGIN OPENSSH PRIVATE KEY-----", b"context"),
+        });
+        if let Some(pin) = host_key {
+            entry["host_key"] = json!(pin);
+        }
+        entry
+    }
+
+    #[tokio::test]
+    async fn an_ssh_key_for_an_address_is_registered_with_the_host_key_it_pins() {
+        let entries = parse(
+            &json!({"credentials": [ssh_entry("52.235.181.217", Some(PIN))]}),
+            1,
+        )
+        .unwrap();
+        assert_eq!(entries[0].kind, SecretKind::SshKey);
+        assert_eq!(entries[0].host_key.as_deref(), Some(PIN));
+        let crypto = FakeCrypto::default();
+        let applied = apply(&crypto, "an-agent", 1, &entries).await;
+        assert_eq!(applied.registered, vec!["gitea".to_string()]);
+        let binding = &crypto.registered.lock().unwrap()[0].3;
+        assert_eq!(
+            (
+                binding.host_pattern.as_str(),
+                binding.kind,
+                binding.host_key.as_deref()
+            ),
+            ("52.235.181.217", SecretKind::SshKey, Some(PIN))
+        );
+    }
+
+    #[test]
+    fn an_ssh_key_names_its_servers_host_key_and_nothing_else_names_one_or_an_address() {
+        let refused = |entry: Value| {
+            parse(&json!({"credentials": [entry]}), 1)
+                .unwrap_err()
+                .join(" | ")
+        };
+        assert!(refused(ssh_entry("52.235.181.217", None)).contains("host key"));
+        assert!(refused(ssh_entry("52.235.181.217", Some("SHA256:short"))).contains("host key"));
+        let mut pinned_token = token_entry("a-site");
+        pinned_token["host_key"] = json!(PIN);
+        assert!(refused(pinned_token).contains("host key"));
+        let mut token_to_an_address = token_entry("a-site");
+        token_to_an_address["host_pattern"] = json!("52.235.181.217");
+        assert!(refused(token_to_an_address).contains("host_pattern"));
+        // A name pattern is as good for an ssh key as for any other.
+        assert!(
+            parse(
+                &json!({"credentials": [ssh_entry("*.example.org", Some(PIN))]}),
+                1
+            )
+            .is_ok()
+        );
+    }
+
+    /// An ssh key's host key comes back from the signed file, and a token's, which it leaves out, as null and no key.
+    #[test]
+    fn an_ssh_key_and_a_token_in_one_signed_version_read_back_as_they_were_written() {
+        let body =
+            json!({"credentials": [token_entry("a-site"), ssh_entry("52.235.181.217", Some(PIN))]});
+        let signed = polar_sign::dhall(&body).expect("one list");
+        let read = polar_sign::evaluate(&signed).unwrap();
+        let entries = parse(&read, 2).unwrap();
+        assert_eq!(entries[0].host_key, None);
+        assert_eq!(entries[1].host_key.as_deref(), Some(PIN));
+    }
+
     proptest! {
         /// Whatever a body holds, no problem repeats what its fields hold: a secret pasted into any of them stays out of
         /// what is reported.
         #[test]
         fn no_problem_says_what_a_field_holds(
             value in "Z[A-Za-z0-9+/ !]{24,40}",
-            field in proptest::sample::select(vec!["name", "host_pattern", "kind", "username", "secret", "stranger"]),
+            field in proptest::sample::select(vec!["name", "host_pattern", "kind", "username", "host_key", "secret", "stranger"]),
         ) {
             let mut item = json!({"name": "a", "host_pattern": "a.example.org", "kind": "token", "secret": "x"});
             item[field] = json!(value);

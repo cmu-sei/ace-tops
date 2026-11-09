@@ -626,6 +626,7 @@ mod tests {
             host_pattern: "localhost".to_string(),
             kind: SecretKind::Token,
             username: None,
+            host_key: None,
         };
         let site =
             http_handle_for(&ca.pem, OPERATIONS, vec![], Some(("jira", TOKEN, binding))).await;

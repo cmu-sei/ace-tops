@@ -135,6 +135,9 @@ pub enum SecretKind {
     Token,
     /// A user name and a password. The binding holds the user name.
     UserPassword,
+    /// An ssh private key, in the form `ssh-keygen` writes it, given to git over ssh only and only to a server that shows
+    /// the host key the binding pins. The user is `git` unless the binding names one.
+    SshKey,
 }
 
 impl SecretKind {
@@ -144,6 +147,7 @@ impl SecretKind {
         match self {
             SecretKind::Token => "token",
             SecretKind::UserPassword => "user-password",
+            SecretKind::SshKey => "ssh-key",
         }
     }
 }
@@ -152,33 +156,86 @@ impl SecretKind {
 /// and the host check cannot be lost.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretBinding {
-    /// The only hosts the secret is ever given for (`host_matches`).
+    /// The only hosts the secret is ever given for (`host_matches`); for an ssh key, that or one address.
     pub host_pattern: String,
     pub kind: SecretKind,
     pub username: Option<String>,
+    /// For an ssh key, and only for one: the server's host key, by its SHA-256 fingerprint as `ssh-keygen -l` writes it
+    /// (`SHA256:` and 43 characters of base64). The key is offered to no server that shows another.
+    pub host_key: Option<String>,
 }
 
 impl SecretBinding {
-    /// Whether the binding can be used at all: its pattern must be valid.
+    /// Whether the binding can be used at all. Its pattern must be valid; an ssh key's must pin a host key, and may
+    /// name one address instead of host names, since the pinned key, not a name a certificate vouches for, is how the
+    /// server is known; no other kind pins a key or names an address.
     pub fn check(&self) -> Result<(), RecordError> {
+        let bad = |problem: &str| Err(RecordError::BadBinding(problem.to_string()));
+        match (self.kind, &self.host_key) {
+            (SecretKind::SshKey, None) => {
+                return bad("an ssh key names the host key of its server");
+            }
+            (SecretKind::SshKey, Some(pin)) if !is_fingerprint(pin) => {
+                return bad(
+                    "a host key is `SHA256:` and 43 characters of base64, as `ssh-keygen -l` writes it",
+                );
+            }
+            (SecretKind::Token | SecretKind::UserPassword, Some(_)) => {
+                return bad("only an ssh key names a host key");
+            }
+            _ => {}
+        }
+        if self.kind == SecretKind::SshKey && self.host_pattern.parse::<IpAddr>().is_ok() {
+            return Ok(());
+        }
         match pattern_problem(&self.host_pattern) {
             Some(problem) => Err(RecordError::BadBinding(problem)),
             None => Ok(()),
         }
     }
+
+    /// Whether the secret may be given for `host`: an ssh key bound to an address, for that address however it is
+    /// written; any other binding, as its pattern says (`host_matches`).
+    fn names(&self, host: &str) -> bool {
+        match (self.kind, self.host_pattern.parse::<IpAddr>()) {
+            (SecretKind::SshKey, Ok(address)) => host.parse::<IpAddr>() == Ok(address),
+            _ => host_matches(&self.host_pattern, host),
+        }
+    }
+}
+
+/// Whether `pin` is a SHA-256 fingerprint as `ssh-keygen -l` writes it: `SHA256:` and the base64 of 32 bytes without its
+/// padding, in its one canonical spelling (the last character carries two bits that must be zero).
+fn is_fingerprint(pin: &str) -> bool {
+    const BASE64: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let Some(digits) = pin.strip_prefix("SHA256:") else {
+        return false;
+    };
+    digits.len() == 43
+        && digits.chars().all(|c| BASE64.contains(c))
+        && digits
+            .chars()
+            .last()
+            .and_then(|c| BASE64.find(c))
+            .is_some_and(|value| value & 0b11 == 0)
 }
 
 /// What git is given for a host: a user name and a secret, wiped when dropped.
 pub struct GitCredential {
+    pub kind: SecretKind,
     pub username: String,
     pub secret: zeroize::Zeroizing<Vec<u8>>,
+    /// For an ssh key: the host key the server must show before the key is offered.
+    pub host_key: Option<String>,
 }
 
 impl std::fmt::Debug for GitCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GitCredential")
+            .field("kind", &self.kind)
             .field("username", &self.username)
             .field("secret", &"<redacted>")
+            .field("host_key", &self.host_key)
             .finish()
     }
 }
@@ -192,6 +249,10 @@ pub enum UseRefusal {
     NoUsername,
     #[error("the secret is not text, so it cannot be given to git or sent in a request")]
     NotText,
+    #[error("the binding is not usable: an ssh key with no host key, or a pin on another kind")]
+    BadBinding,
+    #[error("an ssh key is given only to git over ssh, never to an HTTP request")]
+    NotForHttp,
 }
 
 /// The credential git is given for `host`, or why not. The host is checked first, so a caller who may not have
@@ -201,8 +262,11 @@ pub fn git_credential(
     secret: &[u8],
     host: &str,
 ) -> Result<GitCredential, UseRefusal> {
-    if !host_matches(&binding.host_pattern, host) {
+    if !binding.names(host) {
         return Err(UseRefusal::HostNotBound);
+    }
+    if binding.check().is_err() {
+        return Err(UseRefusal::BadBinding);
     }
     if std::str::from_utf8(secret).is_err() {
         return Err(UseRefusal::NotText);
@@ -210,11 +274,14 @@ pub fn git_credential(
     let username = match (binding.kind, &binding.username) {
         (_, Some(name)) => name.clone(),
         (SecretKind::Token, None) => "oauth2".to_string(),
+        (SecretKind::SshKey, None) => "git".to_string(),
         (SecretKind::UserPassword, None) => return Err(UseRefusal::NoUsername),
     };
     Ok(GitCredential {
+        kind: binding.kind,
         username,
         secret: zeroize::Zeroizing::new(secret.to_vec()),
+        host_key: binding.host_key.clone(),
     })
 }
 
@@ -252,7 +319,7 @@ pub fn http_credential(
     secret: &[u8],
     host: &str,
 ) -> Result<HttpCredential, UseRefusal> {
-    if !host_matches(&binding.host_pattern, host) {
+    if !binding.names(host) {
         return Err(UseRefusal::HostNotBound);
     }
     if std::str::from_utf8(secret).is_err() {
@@ -266,6 +333,7 @@ pub fn http_credential(
             password: secret,
         }),
         (SecretKind::UserPassword, None) => Err(UseRefusal::NoUsername),
+        (SecretKind::SshKey, _) => Err(UseRefusal::NotForHttp),
     }
 }
 
@@ -286,6 +354,9 @@ struct RecordOut<'a> {
     host_pattern: &'a str,
     kind: SecretKind,
     username: Option<&'a str>,
+    // Left out when there is none, so a record of a token or a password is the bytes it always was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_key: Option<&'a str>,
     secret: &'a str,
 }
 
@@ -294,6 +365,8 @@ struct RecordIn {
     host_pattern: String,
     kind: SecretKind,
     username: Option<String>,
+    #[serde(default)]
+    host_key: Option<String>,
     secret: String,
 }
 
@@ -309,6 +382,7 @@ pub fn escrow_form(
         host_pattern: &binding.host_pattern,
         kind: binding.kind,
         username: binding.username.as_deref(),
+        host_key: binding.host_key.as_deref(),
         secret,
     })
     .map(zeroize::Zeroizing::new)
@@ -331,6 +405,7 @@ pub fn from_escrow_form(
         host_pattern: record.host_pattern,
         kind: record.kind,
         username: record.username,
+        host_key: record.host_key,
     };
     binding.check()?;
     Ok((binding, zeroize::Zeroizing::new(record.secret.into_bytes())))
@@ -364,6 +439,7 @@ mod tests {
             host_pattern: pattern.to_string(),
             kind,
             username: username.map(str::to_string),
+            host_key: None,
         }
     }
 
@@ -857,6 +933,202 @@ mod tests {
         for pattern in ["", "*", "**.example.org", "a.*.org", "example.*"] {
             assert!(!host_matches(pattern, "example.org"), "{pattern:?}");
             assert!(!host_matches(pattern, "a.example.org"), "{pattern:?}");
+        }
+    }
+
+    // -- an ssh key ------------------------------------------------------------------------------------------------------
+
+    /// A host key's fingerprint as `ssh-keygen -l` writes it: 32 zero bytes.
+    const PIN: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn ssh_binding(pattern: &str, pin: Option<&str>, username: Option<&str>) -> SecretBinding {
+        SecretBinding {
+            host_key: pin.map(str::to_string),
+            ..binding(pattern, SecretKind::SshKey, username)
+        }
+    }
+
+    #[test]
+    fn an_ssh_key_is_given_to_git_with_the_servers_pin_and_the_user_git_unless_the_binding_names_one()
+     {
+        let b = ssh_binding("52.235.181.217", Some(PIN), None);
+        let got =
+            git_credential(&b, b"-----BEGIN OPENSSH PRIVATE KEY-----", "52.235.181.217").unwrap();
+        assert_eq!(got.kind, SecretKind::SshKey);
+        assert_eq!(got.username, "git");
+        assert_eq!(got.host_key.as_deref(), Some(PIN));
+        let named = ssh_binding("git.example.org", Some(PIN), Some("gitea"));
+        assert_eq!(
+            git_credential(&named, b"k", "git.example.org")
+                .unwrap()
+                .username,
+            "gitea"
+        );
+        // A token or a password names no host key, so git checks the server by its certificate as before.
+        let token = git_credential(
+            &binding("github.com", SecretKind::Token, None),
+            b"t",
+            "github.com",
+        )
+        .unwrap();
+        assert_eq!((token.kind, token.host_key), (SecretKind::Token, None));
+    }
+
+    #[test]
+    fn an_ssh_key_bound_to_an_address_is_given_for_that_address_and_no_other() {
+        let b = ssh_binding("52.235.181.217", Some(PIN), None);
+        for host in [
+            "52.235.181.218",
+            "52.235.181.217.example.org",
+            "example.org",
+            "::ffff:52.235.181.217",
+            "",
+        ] {
+            assert_eq!(
+                git_credential(&b, b"k", host).unwrap_err(),
+                UseRefusal::HostNotBound,
+                "{host:?}"
+            );
+        }
+        let v6 = ssh_binding("2001:db8::1", Some(PIN), None);
+        assert!(
+            git_credential(&v6, b"k", "2001:db8:0::1").is_ok(),
+            "the same address written another way"
+        );
+        assert!(git_credential(&v6, b"k", "2001:db8::2").is_err());
+    }
+
+    #[test]
+    fn an_ssh_keys_binding_needs_a_pin_of_the_form_ssh_keygen_writes() {
+        assert_eq!(
+            ssh_binding("git.example.org", Some(PIN), None).check(),
+            Ok(())
+        );
+        for pin in [
+            None,
+            Some(""),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            Some("SHA256:AAAA"),
+            Some("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            Some("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"),
+            Some("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-"),
+            Some("MD5:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"),
+        ] {
+            assert!(
+                ssh_binding("git.example.org", pin, None).check().is_err(),
+                "{pin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_ssh_key_names_a_host_key_or_an_address() {
+        for kind in [SecretKind::Token, SecretKind::UserPassword] {
+            let pinned = SecretBinding {
+                host_key: Some(PIN.to_string()),
+                ..binding("github.com", kind, Some("u"))
+            };
+            assert!(pinned.check().is_err(), "{kind:?} with a pin");
+            assert!(
+                binding("52.235.181.217", kind, Some("u")).check().is_err(),
+                "{kind:?} for an address"
+            );
+        }
+        // An address is one address: not a list, a wildcard, a port or brackets.
+        for pattern in [
+            "52.235.181.217,github.com",
+            "*.52.235.181.217",
+            "52.235.181.217:22",
+            "[2001:db8::1]",
+            "0x7f.0.0.1",
+        ] {
+            assert!(
+                ssh_binding(pattern, Some(PIN), None).check().is_err(),
+                "{pattern:?}"
+            );
+        }
+        assert_eq!(
+            ssh_binding("*.example.org,git.example.net", Some(PIN), None).check(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_ssh_key_is_never_given_to_an_http_request() {
+        let b = ssh_binding("git.example.org", Some(PIN), None);
+        assert_eq!(
+            http_credential(&b, b"k", "git.example.org").unwrap_err(),
+            UseRefusal::NotForHttp
+        );
+        // The host is still checked first.
+        assert_eq!(
+            http_credential(&b, b"k", "other.example.org").unwrap_err(),
+            UseRefusal::HostNotBound
+        );
+    }
+
+    #[test]
+    fn an_ssh_key_is_escrowed_with_its_pin_and_an_older_record_still_reads() {
+        let b = ssh_binding("52.235.181.217", Some(PIN), Some("git"));
+        let bytes = escrow_form(&b, b"key").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            (v["kind"].as_str(), v["host_key"].as_str()),
+            (Some("ssh-key"), Some(PIN))
+        );
+        assert_eq!(from_escrow_form(&bytes).unwrap().0, b);
+        // A record made before host keys existed has none, and its bytes are what they were.
+        let token = escrow_form(&binding("github.com", SecretKind::Token, None), b"t").unwrap();
+        assert!(!String::from_utf8_lossy(&token).contains("host_key"));
+        assert!(
+            from_escrow_form(
+                br#"{"host_pattern":"github.com","kind":"token","username":null,"secret":"x"}"#
+            )
+            .is_ok()
+        );
+        // An ssh key whose record lost its pin is not trusted.
+        assert!(from_escrow_form(br#"{"host_pattern":"git.example.org","kind":"ssh-key","username":null,"secret":"x"}"#).is_err());
+        assert_eq!(SecretKind::SshKey.as_label(), "ssh-key");
+    }
+
+    fn an_address() -> impl proptest::strategy::Strategy<Value = String> {
+        proptest::prop_oneof![
+            proptest::strategy::Just("52.235.181.217".to_string()),
+            proptest::strategy::Just("52.235.181.218".to_string()),
+            proptest::strategy::Just("2001:db8::1".to_string()),
+            proptest::strategy::Just("2001:db8:0:0::1".to_string()),
+            proptest::strategy::Just("git.example.org".to_string()),
+            proptest::strategy::Just("a.git.example.org".to_string()),
+            "[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}",
+        ]
+    }
+
+    proptest::proptest! {
+        /// For every binding of an ssh key and every host git asks for, the rule: an address is given its key only when
+        /// git asks for the very same address, a name pattern as for any secret; a binding without a well-formed pin
+        /// gives nothing; what is given carries the pin and the binding's user, or `git`.
+        #[test]
+        fn an_ssh_key_follows_the_rule_for_every_binding_and_host(
+            pattern in an_address(),
+            host in an_address(),
+            pinned in proptest::prelude::any::<bool>(),
+            username in proptest::option::of("[a-z]{1,8}"),
+        ) {
+            let pin = pinned.then_some(PIN);
+            let b = ssh_binding(&pattern, pin, username.as_deref());
+            let got = git_credential(&b, b"key", &host);
+            let same_address = matches!(
+                (pattern.parse::<IpAddr>(), host.parse::<IpAddr>()),
+                (Ok(a), Ok(b)) if a == b
+            );
+            let bound = same_address || (pattern.parse::<IpAddr>().is_err() && host_matches(&pattern, &host));
+            if !pinned || !bound {
+                proptest::prop_assert!(got.is_err());
+            } else {
+                let got = got.unwrap();
+                proptest::prop_assert_eq!(got.host_key.as_deref(), Some(PIN));
+                proptest::prop_assert_eq!(got.username, username.unwrap_or_else(|| "git".to_string()));
+            }
         }
     }
 }

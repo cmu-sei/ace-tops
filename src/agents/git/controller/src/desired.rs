@@ -29,7 +29,7 @@
 //! credentials, finds out whether it has it.
 
 use git_agent_common::RepoObservationConfig;
-use git_agent_common::remote::{credential_name_problem, https_host};
+use git_agent_common::remote::{credential_name_problem, repository_host};
 use polar::graph::nodes::git::RepoId;
 use polar_agent_builder::RuntimeSection;
 use polar_agent_builder::runtime::SectionAuthority;
@@ -58,7 +58,7 @@ pub static REPOSITORIES: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: "The repositories to observe, and how. Replaced whole by each version.",
-    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name", "required": true, "doc": "the key of the entry; no login in it, and no port other than digits"}, "refs": {"type": "list of full ref names, such as refs/heads/main", "required": false, "doc": "the branches to observe, by the remote's names; left out, the repository's default branch"}, "frequency_secs": {"type": "whole number, 60 to 604800", "required": false, "default": 900}, "max_depth": {"type": "whole number, 1 to 10000", "required": false, "default": 100, "doc": "commits walked per ref, a safety bound"}, "shallow_depth": {"type": "whole number, 1 to 10000", "required": false, "doc": "depth of a shallow fetch; unset is a full incremental fetch"}, "credential": {"type": "name of a credential", "required": false, "doc": "by name; the controller never sees its value"}}}}"#,
+    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name, or an ssh URL of a host name or an address with a credential", "required": true, "doc": "the key of the entry; no login in it, and no port other than digits; over ssh only with a credential, an ssh key that pins the server's host key"}, "refs": {"type": "list of full ref names, such as refs/heads/main", "required": false, "doc": "the branches to observe, by the remote's names; left out, the repository's default branch"}, "frequency_secs": {"type": "whole number, 60 to 604800", "required": false, "default": 900}, "max_depth": {"type": "whole number, 1 to 10000", "required": false, "default": 100, "doc": "commits walked per ref, a safety bound"}, "shallow_depth": {"type": "whole number, 1 to 10000", "required": false, "doc": "depth of a shallow fetch; unset is a full incremental fetch"}, "credential": {"type": "name of a credential", "required": false, "doc": "by name; the controller never sees its value"}}}}"#,
     validate,
 };
 
@@ -152,6 +152,9 @@ fn entry(i: usize, item: &Value) -> Result<RepoObservationConfig, Vec<String>> {
         }
     }
     let label = format!("entry {i}");
+    // Over ssh a repository is fetched only with a credential: whether the entry names one is what the URL is read with;
+    // whether the name is one is judged with the credential itself.
+    let names_a_credential = object.get("credential").is_some_and(|c| !c.is_null());
 
     let url = match object.get("url").and_then(Value::as_str) {
         None => {
@@ -165,7 +168,7 @@ fn entry(i: usize, item: &Value) -> Result<RepoObservationConfig, Vec<String>> {
                 ));
             } else if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
                 problems.push(format!("{label}: `url` has a space or a control character"));
-            } else if let Err(why) = https_host(url) {
+            } else if let Err(why) = repository_host(url, names_a_credential) {
                 problems.push(format!("{label}: `url`: {why}"));
             }
             url.to_string()
@@ -313,6 +316,27 @@ mod tests {
         assert_eq!(config.max_depth, 100);
         assert_eq!(config.shallow_depth, None);
         assert_eq!(config.credential, None);
+    }
+
+    /// The private gitea, reached over ssh at its address (docs/architecture/build-orchestrator.md, "Revised 2026-11-08, the
+    /// source"): taken with a credential, which is an ssh key pinning the server; refused without one.
+    #[test]
+    fn a_repository_over_ssh_is_taken_with_a_credential_and_refused_without_one() {
+        let gitea = json!({"url": "ssh://52.235.181.217/SEI/ACE.git", "refs": ["refs/heads/main"], "credential": "gitea"});
+        let config = one(gitea.clone()).unwrap();
+        assert_eq!(config.repo_url, "ssh://52.235.181.217/SEI/ACE.git");
+        assert_eq!(config.credential.as_deref(), Some("gitea"));
+        let mut bare = gitea;
+        bare.as_object_mut().unwrap().remove("credential");
+        let problems = one(bare).unwrap_err().join(" | ");
+        assert!(
+            problems.contains("`url`") && problems.contains("credential"),
+            "{problems}"
+        );
+        assert!(
+            one(json!({"url": "ssh://git@52.235.181.217/SEI/ACE.git", "credential": "gitea"}))
+                .is_err()
+        );
     }
 
     #[test]

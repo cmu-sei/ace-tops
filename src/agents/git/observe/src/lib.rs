@@ -968,8 +968,10 @@ mod tests {
             self.asked.lock().unwrap().push((name.clone(), host));
             match self.answer.lock().unwrap().clone() {
                 Answer::Found { username, secret } => Ok(GitCredential {
+                    kind: polar_crypto::registry::SecretKind::Token,
                     username: username.to_string(),
                     secret: Zeroizing::new(secret.to_vec()),
+                    host_key: None,
                 }),
                 Answer::NotRegistered => Err(CryptoError::SecretNotRegistered(name)),
                 Answer::HostNotBound => Err(CryptoError::Use(UseRefusal::HostNotBound)),

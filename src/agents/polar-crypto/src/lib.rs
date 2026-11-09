@@ -2302,6 +2302,7 @@ mod tests {
             host_pattern: host.to_string(),
             kind: SecretKind::Token,
             username: None,
+            host_key: None,
         }
     }
 
@@ -2719,6 +2720,7 @@ mod tests {
             host_pattern: "git.example.org".to_string(),
             kind: SecretKind::UserPassword,
             username: None,
+            host_key: None,
         };
         register(&r, "internal", b"hunter2", b"ctx", binding)
             .await
@@ -2738,6 +2740,7 @@ mod tests {
             host_pattern: "github.com".to_string(),
             kind: SecretKind::Token,
             username: Some("daveman1010221".to_string()),
+            host_key: None,
         };
         register(&r, "github", b"ghp-token", b"ctx", binding.clone())
             .await
@@ -2928,6 +2931,7 @@ mod tests {
             host_pattern: "*.example.org".to_string(),
             kind: SecretKind::Token,
             username: None,
+            host_key: None,
         };
         let record = registry::escrow_form(&binding, b"ghp-token").unwrap();
         let r = rig(vec![], vec![("github", record.to_vec())], false).await;
@@ -2986,6 +2990,7 @@ mod tests {
                 host_pattern: "github.com".to_string(),
                 kind,
                 username: Some("alice".to_string()),
+                host_key: None,
             };
             register(&r, "github", b"ghp-token", b"ctx", binding)
                 .await
