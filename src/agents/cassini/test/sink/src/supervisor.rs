@@ -34,8 +34,8 @@ use harness_common::lanes::{lane_of, producers_on};
 use harness_common::report::{Report, ready_line};
 use harness_common::settings::Run;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::time::{Duration, Instant};
@@ -60,7 +60,6 @@ pub enum SinkMessage {
     Subscribed,
     Disconnected(String),
     Tick,
-    PrepareShutdown,
 }
 
 pub struct SinkSupervisor;
@@ -137,11 +136,6 @@ impl Actor for SinkSupervisor {
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(SinkMessage::PrepareShutdown),
-            });
         drop(myself.send_interval(TICK, || SinkMessage::Tick));
         info!(
             "{SERVICE_NAME} {} of run `{}`: {} message(s) from each of producers {producers:?} on `{topic}`",
@@ -210,11 +204,6 @@ impl Actor for SinkSupervisor {
                 if waited {
                     state.finish("idle");
                 }
-            }
-            SinkMessage::PrepareShutdown => {
-                let _ = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
         }
         Ok(())

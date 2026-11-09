@@ -496,12 +496,9 @@ impl Actor for WriterSupervisor {
                 }
             }
             WriterMessage::PrepareShutdown => {
-                info!("PrepareShutdown received, proceeding: the infrastructure drains the graph");
+                info!("PrepareShutdown received; the infrastructure drains the graph");
                 state.shutting_down = true;
                 state.graph = None;
-                let _ = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
         }
         Ok(())

@@ -441,9 +441,6 @@ impl Actor for RootSupervisor {
             RootSupervisorMessage::PrepareShutdown => {
                 info!("PrepareShutdown received -- nothing to drain");
                 state.shutting_down = true;
-                let _ = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
         }
         Ok(())
@@ -793,11 +790,7 @@ mod tests {
         state.times.republish = Duration::from_millis(40);
         for _ in 0..3 {
             RootSupervisor
-                .handle(
-                    myself.clone(),
-                    RootSupervisorMessage::Republish,
-                    &mut state,
-                )
+                .handle(myself.clone(), RootSupervisorMessage::Republish, &mut state)
                 .await
                 .unwrap();
         }

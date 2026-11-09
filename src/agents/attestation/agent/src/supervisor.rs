@@ -498,9 +498,6 @@ impl Actor for AttestationSupervisor {
             AttestationMessage::PrepareShutdown => {
                 info!("PrepareShutdown received");
                 state.shutting_down = true;
-                let _ = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
         }
         Ok(())

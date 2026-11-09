@@ -25,8 +25,8 @@
 //! the subscriptions and the graph controller come from `AgentBuilder`.
 //!
 //! Each event the observer publishes is turned into graph operations (`ops`) and handed to the
-//! controller. It has no children of its own, so at `PrepareShutdown` it proceeds at once: the
-//! infrastructure drains the controller of what was handed to it, then ends.
+//! controller. It has no children of its own and no drain (`HAS_OWN_DRAIN` is false): at the end
+//! the infrastructure drains the controller of what was handed to it, then ends.
 
 use crate::SERVICE_NAME;
 use crate::ops;
@@ -37,7 +37,7 @@ use git_agent_common::status::{GIT_REPO_OBSERVATION_STATUS, ObservationStatus};
 use polar::graph::controller::GraphOp;
 use polar::topics::GIT_REPOSITORY_EVENTS;
 use polar_agent_builder::{
-    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle,
     InfrastructureSupervisorMessage, Subscription,
 };
 use ractor::concurrency::Duration;
@@ -58,8 +58,6 @@ pub enum GitProcessorMessage {
     Status(ObservationStatus),
     /// What the git controller decided about a proposal, decoded.
     Decision(ProposalDecision),
-    /// The agent is ending; the infrastructure waits for `ProceedWithShutdown`.
-    PrepareShutdown,
 }
 
 /// What was published on the events topic. Anything that does not decode is logged and dropped.
@@ -165,12 +163,6 @@ impl Actor for GitProcessorSupervisor {
         }
         let resources = builder.into_configured(configured).build().await?;
 
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(GitProcessorMessage::PrepareShutdown),
-            });
-
         Ok(GitProcessorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
@@ -203,16 +195,6 @@ impl Actor for GitProcessorSupervisor {
             GitProcessorMessage::Status(status) => state.write("a status", ops::for_status(status)),
             GitProcessorMessage::Decision(decision) => {
                 state.write("a decision", ops::for_decision(decision))
-            }
-            GitProcessorMessage::PrepareShutdown => {
-                info!("PrepareShutdown received; nothing of its own to drain, proceeding");
-                if let Err(e) = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
-                {
-                    error!("could not tell the infrastructure to proceed ({e}); exiting now");
-                    std::process::exit(1);
-                }
             }
         }
         Ok(())

@@ -277,15 +277,8 @@ impl<K: Kind> Actor for Processor<K> {
                 carry_out(state, steps)?;
             }
             ProcessorMessage::PrepareShutdown => {
-                info!("PrepareShutdown received; proceeding: the infrastructure drains the graph");
+                info!("PrepareShutdown received; what is observed now is not written");
                 state.shutting_down = true;
-                if let Err(e) = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
-                {
-                    error!("could not tell the infrastructure to proceed ({e}); exiting now");
-                    std::process::exit(1);
-                }
             }
         }
         Ok(())

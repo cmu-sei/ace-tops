@@ -363,12 +363,9 @@ impl Actor for StateSupervisor {
                 state.graph_timeout = timeout;
             }
             StateSupervisorMessage::PrepareShutdown => {
-                info!("PrepareShutdown received, proceeding: the infrastructure drains the graph");
+                info!("PrepareShutdown received; the infrastructure drains the graph");
                 state.shutting_down = true;
                 state.graph = None;
-                let _ = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
         }
         Ok(())

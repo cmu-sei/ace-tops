@@ -276,15 +276,8 @@ impl Actor for ProcessorSupervisor {
                 ));
             }
             ProcessorMessage::PrepareShutdown => {
-                info!("PrepareShutdown received; proceeding: the infrastructure drains the graph");
+                info!("PrepareShutdown received; nothing more is written or swept");
                 state.shutting_down = true;
-                if let Err(e) = state
-                    .infrastructure
-                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
-                {
-                    error!("could not tell the infrastructure to proceed ({e}); exiting now");
-                    std::process::exit(1);
-                }
             }
         }
         Ok(())
