@@ -37,12 +37,11 @@ use crate::settings;
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
 use polar::cassini::{CassiniClient, TcpClient};
-use polar::graph::controller::{GraphController, GraphSignal};
+use polar::graph::controller::GraphController;
 use polar_agent_builder::topic_gate::PolicySaid;
 use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
     InfrastructureSupervisorMessage, LookupError, PolicyLookup, Subscription,
-    spawn_graph_controller, stop_graph_controller,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -53,11 +52,9 @@ use soft_state_common::{
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// What it holds is a read in flight at most, so this is the read's bound plus the handshake's margin.
-pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
-
-/// How long the graph controller is given to stop.
-const GRAPH_STOP: Duration = Duration::from_secs(10);
+/// What it holds is a read in flight at most, which the graph controller drains in the time the builder counts for it;
+/// this is the infrastructure's own children stopping, and a margin.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(15);
 
 pub enum StateSupervisorMessage {
     ClientEvent {
@@ -68,7 +65,6 @@ pub enum StateSupervisorMessage {
         payload: Vec<u8>,
         published_by: Option<String>,
     },
-    Graph(GraphSignal),
     /// A runtime section was replaced.
     RuntimeChanged {
         section: String,
@@ -152,17 +148,6 @@ fn publish_reply(client: &TcpClient, topic: String, envelope: &Envelope<StateRep
     }
 }
 
-/// What the health actor is told about the graph: the state agent stays up, healthy, while the graph is down, and its
-/// health file says the graph is not connected (the state agent does not expect the graph, so the actor never makes
-/// it unhealthy for it). The closest the health actor has to `Degraded` with reason `Graph`, which health in the graph
-/// will name (remaining-work.md, "HEALTH IN THE GRAPH, PULLED").
-pub fn report_graph(health: &dyn HealthClient, signal: &GraphSignal) {
-    let _ = match signal {
-        GraphSignal::Available => health.graph_available(),
-        GraphSignal::OpFailed(_) => health.graph_disconnected(),
-    };
-}
-
 /// The supervisor holds the wait, and hands it to each read, so it follows it. The answer is the wait in force.
 async fn follow_graph_timeout(
     configuration: &ConfigurationHandle,
@@ -240,13 +225,14 @@ impl Actor for StateSupervisor {
         myself.cast(StateSupervisorMessage::RuntimeChanged {
             section: floor::SECTION_NAME.to_string(),
         })?;
-        let graph = spawn_graph_controller(
-            &myself,
-            format!("{OBSERVER_NAME}.graph_controller"),
-            &resources.config,
-            StateSupervisorMessage::Graph,
-        )
-        .await?;
+        // The builder's, as a reader's: a graph that is down never makes the agent unhealthy, and its health says the
+        // graph is not connected. A read that fails is answered as unavailable.
+        let graph = resources
+            .graph
+            .as_ref()
+            .ok_or("the builder started no graph controller for a graph-read agent")?
+            .actor()
+            .clone();
 
         Ok(StateSupervisorState {
             tcp_client: resources.tcp_client,
@@ -278,13 +264,6 @@ impl Actor for StateSupervisor {
                 }
                 _ => (),
             },
-            // The graph does not end the agent: a read that fails is answered as unavailable.
-            StateSupervisorMessage::Graph(signal) => {
-                if let GraphSignal::OpFailed(reason) = &signal {
-                    debug!("the graph did not answer: {reason}");
-                }
-                report_graph(&state.healthcheck, &signal);
-            }
             StateSupervisorMessage::RuntimeChanged { section } => {
                 if section == floor::SECTION_NAME {
                     match state.configuration.runtime(floor::SECTION_NAME).await {
@@ -384,11 +363,9 @@ impl Actor for StateSupervisor {
                 state.graph_timeout = timeout;
             }
             StateSupervisorMessage::PrepareShutdown => {
-                info!("PrepareShutdown received, stopping the graph controller");
+                info!("PrepareShutdown received, proceeding: the infrastructure drains the graph");
                 state.shutting_down = true;
-                if let Some(graph) = state.graph.take() {
-                    stop_graph_controller(graph, GRAPH_STOP).await;
-                }
+                state.graph = None;
                 let _ = state
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
@@ -523,62 +500,6 @@ mod tests {
             StateReply::Unavailable(ref why) if why.contains("no schema yet")
         ));
         graph.stop(None);
-    }
-
-    /// Records what the health actor is told.
-    #[derive(Default)]
-    struct Told(std::sync::Mutex<Vec<&'static str>>);
-
-    impl HealthClient for Told {
-        fn cassini_connected(
-            &self,
-        ) -> Result<(), ractor::MessagingErr<polar_health::HealthCheckMessage>> {
-            self.0.lock().unwrap().push("cassini_connected");
-            Ok(())
-        }
-        fn cassini_disconnected(
-            &self,
-        ) -> Result<(), ractor::MessagingErr<polar_health::HealthCheckMessage>> {
-            self.0.lock().unwrap().push("cassini_disconnected");
-            Ok(())
-        }
-        fn graph_connected(
-            &self,
-        ) -> Result<(), ractor::MessagingErr<polar_health::HealthCheckMessage>> {
-            self.0.lock().unwrap().push("graph_connected");
-            Ok(())
-        }
-        fn graph_disconnected(
-            &self,
-        ) -> Result<(), ractor::MessagingErr<polar_health::HealthCheckMessage>> {
-            self.0.lock().unwrap().push("graph_disconnected");
-            Ok(())
-        }
-        fn graph_available(
-            &self,
-        ) -> Result<(), ractor::MessagingErr<polar_health::HealthCheckMessage>> {
-            self.0.lock().unwrap().push("graph_available");
-            Ok(())
-        }
-        fn graph_op_failed(
-            &self,
-            _reason: String,
-        ) -> Result<(), ractor::MessagingErr<polar_health::HealthCheckMessage>> {
-            self.0.lock().unwrap().push("graph_op_failed");
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_graph_that_is_down_is_reported_as_not_connected_never_as_a_failure() {
-        let told = Told::default();
-        report_graph(&told, &GraphSignal::OpFailed("refused".into()));
-        report_graph(&told, &GraphSignal::Available);
-        // Never graph_op_failed, which writes the health file unhealthy.
-        assert_eq!(
-            *told.0.lock().unwrap(),
-            ["graph_disconnected", "graph_available"]
-        );
     }
 
     #[test]

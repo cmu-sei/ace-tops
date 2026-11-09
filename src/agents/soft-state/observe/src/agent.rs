@@ -40,8 +40,6 @@ impl PolarAgent for SoftStateObserver {
     const PURPOSE: &'static str =
         "Answers other agents' requests for soft state, read from the graph, by who asks";
     const NEEDS: &'static [Capability] = &[Capability::GraphRead];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
         REQUESTS_TOPIC,
@@ -90,6 +88,14 @@ mod tests {
     use polar_agent_builder::Access;
 
     polar_agent_builder::polar_agent_tests!(SoftStateObserver);
+
+    /// Its own 15 s and the 30 s the builder counts for draining its graph controller, which the catalog renders as the
+    /// pod's grace.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<SoftStateObserver>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 
     #[test]
     fn its_family_is_each_served_workload_s_reply_topic_as_the_scheduler_s_is() {
