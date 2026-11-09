@@ -28,6 +28,7 @@
 use build_orchestrator::build::{
     AT_EXECUTION, AT_REPORTS, AT_SCHEDULING, AT_SOURCE, BuildActor, BuildArgs, Start,
 };
+use build_orchestrator::logs::KeepLog;
 use build_orchestrator::mappings::Mapping;
 use build_orchestrator::publish::Publish;
 use build_orchestrator::reader::{Read, Reader};
@@ -43,7 +44,7 @@ use orchestrator_core::types::{
 };
 use orchestrator_report::Bounds;
 use polar::ProvenanceEvent;
-use polar::events::BuildReport;
+use polar::events::{BuildLog, BuildReport};
 use polar::graph::nodes::git::RepoId;
 use polar::topics::{PROVENANCE_EVENTS, PROVENANCE_EXECUTIONS};
 use polar_agent_builder::worker::{Work, WorkerError};
@@ -134,6 +135,30 @@ impl Source for Archive {
 
 /// The bound a build's source is held to in these tests.
 const MAX_SOURCE: usize = 1234;
+
+/// The most of a build's log kept in these tests, unless a test says otherwise.
+const MAX_LOG: usize = 1 << 20;
+
+/// A registry for logs that keeps what it is given, by the build's id, or refuses.
+#[derive(Default)]
+struct Logs {
+    kept: Mutex<Vec<(String, Vec<u8>)>>,
+    refusing: bool,
+}
+
+#[ractor::async_trait]
+impl KeepLog for Logs {
+    async fn keep(&self, build_id: &str, log: &[u8]) -> Result<String, String> {
+        if self.refusing {
+            return Err("the registry answered 500".into());
+        }
+        self.kept
+            .lock()
+            .unwrap()
+            .push((build_id.to_string(), log.to_vec()));
+        Ok(build_orchestrator::push::digest_of(log))
+    }
+}
 
 /// What was published, read back as its topic's subscriber reads it.
 #[derive(Default)]
@@ -241,6 +266,8 @@ struct Ran {
     asked: usize,
     /// The credential and bound the source step was asked with, each time.
     prepared: Vec<(Option<String>, usize)>,
+    /// What the registry for logs was given, by the build's id.
+    kept: Vec<(String, Vec<u8>)>,
 }
 
 async fn run(start: Start, backend: Backend, source: Result<(), String>, adopted: bool) -> Ran {
@@ -256,7 +283,7 @@ async fn run(start: Start, backend: Backend, source: Result<(), String>, adopted
     .await
 }
 
-/// Runs a build to its actor's end and says what came of it.
+/// Runs a build to its actor's end and says what came of it, its log kept by a registry that takes it.
 async fn run_with(
     start: Start,
     backend: Backend,
@@ -265,6 +292,33 @@ async fn run_with(
     reader: InProcess,
     bounds: Bounds,
     relay: RelayBounds,
+) -> Ran {
+    run_keeping(
+        start,
+        backend,
+        source,
+        adopted,
+        reader,
+        bounds,
+        relay,
+        Logs::default(),
+        MAX_LOG,
+    )
+    .await
+}
+
+/// The same, its log kept by `logs`, at most `max_log` of it.
+#[allow(clippy::too_many_arguments)]
+async fn run_keeping(
+    start: Start,
+    backend: Backend,
+    source: Result<(), String>,
+    adopted: bool,
+    reader: InProcess,
+    bounds: Bounds,
+    relay: RelayBounds,
+    logs: Logs,
+    max_log: usize,
 ) -> Ran {
     let (registry, _) = Actor::spawn(None, BuildRegistry, ()).await.unwrap();
     let request = request();
@@ -280,6 +334,7 @@ async fn run_with(
     let said = Arc::new(Said::default());
     let reader = Arc::new(reader);
     let source_step = Arc::new(Archive(source, Mutex::new(Vec::new())));
+    let logs = Arc::new(logs);
     let (_, ended) = Actor::spawn(
         None,
         BuildActor,
@@ -295,6 +350,8 @@ async fn run_with(
             relay,
             max_source: MAX_SOURCE,
             max_dependencies: 99,
+            logs: logs.clone(),
+            max_log,
             poll_every: Duration::from_millis(5),
         },
     )
@@ -330,6 +387,7 @@ async fn run_with(
     let submitted = backend.submitted.lock().unwrap().clone();
     let asked = *reader.asked.lock().unwrap();
     let prepared = std::mem::take(&mut *source_step.1.lock().unwrap());
+    let kept = std::mem::take(&mut *logs.kept.lock().unwrap());
     Ran {
         id,
         state: record.state,
@@ -343,6 +401,7 @@ async fn run_with(
         submitted,
         asked,
         prepared,
+        kept,
     }
 }
 
@@ -800,4 +859,167 @@ async fn the_source_is_fetched_with_the_mappings_credential_and_held_to_the_buil
     )
     .await;
     assert!(ran.prepared.is_empty());
+}
+
+/// The end a build said, with its log and refused reports.
+fn end_of(ran: &Ran) -> (Option<BuildLog>, u64) {
+    ran.said
+        .iter()
+        .find_map(|(_, event)| match event {
+            ProvenanceEvent::ExecutionCompleted {
+                log,
+                refused_reports,
+                ..
+            }
+            | ProvenanceEvent::ExecutionFailed {
+                log,
+                refused_reports,
+                ..
+            } => Some((log.clone(), *refused_reports)),
+            _ => None,
+        })
+        .expect("an end was said")
+}
+
+/// The lines of the reports test, whose log has three reports relayed and three refused.
+fn mixed_lines() -> Vec<Vec<u8>> {
+    vec![
+        b"cargo build --release".to_vec(),
+        report("stage.json"),
+        report("started.json"),
+        report("artifact.json"),
+        b"polar-report {\"type\": \"execution_completed\", \"build_id\": \"b\"}".to_vec(),
+        b"polar-report {not json".to_vec(),
+        report("status.json"),
+    ]
+}
+
+#[tokio::test]
+async fn a_builds_log_is_kept_whole_by_its_digest_and_said_with_its_end_and_its_refused_reports() {
+    let lines = mixed_lines();
+    let lines: Vec<&[u8]> = lines.iter().map(Vec::as_slice).collect();
+    let whole: Vec<u8> = log(&lines, 4096)
+        .into_iter()
+        .flat_map(Result::unwrap)
+        .collect();
+    let ran = run(
+        new_build(None),
+        with_log(vec![Ok(JobStatus::Succeeded)], log(&lines, 7)),
+        Ok(()),
+        false,
+    )
+    .await;
+    assert_eq!(ran.state, BuildState::Succeeded);
+    assert_eq!(
+        ran.kept,
+        vec![(ran.id.to_string(), whole.clone())],
+        "the whole log, under the build's id"
+    );
+    let (log, refused) = end_of(&ran);
+    assert_eq!(
+        log,
+        Some(BuildLog {
+            digest: build_orchestrator::push::digest_of(&whole),
+            bytes: whole.len() as u64,
+            truncated: false
+        })
+    );
+    assert_eq!(
+        refused, 3,
+        "the artifact, the execution and the line that is not JSON"
+    );
+    assert!(ran.reports_first, "the reports, then the end with its log");
+}
+
+#[tokio::test]
+async fn a_log_past_its_bound_is_kept_to_the_bound_and_said_to_be_cut() {
+    let lines = mixed_lines();
+    let lines: Vec<&[u8]> = lines.iter().map(Vec::as_slice).collect();
+    let whole: Vec<u8> = log(&lines, 4096)
+        .into_iter()
+        .flat_map(Result::unwrap)
+        .collect();
+    let ran = run_keeping(
+        new_build(None),
+        with_log(vec![Ok(JobStatus::Succeeded)], log(&lines, 5)),
+        Ok(()),
+        false,
+        reader(),
+        FORKED,
+        RelayBounds::default(),
+        Logs::default(),
+        40,
+    )
+    .await;
+    assert_eq!(ran.kept[0].1, whole[..40].to_vec(), "what came first");
+    let (log, _) = end_of(&ran);
+    assert_eq!(
+        log,
+        Some(BuildLog {
+            digest: build_orchestrator::push::digest_of(&whole[..40]),
+            bytes: 40,
+            truncated: true
+        })
+    );
+    assert_eq!(
+        ran.relayed.len(),
+        3,
+        "the reports are read whole whatever is kept"
+    );
+}
+
+#[tokio::test]
+async fn a_log_the_registry_will_not_keep_is_said_to_be_none_and_the_build_ends_as_it_did() {
+    let lines = [report("stage.json")];
+    let lines: Vec<&[u8]> = lines.iter().map(Vec::as_slice).collect();
+    let ran = run_keeping(
+        new_build(None),
+        with_log(vec![Ok(JobStatus::Succeeded)], log(&lines, 4096)),
+        Ok(()),
+        false,
+        reader(),
+        FORKED,
+        RelayBounds::default(),
+        Logs {
+            refusing: true,
+            ..Logs::default()
+        },
+        MAX_LOG,
+    )
+    .await;
+    assert_eq!(ran.state, BuildState::Succeeded);
+    assert_eq!(end_of(&ran), (None, 0));
+    assert_eq!(ran.relayed.len(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_build_says_its_log_too_and_one_that_never_ran_has_none() {
+    let lines = [report("stage.json"), b"polar-report {not json".to_vec()];
+    let lines: Vec<&[u8]> = lines.iter().map(Vec::as_slice).collect();
+    let ran = run(
+        new_build(None),
+        with_log(
+            vec![Ok(JobStatus::Failed {
+                reason: Some("exit 1".into()),
+            })],
+            log(&lines, 4096),
+        ),
+        Ok(()),
+        false,
+    )
+    .await;
+    assert_eq!(ran.state, BuildState::Failed);
+    let (log, refused) = end_of(&ran);
+    assert!(log.is_some_and(|log| !log.truncated && log.bytes > 0));
+    assert_eq!(refused, 1);
+
+    let never = run(
+        new_build(None),
+        scripted(vec![]),
+        Err("no such commit".into()),
+        false,
+    )
+    .await;
+    assert_eq!(end_of(&never), (None, 0));
+    assert!(never.kept.is_empty(), "nothing to keep");
 }

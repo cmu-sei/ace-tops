@@ -160,6 +160,13 @@ pub static MAX_REPORT_BYTES: Defaulted<u64> = Defaulted::number(
 )
 .dynamic();
 
+pub static MAX_LOG_BYTES: Defaulted<usize> = Defaulted::number(
+    "POLAR_ORCHESTRATOR_MAX_LOG_BYTES",
+    "the most of a build's log kept in the registry once its pod ends, in bytes; past it, what came first, said to be cut",
+    "67108864",
+)
+.dynamic();
+
 pub static REPORT_LINE_BYTES: Defaulted<usize> = Defaulted::number(
     "POLAR_ORCHESTRATOR_REPORT_LINE_BYTES",
     "the longest report line the reader reads, in bytes, its prefix not counted. At least 1; narrowed while the agent \
@@ -221,6 +228,7 @@ pub static TUNING: &[&dyn Described] = &[
     &KEEP_FAILED_SECS,
     &MAX_REPORTS,
     &MAX_REPORT_BYTES,
+    &MAX_LOG_BYTES,
     &REPORT_LINE_BYTES,
     &REPORT_STRING_BYTES,
     &REPORT_DEPTH,
@@ -247,6 +255,7 @@ static VARIABLES: &[&dyn Described] = &[
     &KEEP_FAILED_SECS,
     &MAX_REPORTS,
     &MAX_REPORT_BYTES,
+    &MAX_LOG_BYTES,
     &REPORT_LINE_BYTES,
     &REPORT_STRING_BYTES,
     &REPORT_DEPTH,
@@ -294,6 +303,8 @@ pub struct Tuning {
     pub retention: Retention,
     pub relay: RelayBounds,
     pub reader: Bounds,
+    /// The most of a build's log kept.
+    pub max_log: usize,
     pub default_command: Vec<String>,
 }
 
@@ -329,6 +340,7 @@ pub fn tuning(config: &Config) -> Result<Tuning, String> {
             bytes: config.read(&MAX_REPORT_BYTES).map_err(read)?,
         },
         reader: reader_bounds(config)?,
+        max_log: config.read(&MAX_LOG_BYTES).map_err(read)?,
         default_command: config.read(&DEFAULT_COMMAND).map_err(read)?,
     })
 }

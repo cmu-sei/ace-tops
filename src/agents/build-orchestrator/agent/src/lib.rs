@@ -35,6 +35,7 @@ pub mod credentials;
 pub mod deps;
 pub mod lines;
 pub mod lock;
+pub mod logs;
 pub mod mappings;
 pub mod observed;
 pub mod publish;

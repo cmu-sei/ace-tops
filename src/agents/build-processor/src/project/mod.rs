@@ -124,9 +124,15 @@ pub fn project(
             build_id,
             duration_secs,
             at,
+            log,
+            refused_reports,
         } => execution::completed(
             build_id,
             duration_secs,
+            &execution::Ended {
+                log,
+                refused_reports,
+            },
             &When {
                 at: &reported(&at)?,
                 observed_at,
@@ -137,10 +143,16 @@ pub fn project(
             reason,
             stage,
             at,
+            log,
+            refused_reports,
         } => execution::failed(
             build_id,
             reason,
             stage,
+            &execution::Ended {
+                log,
+                refused_reports,
+            },
             &When {
                 at: &reported(&at)?,
                 observed_at,
@@ -540,12 +552,16 @@ mod tests {
                 build_id: "b1".into(),
                 duration_secs: 5,
                 at: T0.into(),
+                log: None,
+                refused_reports: 0,
             },
             ProvenanceEvent::ExecutionFailed {
                 build_id: "b2".into(),
                 reason: "exit 1".into(),
                 stage: Some("build".into()),
                 at: T0.into(),
+                log: None,
+                refused_reports: 0,
             },
             ProvenanceEvent::ExecutionCancelled {
                 build_id: "b3".into(),
@@ -913,6 +929,63 @@ mod tests {
         );
     }
 
+    /// The orchestrator's end of a build says where its log is kept and how many of its reports were refused, and the build's
+    /// node holds both (docs/architecture/build-orchestrator.md, O4); an end with no log writes none of a log.
+    #[test]
+    fn a_builds_end_writes_its_kept_log_and_its_refused_reports() {
+        let log = polar::events::BuildLog {
+            digest: format!("sha256:{}", "a".repeat(64)),
+            bytes: 1234,
+            truncated: true,
+        };
+        for event in [
+            ProvenanceEvent::ExecutionCompleted {
+                build_id: "b1".into(),
+                duration_secs: 3,
+                at: T0.into(),
+                log: Some(log.clone()),
+                refused_reports: 2,
+            },
+            ProvenanceEvent::ExecutionFailed {
+                build_id: "b1".into(),
+                reason: "exit 1".into(),
+                stage: Some("execution".into()),
+                at: T0.into(),
+                log: Some(log.clone()),
+                refused_reports: 2,
+            },
+        ] {
+            let written = format!("{:?}", project(event, T0).unwrap());
+            for property in [
+                format!(r#"Property("log_digest", String("{}"))"#, log.digest),
+                r#"Property("log_bytes", I64(1234))"#.to_string(),
+                r#"Property("log_truncated", Bool(true))"#.to_string(),
+                r#"Property("refused_reports", I64(2))"#.to_string(),
+            ] {
+                assert!(written.contains(&property), "{property} in {written}");
+            }
+        }
+        let without = format!(
+            "{:?}",
+            project(
+                ProvenanceEvent::ExecutionCompleted {
+                    build_id: "b1".into(),
+                    duration_secs: 3,
+                    at: T0.into(),
+                    log: None,
+                    refused_reports: 0,
+                },
+                T0,
+            )
+            .unwrap()
+        );
+        assert!(!without.contains("log_digest"), "{without}");
+        assert!(
+            without.contains(r#"Property("refused_reports", I64(0))"#),
+            "{without}"
+        );
+    }
+
     /// A time that is not RFC 3339 is not a time: the event is refused and writes nothing.
     #[test]
     fn an_event_whose_time_is_not_rfc3339_is_refused() {
@@ -927,6 +1000,8 @@ mod tests {
                     build_id: "b1".into(),
                     duration_secs: 3,
                     at: at.into(),
+                    log: None,
+                    refused_reports: 0,
                 },
                 T0,
             );

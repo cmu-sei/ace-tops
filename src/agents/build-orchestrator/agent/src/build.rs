@@ -41,6 +41,7 @@
 //! the registry already.
 
 use crate::lines::{Line, Lines};
+use crate::logs::KeepLog;
 use crate::mappings::Mapping;
 use crate::publish::Publish;
 use crate::reader::{Read, request};
@@ -51,6 +52,7 @@ use orchestrator_core::backend::{BackendJobHandle, BuildBackend, JobStatus};
 use orchestrator_core::relay::{Relay, RelayBounds};
 use orchestrator_core::types::{BuildRequest, BuildSpec, BuildState, SourceRef};
 use orchestrator_report::{Bounds, Report};
+use polar::events::BuildLog;
 use polar::topics::{PROVENANCE_EVENTS, PROVENANCE_EXECUTIONS};
 use polar::{BackendIdentity, ProvenanceEvent};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
@@ -97,6 +99,9 @@ pub struct BuildArgs {
     pub max_source: usize,
     /// The most its dependencies may come to.
     pub max_dependencies: u64,
+    /// Where its log is kept once its pod ends, and the most of it kept.
+    pub logs: Arc<dyn KeepLog>,
+    pub max_log: usize,
     pub poll_every: Duration,
 }
 
@@ -105,6 +110,11 @@ pub struct BuildArgs {
 pub struct ReportsRead {
     pub relayed: usize,
     pub refused: usize,
+    /// The log as it was read, at most the build's bound of it, and whether it went on past that.
+    pub log: Vec<u8>,
+    pub truncated: bool,
+    /// Whether there was a log to read at all.
+    pub had: bool,
 }
 
 pub enum BuildMessage {
@@ -124,11 +134,16 @@ pub struct BuildActorState {
     relay: RelayBounds,
     max_source: usize,
     max_dependencies: u64,
+    logs: Arc<dyn KeepLog>,
+    max_log: usize,
     poll_every: Duration,
     handle: Option<BackendJobHandle>,
     began: DateTime<Utc>,
     /// Whether the registry has been told it runs.
     running: bool,
+    /// What its end says of its log and its refused reports: none and none until its pod's log is read.
+    kept: Option<BuildLog>,
+    refused: u64,
 }
 
 pub struct BuildActor;
@@ -198,6 +213,8 @@ impl BuildActor {
         let mut lines = Lines::new(state.bounds.line);
         let mut relay = Relay::new(build_id.to_string(), state.relay);
         let mut relayed = 0;
+        let mut kept = Vec::new();
+        let mut truncated = false;
         while let Some(piece) = log.next().await {
             let piece = match piece {
                 Ok(piece) => piece,
@@ -206,6 +223,10 @@ impl BuildActor {
                     break;
                 }
             };
+            // What is kept is held to its bound; what is read for reports, to the reader's.
+            let room = state.max_log.saturating_sub(kept.len());
+            kept.extend_from_slice(&piece[..piece.len().min(room)]);
+            truncated |= piece.len() > room;
             for line in lines.feed(&piece) {
                 relayed += Self::report(state, &mut relay, line).await?;
             }
@@ -216,6 +237,9 @@ impl BuildActor {
         let read = ReportsRead {
             relayed,
             refused: relay.refused(),
+            log: kept,
+            truncated,
+            had: true,
         };
         if read.refused > 0 {
             warn!(%build_id, relayed = read.relayed, refused = read.refused, "the build said something refused");
@@ -290,10 +314,17 @@ impl BuildActor {
         state: &mut BuildActorState,
         status: JobStatus,
     ) {
-        if let Err(why) = Self::read_reports(state).await {
-            error!(build_id = %state.request.build_id, "{why}");
-            Self::runs(state);
-            return Self::fail(myself, state, AT_REPORTS, why).await;
+        let read = match Self::read_reports(state).await {
+            Ok(read) => read,
+            Err(why) => {
+                error!(build_id = %state.request.build_id, "{why}");
+                Self::runs(state);
+                return Self::fail(myself, state, AT_REPORTS, why).await;
+            }
+        };
+        state.refused = read.refused as u64;
+        if read.had {
+            state.kept = Self::keep_log(state, read.log, read.truncated).await;
         }
         match status {
             JobStatus::Failed { reason } => {
@@ -314,10 +345,31 @@ impl BuildActor {
                         build_id: state.request.build_id.to_string(),
                         duration_secs,
                         at: now(),
+                        log: state.kept.clone(),
+                        refused_reports: state.refused,
                     },
                 )
                 .await;
                 myself.stop(Some("succeeded".into()));
+            }
+        }
+    }
+
+    /// The build's log, kept in the registry; none if it could not be, which leaves the build as it ended.
+    async fn keep_log(state: &BuildActorState, log: Vec<u8>, truncated: bool) -> Option<BuildLog> {
+        let build_id = state.request.build_id;
+        match state.logs.keep(&build_id.to_string(), &log).await {
+            Ok(digest) => {
+                info!(%build_id, %digest, bytes = log.len(), truncated, "the build's log is kept");
+                Some(BuildLog {
+                    digest,
+                    bytes: log.len() as u64,
+                    truncated,
+                })
+            }
+            Err(e) => {
+                warn!(%build_id, "the build's log could not be kept: {e}");
+                None
             }
         }
     }
@@ -338,6 +390,8 @@ impl BuildActor {
                 reason,
                 stage: Some(stage.to_string()),
                 at: now(),
+                log: state.kept.clone(),
+                refused_reports: state.refused,
             },
         )
         .await;
@@ -489,10 +543,14 @@ impl Actor for BuildActor {
             relay: args.relay,
             max_source: args.max_source,
             max_dependencies: args.max_dependencies,
+            logs: args.logs,
+            max_log: args.max_log,
             poll_every: args.poll_every,
             handle: None,
             began: Utc::now(),
             running: false,
+            kept: None,
+            refused: 0,
         })
     }
 

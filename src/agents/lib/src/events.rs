@@ -115,6 +115,21 @@ pub struct BackendIdentity {
     pub identity_props: Vec<(String, String)>,
 }
 
+/// A build's log as the orchestrator kept it once the build's pod ended (docs/architecture/build-orchestrator.md, O4): a
+/// blob in the registry in the cluster, named by its digest, with a manifest tagged by the build's id in `build-logs` so the
+/// registry keeps it. At most the orchestrator's bound of it: past that, what came first, and `truncated`.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+pub struct BuildLog {
+    /// `sha256:` and the hex of the bytes kept.
+    pub digest: String,
+    /// How many bytes were kept.
+    pub bytes: u64,
+    /// Whether the log went on past what was kept.
+    pub truncated: bool,
+}
+
 /// Outcome of a completed build stage.
 #[derive(
     Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
@@ -430,6 +445,12 @@ pub enum ProvenanceEvent {
         /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
         /// RFC 3339 is refused.
         at: String,
+        /// The build's log as it was kept, or none if it could not be had or kept.
+        #[serde(default)]
+        log: Option<BuildLog>,
+        /// How many of the lines it printed as reports were refused, unrelayed.
+        #[serde(default)]
+        refused_reports: u64,
     },
 
     /// A build execution failed.
@@ -444,6 +465,12 @@ pub enum ProvenanceEvent {
         /// keyed on it, so the same event seen twice, or late, lands on the same state. Required: a time that is not
         /// RFC 3339 is refused.
         at: String,
+        /// The build's log as it was kept, or none: a build that failed before its pod ran has none.
+        #[serde(default)]
+        log: Option<BuildLog>,
+        /// How many of the lines it printed as reports were refused, unrelayed.
+        #[serde(default)]
+        refused_reports: u64,
     },
 
     /// A build execution was cancelled.

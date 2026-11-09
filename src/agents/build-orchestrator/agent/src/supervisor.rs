@@ -31,6 +31,7 @@
 use crate::AGENT_NAME;
 use crate::admission::{Admission, Admitted};
 use crate::build::{BuildActor, BuildArgs, Start, actor_name, build_of};
+use crate::logs::{KeepLog, RegistryLogs};
 use crate::mappings::{self, Mapping};
 use crate::observed::Observed;
 use crate::publish::Publish;
@@ -111,6 +112,8 @@ pub struct OrchestratorState {
     pub publish: Arc<dyn Publish>,
     pub reader: Arc<dyn Read>,
     pub source: Arc<dyn Source>,
+    /// Where each build's log is kept.
+    pub logs: Arc<dyn KeepLog>,
     pub registry: ActorRef<RegistryMessage>,
     pub admission: Admission,
     pub observed: Observed,
@@ -291,6 +294,8 @@ impl OrchestratorSupervisor {
             relay: state.tuning.relay,
             max_source: state.tuning.max_source,
             max_dependencies: state.tuning.max_dependencies,
+            logs: Arc::clone(&state.logs),
+            max_log: state.tuning.max_log,
             poll_every: POLL_EVERY,
         };
         if let Err(e) = Actor::spawn_linked(
@@ -459,6 +464,7 @@ impl Actor for OrchestratorSupervisor {
             deployment.clones.clone(),
             deployment.registry.clone(),
         ));
+        let logs: Arc<dyn KeepLog> = Arc::new(RegistryLogs::new(protocols.clone()));
         Ok(OrchestratorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
@@ -473,6 +479,7 @@ impl Actor for OrchestratorSupervisor {
             publish: Arc::new(resources.tcp_client),
             reader: Arc::new(reader),
             source,
+            logs,
             registry,
             observed: Observed::new(OBSERVED_COMMITS),
             starts: HashMap::new(),

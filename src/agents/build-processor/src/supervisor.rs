@@ -394,6 +394,8 @@ mod tests {
             build_id: "b1".into(),
             duration_secs: 3,
             at: "2026-10-16T00:00:00Z".into(),
+            log: None,
+            refused_reports: 0,
         }
     }
 
@@ -424,6 +426,7 @@ mod tests {
                     build_id,
                     duration_secs,
                     at,
+                    ..
                 }) => assert_eq!(
                     (build_id.as_str(), duration_secs, at.as_str()),
                     ("b1", 3, "2026-10-16T00:00:00Z")

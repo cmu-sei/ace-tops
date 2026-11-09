@@ -40,8 +40,8 @@ use sha2::{Digest, Sha256};
 /// Pushes to the registry in the cluster, and only there.
 pub const PUSH: OperationDecl = OperationDecl {
     name: "registry.source.push",
-    doc: "pushes a build's source archive and its dependencies, and manifests pointing at them, to the registry the \
-          orchestrator's configuration names",
+    doc: "pushes a build's source archive, its dependencies and its log, and manifests pointing at them, to the registry \
+          the orchestrator's configuration names",
     protocol: ProtocolKind::HTTP,
     location: Location::Configured {
         variable: REGISTRY_VAR,
@@ -58,7 +58,7 @@ pub const ARCHIVE_TYPE: &str = "application/vnd.polar.build-source.v1.tar+gzip";
 pub(crate) const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 /// OCI's empty descriptor: an artifact's config when it has none to say.
 pub(crate) const EMPTY_TYPE: &str = "application/vnd.oci.empty.v1+json";
-pub(crate) const EMPTY: &[u8] = b"{}";
+pub const EMPTY: &[u8] = b"{}";
 
 /// `sha256:` and the lower-case hex of `bytes`' digest.
 pub fn digest_of(bytes: &[u8]) -> String {
@@ -67,12 +67,18 @@ pub fn digest_of(bytes: &[u8]) -> String {
 
 /// The manifest of a source whose archive has `digest` and `size`: an OCI image manifest of one layer, the archive.
 pub fn manifest(digest: &str, size: usize) -> Vec<u8> {
+    manifest_of(ARTIFACT_TYPE, ARCHIVE_TYPE, digest, size)
+}
+
+/// An OCI image manifest of an artifact of `artifact_type` with one layer of `layer_type`, `digest` and `size`, and OCI's
+/// empty config.
+pub fn manifest_of(artifact_type: &str, layer_type: &str, digest: &str, size: usize) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "schemaVersion": 2,
         "mediaType": MANIFEST_TYPE,
-        "artifactType": ARTIFACT_TYPE,
+        "artifactType": artifact_type,
         "config": { "mediaType": EMPTY_TYPE, "digest": digest_of(EMPTY), "size": EMPTY.len() },
-        "layers": [{ "mediaType": ARCHIVE_TYPE, "digest": digest, "size": size }],
+        "layers": [{ "mediaType": layer_type, "digest": digest, "size": size }],
     }))
     .expect("a manifest is JSON")
 }

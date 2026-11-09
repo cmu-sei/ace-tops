@@ -984,6 +984,19 @@ I write Rust code"):
     exists, so every cluster would need its Service recreated).
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
+  *O4 DONE 2026-11-09* (the reports were relayed since O2d; this keeps the log). While the orchestrator reads the pod's log
+  for its reports, it keeps the bytes, at most `POLAR_ORCHESTRATOR_MAX_LOG_BYTES` (Dynamic, 64 MiB; past it what came first,
+  said to be cut), and pushes them by the "blob plus a manifest" rule as the source is: a blob in `build-logs` and a manifest
+  tagged by the build's id (`logs.rs`, `RegistryLogs`, through the same declared push), so the registry's garbage collection
+  keeps it and it is found by the build. `ExecutionCompleted` and `ExecutionFailed` carry `log: Option<BuildLog>` (digest,
+  bytes, truncated) and `refused_reports`; a build that ended before its pod ran has neither, and a log the registry will
+  not keep leaves the build as it ended, its log said to be none. build-processor writes them on the build's node
+  (`log_digest`, `log_bytes`, `log_truncated`, `refused_reports`). A wire change: the orchestrator and build-processor are
+  deployed together, and nothing holds the old form (Cassini keeps no messages), so it needs no migration; graphs gain
+  properties. Tested: the log kept whole by its digest and said with its end and its refused reports; cut at its bound,
+  the reports still read whole; a registry that will not keep it; a failed build's log, and none for one that never ran;
+  the real keeper through the HTTP handler against the stand-in registry, and a refusal leaving no manifest; the
+  projection's properties, and none of a log when none was kept. Not yet seen live: with the next bring-up.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
 - **O6** live on u7c: a test repository built end to end, its build in the graph.
 

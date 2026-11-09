@@ -48,6 +48,7 @@
 //! observers and are only referenced through edges.
 
 use super::{edge, upsert};
+use polar::events::BuildLog;
 use polar::graph::controller::{
     GraphOp, GraphValue, IntoGraphKey, Property,
     rel::{BUILT_BY, IS},
@@ -231,7 +232,36 @@ pub fn stage_completed(
     ]
 }
 
-pub fn completed(build_id: String, duration_secs: u64, when: &When) -> Vec<GraphOp> {
+/// What the orchestrator says of a build's end besides how it ended: where its log is kept, and how many of its reports were
+/// refused (docs/architecture/build-orchestrator.md, O4).
+pub struct Ended {
+    pub log: Option<BuildLog>,
+    pub refused_reports: u64,
+}
+
+impl Ended {
+    /// The build's node's properties for it: the log's digest, size and whether it was cut, when one was kept, and the
+    /// refused reports' count always.
+    fn properties(&self) -> Vec<Property> {
+        let mut said = vec![Property(
+            "refused_reports".into(),
+            GraphValue::I64(i64::try_from(self.refused_reports).unwrap_or(i64::MAX)),
+        )];
+        if let Some(log) = &self.log {
+            said.extend([
+                Property("log_digest".into(), string(&log.digest)),
+                Property(
+                    "log_bytes".into(),
+                    GraphValue::I64(i64::try_from(log.bytes).unwrap_or(i64::MAX)),
+                ),
+                Property("log_truncated".into(), GraphValue::Bool(log.truncated)),
+            ]);
+        }
+        said
+    }
+}
+
+pub fn completed(build_id: String, duration_secs: u64, ended: &Ended, when: &When) -> Vec<GraphOp> {
     vec![
         upsert(
             job(&build_id),
@@ -244,6 +274,7 @@ pub fn completed(build_id: String, duration_secs: u64, when: &When) -> Vec<Graph
                 Property("observed_at".into(), string(when.observed_at)),
             ]
             .into_iter()
+            .chain(ended.properties())
             .chain(crate::aging::heard_from())
             .collect(),
         ),
@@ -265,6 +296,7 @@ pub fn failed(
     build_id: String,
     reason: String,
     stage: Option<String>,
+    ended: &Ended,
     when: &When,
 ) -> Vec<GraphOp> {
     let stage = stage.unwrap_or_else(|| "unattributed".into());
@@ -278,6 +310,7 @@ pub fn failed(
                 Property("observed_at".into(), string(when.observed_at)),
             ]
             .into_iter()
+            .chain(ended.properties())
             .chain(crate::aging::heard_from())
             .collect(),
         ),

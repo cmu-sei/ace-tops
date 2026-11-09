@@ -279,6 +279,8 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
             build_id: "b1".into(),
             duration_secs: 3,
             at: "2026-10-16T02:00:05Z".into(),
+            log: None,
+            refused_reports: 0,
         },
         "2026-10-16T02:00:06Z",
     )
@@ -400,6 +402,8 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
             build_id: "quiet".into(),
             duration_secs: 7200,
             at: "2026-10-01T02:00:00Z".into(),
+            log: None,
+            refused_reports: 0,
         },
         "2026-11-08T12:30:00Z",
     )
