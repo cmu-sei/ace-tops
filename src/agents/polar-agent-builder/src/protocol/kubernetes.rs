@@ -145,7 +145,8 @@ pub enum Propagation {
     Orphan,
 }
 
-/// A request of the Kubernetes API: a watch, or one call. Its object, when it has one, is JSON, as a watch's are.
+/// A request of the Kubernetes API: a watch, or one call. Its object, when it has one, is JSON, as a watch's are. A call's
+/// empty namespace is an object across the cluster (a namespace, a node).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
     Watch(Watch),
@@ -531,12 +532,15 @@ impl Kubernetes {
 
     /// One call that is not a watch or a log: its answer, or the API's own answer to it.
     async fn call(&self, call: Call) -> Result<Answer, Failure> {
+        // No namespace is an object across the cluster (a namespace, a node), at a path with no namespace in it.
         let api = |resource: &Resource, namespace: &str| -> (Api<DynamicObject>, ApiResource) {
             let resource = resource.api_resource();
-            (
-                Api::namespaced_with(self.client.clone(), namespace, &resource),
-                resource,
-            )
+            let api = if namespace.is_empty() {
+                Api::all_with(self.client.clone(), &resource)
+            } else {
+                Api::namespaced_with(self.client.clone(), namespace, &resource)
+            };
+            (api, resource)
         };
         match call {
             Call::Create {
@@ -1065,10 +1069,37 @@ mod tests {
                 EVENT.access(Verb::List),
                 POD.access(Verb::List),
                 POD_LOG,
+                NAMESPACE.access(Verb::Get),
             ],
         },
     };
     const CALLS: [OperationDecl; 1] = [CALLING];
+
+    /// A call with no namespace is of an object across the cluster, as a namespace is, and is asked at that object's own path.
+    #[tokio::test]
+    async fn a_call_with_no_namespace_is_of_an_object_across_the_cluster() {
+        let api = KubeApi::start().await;
+        api.answers(
+            "GET",
+            "/api/v1/namespaces/kube-system",
+            200,
+            json!({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "kube-system", "uid": "u-9"}}),
+        );
+        let site = kubernetes_handle(&CALLS, &api).await;
+        let said = site
+            .handle
+            .ask(Calling(Call::Get {
+                resource: NAMESPACE,
+                namespace: String::new(),
+                name: "kube-system".into(),
+            }))
+            .await
+            .unwrap();
+        let Answer::Object(object) = said else {
+            panic!("{said:?}");
+        };
+        assert_eq!(object["metadata"]["uid"], "u-9");
+    }
 
     impl Operation for Calling {
         type Protocol = Kubernetes;
