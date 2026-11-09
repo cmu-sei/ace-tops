@@ -41,8 +41,6 @@ impl PolarAgent for JiraProcessor {
     const PURPOSE: &'static str =
         "Writes the Jira projects, groups, users and issues the observer publishes into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -116,6 +114,14 @@ mod tests {
     use super::*;
 
     polar_agent_builder::polar_agent_tests!(JiraProcessor);
+
+    /// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as
+    /// the pod's grace, is what it was when the agent drained the controller itself: 40 s.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<JiraProcessor>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 40);
+    }
 
     #[test]
     fn it_owns_the_issues_whose_last_update_is_the_observer_s_cursor() {

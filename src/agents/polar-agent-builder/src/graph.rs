@@ -291,6 +291,67 @@ mod tests {
         }
     }
 
+    /// Stands in for the graph controller: it takes a while over each op, and counts the ops it wrote.
+    struct SlowGraph {
+        written: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[ractor::async_trait]
+    impl Actor for SlowGraph {
+        type Msg = polar::graph::controller::GraphControllerMsg;
+        type State = ();
+        type Arguments = ();
+
+        async fn pre_start(
+            &self,
+            _myself: ActorRef<Self::Msg>,
+            _args: (),
+        ) -> Result<(), ActorProcessingErr> {
+            Ok(())
+        }
+
+        async fn handle(
+            &self,
+            _myself: ActorRef<Self::Msg>,
+            message: Self::Msg,
+            _state: &mut (),
+        ) -> Result<(), ActorProcessingErr> {
+            if let polar::graph::controller::GraphControllerMsg::Op(_) = message {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                self.written
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(())
+        }
+    }
+
+    /// The writes still queued for the graph are written before the controller stops: none is dropped. A fast check
+    /// with a stand-in for the controller (from jira-processor, whose own copy of the stop this was); against a real
+    /// Neo4j in `tests/graph_controller.rs`.
+    #[tokio::test]
+    async fn the_graph_controller_writes_what_is_queued_before_it_stops() {
+        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (graph, _) = Actor::spawn(
+            None,
+            SlowGraph {
+                written: written.clone(),
+            },
+            (),
+        )
+        .await
+        .unwrap();
+        for _ in 0..40 {
+            graph
+                .cast(polar::graph::controller::GraphControllerMsg::Op(
+                    polar::graph::controller::GraphOp::Transaction { ops: vec![] },
+                ))
+                .unwrap();
+        }
+
+        stop_graph_controller(graph, Duration::from_secs(10)).await;
+        assert_eq!(written.load(std::sync::atomic::Ordering::SeqCst), 40);
+    }
+
     #[tokio::test]
     async fn a_drain_begins_once_and_delivers_one_elapsed() {
         let seen = Arc::new(Mutex::new(0));

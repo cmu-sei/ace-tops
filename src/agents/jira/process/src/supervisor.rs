@@ -30,20 +30,17 @@ use jira_common::{
     JIRA_USERS_CONSUMER_TOPIC,
 };
 use polar::cassini::{CassiniClient, TcpClient};
-use polar::graph::controller::{
-    GraphController, GraphControllerActor, GraphControllerArgs, GraphSignal,
-};
+use polar::graph::controller::GraphController;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
     InfrastructureSupervisorMessage, Subscription,
 };
+use ractor::Actor;
 use ractor::ActorProcessingErr;
 use ractor::ActorRef;
 use ractor::SupervisionEvent;
 use ractor::async_trait;
 use ractor::concurrency::Duration;
-use ractor::{Actor, OutputPort};
-use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// Every topic this agent consumes. One Subscription each; all of them
@@ -55,10 +52,10 @@ pub(crate) const JIRA_TOPICS: [&str; 4] = [
     JIRA_ISSUES_CONSUMER_TOPIC,
 ];
 
-/// How long the infrastructure supervisor gives this agent to drain: the graph
-/// controller's stop (up to 30 s) plus a margin. If it is not done by then the
-/// process exits 1 regardless.
-pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30 + 10);
+/// What this agent needs to drain beyond the graph controller, whose drain the
+/// builder counts: letting go of its topics, and a margin. If it is not done by
+/// then the process exits 1 regardless.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
 
 /// This supervisor's own message type. polar::SupervisorMessage cannot
 /// carry the two infrastructure signals without polar-agent-builder
@@ -68,10 +65,8 @@ pub enum ConsumerSupervisorMessage {
     ClientEvent {
         event: ClientEvent,
     },
-    GraphSignal(GraphSignal),
-    /// The HealthCheckActor, a child of InfrastructureSupervisor, has
-    /// terminated for rejuvenation. Finish this supervisor's own work,
-    /// then send InfrastructureSupervisorMessage::ProceedWithShutdown.
+    /// The agent is ending. Finish this supervisor's own work, then send
+    /// InfrastructureSupervisorMessage::ProceedWithShutdown.
     PrepareShutdown,
 }
 
@@ -79,34 +74,14 @@ pub struct ConsumerSupervisor;
 
 pub struct ConsumerSupervisorState {
     broker_client: TcpClient,
-    graph_controller: Option<GraphController>,
+    /// The builder's: it reports the graph's health and drains it at the end.
+    graph: GraphHandle,
     healthcheck: HealthHandle,
-    /// Sent ProceedWithShutdown once the graph controller has flushed.
+    /// Sent ProceedWithShutdown once this agent has let go of its topics.
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     /// True once PrepareShutdown has been received. Messages that still
-    /// arrive are logged, not written, and a linked actor stopping is
-    /// expected rather than fatal.
+    /// arrive are logged, not written.
     shutting_down: bool,
-}
-
-/// How long the graph controller gets to finish at a shutdown.
-const GRAPH_STOP_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Stops the graph controller at a shutdown once it has written every op already in its mailbox (a drain), bounded
-/// by `timeout`; one that has not stopped by then is logged and left, as the process is about to exit. A stop
-/// (`stop_and_wait`) would be served before the ops still queued, and lose them at every rejuvenation.
-async fn stop_graph_controller(controller: GraphController, timeout: Duration) {
-    match controller.drain_and_wait(Some(timeout)).await {
-        Ok(()) => {
-            info!("CONSUMER_SUPERVISOR: graph controller wrote what was queued and stopped");
-        }
-        Err(e) => {
-            error!(
-                "CONSUMER_SUPERVISOR: graph controller did not stop cleanly \
-                 within {timeout:?}, continuing: {e:?}"
-            );
-        }
-    }
 }
 
 /// Decodes what an observer published: the payload of the event is the
@@ -193,9 +168,6 @@ impl Actor for ConsumerSupervisor {
         // spawning anything, and reads the dependency endpoints from
         // POLAR_HEALTH_DEP_ENDPOINTS. This agent never encrypts a payload,
         // so it does not declare encryption.
-        // What the graph controller makes at start for the labels this agent owns; read before the builder takes
-        // the configuration.
-        let key_indexes = configured.graph_key_indexes();
         let mut builder = AgentBuilder::new(myself.clone(), BROKER_CLIENT_NAME);
         for subscription in Self::jira_subscriptions(&myself) {
             builder = builder.with_subscription(subscription);
@@ -215,32 +187,11 @@ impl Actor for ConsumerSupervisor {
                 }
             });
 
-        // Eager graph controller spawn: its health never needs to wait on
-        // Cassini registration. GraphControllerActor::pre_start only builds
-        // pool config; HealthCheckMessage::GraphAvailable is what proves
-        // real connectivity.
-        let graph_signal_port = Arc::new(OutputPort::<GraphSignal>::default());
-        graph_signal_port.subscribe(myself.clone(), |signal| {
-            Some(ConsumerSupervisorMessage::GraphSignal(signal))
-        });
-        let (graph_controller, _) = GraphControllerActor::spawn_linked(
-            Some("jira.process.graph.controller".to_string()),
-            GraphControllerActor,
-            // The settings come from the builder's snapshot, which already judged them.
-            GraphControllerArgs::new(graph_signal_port)
-                .with_settings(
-                    polar::graph::environment::GraphSettings::from_env(&*resources.config)
-                        .map_err(ActorProcessingErr::from)?,
-                )
-                .with_key_indexes(key_indexes),
-            myself.get_cell(),
-        )
-        .await
-        .map_err(ActorProcessingErr::from)?;
-
         Ok(ConsumerSupervisorState {
             broker_client: resources.tcp_client,
-            graph_controller: Some(graph_controller),
+            graph: resources
+                .graph
+                .ok_or("the builder started no graph controller for a graph-write agent")?,
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
             shutting_down: false,
@@ -254,18 +205,10 @@ impl Actor for ConsumerSupervisor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            ConsumerSupervisorMessage::GraphSignal(signal) => match signal {
-                GraphSignal::Available => {
-                    let _ = state.healthcheck.graph_available();
-                }
-                GraphSignal::OpFailed(reason) => {
-                    let _ = state.healthcheck.graph_op_failed(reason);
-                }
-            },
             ConsumerSupervisorMessage::PrepareShutdown => {
                 info!(
-                    "CONSUMER_SUPERVISOR: PrepareShutdown received -- unsubscribing and \
-                     flushing the graph controller before infrastructure goes down"
+                    "CONSUMER_SUPERVISOR: PrepareShutdown received -- unsubscribing, then \
+                     proceeding; the infrastructure drains the graph controller"
                 );
                 state.shutting_down = true;
 
@@ -284,10 +227,6 @@ impl Actor for ConsumerSupervisor {
                     }
                 }
 
-                if let Some(controller) = state.graph_controller.take() {
-                    stop_graph_controller(controller, GRAPH_STOP_TIMEOUT).await;
-                }
-
                 let _ = state
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
@@ -297,7 +236,6 @@ impl Actor for ConsumerSupervisor {
                     // AgentBuilder already fired the wire-level Subscribe
                     // for every topic when this event fired.
                     let _ = state.healthcheck.cassini_connected();
-                    let _ = state.healthcheck.graph_connected();
                 }
                 ClientEvent::MessagePublished { topic, payload, .. } => {
                     if state.shutting_down {
@@ -307,12 +245,8 @@ impl Actor for ConsumerSupervisor {
                             payload.len()
                         );
                         // TODO: publish to dead-letter queue once Cassini supports one.
-                    } else if let Some(controller) = &state.graph_controller {
-                        Self::dispatch(&topic, &payload, controller)?;
                     } else {
-                        return Err(ActorProcessingErr::from(
-                            "a message arrived but there is no graph controller",
-                        ));
+                        Self::dispatch(&topic, &payload, state.graph.actor())?;
                     }
                 }
                 ClientEvent::TransportError { reason } => {
@@ -355,13 +289,10 @@ impl Actor for ConsumerSupervisor {
                     info!("CONSUMER_SUPERVISOR: infrastructure is down, exiting");
                     std::process::exit(1);
                 }
-                // Any other linked actor (the graph controller) stopping
-                // outside a shutdown means writes can no longer happen.
+                // Any other linked actor stopping outside a shutdown is
+                // unexpected.
                 if !state.shutting_down {
-                    error!(
-                        "CONSUMER_SUPERVISOR: a linked actor terminated unexpectedly, \
-                         graph writes can no longer happen; exiting"
-                    );
+                    error!("CONSUMER_SUPERVISOR: a linked actor terminated unexpectedly; exiting");
                     std::process::exit(1);
                 }
             }
@@ -415,66 +346,6 @@ mod tests {
     #[test]
     fn a_payload_that_does_not_decode_is_dropped_not_fatal() {
         assert!(decode_payload(&[0u8; 3]).is_none());
-    }
-
-    /// Stands in for the graph controller: it takes a while over each op, and counts the ops it wrote.
-    struct SlowGraph {
-        written: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl Actor for SlowGraph {
-        type Msg = polar::graph::controller::GraphControllerMsg;
-        type State = ();
-        type Arguments = ();
-
-        async fn pre_start(
-            &self,
-            _myself: ActorRef<Self::Msg>,
-            _args: (),
-        ) -> Result<(), ActorProcessingErr> {
-            Ok(())
-        }
-
-        async fn handle(
-            &self,
-            _myself: ActorRef<Self::Msg>,
-            message: Self::Msg,
-            _state: &mut (),
-        ) -> Result<(), ActorProcessingErr> {
-            if let polar::graph::controller::GraphControllerMsg::Op(_) = message {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                self.written
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-            Ok(())
-        }
-    }
-
-    /// At a rejuvenation the writes still queued for the graph are written before the graph controller stops: none
-    /// is dropped.
-    #[tokio::test]
-    async fn the_graph_controller_writes_what_is_queued_before_it_stops() {
-        let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (graph, _) = Actor::spawn(
-            None,
-            SlowGraph {
-                written: written.clone(),
-            },
-            (),
-        )
-        .await
-        .unwrap();
-        for _ in 0..40 {
-            graph
-                .cast(polar::graph::controller::GraphControllerMsg::Op(
-                    polar::graph::controller::GraphOp::Transaction { ops: vec![] },
-                ))
-                .unwrap();
-        }
-
-        stop_graph_controller(graph, Duration::from_secs(10)).await;
-        assert_eq!(written.load(std::sync::atomic::Ordering::SeqCst), 40);
     }
 
     #[test]
