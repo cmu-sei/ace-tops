@@ -40,8 +40,6 @@ impl PolarAgent for BuildProcessor {
     const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str = "Projects the provenance stream (builds, what they produced, findings, what registries serve) into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -120,6 +118,14 @@ mod tests {
     use super::*;
 
     polar_agent_builder::polar_agent_tests!(BuildProcessor);
+
+    /// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as
+    /// the pod's grace, is what it was when the agent drained the controller itself: 45 s.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<BuildProcessor>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 
     /// Every label it owns is merged on a key its vocabulary names, so each gets its constraint at start, and two
     /// writers of one node race to one node, not two.
