@@ -784,6 +784,25 @@ I write Rust code"):
     dependency served over TLS, the stand-in crates host and registry: a source's lock read from its commit, its crate kept by
     the lock's sha256, its git dependency archived at its commit, the index naming both, and the build given the index; no
     locks, no dependencies; a lock the commit lacks named; a bound passed refused.
+  - *D3 planned 2026-11-08* (the maintainer, "Yes, record it and start"), on experiments with Cargo (in the scratchpad, Cargo
+    1.101 nightly): a project builds offline (`--offline --frozen`) with a read-only Cargo home holding only its config and a
+    read-only vendor directory whose crates carry nixpkgs' minimal `.cargo-checksum.json` (`{"files":{},"package":"<sha256>"}`),
+    and Cargo refuses a vendored crate whose checksum is not its lock's. A git dependency is the hard part: one is often a member
+    of its own workspace, its `Cargo.toml` inheriting from the workspace's (`version.workspace = true`), so vendoring it as a
+    directory means rewriting a foreign `Cargo.toml` (nixpkgs does, with a script). Instead the git source is replaced by
+    another git source, a local repository: Cargo builds from it, resolving the inheritance itself, and from a shallow bare
+    repository holding the pinned commit alone (its pack, a ref, `shallow`). So no `Cargo.toml` is read or rewritten. The cost:
+    Cargo counts even a `file://` checkout as network, so a build is `--locked` and not `--offline`, and what keeps the pod off
+    the network is the network step after D4; source replacement only leaves Cargo no reason to go out, and a build script that
+    downloads is stopped by nothing else. In three: D3a the orchestrator pushes a git dependency as that shallow repository (a
+    pack of the commit, its tree and blobs, built with libgit2's pack builder, its index with libgit2's indexer, a ref and the
+    `shallow` marker); D3b the template gains a `dependencies` volume shared by the fetch and the pipeline, and the pipeline
+    `CARGO_HOME=/dependencies/cargo`; the fetch, told the index's digest (the one more thing `departures` lets it be told),
+    pulls the index and each dependency by digest, unpacks each crate into `/dependencies/vendor/<name>-<version>` (refusing an
+    entry outside it) with the checksum file, each git repository into `/dependencies/git/`, and writes Cargo's source
+    replacement (crates.io by the vendor directory, each git source, keyed as the lock names it, by its repository); D3c an
+    end-to-end test: a crate and a git dependency laid out as the pod lays them out, and the test's own `cargo build --locked` of
+    a project that uses both.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
