@@ -39,11 +39,10 @@ use crate::settings::Timing;
 use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::ClientEvent;
 use polar::cassini::{CassiniClient, TcpClient};
-use polar::graph::controller::{GraphController, GraphControllerMsg, GraphSignal};
+use polar::graph::controller::{GraphController, GraphControllerMsg};
 use polar_agent_builder::{
     Access, AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle,
     InfrastructureEvent, InfrastructureSupervisorMessage, Subscription, TopicSet,
-    spawn_graph_controller, stop_graph_controller,
 };
 use polar_health::HealthReport;
 use polar_health::report::{self, HEALTH_REPLIES_TOPIC, HealthAnswer, HealthQuery};
@@ -54,11 +53,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// What it holds is a round in flight at most, and one graph write.
-pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
-
-/// How long the graph controller is given to stop.
-const GRAPH_STOP: Duration = Duration::from_secs(10);
+/// What it holds is a round in flight at most, whose writes the graph controller drains in the time the builder counts
+/// for it; this is the infrastructure's own children stopping, and a margin.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(15);
 
 /// How long reading the histories back may take.
 const READ_BACK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -78,7 +75,6 @@ pub enum WriterMessage {
     Close {
         round: u64,
     },
-    Graph(GraphSignal),
     RuntimeChanged {
         section: String,
     },
@@ -366,13 +362,13 @@ impl Actor for WriterSupervisor {
         myself.cast(WriterMessage::RuntimeChanged {
             section: expected::SECTION_NAME.to_string(),
         })?;
-        let graph = spawn_graph_controller(
-            &myself,
-            format!("{PROCESSOR_NAME}.graph_controller"),
-            &resources.config,
-            WriterMessage::Graph,
-        )
-        .await?;
+        // The builder's: it reports the graph's health and drains it at the end.
+        let graph = resources
+            .graph
+            .as_ref()
+            .ok_or("the builder started no graph controller for a graph-write agent")?
+            .actor()
+            .clone();
         let timing = Self::follow_timing(&resources.configuration, &myself).await?;
         // The one timer: the writer's rounds. No agent it asks keeps one.
         let asking = myself.send_interval(timing.interval, || WriterMessage::Ask);
@@ -414,12 +410,6 @@ impl Actor for WriterSupervisor {
                 }
                 _ => (),
             },
-            WriterMessage::Graph(signal) => {
-                let _ = match signal {
-                    GraphSignal::Available => state.healthcheck.graph_available(),
-                    GraphSignal::OpFailed(reason) => state.healthcheck.graph_op_failed(reason),
-                };
-            }
             WriterMessage::RuntimeChanged { section } => {
                 if section == expected::SECTION_NAME {
                     match state.configuration.runtime(expected::SECTION_NAME).await {
@@ -506,11 +496,9 @@ impl Actor for WriterSupervisor {
                 }
             }
             WriterMessage::PrepareShutdown => {
-                info!("PrepareShutdown received, stopping the graph controller");
+                info!("PrepareShutdown received, proceeding: the infrastructure drains the graph");
                 state.shutting_down = true;
-                if let Some(graph) = state.graph.take() {
-                    stop_graph_controller(graph, GRAPH_STOP).await;
-                }
+                state.graph = None;
                 let _ = state
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);

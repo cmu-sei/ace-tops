@@ -43,8 +43,6 @@ impl PolarAgent for SoftStateProcessor {
     const PURPOSE: &'static str =
         "Asks every agent about its health and writes what it hears into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
         HEALTH_REPLIES_TOPIC,
@@ -97,6 +95,14 @@ mod tests {
     use polar_agent_builder::Access;
 
     polar_agent_builder::polar_agent_tests!(SoftStateProcessor);
+
+    /// Its own 15 s and the 30 s the builder counts for draining its graph controller, which the catalog renders as the
+    /// pod's grace.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<SoftStateProcessor>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 
     #[test]
     fn it_asks_each_served_workload_on_its_own_topic_and_alone_hears_the_answers() {
