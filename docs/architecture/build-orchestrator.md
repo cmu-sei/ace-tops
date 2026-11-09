@@ -996,7 +996,9 @@ I write Rust code"):
   properties. Tested: the log kept whole by its digest and said with its end and its refused reports; cut at its bound,
   the reports still read whole; a registry that will not keep it; a failed build's log, and none for one that never ran;
   the real keeper through the HTTP handler against the stand-in registry, and a refusal leaving no manifest; the
-  projection's properties, and none of a log when none was kept. Not yet seen live: with the next bring-up.
+  projection's properties, and none of a log when none was kept. Seen live on u7c, 2026-11-09: build `616253d6` (`logger`, 151 s)
+  relayed its 162 reports and kept its log, 8,292,177 bytes, not cut, as `sha256:eb904111…` in `build-logs` with its manifest
+  by the build's id, and its node in the graph holds `log_digest`, `log_bytes`, `log_truncated` and `refused_reports` (0).
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
 - **O6** live on u7c: a test repository built end to end, its build in the graph.
 

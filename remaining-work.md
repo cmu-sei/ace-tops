@@ -878,7 +878,8 @@ only.
   code, so they leave this area and stand as K2 and K4 for every graph writer (decided for review, to finish the port). The build orchestrator:
   O1 to O3, D1 to D4, E1 to E3 and O4 done, the watched build live on u7c (`docs/architecture/build-orchestrator.md`); O4 to be seen live with
   the next bring-up; the network step planned and deferred behind a standing rule (no mapping of a repository Polar does not control, no
-  archive built, until it is done); images out of build pods a decision of its own. With O4 seen live, area (2) is DONE. The history that
+  archive built, until it is done); images out of build pods a decision of its own. O4 seen live 2026-11-09 (build `616253d6`): area (2) is
+  DONE. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
