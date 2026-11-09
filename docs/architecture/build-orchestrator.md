@@ -934,6 +934,24 @@ I write Rust code"):
     variable, which hid it. `polar_env::Config::resolved` gives what a declared variable resolves to (an override, its value,
     its default), as every read of the setting does, and the handler goes to that. Tested: `resolved` for each source and
     for one undeclared; the configuration handle read as a handler reads it.
+  - *D4 and E3 DONE 2026-11-09: the watched build, live on u7c.* The observer fetched `main` of `SEI/ACE` from the private
+    gitea over ssh with the deploy key (credentials version 2, pinning the gitea's three host keys; the cluster is shown
+    its ECDSA one) and reported it; the orchestrator, by mappings version 3, fetched the same commit over ssh, archived and
+    pushed the source, read `src/agents/Cargo.lock`, fetched the five git dependencies it pins (public, from github) as
+    shallow repositories and the crates from `static.crates.io`, each checked against the lock and pushed to
+    `build-dependencies` (816 crate downloads, every request judged and recorded), and made the Job. The fetch laid out
+    the dependencies ("crates=816 git=5") and the source; the pipeline, in `polar-ci` pinned by digest, offline but for the
+    registry, read-only root, uid 1000, made an SBOM of each of the 80 workspace packages and built `event-logger`
+    `--release --locked` (133 s); the orchestrator read the pod's log once it ended, relayed its 162 reports
+    (`relayed=162`), and the build succeeded, 194 s from the ref to the end. build-processor took them (SBOMs, artifacts,
+    the binary's link), saying of three crates with no dependencies (`gitlab-common`, `openapi-common`, `polar-scudo`)
+    that their SBOMs link flat. Found on the way, each fixed and recorded above: the pin of one host key; a mapping's
+    repository id; a configured location's default. Found, for later: every bring-up rebuilds all 32 agent images (32 of
+    41 pushed new each time, the 9 unchanged being mirrored or external), even for a change to one agent: the nix build
+    seems to take the whole workspace as each agent's input, not its own closure (not yet read in `workspace.nix`); and
+    superseded images, ReplicaSets and the like accumulate, now the Reaper's (`pod-reaper.md`, "Every kind of stale
+    object"). And `str downcase` (deprecated in nu 0.114) printed a warning at the head of every build's log; it is `str
+    lowercase` now. Next: the network step.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

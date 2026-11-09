@@ -75,7 +75,7 @@ def ensure-table [table: string, columns: record]: nothing -> table {
 # authoritative key is the exact name; this only backstops purl-vs-metadata
 # name skew.
 def norm-name [name: string]: nothing -> string {
-    $name | str downcase | str replace --all "_" "-"
+    $name | str lowercase | str replace --all "_" "-"
 }
 
 # ---------------------------------------------------------------------------

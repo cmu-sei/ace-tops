@@ -62,6 +62,26 @@ cleanup is by hand. The Reaper's work, as it stands:
   Reaper then keeps the newest N (to be settled) and deletes the rest. It needs `delete` on `replicasets` in Polar's
   namespaces, and the admission policy refuses a ReplicaSet that has replicas, is the Deployment's current revision, or
   is not owned by a Polar Deployment.
+- **Superseded images** (the maintainer, 2026-11-08). Every bring-up pushes a new set of every agent image (32 of 41 on
+  u7c each time, `build-orchestrator.md`, E3), and nothing removes the old ones: each node's containerd store keeps every
+  version it pulled (u7c's node volumes held 129 GB on 2026-11-08, `/home` at 95%), and the registry in the cluster keeps
+  every pushed blob (13.3 GB then, nearly all earlier versions of the agent images; the builds' own repositories,
+  `build-sources` and `build-dependencies`, and `polar-ci` were small). The observable: each image set a deployment
+  record named, which digests the next record dropped, and when. The Reaper deletes what no record in force (or kept)
+  names: registry manifests by digest through the registry's API, then the registry's garbage collection for the blobs
+  (which wants the registry read-only while it runs); and on each node, the images no container uses. The admission policy
+  refuses an image a running pod or the record in force names.
+- **Every kind of stale object, as one job** (the maintainer, 2026-11-08, with u7c's list: about ten empty ReplicaSets
+  for each of 27 Polar Deployments, one per bring-up, since every bring-up changes every image and Kubernetes keeps ten;
+  and in `flux-system` (3) and `local-path-storage` (1)). Old ReplicaSets, superseded images, Failed and evicted pods and
+  finished Jobs are all "superseded by a newer deployment", so they are one job with one trigger, not a mechanism each:
+  the deployment record coming into force. The record is read already: the configuration agent reads it from the
+  deployment repository on Polar's own git server and publishes it on a topic of its own every 30 s
+  (`runtime-attestation.md`, "Continually, the Deployments against the signed record"; `deployment_record.rs`). The
+  maintainer: the Reaper is told when a new set is deployed, not left to poll on a schedule. So the attestation agent,
+  hearing a record newer than the last, records in the graph what it superseded (the observable, first), then announces it
+  as a non-sensitive notice on a fixed topic (`announce, then ask`); the Reaper acts on the notice, by policy per kind. A
+  new kind is a line of policy and an observable, not another mechanism.
 - By hand until then: `just cluster-prune-failed` for Failed pods; for empty ReplicaSets, `kubectl get rs -A --no-headers
   | awk '$3==0 && $4==0 {print $1, $2}' | while read ns rs; do kubectl -n "$ns" delete rs "$rs"; done` (both were run on
   u7c on 2026-10-30: 18 pods and 28 ReplicaSets).
@@ -145,3 +165,13 @@ replaced under the same name is not the one deleted.
 4. **What is kept of a log.** The end of each container's log goes into the failure's graph node: how much (200 lines? 64
    KiB?), and is a log a thing the graph should hold, or should it go to a store of its own with an edge to it?
 5. **Names.** `pod-observer` and `reaper`, as their workloads, identities and crates?
+6. **How many earlier sets are kept,** for a rollback (a revert in the deployment repository with Flux): the image sets
+   of the last N records, and the ReplicaSets that ran them?
+7. **Reaching a node's images.** The Reaper has no presence on a node, and a node's containerd is reached only from it: a
+   privileged piece on each node (a DaemonSet, its own identity and admission), or the kubelet's own image garbage
+   collection told what to keep? The first is Polar's own housekeeping; the second leans on Kubernetes' policy.
+8. **Infrastructure Polar installs but does not write.** Flux's and the local-path provisioner's ReplicaSets are in
+   namespaces Polar deploys (`flux-system`, `local-path-storage`) and are owned by Deployments Polar did not write: within
+   the Reaper's reach, or left to their own charts?
+9. **The registry's garbage collection** wants the registry read-only: when, on a cluster whose builds push to it (between
+   builds, with the orchestrator's admission holding new ones)?

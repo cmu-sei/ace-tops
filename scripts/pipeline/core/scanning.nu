@@ -82,7 +82,7 @@ export def resolve-package-purl [index: table, name: string, version: string]: n
     let exact = ($index | where {|r| $r.name == $name and $r.version == $version })
     if ($exact | is-not-empty) { return ($exact | first | get purl) }
 
-    let nk = ($name | str downcase | str replace --all "_" "-")
+    let nk = ($name | str lowercase | str replace --all "_" "-")
     let norm = ($index | where {|r| $r.name_norm == $nk and $r.version == $version })
     if ($norm | is-not-empty) { return ($norm | first | get purl) }
 
