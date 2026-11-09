@@ -793,11 +793,10 @@ only.
 
 ## The agent builder and its migration
 
-- [ ] CHECK: A PERSON'S IDENTITY IN A WORKLOAD'S FORM (found 2026-11-09, `docs/architecture/remote-observers.md`, the last section).
-  `SuffixedClaim` makes `<claim>.<scope>` with both parts only DNS-safe, so a Keycloak token with the right `preferred_username` and
-  `identity_scope` normalizes to `<workload>.polar.serviceaccount.cluster.local`, which `workload_of` reads as that workload. Nothing read in
-  cert-issuer refuses it; the credentials agent's people path and the realm's `identity_scope` mapper (not in this repository) not checked.
-  If it holds, fix at the cause: an identity from a non-Kubernetes issuer never takes the `.serviceaccount.` form. Tests first.
+- [x] A PERSON'S IDENTITY IN A WORKLOAD'S FORM (found and FIXED 2026-11-09, `docs/architecture/remote-observers.md`, the last section).
+  A Keycloak token with `identity_scope` `polar.serviceaccount.cluster.local` normalized to a workload's identity, and neither cert-issuer
+  nor the credentials agent refused it (the realm's mapper is admin-set, so it took the realm's administrator). `normalize_identity` now
+  refuses a suffixed identity that `workload_of` reads as a workload, tested by example and by property.
 - [ ] UPSTREAM'S WORK, BY VAUGHN'S PORT, TAKEN APART AREA BY AREA (decided 2026-11-07, the maintainer, "Yes, oci fixes first"). What there is (read
   2026-11-07): cmu-sei/Polar `main` (`5074f15f`, 2026-10-17, 14 commits since `9aea62f6`) and `blitz-deploy` (`df69bce`, 2026-10-31, those and 43
   more: the operator, the `polar` CLI, the Dhall deployment library, the build orchestrator), neither moved since; on gitea, Vaughn's

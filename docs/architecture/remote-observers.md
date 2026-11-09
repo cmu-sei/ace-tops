@@ -114,13 +114,18 @@ role. What follows is what stands in the way, read 2026-11-09.
   observer differently.
 - "None" is allowed for the `Observer` role only; hardware is the upgrade path for a host Polar does not own.
 
-## Found doing this, for now, not only for remote observers
+## Found doing this, for now, not only for remote observers: fixed 2026-11-09
 
-**A person's identity can take a workload's form.** `SuffixedClaim` makes `<claim>.<scope>` with each part only required
+**A person's identity could take a workload's form.** `SuffixedClaim` made `<claim>.<scope>` with each part only required
 to be DNS-safe (`identity.rs`, `normalize_identity`), and `verify_identity` compares the CSR's name with that string
 (`cert-issuer/server/src/csr.rs`). So a Keycloak token whose `preferred_username` is `credentials-agent` and whose
-`identity_scope` is `polar.serviceaccount.cluster.local` normalizes to `credentials-agent.polar.serviceaccount.cluster.local`,
-which `workload_of` reads as the credentials agent. Nothing read refuses it; whether anything does further on (the
-credentials agent's people path) was not checked, nor where the realm's `identity_scope` mapper is set and whether a
-person can change their own (it is not in this repository). To check, and if it holds, to fix at the cause: an identity
-from a non-Kubernetes issuer never takes the `.serviceaccount.` form.
+`identity_scope` is `polar.serviceaccount.cluster.local` normalized to `credentials-agent.polar.serviceaccount.cluster.local`,
+which `workload_of` reads as the credentials agent; and the credentials agent issues under the identity cert-issuer's
+`/validate` normalizes (`credentials-agent/consume/src/issuance.rs`, step 3), so that path did not refuse it either. The
+existing property test had assumed such scopes away. Reaching it took the Keycloak realm's administrator: in the
+maintainer's realm the `identity_scope` mapper is admin-set, not a person's to change.
+
+Fixed at the cause: `normalize_identity` refuses a suffixed identity that `workload_of` reads as a workload
+(`IdentityError::ShapedLikeAWorkload`), so cert-issuer's `/issue` and `/validate` and every client that computes its CSR's
+name refuse it alike. Tests: `a_suffixed_identity_shaped_like_a_workload_is_refused`, and the property
+`no_suffixed_identity_is_a_workload`, whose scopes include the service account form; both failed before the fix.

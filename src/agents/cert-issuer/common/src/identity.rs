@@ -30,6 +30,9 @@ use thiserror::Error;
 pub enum IdentityError {
     #[error("unrecognized identity format: {0}")]
     UnrecognizedFormat(String),
+    /// A suffixed identity (a person's) that `workload_of` would read as a workload's.
+    #[error("'{0}' is shaped like a workload's identity, which no suffixed claim may give")]
+    ShapedLikeAWorkload(String),
 }
 
 /// How a validated token's claims are turned into a DNS-safe identity
@@ -149,7 +152,13 @@ pub fn normalize_identity(
                 ));
             }
 
-            Ok(format!("{identity_claim_value}.{scope}"))
+            // A person's identity is never a workload's, whatever the scope claim says: everything that joins an
+            // identity to a workload (its topics, the documents addressed to it, its grants) reads the form alone.
+            let identity = format!("{identity_claim_value}.{scope}");
+            if workload_of(&identity).is_some() {
+                return Err(IdentityError::ShapedLikeAWorkload(identity));
+            }
+            Ok(identity)
         }
     }
 }
@@ -413,6 +422,20 @@ mod unit_tests {
         assert_ne!(a, b);
     }
 
+    /// A person's identity is never a workload's: a scope shaped like a cluster's service account domain would make
+    /// `<user>.<scope>` the identity of the workload named like the user, whatever certificate it was issued as
+    /// (docs/architecture/remote-observers.md, the last section).
+    #[test]
+    fn a_suffixed_identity_shaped_like_a_workload_is_refused() {
+        let err = normalize_identity(
+            "credentials-agent",
+            Some("polar.serviceaccount.cluster.local"),
+            &IdentityNormalization::SuffixedClaim,
+        )
+        .expect_err("a suffixed identity that names a workload must be refused");
+        assert!(matches!(err, IdentityError::ShapedLikeAWorkload(_)));
+    }
+
     use super::workload_of;
 
     #[test]
@@ -445,7 +468,7 @@ mod unit_tests {
     }
 
     mod props {
-        use super::{k8s, normalize_identity, workload_of};
+        use super::{IdentityNormalization, k8s, normalize_identity, workload_of};
         use proptest::prelude::*;
 
         fn label() -> impl Strategy<Value = String> {
@@ -481,6 +504,21 @@ mod unit_tests {
                 prop_assume!(!scope.split('.').any(|l| l == "serviceaccount"));
                 let identity = format!("{user}.{scope}");
                 prop_assert_eq!(workload_of(&identity), None);
+            }
+
+            /// Whatever the scope claim holds, a suffixed identity cert-issuer gives is never taken for a workload:
+            /// one shaped like a cluster's service account domain is refused.
+            #[test]
+            fn no_suffixed_identity_is_a_workload(
+                user in label(),
+                scope in prop_oneof![
+                    domain(),
+                    (label(), domain()).prop_map(|(namespace, domain)| format!("{namespace}.serviceaccount.{domain}")),
+                ],
+            ) {
+                if let Ok(identity) = normalize_identity(&user, Some(&scope), &IdentityNormalization::SuffixedClaim) {
+                    prop_assert_eq!(workload_of(&identity), None);
+                }
             }
         }
     }
