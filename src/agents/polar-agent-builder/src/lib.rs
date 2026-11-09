@@ -541,13 +541,14 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
             .map(|set| topic_gate::gate(&this.service_name, own.identity, Some(own.pem), set));
 
         let myself_cell = this.myself.get_cell();
+        let process_exit = shutdown::real_process_exit();
 
         // The real, entire, foundational subtree -- HealthCheckActor,
         // RouterActor, this agent's own subscriptions, TcpClient, and
         // (if requested) CryptoActor -- collapsed into one, real,
         // linked child. See infrastructure::InfrastructureSupervisor's
         // own, top-level doc comment for the complete, real reasoning.
-        let (infrastructure, _) = InfrastructureSupervisor::spawn_linked(
+        let (infrastructure, ended) = InfrastructureSupervisor::spawn_linked(
             None,
             InfrastructureSupervisor,
             infrastructure::InfrastructureSupervisorArgs {
@@ -563,7 +564,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 graph,
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: true,
-                process_exit: shutdown::real_process_exit(),
+                process_exit: process_exit.clone(),
                 tcp_spawner: Arc::new(infrastructure::CassiniSpawner { gate }),
                 commands,
                 runtime_sections: this.declared_runtime,
@@ -576,6 +577,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
         )
         .await
         .map_err(ActorProcessingErr::from)?;
+        shutdown::exit_when_ended(ended, process_exit);
 
         let resources: AgentResources = ractor::call!(infrastructure, |reply| {
             InfrastructureSupervisorMessage::GetResources { reply }
@@ -707,7 +709,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
         )
         .with_config(startup.health);
 
-        let (infrastructure, _) = InfrastructureSupervisor::spawn_linked(
+        let (infrastructure, ended) = InfrastructureSupervisor::spawn_linked(
             None,
             InfrastructureSupervisor,
             infrastructure::InfrastructureSupervisorArgs {
@@ -736,6 +738,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
         )
         .await
         .map_err(ActorProcessingErr::from)?;
+        shutdown::exit_when_ended(ended, hooks.process_exit.clone());
 
         let resources: ServiceResources = ractor::call!(infrastructure, |reply| {
             InfrastructureSupervisorMessage::GetService { reply }
@@ -1265,5 +1268,102 @@ mod tests {
             !configured.startup.health.expects_graph,
             "health does not watch the graph"
         );
+    }
+}
+
+#[cfg(test)]
+mod the_infrastructure_ending {
+    use super::*;
+    use crate::infrastructure::InfrastructureSupervisorMessage;
+    use ractor::{Actor, SupervisionEvent};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// A service's domain supervisor that does nothing when its infrastructure ends: whatever exits the process then
+    /// is the builder's doing.
+    struct Indifferent;
+
+    #[ractor::async_trait]
+    impl Actor for Indifferent {
+        type Msg = ();
+        type State = ();
+        type Arguments = crate::Configured;
+
+        async fn pre_start(
+            &self,
+            myself: ActorRef<()>,
+            configured: crate::Configured,
+        ) -> Result<(), ActorProcessingErr> {
+            ServiceBuilder::new(myself, "indifferent")
+                .into_configured(configured)
+                .build()
+                .await?;
+            Ok(())
+        }
+
+        async fn handle_supervisor_evt(
+            &self,
+            _myself: ActorRef<()>,
+            _event: SupervisionEvent,
+            _state: &mut (),
+        ) -> Result<(), ActorProcessingErr> {
+            Ok(())
+        }
+    }
+
+    type Exits = Arc<Mutex<Vec<i32>>>;
+
+    async fn service() -> (ServiceResources, Exits, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let env: HashMap<String, String> = [(
+            "POLAR_HEALTH_FILE".to_string(),
+            dir.path()
+                .join("health.json")
+                .to_string_lossy()
+                .into_owned(),
+        )]
+        .into();
+        let exits = Arc::new(Mutex::new(Vec::new()));
+        let (configured, out) =
+            crate::Configured::for_service_test(&env, Duration::from_secs(20), exits.clone());
+        Actor::spawn(None, Indifferent, configured).await.unwrap();
+        let resources = out.lock().unwrap().clone().expect("the service was built");
+        (resources, exits, dir)
+    }
+
+    /// The codes the process was asked to exit with, once there is one, or none after `within`.
+    async fn exited(exits: &Exits, within: Duration) -> Vec<i32> {
+        let deadline = tokio::time::Instant::now() + within;
+        while exits.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        exits.lock().unwrap().clone()
+    }
+
+    /// The end of the shutdown handshake ends the process, with no help from the domain supervisor, and well before
+    /// the watchdog's budget.
+    #[tokio::test]
+    async fn the_end_of_the_handshake_exits_the_process() {
+        let (resources, exits, _dir) = service().await;
+        resources
+            .infrastructure
+            .cast(InfrastructureSupervisorMessage::BeginShutdown {
+                reason: "test".to_string(),
+            })
+            .unwrap();
+        resources
+            .infrastructure
+            .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
+            .unwrap();
+        assert_eq!(exited(&exits, Duration::from_secs(15)).await, [1]);
+    }
+
+    /// An infrastructure that ends without a handshake, killed outright (no `post_stop` runs), ends the process too.
+    #[tokio::test]
+    async fn an_infrastructure_killed_outright_exits_the_process() {
+        let (resources, exits, _dir) = service().await;
+        resources.infrastructure.kill();
+        assert_eq!(exited(&exits, Duration::from_secs(15)).await, [1]);
     }
 }

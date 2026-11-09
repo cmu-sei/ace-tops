@@ -147,7 +147,10 @@ impl GraphHandle {
 /// Stops the controller once it has handled every write already queued, waiting up to `wait`. A
 /// stop would come ahead of the queue and lose those writes; a drain is behind them. A controller
 /// that does not finish in time is logged, not waited on: the process is about to end.
-pub(crate) async fn stop_graph_controller(controller: ActorRef<GraphControllerMsg>, wait: Duration) {
+pub(crate) async fn stop_graph_controller(
+    controller: ActorRef<GraphControllerMsg>,
+    wait: Duration,
+) {
     match controller.drain_and_wait(Some(wait)).await {
         Ok(()) => info!("graph controller stopped cleanly"),
         Err(e) => error!(

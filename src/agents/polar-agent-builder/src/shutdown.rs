@@ -98,6 +98,22 @@ pub(crate) fn real_process_exit() -> ProcessExit {
     Arc::new(|code| std::process::exit(code))
 }
 
+/// Exits the process once the infrastructure has ended, however it ended: at the end of the shutdown handshake, by a
+/// failure, or killed outright, when no `post_stop` runs. Its spawn's join handle sees all three, so the domain
+/// supervisor need not watch for it. Non-zero, so the pod starts afresh.
+pub(crate) fn exit_when_ended(
+    ended: ractor::concurrency::JoinHandle<()>,
+    process_exit: ProcessExit,
+) {
+    tokio::spawn(async move {
+        let how = ended.await;
+        tracing::info!(
+            "the infrastructure has ended ({how:?}); exiting 1 so the pod starts afresh"
+        );
+        process_exit(1);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // The shutdown machine
 // ---------------------------------------------------------------------------
