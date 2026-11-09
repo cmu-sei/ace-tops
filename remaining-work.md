@@ -812,7 +812,7 @@ only.
   (PLANNED 2026-11-09, `docs/architecture/kubernetes/kubernetes.md`, "Cluster-scoped identity and discovery"; DECIDED 2026-11-09, the
   maintainer: one cluster for now, observers that run anywhere written up and deferred in `docs/architecture/remote-observers.md`; so area 3
   is bite C only, Namespace and Node states and a pod `RUNNING_ON` its node, and A, B and D wait with remote observers; C BUILT 2026-11-09,
-  the observer stamping the cluster's uid, K12's panic gone, K6 and K7 not repeated in the new projections; live on u7c to see);
+  the observer stamping the cluster's uid, K12's panic gone, K6 and K7 not repeated in the new projections; seen live on u7c the same day);
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design (DONE 2026-11-09:
   written there, "From Vaughn's operator", what to take and not, and three questions for when the controller is designed); (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read

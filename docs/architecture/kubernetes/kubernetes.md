@@ -257,4 +257,9 @@ projected). What was built:
 - *Not done, by the order of work:* the nodes and edges are new, so nothing already in a graph changes and no migration is
   needed. The cache lives in memory: a consumer that restarts writes each namespace's and node's current state once more,
   and a pod whose node it has not seen since waits for the node's next event.
+- *Seen live on u7c (2026-11-09, `0f470f39`):* the observer read the cluster's uid (kube-system's) before it watched; the
+  graph held 13 of the cluster's 13 namespaces under that one cluster, each `Active`, the 4 of its 4 nodes with one ready
+  state each, 51 pods `RUNNING_ON` a node (the 40 running and those the rollout replaced), and `IN_NAMESPACE` from
+  deployments, replica sets, pods, jobs and kustomizations (u7c has no OCI repositories). The consumer dropped one burst of
+  102 events without `cluster_uid`, the old observer's, still queued at the rollout, as designed, and none since.
 
