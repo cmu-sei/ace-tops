@@ -175,6 +175,13 @@ pub trait PolarAgent: Sized + 'static {
     /// under `graph_edges`, so what a workload could touch is in its scaffold, and the tool that signs a mapping for it
     /// judges the mapping by them. An agent that declares none says nothing about its edges.
     const GRAPH_EDGES: &'static [EdgeDecl] = &[];
+    /// The repairs of what this writer wrote wrong before, which its graph controller runs at the first contact with
+    /// the graph, after the constraints (`polar::graph::repair`).
+    const GRAPH_REPAIRS: &'static [polar::graph::repair::Repair] = &[];
+    /// For a graph agent not yet moved onto the builder's graph controller: it starts and stops its own, and the
+    /// builder starts none for it. Removed when the last one has moved (remaining-work.md, "The agent builder and
+    /// its migration").
+    const STARTS_OWN_GRAPH_CONTROLLER: bool = false;
 
     /// The agent proper. It is given the configuration the infrastructure judged, and builds
     /// its infrastructure from it (see `AgentBuilder::into_configured`). It returns when the
@@ -202,6 +209,10 @@ pub struct Configured {
     pub(crate) workers: Vec<crate::worker::Forked>,
     /// The constraints and indexes for the labels the agent owns ([`graph_key_indexes`]).
     pub(crate) graph_key_indexes: Vec<polar::graph::schema::KeyIndex>,
+    /// How the builder's graph controller serves the agent, if it starts one ([`graph_use_of`]).
+    pub(crate) graph: Option<crate::graph::GraphUse>,
+    /// What that controller repairs at the first contact with the graph (`PolarAgent::GRAPH_REPAIRS`).
+    pub(crate) graph_repairs: &'static [polar::graph::repair::Repair],
     /// Every topic the agent uses, its families expanded for the workloads it serves.
     pub(crate) topics: Arc<TopicSet>,
     pub(crate) hooks: Hooks,
@@ -300,6 +311,8 @@ impl Configured {
             protocols: ProtocolSetup::default(),
             workers: Vec::new(),
             graph_key_indexes: Vec::new(),
+            graph: None,
+            graph_repairs: &[],
             topics: Arc::new(TopicSet::default()),
             hooks: Hooks {
                 process_exit: Arc::new(move |code| exits.lock().unwrap().push(code)),
@@ -595,6 +608,31 @@ fn sections_of<A: PolarAgent>() -> Vec<(Option<Capability>, &'static Section)> {
     sections
 }
 
+/// How the builder's graph controller serves `A`: as a writer for `graph-write`, a reader for `graph-read`, and not at
+/// all for an agent that needs neither or still starts its own.
+pub(crate) fn graph_use_of<A: PolarAgent>() -> Option<crate::graph::GraphUse> {
+    if A::STARTS_OWN_GRAPH_CONTROLLER {
+        return None;
+    }
+    let needs = needs_of::<A>();
+    if needs.contains(&Capability::GraphWrite) {
+        Some(crate::graph::GraphUse::Writes)
+    } else if needs.contains(&Capability::GraphRead) {
+        Some(crate::graph::GraphUse::Reads)
+    } else {
+        None
+    }
+}
+
+/// The least shutdown budget `A` runs with: what it declares for its own drain, and the graph controller's drain when
+/// the builder starts one for it, so no agent counts the graph's time itself.
+pub(crate) fn least_budget<A: PolarAgent>() -> Duration {
+    match graph_use_of::<A>() {
+        Some(_) => A::SHUTDOWN_BUDGET + crate::graph::GRAPH_DRAIN,
+        None => A::SHUTDOWN_BUDGET,
+    }
+}
+
 /// `A`'s labels, each it owns with the keys its constraints are made on ([`graph_key_indexes`]).
 fn graph_with_keys<A: PolarAgent>() -> Vec<GraphEntry> {
     let indexes = graph_key_indexes::<A>();
@@ -630,7 +668,7 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
             .collect(),
         optional: A::OPTIONAL.iter().map(|c| c.as_str().to_string()).collect(),
         depends_on_cassini: A::DEPENDS_ON_CASSINI,
-        shutdown_budget_minimum_secs: A::SHUTDOWN_BUDGET.as_secs(),
+        shutdown_budget_minimum_secs: least_budget::<A>().as_secs(),
         commands: A::COMMANDS
             .iter()
             .map(|c| CommandDocument {
@@ -773,7 +811,7 @@ fn problems_of<A: PolarAgent>(loaded: &Loaded) -> Vec<String> {
         Source::File,
         &own_sections::<A>(),
         &effective_of::<A>(loaded.env.var(crate::capability::PROVIDED_ENV).as_deref()),
-        Some(A::SHUTDOWN_BUDGET),
+        Some(least_budget::<A>()),
     ) {
         problems.extend(error.problems());
     }
@@ -943,7 +981,7 @@ pub fn help_text<A: PolarAgent>() -> String {
     }
     text.push_str(&format!(
         "Shutdown: it needs at least {} seconds to drain.\n\n",
-        A::SHUTDOWN_BUDGET.as_secs()
+        least_budget::<A>().as_secs()
     ));
     if !A::SECTIONS.is_empty() {
         text.push_str("Variables it reads itself:\n");
@@ -1166,7 +1204,7 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         source,
         &own_sections::<A>(),
         &used,
-        Some(A::SHUTDOWN_BUDGET),
+        Some(least_budget::<A>()),
     ) {
         Ok(startup) => startup,
         Err(error) => {
@@ -1230,6 +1268,8 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         },
         workers,
         graph_key_indexes: graph_key_indexes::<A>(),
+        graph: graph_use_of::<A>(),
+        graph_repairs: A::GRAPH_REPAIRS,
         hooks: Hooks::real(),
     };
 
@@ -1752,7 +1792,8 @@ mod tests {
             "cassini",
             "graph-write",
             "EXAMPLE_BUCKET",
-            "30",
+            // Its own 30 seconds and the graph controller's drain.
+            "60",
             "--scaffold",
             "--check",
             "--version",
@@ -1781,7 +1822,8 @@ mod tests {
         assert_eq!(doc.agent.name, "example-agent");
         assert_eq!(doc.agent.role, Some(Role::Processor));
         assert_eq!(doc.requires, vec!["cassini", "graph-write"]);
-        assert_eq!(doc.shutdown_budget_minimum_secs, 30);
+        // Its own 30 seconds and the drain of the graph controller the builder starts for it.
+        assert_eq!(doc.shutdown_budget_minimum_secs, 60);
         assert_eq!(doc.document.format, polar_env::DOCUMENT_FORMAT);
     }
 
@@ -2442,7 +2484,46 @@ mod tests {
     fn a_budget_below_the_least_the_code_needs_fails_the_check() {
         let path = populated_file_with("budget", "POLAR_SHUTDOWN_BUDGET_SECS", "10");
         let problems = check::<Example>(&path, with_secrets()).join(" | ");
-        assert!(problems.contains("30"), "{problems}");
+        assert!(problems.contains("60"), "{problems}");
+    }
+
+    /// An agent the builder starts a graph controller for has the controller's drain counted in its least budget, so it
+    /// declares only its own; one that needs no graph, or still starts its own controller, has only what it declares.
+    #[test]
+    fn the_least_budget_counts_the_graph_controllers_drain_when_the_builder_starts_it() {
+        struct OwnController;
+        impl PolarAgent for OwnController {
+            const NAME: &'static str = "own-controller";
+            const ROLE: Role = Role::Processor;
+            const PURPOSE: &'static str = "Starts its own graph controller";
+            const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
+            const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(40);
+            async fn start(_: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+
+        assert_eq!(
+            graph_use_of::<Example>(),
+            Some(crate::graph::GraphUse::Writes)
+        );
+        assert_eq!(
+            least_budget::<Example>(),
+            Duration::from_secs(30) + crate::graph::GRAPH_DRAIN
+        );
+        assert_eq!(
+            graph_use_of::<Reading>(),
+            Some(crate::graph::GraphUse::Reads)
+        );
+        assert_eq!(
+            least_budget::<Reading>(),
+            Duration::from_secs(5) + crate::graph::GRAPH_DRAIN
+        );
+        assert_eq!(graph_use_of::<Bare>(), None);
+        assert_eq!(least_budget::<Bare>(), Bare::SHUTDOWN_BUDGET);
+        assert_eq!(graph_use_of::<OwnController>(), None);
+        assert_eq!(least_budget::<OwnController>(), Duration::from_secs(40));
     }
 
     #[test]

@@ -38,6 +38,8 @@ impl PolarAgent for KubeConsumer {
     const PURPOSE: &'static str =
         "Projects the Kubernetes resources the observer publishes into the Polar knowledge graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite, Capability::Encryption];
+    // It still starts and stops its own graph controller, until it moves onto the builder's.
+    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(

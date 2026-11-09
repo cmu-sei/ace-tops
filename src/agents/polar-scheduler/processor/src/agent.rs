@@ -39,6 +39,8 @@ impl PolarAgent for SchedulerProcessor {
     const PURPOSE: &'static str =
         "Records schedule changes in the graph and notifies the agents they concern";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
+    // It still starts and stops its own graph controller, until it moves onto the builder's.
+    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(

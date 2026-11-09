@@ -40,6 +40,8 @@ impl PolarAgent for BuildProcessor {
     const ROLE: Role = Role::Processor;
     const PURPOSE: &'static str = "Projects the provenance stream (builds, what they produced, findings, what registries serve) into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
+    // It still starts and stops its own graph controller, until it moves onto the builder's.
+    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(

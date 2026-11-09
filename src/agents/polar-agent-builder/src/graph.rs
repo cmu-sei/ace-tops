@@ -21,20 +21,129 @@
    DM26-0670
 */
 
-//! What an agent that writes to the graph does around its graph controller, which every such agent
-//! did by hand: start the controller from the builder's snapshot of the environment with its
-//! signals going to the supervisor, stop it waiting for a write in flight, and run the drain that
-//! precedes the exit or the handover to the infrastructure supervisor.
+//! An agent's graph controller. The builder starts it under the infrastructure supervisor for an
+//! agent that needs `graph-write` or `graph-read`, as it starts the crypto actor: from the
+//! snapshot, with the constraints and repairs the agent declared, its signals going to the health
+//! actor by how the agent uses the graph, and drained at the end, before the rest of the
+//! infrastructure stops. The agent writes through its [`GraphHandle`].
+//!
+//! Until each graph agent has moved onto that, it starts its own with [`spawn_graph_controller`],
+//! stops it with [`stop_graph_controller`] and runs the [`Drain`] that precedes the exit or the
+//! handover to the infrastructure supervisor (`PolarAgent::STARTS_OWN_GRAPH_CONTROLLER`).
 
 use crate::infrastructure::InfrastructureSupervisorMessage;
 use polar::graph::controller::{
-    GraphControllerActor, GraphControllerArgs, GraphControllerMsg, GraphSignal,
+    GraphControllerActor, GraphControllerArgs, GraphControllerMsg, GraphOp, GraphSignal,
 };
 use polar::graph::environment::GraphSettings;
+use polar::graph::repair::Repair;
+use polar::graph::schema::KeyIndex;
+use polar_health::HealthCheckMessage;
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, Message, OutputPort};
 use std::sync::Arc;
 use tracing::{error, info, warn};
+
+/// How long the graph controller has, at the end, to write what is queued before the rest of the
+/// infrastructure stops. Part of the least shutdown budget of an agent whose controller the
+/// builder starts.
+pub const GRAPH_DRAIN: Duration = Duration::from_secs(30);
+
+/// How an agent uses the graph, which decides what its health makes of the graph's signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphUse {
+    /// It writes (`graph-write`): it is no use without the graph, so a graph that fails its
+    /// writes long enough ends it (`POLAR_HEALTH_GRAPH_DEADLINE_SECS`).
+    Writes,
+    /// It reads (`graph-read`): it stays up while the graph is down, answers that it cannot
+    /// read, and its health says the graph is not connected.
+    Reads,
+}
+
+/// What the health actor is told of a signal from the graph controller.
+pub(crate) fn health_message(uses: GraphUse, signal: GraphSignal) -> HealthCheckMessage {
+    match (uses, signal) {
+        (_, GraphSignal::Available) => HealthCheckMessage::GraphAvailable,
+        (GraphUse::Writes, GraphSignal::OpFailed(reason)) => {
+            HealthCheckMessage::GraphOpFailed(reason)
+        }
+        (GraphUse::Reads, GraphSignal::OpFailed(_)) => HealthCheckMessage::GraphDisconnected,
+    }
+}
+
+/// What the infrastructure supervisor starts the controller with.
+pub(crate) struct GraphSetup {
+    pub(crate) uses: GraphUse,
+    pub(crate) settings: GraphSettings,
+    pub(crate) key_indexes: Vec<KeyIndex>,
+    pub(crate) repairs: Vec<Repair>,
+}
+
+/// Starts the agent's graph controller under `supervisor`, its signals reported to `health` as
+/// the agent uses the graph. The controller only builds its pool here; `Available` is what proves
+/// the graph answers.
+pub(crate) async fn start_controller(
+    name: String,
+    setup: GraphSetup,
+    health: ActorRef<HealthCheckMessage>,
+    supervisor: ractor::ActorCell,
+) -> Result<GraphHandle, ActorProcessingErr> {
+    let port = Arc::new(OutputPort::<GraphSignal>::default());
+    let uses = setup.uses;
+    port.subscribe(health.clone(), move |signal| {
+        Some(health_message(uses, signal))
+    });
+    let (controller, _) = Actor::spawn_linked(
+        Some(name),
+        GraphControllerActor,
+        GraphControllerArgs::new(port)
+            .with_settings(setup.settings)
+            .with_key_indexes(setup.key_indexes)
+            .with_repairs(setup.repairs),
+        supervisor,
+    )
+    .await
+    .map_err(ActorProcessingErr::from)?;
+    if let Err(e) = health.cast(HealthCheckMessage::GraphConnected) {
+        warn!("could not tell the health actor the graph controller started: {e}");
+    }
+    Ok(GraphHandle::new(controller))
+}
+
+/// The agent's way to its graph controller.
+#[derive(Clone)]
+pub struct GraphHandle {
+    controller: ActorRef<GraphControllerMsg>,
+}
+
+/// A write the controller no longer takes: it is draining what was queued before the agent ends.
+#[derive(Debug, thiserror::Error)]
+#[error("the graph controller takes no more writes: the agent is ending")]
+pub struct GraphClosed;
+
+impl GraphHandle {
+    /// A handle on `controller`: the builder's, or a stand-in in a test.
+    pub fn new(controller: ActorRef<GraphControllerMsg>) -> Self {
+        Self { controller }
+    }
+
+    /// Queues `op`. Refused once the controller is draining at the end.
+    pub fn write(&self, op: GraphOp) -> Result<(), GraphClosed> {
+        self.controller
+            .cast(GraphControllerMsg::Op(op))
+            .map_err(|_| GraphClosed)
+    }
+
+    /// Queues each of `ops` in order, stopping at the first refused.
+    pub fn write_all(&self, ops: impl IntoIterator<Item = GraphOp>) -> Result<(), GraphClosed> {
+        ops.into_iter().try_for_each(|op| self.write(op))
+    }
+
+    /// The controller itself, for code that talks to it directly.
+    pub fn actor(&self) -> &ActorRef<GraphControllerMsg> {
+        &self.controller
+    }
+}
 
 /// Starts the graph controller as a child of `supervisor`, reading the connection from the
 /// builder's snapshot. Each signal it raises is turned into the supervisor's own message by `wrap`.
@@ -132,6 +241,26 @@ impl Drain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A writer is made unhealthy by a graph that fails its writes long enough; a reader is only told the graph is not
+    /// connected, and stays up; both are told when the graph answers.
+    #[test]
+    fn the_health_actor_hears_the_graph_as_the_agent_uses_it() {
+        for uses in [GraphUse::Writes, GraphUse::Reads] {
+            assert!(matches!(
+                health_message(uses, GraphSignal::Available),
+                HealthCheckMessage::GraphAvailable
+            ));
+        }
+        assert!(matches!(
+            health_message(GraphUse::Writes, GraphSignal::OpFailed("refused".into())),
+            HealthCheckMessage::GraphOpFailed(reason) if reason == "refused"
+        ));
+        assert!(matches!(
+            health_message(GraphUse::Reads, GraphSignal::OpFailed("refused".into())),
+            HealthCheckMessage::GraphDisconnected
+        ));
+    }
     use std::sync::{Arc, Mutex};
 
     struct Probe;

@@ -247,6 +247,8 @@ pub struct InfrastructureSupervisorArgs {
     pub(crate) settings_judge: Option<crate::configuration::SettingsJudge>,
     /// Publish probes to the agent itself and expect them back; see `selftest`.
     pub(crate) self_test: bool,
+    /// For an agent that needs the graph, what its graph controller is started with (`graph.rs`).
+    pub(crate) graph: Option<crate::graph::GraphSetup>,
 }
 
 /// How often the self-test looks at the clock; a probe is sent every `SELF_TEST_INTERVAL`, and
@@ -375,6 +377,8 @@ pub struct InfrastructureSupervisorState {
     running_answerer: Option<crate::running::Answerer>,
     /// The `Registered` the client is on, until it loses the connection.
     last_registered: Option<ClientEvent>,
+    /// The agent's graph controller, until it is drained at the end.
+    graph: Option<crate::graph::GraphHandle>,
 }
 
 pub struct InfrastructureSupervisor;
@@ -738,6 +742,12 @@ impl InfrastructureSupervisor {
             .is_some_and(|handle| handle.as_actor_ref().get_id() == id)
         {
             Child::Other("the state actor".to_string())
+        } else if state
+            .graph
+            .as_ref()
+            .is_some_and(|graph| graph.actor().get_id() == id)
+        {
+            Child::Other("the graph controller".to_string())
         } else {
             Child::Other(match cell.get_name() {
                 Some(name) => name,
@@ -935,6 +945,19 @@ impl Actor for InfrastructureSupervisor {
             shutdown::spawn_signal_listener(myself.clone());
         }
 
+        let graph = match args.graph {
+            Some(setup) => Some(
+                crate::graph::start_controller(
+                    format!("{}.graph_controller", args.service_name),
+                    setup,
+                    healthcheck.clone(),
+                    myself_cell.clone(),
+                )
+                .await?,
+            ),
+            None => None,
+        };
+
         let healthcheck = HealthHandle::new(healthcheck);
         let mut workers = crate::worker::Workers::default();
         for forked in args.workers {
@@ -1001,6 +1024,7 @@ impl Actor for InfrastructureSupervisor {
             health_answerer,
             running_answerer,
             last_registered: None,
+            graph,
         })
     }
 
@@ -1220,6 +1244,15 @@ impl Actor for InfrastructureSupervisor {
                 if let Some(client) = state.client.as_ref().filter(|client| client.one_of_many) {
                     Self::say_goodbye(&state.service_name, client).await;
                 }
+                // The graph first: what the agent handed it before it proceeded is written, and the
+                // rest of the infrastructure is not needed for that.
+                if let Some(graph) = state.graph.take() {
+                    crate::graph::stop_graph_controller(
+                        graph.actor().clone(),
+                        crate::graph::GRAPH_DRAIN,
+                    )
+                    .await;
+                }
                 myself
                     .stop_children_and_wait(
                         Some("infrastructure shutdown".to_string()),
@@ -1238,6 +1271,7 @@ impl Actor for InfrastructureSupervisor {
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
                         workers: state.workers.clone(),
+                        graph: state.graph.clone(),
                         events_output: client.events_output.clone(),
                         infrastructure_events: state.infrastructure_events.clone(),
                         infrastructure: myself.clone(),
@@ -1575,6 +1609,24 @@ mod tests {
                 vec![],
                 &[],
                 Some("soft-state-observer.polar.serviceaccount.cluster.local".to_string()),
+                None,
+            )
+            .await
+        }
+
+        /// A rig whose agent needs the graph: the builder starts its graph controller with `setup`.
+        async fn with_graph(service: &str, setup: crate::graph::GraphSetup) -> Self {
+            Self::build_with(
+                service,
+                Duration::from_secs(20),
+                &[],
+                false,
+                false,
+                None,
+                vec![],
+                &[],
+                None,
+                Some(setup),
             )
             .await
         }
@@ -1603,6 +1655,7 @@ mod tests {
                 commands,
                 runtime,
                 None,
+                None,
             )
             .await
         }
@@ -1621,6 +1674,7 @@ mod tests {
             )>,
             runtime: &'static [&'static crate::runtime::RuntimeSection],
             state_agent: Option<String>,
+            graph: Option<crate::graph::GraphSetup>,
         ) -> Self {
             let health_writer = Some(RIG_WRITER.to_string());
             let dir = tempfile::tempdir().unwrap();
@@ -1691,6 +1745,7 @@ mod tests {
                     section_judge: None,
                     settings_judge: None,
                     self_test: self_test.is_some(),
+                    graph,
                 },
             )
             .await
@@ -3353,6 +3408,95 @@ mod tests {
         assert_eq!(rig.events(), ["prepare_shutdown"]);
     }
 
+    // -- the graph controller -----------------------------------------------------------------
+
+    /// What a writer's controller is started with, reaching `settings`.
+    fn writer(settings: polar::graph::environment::GraphSettings) -> crate::graph::GraphSetup {
+        crate::graph::GraphSetup {
+            uses: crate::graph::GraphUse::Writes,
+            settings,
+            key_indexes: Vec::new(),
+            repairs: Vec::new(),
+        }
+    }
+
+    /// A graph nobody answers at, for a test that writes nothing.
+    fn nowhere() -> polar::graph::environment::GraphSettings {
+        polar::graph::environment::GraphSettings {
+            database: "neo4j".to_string(),
+            user: "neo4j".to_string(),
+            password: "unused".to_string(),
+            endpoint: "bolt://127.0.0.1:1".to_string(),
+            tls: polar::graph::environment::GraphTls::None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_needs_the_graph_is_given_a_controller_and_one_that_does_not_is_not() {
+        let graph = Rig::with_graph("infra-graph-given", writer(nowhere())).await;
+        assert!(graph.resources.graph.is_some());
+        let plain = Rig::standard("infra-graph-none").await;
+        assert!(plain.resources.graph.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_graph_controller_dying_starts_an_orderly_shutdown() {
+        let rig = Rig::with_graph("infra-graph-dies", writer(nowhere())).await;
+        let graph = rig.resources.graph.clone().expect("a graph agent has one");
+        graph.actor().kill();
+        rig.settle().await;
+        assert_eq!(rig.events(), ["prepare_shutdown"]);
+    }
+
+    /// What the domain handed the graph before it proceeded is written before the infrastructure ends, and nothing is
+    /// taken after: the controller drains first (`graph::GRAPH_DRAIN`), against a real Neo4j.
+    #[tokio::test]
+    async fn proceeding_writes_what_the_agent_handed_the_graph_and_takes_no_more() {
+        use polar::graph::controller::{DynamicNodeKey, GraphOp};
+        const LABEL: &str = "ProceedProbe";
+        const HANDED: usize = 200;
+        let probe = |i: usize| GraphOp::UpsertNode {
+            key: Box::new(DynamicNodeKey::new(LABEL, "id", i.to_string()).unwrap()),
+            props: Vec::new(),
+        };
+
+        let store = polar_test_graph::neo4j();
+        let _runtime = polar_test_graph::enter();
+        polar_test_graph::clear_graph(store).await;
+        let c = polar_test_graph::connection();
+        let mut rig = Rig::with_graph(
+            "infra-graph-drains",
+            writer(polar::graph::environment::GraphSettings {
+                database: "neo4j".to_string(),
+                user: c.user,
+                password: c.password,
+                endpoint: c.bolt,
+                tls: polar::graph::environment::GraphTls::None,
+            }),
+        )
+        .await;
+        let graph = rig.resources.graph.clone().expect("a graph agent has one");
+
+        graph.write_all((0..HANDED).map(probe)).unwrap();
+        rig.begin("test");
+        rig.infra
+            .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
+            .unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(60), rig.done.take().unwrap()).await;
+        assert!(ended.is_ok(), "the supervisor never ended");
+
+        let written = polar_test_graph::dump(store)
+            .await
+            .into_iter()
+            .filter(|line| line.contains(LABEL))
+            .count();
+        assert_eq!(written, HANDED, "everything handed over is in the graph");
+        assert!(
+            graph.write(probe(HANDED)).is_err(),
+            "a write after the end is refused"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn the_client_is_started_with_the_snapshots_coordinates() {
         // The rig's process has no BROKER_ADDR; the snapshot is built from a map that does.
@@ -3557,6 +3701,7 @@ mod service_tests {
                     section_judge: None,
                     settings_judge: None,
                     self_test: false,
+                    graph: None,
                 },
             )
             .await

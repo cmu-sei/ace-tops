@@ -61,7 +61,10 @@ pub use crypto::{CryptoClient, CryptoError, CryptoHandle, Zeroizing};
 pub use floor::Floor;
 pub mod graph;
 pub mod graph_schema;
-pub use graph::{Drain, spawn_graph_controller, stop_graph_controller};
+pub use graph::{
+    Drain, GRAPH_DRAIN, GraphClosed, GraphHandle, GraphUse, spawn_graph_controller,
+    stop_graph_controller,
+};
 pub use graph_schema::{EdgeDecl, GraphAccess, GraphDecl};
 pub mod health;
 pub use health::{HealthClient, HealthHandle};
@@ -160,6 +163,9 @@ pub struct AgentResources {
     pub state: Option<crate::state::StateHandle>,
     /// The agent's workers, by name, each locked in seccomp's strict mode (`PolarAgent::WORKERS`; [`worker`]).
     pub workers: crate::worker::Workers,
+    /// The agent's way to its graph controller, for one that needs `graph-write` or `graph-read` ([`graph`]). The
+    /// infrastructure starts it, reports its signals to the health actor and drains it at the end.
+    pub graph: Option<crate::graph::GraphHandle>,
     /// Every real ClientEvent this agent's own TcpClient produces --
     /// subscribe with your own, real mapping closure, exactly the
     /// same, established pattern as prepare_shutdown_port/
@@ -215,6 +221,11 @@ pub struct AgentBuilder<M: ractor::Message> {
     settings_judge: Option<configuration::SettingsJudge>,
     /// The agent's topics, from `PolarAgent`; with them the client checks each publish and subscribe.
     topics: Option<Arc<topics::TopicSet>>,
+    /// How the graph controller the infrastructure starts serves the agent, if it starts one, with the constraints
+    /// and repairs it makes at the first contact with the graph (from `PolarAgent`).
+    graph: Option<graph::GraphUse>,
+    graph_key_indexes: Vec<polar::graph::schema::KeyIndex>,
+    graph_repairs: &'static [polar::graph::repair::Repair],
 }
 
 /// Each declared command with its handler.
@@ -280,6 +291,9 @@ impl<M: ractor::Message> AgentBuilder<M> {
             section_judge: None,
             settings_judge: None,
             topics: None,
+            graph: None,
+            graph_key_indexes: Vec::new(),
+            graph_repairs: &[],
         }
     }
 
@@ -436,6 +450,9 @@ impl<M: ractor::Message> AgentBuilder<M> {
         self.declared_protocols = configured.protocols;
         self.declared_workers = configured.workers;
         self.topics = Some(configured.topics.clone());
+        self.graph = configured.graph;
+        self.graph_key_indexes = configured.graph_key_indexes.clone();
+        self.graph_repairs = configured.graph_repairs;
         ConfiguredAgent {
             builder: self,
             startup: configured.startup,
@@ -488,6 +505,18 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
         let commands = resolve_commands(this.declared_commands, this.commands)
             .map_err(|problems| ActorProcessingErr::from(format!("the commands: {problems}")))?;
 
+        // The graph controller's connection, read and judged from the snapshot like the rest.
+        let graph = match this.graph {
+            Some(uses) => Some(graph::GraphSetup {
+                uses,
+                settings: polar::graph::environment::GraphSettings::from_env(&*startup.config)
+                    .map_err(ActorProcessingErr::from)?,
+                key_indexes: this.graph_key_indexes,
+                repairs: this.graph_repairs.to_vec(),
+            }),
+            None => None,
+        };
+
         // The agent is the workload its certificate names, or it does not start.
         let certificate = startup
             .config
@@ -534,6 +563,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 health_writer,
                 with_client: true,
                 self_test: this.self_test,
+                graph,
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: true,
                 process_exit: shutdown::real_process_exit(),
@@ -693,6 +723,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 health_writer: None,
                 with_client: false,
                 self_test: false,
+                graph: None,
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: hooks.listen_for_signals,
                 process_exit: hooks.process_exit.clone(),
@@ -1094,6 +1125,8 @@ mod tests {
             protocols: protocol::ProtocolSetup::default(),
             workers: Vec::new(),
             graph_key_indexes: Vec::new(),
+            graph: None,
+            graph_repairs: &[],
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1138,6 +1171,8 @@ mod tests {
             protocols: protocol::ProtocolSetup::default(),
             workers: Vec::new(),
             graph_key_indexes: Vec::new(),
+            graph: None,
+            graph_repairs: &[],
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1172,6 +1207,8 @@ mod tests {
             protocols: protocol::ProtocolSetup::default(),
             workers: Vec::new(),
             graph_key_indexes: Vec::new(),
+            graph: None,
+            graph_repairs: &[],
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };

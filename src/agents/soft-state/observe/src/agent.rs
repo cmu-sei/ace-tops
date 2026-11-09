@@ -40,6 +40,8 @@ impl PolarAgent for SoftStateObserver {
     const PURPOSE: &'static str =
         "Answers other agents' requests for soft state, read from the graph, by who asks";
     const NEEDS: &'static [Capability] = &[Capability::GraphRead];
+    // It still starts and stops its own graph controller, until it moves onto the builder's.
+    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
         REQUESTS_TOPIC,

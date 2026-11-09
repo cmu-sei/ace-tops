@@ -43,6 +43,8 @@ impl PolarAgent for SoftStateProcessor {
     const PURPOSE: &'static str =
         "Asks every agent about its health and writes what it hears into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
+    // It still starts and stops its own graph controller, until it moves onto the builder's.
+    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::subscribe(
         HEALTH_REPLIES_TOPIC,
