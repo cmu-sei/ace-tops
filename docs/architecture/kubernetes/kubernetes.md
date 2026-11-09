@@ -222,24 +222,17 @@ migration (`polar-sign migration`) that, in a graph that has known one cluster (
 on every kube node without one and re-keys the named ones, before the new consumer writes; the consumer's section names it, so the
 consumer holds until it is applied.
 
-**The decision (the maintainer's): one events topic, or one per cluster.** Upstream publishes each cluster's events on a topic of
-its own; Vaughn kept the one topic, since Polar's topics are exact declared names.
-- *One topic*, every event carrying its `cluster_uid`. The topic stays an exact name the catalog declares for the one observer
-  kind. But then nothing on the broker tells clusters apart: the consumer must believe an event's `cluster_uid` only from the
-  observer that announced that cluster, by the broker-stamped `published_by` (as build-processor believes each kind only on its
-  topic and from whose word, `whose_word`). Discovery's announcements bind a cluster to an observer's identity; an event whose
-  `cluster_uid` is not its publisher's is refused.
-- *One per cluster*: Cedar can separate clusters at the broker, by topic, judged by the stamped identity, with no binding to keep in
-  the consumer. But a topic named for a cluster's UID is not a name the catalog can declare ahead of the cluster, so either each
-  cluster's observer becomes a catalog workload with its own declared topic, or topic names become patterns, which "topics are
-  exact names" refuses.
-- Recommended: one topic, the binding by stamped identity in the consumer. It keeps topics exact and adds one more instance of a
-  rule Polar already has (whose word a fact is).
+**Decided (the maintainer, 2026-11-09): one cluster, for now.** Asked between one events topic and one per cluster, the
+maintainer first chose one per cluster, then, with an observer per cluster meaning observers outside Polar's own cluster,
+deferred the whole question: "The kubernetes question remains just one cluster for now." Why it waits, and what stands in
+the way of an observer that runs anywhere (identity outside a ServiceAccount, the dropped domain, renewal, attestation):
+`remote-observers.md`. The per-cluster topic, when it comes, is a family whose slot is the placement (that document, item 3).
 
-**The bites, once decided:** (A) `cluster_uid` on the named keys and on every kube node, the observer stamping it, the migration with
-it; (B) discovery: the announcement and the query on fixed topics, `KubernetesCluster` nodes, and the binding of a cluster to its
-observer's identity; (C) Namespace and Node with their states, a pod `RUNNING_ON` its node; (D) the resolver's container reference
-with `cluster_uid`. The split of the consumer into a file per resource only where a bite needs it, not as a refactor of its own. The
-kube consumer's open findings (`remaining-work.md`, K2 to K16) are not this area's, but (A) and (C) touch the same projections, so
-each is read against them as it is written. Each bite tests first, then live on u7c.
+**The bites, with one cluster** (decided here for review, 2026-11-09, by the rule that a change is made for what it serves
+now): (C) Namespace and Node with their states, a pod `RUNNING_ON` its node, on main's keys as they are (`Namespace` is
+already keyed by `(name, cluster_uid)`), is what area 3 takes. `cluster_uid` on every node and its migration (A), discovery
+and `KubernetesCluster` nodes (B), and `cluster_uid` on the resolver's container reference (D) serve several clusters only,
+so they wait with `remote-observers.md`; Vaughn's commit stays the reference for them. The consumer is split into a file per
+resource only where C needs it. The kube consumer's open findings (`remaining-work.md`, K2 to K16) are not this area's, but
+C touches the same projections, so it is read against them as it is written. Tests first, then live on u7c.
 

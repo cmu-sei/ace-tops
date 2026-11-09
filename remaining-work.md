@@ -793,6 +793,11 @@ only.
 
 ## The agent builder and its migration
 
+- [ ] CHECK: A PERSON'S IDENTITY IN A WORKLOAD'S FORM (found 2026-11-09, `docs/architecture/remote-observers.md`, the last section).
+  `SuffixedClaim` makes `<claim>.<scope>` with both parts only DNS-safe, so a Keycloak token with the right `preferred_username` and
+  `identity_scope` normalizes to `<workload>.polar.serviceaccount.cluster.local`, which `workload_of` reads as that workload. Nothing read in
+  cert-issuer refuses it; the credentials agent's people path and the realm's `identity_scope` mapper (not in this repository) not checked.
+  If it holds, fix at the cause: an identity from a non-Kubernetes issuer never takes the `.serviceaccount.` form. Tests first.
 - [ ] UPSTREAM'S WORK, BY VAUGHN'S PORT, TAKEN APART AREA BY AREA (decided 2026-11-07, the maintainer, "Yes, oci fixes first"). What there is (read
   2026-11-07): cmu-sei/Polar `main` (`5074f15f`, 2026-10-17, 14 commits since `9aea62f6`) and `blitz-deploy` (`df69bce`, 2026-10-31, those and 43
   more: the operator, the `polar` CLI, the Dhall deployment library, the build orchestrator), neither moved since; on gitea, Vaughn's
@@ -805,9 +810,9 @@ only.
   is taken; (2) build-processor and the build orchestrator together, his port the starting point, moved onto the builder and into the catalog, the
   failure findings re-read on that code (merging and migrating one step per area); (3) the kube agents' cluster-scoped identity and discovery, its
   own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide
-  (PLANNED 2026-11-09, `docs/architecture/kubernetes/kubernetes.md`, "Cluster-scoped identity and discovery": `cluster_uid` needed in the named
-  keys only, the rest keyed by UID already, which shrinks the migration; one topic with the cluster bound to its observer's stamped identity
-  recommended; waiting for that decision);
+  (PLANNED 2026-11-09, `docs/architecture/kubernetes/kubernetes.md`, "Cluster-scoped identity and discovery"; DECIDED 2026-11-09, the
+  maintainer: one cluster for now, observers that run anywhere written up and deferred in `docs/architecture/remote-observers.md`; so area 3
+  is bite C only, Namespace and Node states and a pod `RUNNING_ON` its node, and A, B and D wait with remote observers);
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design (DONE 2026-11-09:
   written there, "From Vaughn's operator", what to take and not, and three questions for when the controller is designed); (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
