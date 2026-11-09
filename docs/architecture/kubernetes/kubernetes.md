@@ -200,3 +200,46 @@ Does this cover your questions, or would you like to dive deeper into any partic
 
 ## Conclusion
 This design allows the Kubernetes Agent to flexibly and reliably observe resource states while providing a strong foundation for relationship mapping and security verification. It balances completeness, modularity, and extensibility to support evolving requirements across regulated and secure environments.
+
+## Cluster-scoped identity and discovery (the port's area 3, planned 2026-11-09)
+
+Vaughn's port carries public Polar's kube-agent work in one commit (`137438a6` on `ace-remote/port/public-polar-blitz-deploy`,
+from cmu-sei/Polar `5bb6928`, `242d6d3`, `2a5e3f1`, `4466a03`, `8d0f058`, `09af243`; 20 files, +3,501/-1,864): `cluster_uid` (the
+UID of `kube-system`) on every `KubeNodeKey`, stamped by the observer on every `RawKubeEvent`; Namespace and Node projected with their
+states and a pod `RUNNING_ON` its node; the consumer split into a file per resource with its projection cache keyed by
+`(kind, cluster_uid, uid)`; discovery (observers announce their cluster on a fixed topic and answer `discovery.query`, the consumer
+records each as a `KubernetesCluster`); and `cluster_uid` on the resolver's `DiscoverySourceRef::KubernetesPodContainer`. It was
+written against the kube agents before main moved them onto the protocol handlers (seven commits since the branch point, the
+Kubernetes API as a stream, +1,341/-1,070 in 9 files), so it is a port onto main's code, not a merge.
+
+**Read against main** (`lib/src/graph/nodes/kube.rs`): `KubeNodeKey` already has `Cluster { uid }` and a `Namespace` keyed by
+`(name, cluster_uid)`. Every other key is the resource's own Kubernetes UID, a random UUID, unique across clusters in practice. So
+`cluster_uid` belongs in the key of what is named rather than given a UID (a namespace, a node) and on every node as a property, to
+group and to ask by, not in every key. That keeps most of the breaking change out: the nodes keyed by UID are the same nodes after
+it. Vaughn's note, "a graph that holds kube nodes needs them observed again", holds only for the keys that change, and a node left
+under the old key is not removed by observing again. **The migration it needs** (after 3.0.0 a breaking change needs one): a signed
+migration (`polar-sign migration`) that, in a graph that has known one cluster (every Polar deployment so far), sets `cluster_uid`
+on every kube node without one and re-keys the named ones, before the new consumer writes; the consumer's section names it, so the
+consumer holds until it is applied.
+
+**The decision (the maintainer's): one events topic, or one per cluster.** Upstream publishes each cluster's events on a topic of
+its own; Vaughn kept the one topic, since Polar's topics are exact declared names.
+- *One topic*, every event carrying its `cluster_uid`. The topic stays an exact name the catalog declares for the one observer
+  kind. But then nothing on the broker tells clusters apart: the consumer must believe an event's `cluster_uid` only from the
+  observer that announced that cluster, by the broker-stamped `published_by` (as build-processor believes each kind only on its
+  topic and from whose word, `whose_word`). Discovery's announcements bind a cluster to an observer's identity; an event whose
+  `cluster_uid` is not its publisher's is refused.
+- *One per cluster*: Cedar can separate clusters at the broker, by topic, judged by the stamped identity, with no binding to keep in
+  the consumer. But a topic named for a cluster's UID is not a name the catalog can declare ahead of the cluster, so either each
+  cluster's observer becomes a catalog workload with its own declared topic, or topic names become patterns, which "topics are
+  exact names" refuses.
+- Recommended: one topic, the binding by stamped identity in the consumer. It keeps topics exact and adds one more instance of a
+  rule Polar already has (whose word a fact is).
+
+**The bites, once decided:** (A) `cluster_uid` on the named keys and on every kube node, the observer stamping it, the migration with
+it; (B) discovery: the announcement and the query on fixed topics, `KubernetesCluster` nodes, and the binding of a cluster to its
+observer's identity; (C) Namespace and Node with their states, a pod `RUNNING_ON` its node; (D) the resolver's container reference
+with `cluster_uid`. The split of the consumer into a file per resource only where a bite needs it, not as a refactor of its own. The
+kube consumer's open findings (`remaining-work.md`, K2 to K16) are not this area's, but (A) and (C) touch the same projections, so
+each is read against them as it is written. Each bite tests first, then live on u7c.
+

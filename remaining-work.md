@@ -804,7 +804,10 @@ only.
   builder). In order: (1) his oci-resolver fixes, each with a test; the `localhost/<name>` naming checked against one artifact per target before it
   is taken; (2) build-processor and the build orchestrator together, his port the starting point, moved onto the builder and into the catalog, the
   failure findings re-read on that code (merging and migrating one step per area); (3) the kube agents' cluster-scoped identity and discovery, its
-  own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide;
+  own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide
+  (PLANNED 2026-11-09, `docs/architecture/kubernetes/kubernetes.md`, "Cluster-scoped identity and discovery": `cluster_uid` needed in the named
+  keys only, the rest keyed by UID already, which shrinks the migration; one topic with the cluster bound to its observer's stamped identity
+  recommended; waiting for that decision);
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design (DONE 2026-11-09:
   written there, "From Vaughn's operator", what to take and not, and three questions for when the controller is designed); (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
