@@ -21,13 +21,12 @@
    DM26-0670
 */
 
-//! The git processor's supervisor, on the agent builder: health check, router, the Cassini client
-//! and the subscription come from `AgentBuilder`, the graph controller from the shared helper.
+//! The git processor's supervisor, on the agent builder: health check, router, the Cassini client,
+//! the subscriptions and the graph controller come from `AgentBuilder`.
 //!
 //! Each event the observer publishes is turned into graph operations (`ops`) and handed to the
-//! controller. A failure of the controller starts a drain window and then ends the process, and the
-//! Job starts a fresh one. Shutdown follows the same order as every graph-writing agent: the drain
-//! window, the controller stopped waiting for a write in flight, then `ProceedWithShutdown`.
+//! controller. It has no children of its own, so at `PrepareShutdown` it proceeds at once: the
+//! infrastructure drains the controller of what was handed to it, then ends.
 
 use crate::SERVICE_NAME;
 use crate::ops;
@@ -35,26 +34,19 @@ use cassini_types::ClientEvent;
 use git_agent_common::GitRepositoryMessage;
 use git_agent_common::proposal::{PROPOSAL_DECISIONS_TOPIC, ProposalDecision};
 use git_agent_common::status::{GIT_REPO_OBSERVATION_STATUS, ObservationStatus};
-use polar::graph::controller::{GraphControllerMsg, GraphSignal};
+use polar::graph::controller::GraphOp;
 use polar::topics::GIT_REPOSITORY_EVENTS;
 use polar_agent_builder::{
-    AgentBuilder, Configured, Drain, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription, spawn_graph_controller, stop_graph_controller,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
+    InfrastructureSupervisorMessage, Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use tracing::{debug, error, info, warn};
 
-const DRAIN_WINDOW_SECS: u64 = 5;
-const GRAPH_STOP_SECS: u64 = 30;
-
-/// How long the infrastructure supervisor gives this agent to drain: the drain window and the
-/// graph controller's stop, plus a margin. Past it the process exits 1 regardless.
-pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(DRAIN_WINDOW_SECS + GRAPH_STOP_SECS + 10);
-
-fn drain_window() -> Duration {
-    Duration::from_secs(DRAIN_WINDOW_SECS)
-}
+/// What this agent needs to drain beyond the graph controller, whose drain the builder counts: the
+/// infrastructure's own children stopping, and a margin. Past it the process exits 1 regardless.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(15);
 
 pub enum GitProcessorMessage {
     ClientEvent {
@@ -66,13 +58,8 @@ pub enum GitProcessorMessage {
     Status(ObservationStatus),
     /// What the git controller decided about a proposal, decoded.
     Decision(ProposalDecision),
-    GraphSignal(GraphSignal),
-    /// The health check ended the pod's life; the infrastructure waits for
-    /// `ProceedWithShutdown`.
+    /// The agent is ending; the infrastructure waits for `ProceedWithShutdown`.
     PrepareShutdown,
-    /// The drain window has elapsed: after a failure this exits, after `PrepareShutdown` it
-    /// flushes the graph controller and completes the handshake.
-    DrainElapsed,
 }
 
 /// What was published on the events topic. Anything that does not decode is logged and dropped.
@@ -145,8 +132,17 @@ pub struct GitProcessorSupervisor;
 pub struct GitProcessorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
-    graph_controller: Option<ActorRef<GraphControllerMsg>>,
-    drain: Drain,
+    graph: GraphHandle,
+}
+
+impl GitProcessorState {
+    /// Hands `ops` to the graph. Refused only once the agent is ending, when what came too late
+    /// is lost.
+    fn write(&self, what: &str, ops: Vec<GraphOp>) {
+        if let Err(e) = self.graph.write_all(ops) {
+            warn!("{e}: {what} is lost");
+        }
+    }
 }
 
 #[async_trait]
@@ -175,45 +171,27 @@ impl Actor for GitProcessorSupervisor {
                 InfrastructureEvent::PrepareShutdown => Some(GitProcessorMessage::PrepareShutdown),
             });
 
-        let graph_controller = spawn_graph_controller(
-            &myself,
-            format!("{SERVICE_NAME}.graph_controller"),
-            &resources.config,
-            GitProcessorMessage::GraphSignal,
-        )
-        .await?;
-
         Ok(GitProcessorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
-            graph_controller: Some(graph_controller),
-            drain: Drain::default(),
+            graph: resources
+                .graph
+                .ok_or("the builder started no graph controller for a graph-write agent")?,
         })
     }
 
     async fn handle(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            GitProcessorMessage::GraphSignal(signal) => match signal {
-                GraphSignal::Available => {
-                    let _ = state.healthcheck.graph_available();
-                }
-                GraphSignal::OpFailed(reason) => {
-                    let _ = state.healthcheck.graph_op_failed(reason);
-                }
-            },
             GitProcessorMessage::ClientEvent { event } => match event {
                 // Fires on every registration, a reconnect included, and the builder has already
-                // subscribed to the topic, so it only reports health. The graph controller is
-                // started once, in pre_start: starting it here made the second registration fail
-                // on the name the first had taken.
+                // subscribed to the topic, so it only reports health.
                 ClientEvent::Registered { .. } => {
                     let _ = state.healthcheck.cassini_connected();
-                    let _ = state.healthcheck.graph_connected();
                 }
                 ClientEvent::TransportError { reason } => {
                     warn!("Transport error (non-fatal, awaiting reconnect): {reason}");
@@ -221,50 +199,20 @@ impl Actor for GitProcessorSupervisor {
                 }
                 _ => {}
             },
-            GitProcessorMessage::Event(event) => {
-                if state.drain.is_draining() {
-                    warn!("draining -- an event will be lost on exit");
-                } else if let Some(controller) = &state.graph_controller {
-                    for op in ops::for_event(event) {
-                        controller.cast(GraphControllerMsg::Op(op))?;
-                    }
-                }
-            }
-            GitProcessorMessage::Status(status) => {
-                if state.drain.is_draining() {
-                    warn!("draining -- a status will be lost on exit");
-                } else if let Some(controller) = &state.graph_controller {
-                    for op in ops::for_status(status) {
-                        controller.cast(GraphControllerMsg::Op(op))?;
-                    }
-                }
-            }
+            GitProcessorMessage::Event(event) => state.write("an event", ops::for_event(event)),
+            GitProcessorMessage::Status(status) => state.write("a status", ops::for_status(status)),
             GitProcessorMessage::Decision(decision) => {
-                if state.drain.is_draining() {
-                    warn!("draining -- a decision will be lost on exit");
-                } else if let Some(controller) = &state.graph_controller {
-                    for op in ops::for_decision(decision) {
-                        controller.cast(GraphControllerMsg::Op(op))?;
-                    }
-                }
+                state.write("a decision", ops::for_decision(decision))
             }
             GitProcessorMessage::PrepareShutdown => {
-                if state.drain.begin(&myself, drain_window(), true, || {
-                    GitProcessorMessage::DrainElapsed
-                }) {
-                    info!("PrepareShutdown received (rejuvenation); entering the drain window");
-                } else {
-                    warn!(
-                        "PrepareShutdown while already draining; the pending exit ends the process"
-                    );
+                info!("PrepareShutdown received; nothing of its own to drain, proceeding");
+                if let Err(e) = state
+                    .infrastructure
+                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
+                {
+                    error!("could not tell the infrastructure to proceed ({e}); exiting now");
+                    std::process::exit(1);
                 }
-            }
-            GitProcessorMessage::DrainElapsed => {
-                warn!("drain window elapsed, beginning shutdown");
-                if let Some(controller) = state.graph_controller.take() {
-                    stop_graph_controller(controller, Duration::from_secs(GRAPH_STOP_SECS)).await;
-                }
-                state.drain.complete(&state.infrastructure);
             }
         }
         Ok(())
@@ -272,28 +220,31 @@ impl Actor for GitProcessorSupervisor {
 
     async fn handle_supervisor_evt(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match event {
+            // Its one child is the infrastructure. Its ending is the end of the handshake, or
+            // infrastructure dying on its own; either way the process exits so the Job starts a
+            // pod with fresh certificates.
+            SupervisionEvent::ActorTerminated(actor, _, reason)
+                if actor.get_id() == state.infrastructure.get_id() =>
+            {
+                info!("infrastructure terminated ({reason:?}), exiting");
+                std::process::exit(1);
+            }
+            SupervisionEvent::ActorFailed(actor, err)
+                if actor.get_id() == state.infrastructure.get_id() =>
+            {
+                error!("infrastructure failed ({err:?}), exiting");
+                std::process::exit(1);
+            }
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure supervisor ending is the end of the handshake, or
-                // infrastructure dying on its own; either way the process exits so the Job
-                // starts a pod with fresh certificates.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure terminated ({reason:?}), exiting");
-                    std::process::exit(1);
-                }
                 warn!("Actor {:?} terminated: {reason:?}", actor.get_name());
             }
             SupervisionEvent::ActorFailed(actor, err) => {
                 error!("Actor {:?} failed: {err:?}", actor.get_name());
-                if state.drain.begin(&myself, drain_window(), false, || {
-                    GitProcessorMessage::DrainElapsed
-                }) {
-                    warn!("entering drain window before exit");
-                }
             }
             _ => {}
         }

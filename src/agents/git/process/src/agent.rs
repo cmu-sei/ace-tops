@@ -38,8 +38,6 @@ impl PolarAgent for GitProcessor {
     const PURPOSE: &'static str =
         "Records the commits and ref updates the git observer publishes in the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -85,4 +83,12 @@ mod tests {
     use super::*;
 
     polar_agent_builder::polar_agent_tests!(GitProcessor);
+
+    /// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as
+    /// the pod's grace, is what it was when the agent drained the controller itself: 45 s.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<GitProcessor>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 }
