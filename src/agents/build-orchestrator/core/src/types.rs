@@ -192,6 +192,9 @@ pub struct SourceArchive {
     reference: String,
     /// Its registry is spoken to over plain http.
     over_http: bool,
+    /// The index of the source's dependencies in the same registry, `name@sha256:<hex>`, if it has any
+    /// (docs/architecture/build-orchestrator.md, D2).
+    dependencies: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -206,6 +209,7 @@ impl SourceArchive {
             Ok(Self {
                 reference,
                 over_http: false,
+                dependencies: None,
             })
         } else {
             Err(UnpinnedArchive(reference))
@@ -218,6 +222,22 @@ impl SourceArchive {
             over_http: true,
             ..self
         }
+    }
+
+    /// The same archive, with the index of its dependencies, pinned as it is.
+    pub fn with_dependencies(self, index: String) -> Result<Self, UnpinnedArchive> {
+        if !pinned_by_digest(&index) {
+            return Err(UnpinnedArchive(index));
+        }
+        Ok(Self {
+            dependencies: Some(index),
+            ..self
+        })
+    }
+
+    /// The index of its dependencies, if it has any.
+    pub fn dependencies(&self) -> Option<&str> {
+        self.dependencies.as_deref()
     }
 
     /// The blob, `name@sha256:<hex>`.

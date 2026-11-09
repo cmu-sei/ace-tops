@@ -117,3 +117,39 @@ pub async fn registry() -> (MockServer, Registry) {
         .await;
     (server, registry)
 }
+
+/// What a crates host serves, and what it was asked.
+#[derive(Default)]
+pub struct Served {
+    /// Each crate's bytes by its path.
+    pub files: HashMap<String, Vec<u8>>,
+    /// Every path asked for.
+    pub asked: Vec<String>,
+}
+
+/// A crates host.
+#[derive(Clone, Default)]
+pub struct Crates(pub Arc<Mutex<Served>>);
+
+impl Respond for Crates {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let mut held = self.0.lock().unwrap();
+        let path = request.url.path().to_string();
+        held.asked.push(path.clone());
+        match held.files.get(&path) {
+            Some(bytes) => ResponseTemplate::new(200).set_body_bytes(bytes.clone()),
+            None => ResponseTemplate::new(404),
+        }
+    }
+}
+
+/// A stand-in crates host, served: each crate's bytes at `/crates/<name>/<name>-<version>.crate`.
+pub async fn crates_host() -> (MockServer, Crates) {
+    let server = MockServer::start().await;
+    let crates = Crates::default();
+    Mock::given(any())
+        .respond_with(crates.clone())
+        .mount(&server)
+        .await;
+    (server, crates)
+}

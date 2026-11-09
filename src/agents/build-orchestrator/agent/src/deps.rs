@@ -150,14 +150,14 @@ impl Operation for Download {
 }
 
 /// `c` in the registry, by the digest its lock pins: held already, or downloaded, checked and pushed. Its size.
-async fn one(protocols: &ProtocolHandle, c: &Crate) -> Result<(String, u64), String> {
+async fn one(protocols: &ProtocolHandle, c: Crate) -> Result<(String, u64), String> {
     let what = format!("crate {} {}", c.name, c.version);
     let digest = format!("sha256:{}", c.sha256);
     if let Some(size) = push::held(protocols, REPOSITORY, &digest, &what).await? {
         return Ok((digest, size));
     }
     let got = protocols
-        .ask(Download(Request::get(crate_path(c))))
+        .ask(Download(Request::get(crate_path(&c))))
         .await
         .map_err(|failure: Failure| format!("{what} could not be downloaded: {failure}"))?;
     if got.status != StatusCode::OK {
@@ -182,7 +182,8 @@ pub async fn crates(
     crates: &[Crate],
     bound: u64,
 ) -> Result<Vec<(String, u64)>, String> {
-    let held: Vec<(String, u64)> = stream::iter(crates)
+    // Each crate owned by its own future: a future that borrowed it would meet rust-lang/rust#100013 where it is awaited.
+    let held: Vec<(String, u64)> = stream::iter(crates.to_vec())
         .map(|c| one(protocols, c))
         .buffered(AT_ONCE)
         .try_collect()

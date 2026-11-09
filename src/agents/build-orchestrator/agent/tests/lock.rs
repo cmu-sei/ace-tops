@@ -25,7 +25,7 @@
 //! in any order of its packages; and any one thing in it that is not what Cargo writes, or not pinned, is refused, saying
 //! where and never what.
 
-use build_orchestrator::lock::{Crate, Dependencies, GitSource, read};
+use build_orchestrator::lock::{Crate, Dependencies, GitSource, read, union};
 use proptest::prelude::*;
 
 const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
@@ -235,6 +235,34 @@ proptest! {
         let problems = read(&spoiled).unwrap_err();
         prop_assert!(problems.iter().any(|p| p.contains(words)), "{} in {:?}", words, problems);
         prop_assert!(!problems.iter().any(|p| p.contains(MARK)), "{:?}", problems);
+    }
+
+    /// The dependencies of several locks: the same whatever order the locks come in, holding everything each pins, and
+    /// nothing else; and a lock's own dependencies are their own union.
+    #[test]
+    fn the_union_of_locks_is_every_part_and_no_more(parts in proptest::collection::vec(lock().prop_map(|(_, d)| d), 0..4)) {
+        let all = union(parts.clone());
+        let mut reversed = parts.clone();
+        reversed.reverse();
+        prop_assert_eq!(&union(reversed), &all);
+        for part in &parts {
+            prop_assert_eq!(&union(vec![part.clone()]), part);
+            for c in &part.crates {
+                prop_assert!(all.crates.contains(c));
+            }
+            for g in &part.git {
+                let held = all.git.iter().find(|h| h.source == g.source && h.commit == g.commit).unwrap();
+                prop_assert!(g.packages.iter().all(|p| held.packages.contains(p)));
+            }
+        }
+        for c in &all.crates {
+            prop_assert!(parts.iter().any(|p| p.crates.contains(c)));
+        }
+        for g in &all.git {
+            for p in &g.packages {
+                prop_assert!(parts.iter().any(|part| part.git.iter().any(|h| h.source == g.source && h.commit == g.commit && h.packages.contains(p))));
+            }
+        }
     }
 
     /// A crates.io package with no checksum, or one that is not a sha256, is refused.

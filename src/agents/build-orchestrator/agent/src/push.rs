@@ -77,13 +77,13 @@ pub fn manifest(digest: &str, size: usize) -> Vec<u8> {
     .expect("a manifest is JSON")
 }
 
-/// The archive as a build's pod names it, `host:port/build-sources@sha256:<hex>`, from the registry's address.
-pub fn reference(registry: &str, digest: &str) -> String {
+/// A blob of `repository` as a build's pod names it, `host:port/<repository>@sha256:<hex>`, from the registry's address.
+pub fn reference(registry: &str, repository: &str, digest: &str) -> String {
     let host = registry
         .strip_prefix("http://")
         .or_else(|| registry.strip_prefix("https://"))
         .unwrap_or(registry);
-    format!("{host}/{REPOSITORY}@{digest}")
+    format!("{host}/{repository}@{digest}")
 }
 
 /// Whether `tag` is one a registry takes: a letter, digit or `_`, then up to 127 of those, `.` and `-`.
@@ -282,6 +282,7 @@ mod tests {
         assert_eq!(
             reference(
                 "http://registry.polar-registry.svc.cluster.local:5000",
+                REPOSITORY,
                 &digest
             ),
             format!("registry.polar-registry.svc.cluster.local:5000/build-sources@{digest}")

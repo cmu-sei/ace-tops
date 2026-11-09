@@ -52,9 +52,10 @@ fn mapping() -> impl Strategy<Value = Mapping> {
         any::<bool>(),
         proptest::collection::vec("[A-Z][A-Z_]{0,10}", 0..4),
         proptest::option::of("[a-z0-9-]{1,12}"),
+        proptest::collection::vec("([a-z0-9_-]{1,8}/){0,3}Cargo\\.lock", 0..3),
     )
         .prop_map(
-            |(host, path, digest, command, root, escalate, caps, credential)| {
+            |(host, path, digest, command, root, escalate, caps, credential, locks)| {
                 let url = format!("https://{host}.example/{}", path.join("/"));
                 Mapping {
                     repo: RepoId::from_url(&url),
@@ -67,6 +68,7 @@ fn mapping() -> impl Strategy<Value = Mapping> {
                         add_capabilities: caps,
                     },
                     credential,
+                    locks,
                 }
             },
         )
@@ -97,6 +99,9 @@ fn written(m: &Mapping) -> Value {
             "allow_privilege_escalation": m.privileges.allow_privilege_escalation,
             "add_capabilities": m.privileges.add_capabilities,
         });
+    }
+    if !m.locks.is_empty() {
+        entry["locks"] = json!(m.locks);
     }
     if let Some(credential) = &m.credential {
         entry["credential"] = json!(credential);
@@ -161,6 +166,10 @@ fn spoil(entry: &mut Value, how: usize) -> &'static str {
         10 => {
             object.insert("credential".into(), json!(format!("{MARK}_UPPER")));
             "`credential`"
+        }
+        11 => {
+            object.insert("locks".into(), json!([format!("../{MARK}/Cargo.lock")]));
+            "`locks`"
         }
         _ => {
             object.insert(format!("{MARK}-Key"), json!(1));
@@ -305,7 +314,7 @@ proptest! {
         prop_assert_eq!(&layers[0]["size"], &Value::from(archive.len()));
         prop_assert_eq!(&layers[0]["mediaType"], &Value::from(ARCHIVE_TYPE));
         let scheme = if https { "https" } else { "http" };
-        let named = reference(&format!("{scheme}://{host}:{port}"), &digest);
+        let named = reference(&format!("{scheme}://{host}:{port}"), "build-sources", &digest);
         prop_assert!(named.starts_with(&format!("{host}:{port}/build-sources@")), "{}", named);
         let pinned = SourceArchive::new(named).unwrap();
         prop_assert_eq!(pinned.sha256(), &digest["sha256:".len()..]);
@@ -422,7 +431,7 @@ proptest! {
     /// problem echoes the value.
     #[test]
     fn a_spoiled_entry_is_named_and_never_echoed(all in mappings().prop_filter("one at least", |a| !a.is_empty()),
-                                                 which in any::<prop::sample::Index>(), how in 0usize..12) {
+                                                 which in any::<prop::sample::Index>(), how in 0usize..13) {
         let i = which.index(all.len());
         let mut written = body(&all);
         let field = spoil(&mut written["repositories"][i], how);

@@ -33,42 +33,14 @@ use build_orchestrator::deps::{
 use build_orchestrator::lock::{Crate, Dependencies};
 use build_orchestrator::push::{PUSH, digest_of};
 use build_orchestrator::settings::{CRATES_VAR, REGISTRY_VAR};
-use common::{Registry, registry};
+use common::{Crates, Registry, crates_host, registry};
 use polar_agent_builder::protocol::OperationDecl;
 use polar_agent_builder::protocol::testing::{Site, git_ca, http_handle};
 use proptest::prelude::*;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use wiremock::matchers::any as every_request;
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::MockServer;
 
 const OPERATIONS: &[OperationDecl] = &[DOWNLOAD, PUSH];
-
-/// What a crates host serves, and what it was asked.
-#[derive(Default)]
-struct Served {
-    /// Each crate's bytes by its path.
-    files: HashMap<String, Vec<u8>>,
-    /// Every path asked for.
-    asked: Vec<String>,
-}
-
-/// A crates host.
-#[derive(Clone, Default)]
-struct Crates(Arc<Mutex<Served>>);
-
-impl Respond for Crates {
-    fn respond(&self, request: &Request) -> ResponseTemplate {
-        let mut held = self.0.lock().unwrap();
-        let path = request.url.path().to_string();
-        held.asked.push(path.clone());
-        match held.files.get(&path) {
-            Some(bytes) => ResponseTemplate::new(200).set_body_bytes(bytes.clone()),
-            None => ResponseTemplate::new(404),
-        }
-    }
-}
 
 struct Rig {
     _crates_server: MockServer,
@@ -79,12 +51,7 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
-    let crates_server = MockServer::start().await;
-    let crates = Crates::default();
-    Mock::given(every_request())
-        .respond_with(crates.clone())
-        .mount(&crates_server)
-        .await;
+    let (crates_server, crates) = crates_host().await;
     let (registry_server, registry) = registry().await;
     let site = http_handle(
         &git_ca().pem,

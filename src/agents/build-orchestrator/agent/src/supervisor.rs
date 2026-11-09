@@ -290,6 +290,7 @@ impl OrchestratorSupervisor {
             bounds: settings::narrowed(&state.forked_reader, &state.tuning.reader),
             relay: state.tuning.relay,
             max_source: state.tuning.max_source,
+            max_dependencies: state.tuning.max_dependencies,
             poll_every: POLL_EVERY,
         };
         if let Err(e) = Actor::spawn_linked(
@@ -634,6 +635,7 @@ mod tests {
             command: None,
             privileges: Privileges::default(),
             credential: None,
+            locks: vec![],
         }]
     }
 

@@ -45,7 +45,7 @@ use crate::mappings::Mapping;
 use crate::publish::Publish;
 use crate::reader::{Read, request};
 use crate::registry::RegistryMessage;
-use crate::source::Source;
+use crate::source::{How, Source};
 use chrono::{DateTime, Utc};
 use orchestrator_core::backend::{BackendJobHandle, BuildBackend, JobStatus};
 use orchestrator_core::relay::{Relay, RelayBounds};
@@ -95,6 +95,8 @@ pub struct BuildArgs {
     pub relay: RelayBounds,
     /// The largest its source archive may be.
     pub max_source: usize,
+    /// The most its dependencies may come to.
+    pub max_dependencies: u64,
     pub poll_every: Duration,
 }
 
@@ -121,6 +123,7 @@ pub struct BuildActorState {
     bounds: Bounds,
     relay: RelayBounds,
     max_source: usize,
+    max_dependencies: u64,
     poll_every: Duration,
     handle: Option<BackendJobHandle>,
     began: DateTime<Utc>,
@@ -358,15 +361,13 @@ impl BuildActor {
                 default_command,
             }) => {
                 Self::transition(state, BuildState::PreparingSource, None, None, None);
-                let archive = match state
-                    .source
-                    .prepare(
-                        &state.request.source,
-                        mapping.credential.as_deref(),
-                        state.max_source,
-                    )
-                    .await
-                {
+                let how = How {
+                    credential: mapping.credential.clone(),
+                    locks: mapping.locks.clone(),
+                    max_source: state.max_source,
+                    max_dependencies: state.max_dependencies,
+                };
+                let archive = match state.source.prepare(&state.request.source, &how).await {
                     Ok(archive) => archive,
                     Err(why) => return Self::fail(myself, state, AT_SOURCE, why).await,
                 };
@@ -487,6 +488,7 @@ impl Actor for BuildActor {
             bounds: args.bounds,
             relay: args.relay,
             max_source: args.max_source,
+            max_dependencies: args.max_dependencies,
             poll_every: args.poll_every,
             handle: None,
             began: Utc::now(),

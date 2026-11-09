@@ -45,15 +45,18 @@ pub const MAX_URL: usize = 2048;
 /// Most words in a command, and the longest one.
 pub const MAX_COMMAND: usize = 64;
 pub const MAX_WORD: usize = 4096;
+/// Most locks a mapping names.
+pub const MAX_LOCKS: usize = 16;
 /// Most capabilities a mapping adds: more than Linux has.
 pub const MAX_CAPABILITIES: usize = 64;
 
-const FIELDS: [&str; 5] = [
+const FIELDS: [&str; 6] = [
     "url",
     "pipeline_image",
     "command",
     "privileges",
     "credential",
+    "locks",
 ];
 const PRIVILEGES: [&str; 3] = [
     "run_as_root",
@@ -65,7 +68,7 @@ pub static MAPPINGS: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: "The repositories build-orchestrator builds, and with what. Replaced whole by each version.",
-    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}}}}"#,
+    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}}}}"#,
     validate,
 };
 
@@ -83,6 +86,8 @@ pub struct Mapping {
     pub privileges: Privileges,
     /// The credential its source is fetched with, by name; `None`, it is fetched with none.
     pub credential: Option<String>,
+    /// The Cargo locks in its tree whose dependencies its builds are given, by digest.
+    pub locks: Vec<String>,
 }
 
 fn validate(body: &Value) -> Result<(), Vec<String>> {
@@ -157,6 +162,27 @@ const COMMAND: List = List {
     longest: MAX_WORD,
     may_be_empty: false,
 };
+const LOCKS: List = List {
+    shown: "locks",
+    most: MAX_LOCKS,
+    longest: 512,
+    may_be_empty: true,
+};
+
+/// Whether `path` is a lock's path in a tree: segments of letters, digits, `.`, `_` and `-`, none `.` or `..`, the last
+/// `Cargo.lock`.
+fn is_lock_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    segments.last() == Some(&"Cargo.lock")
+        && segments.iter().all(|s| {
+            !s.is_empty()
+                && *s != "."
+                && *s != ".."
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+        })
+}
+
 const CAPABILITIES: List = List {
     shown: "privileges.add_capabilities",
     most: MAX_CAPABILITIES,
@@ -313,6 +339,12 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
         }
     };
 
+    let locks = text_list(object, &label, "locks", &LOCKS, &mut problems).unwrap_or_default();
+    if locks.iter().any(|path| !is_lock_path(path)) {
+        problems.push(format!(
+            "{label}: `locks` names a path that is not a Cargo.lock within the repository"
+        ));
+    }
     if problems.is_empty() {
         Ok(Mapping {
             repo: RepoId::from_url(&url),
@@ -321,6 +353,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             command,
             privileges,
             credential,
+            locks,
         })
     } else {
         Err(problems)
@@ -405,6 +438,34 @@ mod tests {
             assert!(
                 !problems.iter().any(|p| p.contains(value)),
                 "{value} echoed in {problems:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mapping_names_its_locks_within_the_tree() {
+        let parsed = parse(&json!({"repositories": [
+            {"url": "https://git.example.org/a/b.git", "pipeline_image": image(),
+             "locks": ["Cargo.lock", "src/agents/Cargo.lock"]}
+        ]}))
+        .unwrap();
+        assert_eq!(parsed[0].locks, ["Cargo.lock", "src/agents/Cargo.lock"]);
+        for bad in [
+            "../Cargo.lock",
+            "/Cargo.lock",
+            "a//Cargo.lock",
+            "a/./Cargo.lock",
+            "Cargo.toml",
+            "a/Cargo.lock/",
+            "a b/Cargo.lock",
+        ] {
+            let problems = parse(&json!({"repositories": [
+                {"url": "https://git.example.org/a/b.git", "pipeline_image": image(), "locks": [bad]}
+            ]}))
+            .unwrap_err();
+            assert!(
+                problems.iter().any(|p| p.contains("entry 0: `locks`")),
+                "{bad}: {problems:?}"
             );
         }
     }

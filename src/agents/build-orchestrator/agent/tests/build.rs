@@ -32,7 +32,7 @@ use build_orchestrator::mappings::Mapping;
 use build_orchestrator::publish::Publish;
 use build_orchestrator::reader::{Read, Reader};
 use build_orchestrator::registry::{BuildRegistry, RegistryMessage};
-use build_orchestrator::source::Source;
+use build_orchestrator::source::{How, Source};
 use orchestrator_core::backend::{
     BackendJobHandle, BuildBackend, JobGraphIdentity, JobStatus, LogPieces, SubmittedJob,
 };
@@ -122,16 +122,11 @@ struct Archive(Result<(), String>, Mutex<Vec<(Option<String>, usize)>>);
 
 #[ractor::async_trait]
 impl Source for Archive {
-    async fn prepare(
-        &self,
-        _: &SourceRef,
-        credential: Option<&str>,
-        bound: usize,
-    ) -> Result<SourceArchive, String> {
+    async fn prepare(&self, _: &SourceRef, how: &How) -> Result<SourceArchive, String> {
         self.1
             .lock()
             .unwrap()
-            .push((credential.map(str::to_string), bound));
+            .push((how.credential.clone(), how.max_source));
         self.0.clone()?;
         Ok(SourceArchive::new(format!("registry.polar/build-sources@sha256:{HEX}")).unwrap())
     }
@@ -205,6 +200,7 @@ fn mapping_with(command: Option<Vec<String>>, credential: Option<&str>) -> Mappi
             add_capabilities: vec!["SETUID".into()],
         },
         credential: credential.map(str::to_string),
+        locks: vec![],
     }
 }
 
@@ -298,6 +294,7 @@ async fn run_with(
             bounds,
             relay,
             max_source: MAX_SOURCE,
+            max_dependencies: 99,
             poll_every: Duration::from_millis(5),
         },
     )

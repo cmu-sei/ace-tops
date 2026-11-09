@@ -769,6 +769,21 @@ I write Rust code"):
     downloaded again; a crate that is not what the lock pins refused, naming it, nothing kept; a crate the host lacks named; a
     bound passed refused with no manifest; and a property that the index and manifest are the same bytes in any order and
     name the index, every crate and the git dependency once each.
+    *D2b DONE 2026-11-08*: a mapping names its `locks`, the paths of the Cargo locks in its repository whose dependencies its
+    builds are given (each of plain segments, none `.` or `..`, the last `Cargo.lock`; at most 16; left out, none, and a build
+    has nothing but its source). Decided by standing rules, for review: the signed mapping says which locks, since a repository
+    can hold several workspaces (Polar's own is `src/agents/Cargo.lock`) and a guess would decide what the build depends on.
+    The source step reads them from the same commit's tree in the same fetch (a lock the commit lacks is named, and the build
+    fails at its source), and depends on their union (`lock::union`: each crate once, each git source's packages together).
+    Each git dependency is fetched at the commit it pins through `git.fetch-public` into a clone of its own, archived as a
+    source is and pushed to `build-dependencies`; then `deps::store` brings the crates in and keeps all of it under the index
+    and a manifest by the commit. The build's archive carries the index (`SourceArchive::with_dependencies`), for its fetch in
+    D3. The source step is asked all of this at once (`source::How`: the credential, the locks, the bounds). Tested: a mapping's
+    locks read and paths that leave the tree refused, in the mappings property too; a property that the union of locks is the
+    same in any order, holds every part and nothing else; and through the real handlers, a stand-in git server, a git
+    dependency served over TLS, the stand-in crates host and registry: a source's lock read from its commit, its crate kept by
+    the lock's sha256, its git dependency archived at its commit, the index naming both, and the build given the index; no
+    locks, no dependencies; a lock the commit lacks named; a bound passed refused.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

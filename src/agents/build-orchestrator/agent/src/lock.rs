@@ -280,6 +280,32 @@ pub fn read(lock: &str) -> Result<Dependencies, Vec<String>> {
     }
 }
 
+/// What several locks pin, together: each crate once, and each git source's packages together, in the order `read` gives.
+pub fn union(parts: Vec<Dependencies>) -> Dependencies {
+    let mut all = Dependencies::default();
+    for part in parts {
+        all.crates.extend(part.crates);
+        for git in part.git {
+            match all
+                .git
+                .iter_mut()
+                .find(|held| held.source == git.source && held.commit == git.commit)
+            {
+                Some(held) => held.packages.extend(git.packages),
+                None => all.git.push(git),
+            }
+        }
+    }
+    all.crates.sort();
+    all.crates.dedup();
+    for git in &mut all.git {
+        git.packages.sort();
+        git.packages.dedup();
+    }
+    all.git.sort();
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
