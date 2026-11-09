@@ -43,6 +43,10 @@ Each step is taken in bites, each reported before the next.
 7. **The two OpenAPI and two GitLab agents onto the builder and into the catalog.** Below, under the builder. OpenAPI done as a first cut, 2026-11-05: the first of the HTTP observers, on shared libraries, one workload per kind, with its processor driven by a signed Dhall mapping (`docs/architecture/http-observers.md`). GitLab moves to the builder on its own, without waiting for that engine. The maintainer, 2026-11-05: the generic HTTP architecture is settled first, so the agents rewritten onto it do not move again, by the evidence plan in `docs/architecture/http-observers.md`, "Evidence", in seven bites. Bite 1, the scaffold as the contract, built 2026-11-05. Bite 2, pure cores and engine properties, built 2026-11-05; it found Dhall evaluation exponential in nesting (open there). Bite 3, the test kit every kind takes (`polar-http-testkit`), built 2026-11-05. Bite 4, `polar-sign projection test` with signed evidence records in a new `polar-evidence` repository on the git server, built 2026-11-06. Bite 5, `polar-sign check`, the first invariants over one instance's signed facts, report only, built 2026-11-06; asking the running agents what is in force (`check --ask`) built the same day and checked live on u7c. Bite 6, version ranges and migrations as signed facts the agent and the check both hold to, built the same day.
 8. **Runtime attestation, slice C.** It puts a builder actor in every agent, so it waits for step 7.
 9. **Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.** `polar-operator` stays out; it still needs its design conversation.
+10. **Lifecycle, after slice C** (the maintainer, 2026-11-09, "After slice C, sure"): `docs/architecture/lifecycle.md`'s order, the lifecycle
+    document and its reader (where the Rust `polar` CLI starts), the agents deriving from it, then the catalog's split (where a downstream
+    project's workloads get their layer), then the GitOps controller around phases. Where the port's area 5 lands in it: the review on
+    Vaughn's branch, `docs/requests/public-polar-port-deployment-review.md` (`bdf2f096`).
 
 ## Runtime attestation
 
@@ -815,7 +819,12 @@ only.
   the observer stamping the cluster's uid, K12's panic gone, K6 and K7 not repeated in the new projections; seen live on u7c the same day);
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design (DONE 2026-11-09:
   written there, "From Vaughn's operator", what to take and not, and three questions for when the controller is designed); (5) the `polar` CLI
-  and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
+  and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog (REVIEWED 2026-11-09: not
+  taken as a system; what is taken, what is not and why, the problems for Blitz to fix now, and the options, written on his branch as
+  `docs/requests/public-polar-port-deployment-review.md`, `bdf2f096`; the parts taken land in step 10's lifecycle work, and these now, in bites:
+  kube-observer's role derived from what it declares (it reads every Secret today, `infra/config/capabilities.nuon:165`), `up.nu` requiring the
+  cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree, the
+  bootstrap CA constrained for new clusters, and tests that `polar-sign` and `polar-admin-grant` cannot print a secret); (6) `polar-sign next` read
   against lifecycle's decisions first. (6) DONE 2026-11-09 (the maintainer, "Take it, with the push fix"): `polar-sign next` built, with a sealed secret
   never carried (bound to its version) and `push`'s stale clone fixed (`docs/architecture/polar-sign-next.md`). (1) DONE 2026-11-07: taken from `2cce4722`/`5189c650`, Docker's rule for the registry host (a tag's dots
   are not a host: `neo4j:5.26.2` had been sent to a registry named "neo4j:5.26.2") and a `localhost` registry as the node's own store, never fetched,
