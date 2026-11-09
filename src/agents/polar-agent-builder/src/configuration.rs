@@ -1373,6 +1373,26 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    /// What a protocol handler reads for a configured location is what the setting resolves to, a default included: a
+    /// build's crates were refused live, `POLAR_ORCHESTRATOR_CRATES` unset and its default never seen (2026-11-08).
+    #[tokio::test]
+    async fn a_handler_reads_a_variable_as_it_resolves_its_default_included() {
+        use crate::protocol::LiveConfiguration;
+        let (handle, _) = handle().await;
+        assert_eq!(
+            handle.value("LOW").await.as_deref(),
+            Some("1"),
+            "the default"
+        );
+        assert_eq!(
+            handle.value("HOST").await.as_deref(),
+            Some("h"),
+            "the value"
+        );
+        assert_eq!(handle.value("TOKEN").await, None, "nothing, and no default");
+        assert_eq!(handle.value("UNDECLARED").await, None);
+    }
+
     #[tokio::test]
     async fn a_dynamic_variable_changes_and_subscribers_are_told_once() {
         let (config, seen) = handle().await;

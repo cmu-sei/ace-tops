@@ -269,6 +269,18 @@ impl Config {
             .collect()
     }
 
+    /// What the declared variable `name` resolves to now: its override, else its value, else its default, as every read of
+    /// it resolves it; `None` when it has none of them, or is not declared. What reaches something that names a setting
+    /// by its variable rather than reading it, such as a protocol handler's configured location, so that a default reaches
+    /// it too.
+    pub fn resolved(&self, name: &str) -> Option<String> {
+        self.declarations()
+            .find(|(_, desc)| desc.name == name)
+            .and_then(|(_, desc)| {
+                effective(&self.overrides, &self.snapshot, self.snapshot_source, &desc).0
+            })
+    }
+
     /// What every declared variable resolves to now, and where that came from.
     pub fn report(&self) -> Vec<Resolved> {
         self.declarations()
@@ -807,6 +819,24 @@ mod tests {
         c.apply_overrides(&[("LOW", "4")]).unwrap();
         let as_env: &dyn crate::Env = &c;
         assert_eq!(as_env.var("LOW").as_deref(), Some("4"));
+    }
+
+    /// What a protocol handler goes to for a configured location is what the setting resolves to, its default included
+    /// (found live 2026-11-08: a build's crates were refused, `POLAR_ORCHESTRATOR_CRATES` unset and its default unseen).
+    #[test]
+    fn a_declared_variable_resolves_to_its_override_its_value_or_its_default() {
+        let mut c = config(&[("HOST", "h"), ("PORT", "80"), ("HIGH", "30")]);
+        assert_eq!(c.resolved("LOW").as_deref(), Some("1"), "the default");
+        assert_eq!(c.resolved("HIGH").as_deref(), Some("30"), "the environment");
+        c.apply_overrides(&[("LOW", "4")]).unwrap();
+        assert_eq!(c.resolved("LOW").as_deref(), Some("4"), "the override");
+        assert_eq!(c.resolved("NOTE"), None, "no value and no default");
+        assert_eq!(c.resolved("STRAY"), None, "not declared");
+        // As every read of the agent's own settings resolves it.
+        assert_eq!(
+            c.resolved("HIGH").unwrap().parse::<u64>().unwrap(),
+            HIGH.read(&c).unwrap()
+        );
     }
 
     #[test]

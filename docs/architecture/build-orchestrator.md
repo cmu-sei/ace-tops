@@ -927,6 +927,13 @@ I write Rust code"):
     update was taken as unmapped, without a word. Hello-World's URL had no `.git`, which hid it. One function now gives the
     id both use (`git_agent_common::remote::repo_id_of`); a test builds from an update carrying the id the controller gives,
     for a mapping parsed as signed, where the old tests made both sides with the same raw call and agreed with each other.
+    *Found live next, older than E* (since D2a): the build began (the source fetched from the gitea over ssh and pushed, the
+    lock's five git dependencies fetched and pushed), and every crate was refused, "the variable it goes to is not set".
+    A protocol handler read a configured location's variable as set (`Config::var`) and never its declared default, and the
+    catalog does not set `POLAR_ORCHESTRATOR_CRATES`, whose default is `https://static.crates.io`; D2a's tests named the
+    variable, which hid it. `polar_env::Config::resolved` gives what a declared variable resolves to (an override, its value,
+    its default), as every read of the setting does, and the handler goes to that. Tested: `resolved` for each source and
+    for one undeclared; the configuration handle read as a handler reads it.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).

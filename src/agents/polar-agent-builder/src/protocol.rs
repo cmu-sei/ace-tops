@@ -49,7 +49,6 @@ use crate::health::HealthHandle;
 use crate::runtime::RuntimeValue;
 use polar_crypto::registry::{GitCredential, HttpCredential, UseRefusal};
 use polar_crypto::{CredentialPort, CryptoError};
-use polar_env::Env;
 use polar_health::HoldReason;
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, OutputPort, async_trait};
 use std::any::Any;
@@ -319,7 +318,7 @@ fn log_request(record: &RequestRecord) {
 /// What the handler reads of the configuration in force.
 #[async_trait]
 pub(crate) trait LiveConfiguration: Send + Sync {
-    /// The value of a variable.
+    /// The value a declared variable resolves to: its override, its value, or its default.
     async fn value(&self, name: &str) -> Option<String>;
     /// The latest version of a runtime section.
     async fn section(&self, name: &str) -> Option<RuntimeValue>;
@@ -328,8 +327,9 @@ pub(crate) trait LiveConfiguration: Send + Sync {
 #[async_trait]
 impl LiveConfiguration for ConfigurationHandle {
     async fn value(&self, name: &str) -> Option<String> {
+        // As the setting resolves: its default when nothing sets it, as the agent's own reading of it would have it.
         match self.current().await {
-            Ok(config) => config.var(name).filter(|value| !value.is_empty()),
+            Ok(config) => config.resolved(name).filter(|value| !value.is_empty()),
             Err(e) => {
                 tracing::warn!("the configuration in force could not be read: {e}");
                 None
