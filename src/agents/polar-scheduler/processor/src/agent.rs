@@ -39,8 +39,6 @@ impl PolarAgent for SchedulerProcessor {
     const PURPOSE: &'static str =
         "Records schedule changes in the graph and notifies the agents they concern";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -87,6 +85,14 @@ mod tests {
     use super::*;
 
     polar_agent_builder::polar_agent_tests!(SchedulerProcessor);
+
+    /// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as
+    /// the pod's grace, is what it was when the agent drained the controller itself: 45 s.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<SchedulerProcessor>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 
     #[test]
     fn its_family_is_the_topic_the_code_publishes_each_workloads_configuration_on() {

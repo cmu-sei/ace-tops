@@ -25,26 +25,25 @@
 //! client and the subscriptions come from `AgentBuilder`.
 //!
 //! The processor receives schedule changes (from the observer) and ad-hoc agent announcements,
-//! records them in the graph and notifies the agents they concern. Children: the graph controller
-//! and the processor, both linked, so a failure of either starts a drain window and then ends the
-//! process, and the Job starts a fresh one.
+//! records them in the graph and notifies the agents they concern. Its one child is the processor,
+//! linked, so its failure asks the infrastructure for an orderly shutdown. The graph controller is
+//! the builder's.
 //!
-//! Shutdown, in order, when the health check ends the pod's life:
+//! Shutdown, in order:
 //!
-//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor, which starts the drain window.
-//! 2. When the window ends the processor and the graph controller are stopped, the latter waiting
-//!    for any write in flight.
-//! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
-//! 4. The infrastructure supervisor's termination makes this supervisor exit non-zero, so the
+//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor, which drains the processor of
+//!    what it was handed.
+//! 2. `ProceedWithShutdown` goes to the infrastructure supervisor, which drains the graph
+//!    controller and stops its children.
+//! 3. The infrastructure supervisor's termination makes this supervisor exit non-zero, so the
 //!    workload is restarted with fresh certificates.
 
 use crate::processor::ScheduleInfoProcessor;
 use crate::types::ProcessorMsg;
 use cassini_types::ClientEvent;
-use polar::graph::controller::{GraphControllerMsg, GraphSignal};
 use polar_agent_builder::{
-    AgentBuilder, Configured, Drain, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription, spawn_graph_controller, stop_graph_controller,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
+    InfrastructureSupervisorMessage, Subscription,
 };
 use polar_scheduler_common::{
     CONFIGURATION_OUTCOME_TOPIC, ConfigurationOutcome, GitScheduleChange, SCHEDULER_IN_TOPIC,
@@ -55,16 +54,12 @@ use tracing::{debug, error, info, warn};
 
 pub const SERVICE_NAME: &str = "polar-scheduler";
 
-const DRAIN_WINDOW_SECS: u64 = 5;
-const GRAPH_STOP_SECS: u64 = 30;
+/// How long the processor has to handle what it was handed before the supervisor proceeds.
+const PROCESSOR_DRAIN: Duration = Duration::from_secs(10);
 
-/// How long the infrastructure supervisor gives this agent to drain: the drain window and the
-/// graph controller's stop, plus a margin. Past it the process exits 1 regardless.
-pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(DRAIN_WINDOW_SECS + GRAPH_STOP_SECS + 10);
-
-fn drain_window() -> Duration {
-    Duration::from_secs(DRAIN_WINDOW_SECS)
-}
+/// What this agent needs to drain beyond the graph controller, whose drain the builder counts: the
+/// processor's drain and a margin. Past it the process exits 1 regardless.
+pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(15);
 
 pub enum SchedulerSupervisorMessage {
     ClientEvent {
@@ -77,13 +72,8 @@ pub enum SchedulerSupervisorMessage {
         outcome: ConfigurationOutcome,
         reported_by: Option<String>,
     },
-    GraphSignal(GraphSignal),
-    /// The health check ended the pod's life; the infrastructure waits for
-    /// `ProceedWithShutdown`.
+    /// The agent is ending; the infrastructure waits for `ProceedWithShutdown`.
     PrepareShutdown,
-    /// The drain window has elapsed: after a failure this exits, after `PrepareShutdown` it
-    /// flushes the graph controller and completes the handshake.
-    DrainElapsed,
 }
 
 /// The processor's two subscriptions. Each payload is decoded where it arrives, so the supervisor
@@ -128,9 +118,8 @@ pub struct SchedulerSupervisor;
 pub struct SchedulerSupervisorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
-    graph_controller: Option<ActorRef<GraphControllerMsg>>,
+    /// Until the agent ends.
     processor: Option<ActorRef<ProcessorMsg>>,
-    drain: Drain,
 }
 
 #[async_trait]
@@ -163,19 +152,14 @@ impl Actor for SchedulerSupervisor {
                 }
             });
 
-        let graph_controller = spawn_graph_controller(
-            &myself,
-            format!("{SERVICE_NAME}.graph_controller"),
-            &resources.config,
-            SchedulerSupervisorMessage::GraphSignal,
-        )
-        .await?;
-
+        let graph = resources
+            .graph
+            .ok_or("the builder started no graph controller for a graph-write agent")?;
         let tcp_client = resources.tcp_client.as_actor_ref().clone();
         let (processor, _) = Actor::spawn_linked(
             Some(format!("{SERVICE_NAME}.processor")),
             ScheduleInfoProcessor,
-            (tcp_client, graph_controller.clone()),
+            (tcp_client, graph.actor().clone()),
             myself.get_cell(),
         )
         .await?;
@@ -183,33 +167,22 @@ impl Actor for SchedulerSupervisor {
         Ok(SchedulerSupervisorState {
             healthcheck: resources.healthcheck,
             infrastructure: resources.infrastructure,
-            graph_controller: Some(graph_controller),
             processor: Some(processor),
-            drain: Drain::default(),
         })
     }
 
     async fn handle(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            SchedulerSupervisorMessage::GraphSignal(signal) => match signal {
-                GraphSignal::Available => {
-                    let _ = state.healthcheck.graph_available();
-                }
-                GraphSignal::OpFailed(reason) => {
-                    let _ = state.healthcheck.graph_op_failed(reason);
-                }
-            },
             SchedulerSupervisorMessage::ClientEvent { event } => match event {
                 // Fires on every registration, a reconnect included, and the builder has already
                 // subscribed to the topics, so it only reports health.
                 ClientEvent::Registered { .. } => {
                     let _ = state.healthcheck.cassini_connected();
-                    let _ = state.healthcheck.graph_connected();
                 }
                 ClientEvent::TransportError { reason } => {
                     warn!("Transport error (non-fatal, awaiting reconnect): {reason}");
@@ -217,46 +190,34 @@ impl Actor for SchedulerSupervisor {
                 }
                 _ => {}
             },
-            SchedulerSupervisorMessage::ScheduleChanged(change) => {
-                if state.drain.is_draining() {
-                    warn!("draining -- a schedule change will be lost on exit");
-                } else if let Some(processor) = &state.processor {
-                    processor.cast(ProcessorMsg::GitChange(change))?;
-                }
-            }
+            SchedulerSupervisorMessage::ScheduleChanged(change) => match &state.processor {
+                Some(processor) => processor.cast(ProcessorMsg::GitChange(change))?,
+                None => warn!("ending: a schedule change is lost"),
+            },
             SchedulerSupervisorMessage::Outcome {
                 outcome,
                 reported_by,
-            } => {
-                if state.drain.is_draining() {
-                    warn!("draining -- a configuration outcome will be lost on exit");
-                } else if let Some(processor) = &state.processor {
-                    processor.cast(ProcessorMsg::Outcome {
-                        outcome,
-                        reported_by,
-                    })?;
-                }
-            }
+            } => match &state.processor {
+                Some(processor) => processor.cast(ProcessorMsg::Outcome {
+                    outcome,
+                    reported_by,
+                })?,
+                None => warn!("ending: a configuration outcome is lost"),
+            },
             SchedulerSupervisorMessage::PrepareShutdown => {
-                if state.drain.begin(&myself, drain_window(), true, || {
-                    SchedulerSupervisorMessage::DrainElapsed
-                }) {
-                    info!("PrepareShutdown received (rejuvenation); entering the drain window");
-                } else {
-                    warn!(
-                        "PrepareShutdown while already draining; the pending exit ends the process"
-                    );
+                info!("PrepareShutdown received; draining the processor, then proceeding");
+                if let Some(processor) = state.processor.take()
+                    && let Err(e) = processor.drain_and_wait(Some(PROCESSOR_DRAIN)).await
+                {
+                    error!("the processor did not drain in time ({e:?}); proceeding");
                 }
-            }
-            SchedulerSupervisorMessage::DrainElapsed => {
-                warn!("drain window elapsed, beginning shutdown");
-                if let Some(processor) = state.processor.take() {
-                    processor.stop(Some("supervisor shutting down".into()));
+                if let Err(e) = state
+                    .infrastructure
+                    .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
+                {
+                    error!("could not tell the infrastructure to proceed ({e}); exiting now");
+                    std::process::exit(1);
                 }
-                if let Some(controller) = state.graph_controller.take() {
-                    stop_graph_controller(controller, Duration::from_secs(GRAPH_STOP_SECS)).await;
-                }
-                state.drain.complete(&state.infrastructure);
             }
         }
         Ok(())
@@ -264,7 +225,7 @@ impl Actor for SchedulerSupervisor {
 
     async fn handle_supervisor_evt(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
@@ -281,10 +242,19 @@ impl Actor for SchedulerSupervisor {
             }
             SupervisionEvent::ActorFailed(actor, err) => {
                 error!("Actor {:?} failed: {err:?}", actor.get_name());
-                if state.drain.begin(&myself, drain_window(), false, || {
-                    SchedulerSupervisorMessage::DrainElapsed
-                }) {
-                    warn!("entering drain window before exit");
+                if actor.get_id() == state.infrastructure.get_id() {
+                    std::process::exit(1);
+                }
+                // The processor: the agent cannot go on, so it ends in order.
+                if let Err(e) =
+                    state
+                        .infrastructure
+                        .cast(InfrastructureSupervisorMessage::BeginShutdown {
+                            reason: format!("{:?} failed: {err}", actor.get_name()),
+                        })
+                {
+                    error!("could not ask the infrastructure to end ({e}); exiting now");
+                    std::process::exit(1);
                 }
             }
             _ => {}
