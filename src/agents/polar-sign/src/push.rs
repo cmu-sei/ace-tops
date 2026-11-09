@@ -73,9 +73,13 @@ pub enum Pushed {
     Unchanged,
 }
 
-fn git(plan: &Plan<'_>, in_dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
+fn git(
+    config: &[(String, String)],
+    in_dir: Option<&Path>,
+    args: &[&str],
+) -> Result<String, String> {
     let mut command = Command::new("git");
-    for (key, value) in plan.git_config {
+    for (key, value) in config {
         command.arg("-c").arg(format!("{key}={value}"));
     }
     if let Some(dir) = in_dir {
@@ -86,7 +90,7 @@ fn git(plan: &Plan<'_>, in_dir: Option<&Path>, args: &[&str]) -> Result<String, 
     command.env("GIT_TERMINAL_PROMPT", "0");
     // GIT_SSL_CAINFO and SSL_CERT_FILE in the environment would override the CA given here (`http.sslCAInfo`);
     // `just polar-git-clone` clears both for the same reason.
-    if plan.git_config.iter().any(|(k, _)| k == "http.sslCAInfo") {
+    if config.iter().any(|(k, _)| k == "http.sslCAInfo") {
         command.env_remove("GIT_SSL_CAINFO");
         command.env_remove("SSL_CERT_FILE");
     }
@@ -107,8 +111,64 @@ fn git(plan: &Plan<'_>, in_dir: Option<&Path>, args: &[&str]) -> Result<String, 
 }
 
 /// Whether `dir` is a clone of `remote`.
-fn clone_of(plan: &Plan<'_>, dir: &Path) -> Result<bool, String> {
-    Ok(git(plan, Some(dir), &["remote", "get-url", "origin"])? == plan.remote)
+fn clone_of(config: &[(String, String)], remote: &str, dir: &Path) -> Result<bool, String> {
+    Ok(git(config, Some(dir), &["remote", "get-url", "origin"])? == remote)
+}
+
+/// The tool's clone of `remote` in `workdir`, as the repository's branch holds it now: cloned if there is none, and
+/// otherwise reset to what the branch holds, whatever the clone's own history. The clone is the tool's cache, nothing of
+/// the author's: a repository made again at the same address (a cluster brought up anew) leaves a clone whose history
+/// cannot be fast-forwarded, which `pull --ff-only` refused (Vaughn's finding, 2026-11-04). A folder that is another
+/// repository's clone is refused, not touched.
+pub fn up_to_date(remote: &str, workdir: &Path, config: &[(String, String)]) -> Result<(), String> {
+    if workdir.join(".git").exists() {
+        if !clone_of(config, remote, workdir)? {
+            return Err(format!(
+                "{} is a working folder for another repository; give --workdir another place",
+                workdir.display()
+            ));
+        }
+        let branch = git(config, Some(workdir), &["symbolic-ref", "--short", "HEAD"])?;
+        let held = git(
+            config,
+            Some(workdir),
+            &["ls-remote", "--heads", "origin", &branch],
+        )?;
+        if !held.is_empty() {
+            git(config, Some(workdir), &["fetch", "-q", "origin", &branch])?;
+            git(
+                config,
+                Some(workdir),
+                &["reset", "-q", "--hard", "FETCH_HEAD"],
+            )?;
+            return Ok(());
+        }
+        // The repository holds nothing on that branch: one made again, still empty. What the clone holds is another
+        // history's, so it is cloned afresh rather than pushed into it.
+        if git(
+            config,
+            Some(workdir),
+            &["rev-parse", "--verify", "-q", "HEAD"],
+        )
+        .is_err()
+        {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(workdir)
+            .map_err(|e| format!("cannot clear {}: {e}", workdir.display()))?;
+    }
+    if let Some(parent) = workdir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot make {}: {e}", parent.display()))?;
+    }
+    let target = workdir.to_string_lossy().to_string();
+    git(config, None, &["clone", "-q", remote, &target])?;
+    Ok(())
+}
+
+/// The commit the tool's clone in `workdir` is at, as a short id.
+pub fn head(workdir: &Path, config: &[(String, String)]) -> Result<String, String> {
+    git(config, Some(workdir), &["rev-parse", "--short=7", "HEAD"])
 }
 
 pub fn push(plan: &Plan<'_>) -> Result<Pushed, String> {
@@ -120,25 +180,7 @@ pub fn push(plan: &Plan<'_>) -> Result<Pushed, String> {
         ));
     }
     let dir: PathBuf = plan.workdir.to_path_buf();
-    if dir.join(".git").exists() {
-        if !clone_of(plan, &dir)? {
-            return Err(format!(
-                "{} is a working folder for another repository; give --workdir another place",
-                dir.display()
-            ));
-        }
-        // An empty repository has nothing to bring up to date.
-        if git(plan, Some(&dir), &["rev-parse", "--verify", "-q", "HEAD"]).is_ok() {
-            git(plan, Some(&dir), &["pull", "--ff-only", "-q"])?;
-        }
-    } else {
-        if let Some(parent) = dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("cannot make {}: {e}", parent.display()))?;
-        }
-        let target = dir.to_string_lossy().to_string();
-        git(plan, None, &["clone", "-q", plan.remote, &target])?;
-    }
+    up_to_date(plan.remote, &dir, plan.git_config)?;
 
     let file = dir.join(plan.relative);
     if let Some(parent) = file.parent() {
@@ -148,7 +190,7 @@ pub fn push(plan: &Plan<'_>) -> Result<Pushed, String> {
     std::fs::write(&file, plan.content)
         .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
 
-    git(plan, Some(&dir), &["add", "--", plan.relative])?;
+    git(plan.git_config, Some(&dir), &["add", "--", plan.relative])?;
     // Exit status 0 means nothing staged differs from what the repository has.
     let unchanged = Command::new("git")
         .args(
@@ -169,7 +211,7 @@ pub fn push(plan: &Plan<'_>) -> Result<Pushed, String> {
     let name = format!("user.name={}", plan.author_name);
     let email = format!("user.email={}", plan.author_email);
     git(
-        plan,
+        plan.git_config,
         Some(&dir),
         &[
             "-c",
@@ -184,7 +226,12 @@ pub fn push(plan: &Plan<'_>) -> Result<Pushed, String> {
             plan.relative,
         ],
     )?;
-    git(plan, Some(&dir), &["push", "-q", "origin", "HEAD"]).map_err(|e| {
+    git(
+        plan.git_config,
+        Some(&dir),
+        &["push", "-q", "origin", "HEAD"],
+    )
+    .map_err(|e| {
         format!(
             "{e}; the commit is in {} and can be pushed again",
             dir.display()
@@ -312,6 +359,112 @@ mod tests {
             "alice <alice@example.org>|a s v1 signed by alice"
         );
         assert_eq!(commits(&r), 1);
+    }
+
+    /// A clone left from a repository of the same address that was made again (a cluster brought up anew) is brought up
+    /// to date with what the repository holds now, whatever its own history (Vaughn's finding, 2026-11-04: `pull
+    /// --ff-only` refused such a clone, "Not possible to fast-forward", and every push failed until `--workdir` was moved).
+    #[test]
+    fn a_clone_left_from_a_repository_made_again_is_brought_up_to_date_and_pushed_through() {
+        let r = repo();
+        let cfg = config();
+        let remote = r.bare.to_string_lossy().to_string();
+        let old = plan(
+            &r,
+            &remote,
+            "permanent/a/s.dhall",
+            "from the old cluster\n",
+            "old",
+            &cfg,
+        );
+        assert_eq!(push(&old).unwrap(), Pushed::Pushed);
+
+        // The repository is made again at the same address, with a history of its own.
+        std::fs::remove_dir_all(&r.bare).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "--bare", "--initial-branch=main"])
+                .arg(&r.bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let other = tempfile::tempdir().unwrap();
+        let elsewhere = Plan {
+            workdir: other.path(),
+            ..plan(
+                &r,
+                &remote,
+                "permanent/b/t.dhall",
+                "the new cluster's\n",
+                "new",
+                &cfg,
+            )
+        };
+        assert_eq!(push(&elsewhere).unwrap(), Pushed::Pushed);
+
+        let next = plan(
+            &r,
+            &remote,
+            "permanent/a/s.dhall",
+            "signed now\n",
+            "now",
+            &cfg,
+        );
+        assert_eq!(push(&next).unwrap(), Pushed::Pushed);
+        assert_eq!(
+            in_remote(&r, &["show", "main:permanent/a/s.dhall"]),
+            "signed now"
+        );
+        assert_eq!(
+            in_remote(&r, &["show", "main:permanent/b/t.dhall"]),
+            "the new cluster's"
+        );
+        assert_eq!(
+            commits(&r),
+            2,
+            "the new history and this commit, nothing of the old"
+        );
+    }
+
+    /// A repository made again and still empty is not given the old clone's history: the clone is made afresh.
+    #[test]
+    fn a_clone_left_from_a_repository_made_again_empty_is_made_afresh() {
+        let r = repo();
+        let cfg = config();
+        let remote = r.bare.to_string_lossy().to_string();
+        let old = plan(
+            &r,
+            &remote,
+            "permanent/a/s.dhall",
+            "from the old cluster\n",
+            "old",
+            &cfg,
+        );
+        assert_eq!(push(&old).unwrap(), Pushed::Pushed);
+        std::fs::remove_dir_all(&r.bare).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "--bare", "--initial-branch=main"])
+                .arg(&r.bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let next = plan(
+            &r,
+            &remote,
+            "permanent/b/t.dhall",
+            "first of the new\n",
+            "new",
+            &cfg,
+        );
+        assert_eq!(push(&next).unwrap(), Pushed::Pushed);
+        assert_eq!(commits(&r), 1, "this commit alone");
+        assert_eq!(
+            in_remote(&r, &["ls-tree", "-r", "--name-only", "main"]),
+            "permanent/b/t.dhall"
+        );
     }
 
     #[test]

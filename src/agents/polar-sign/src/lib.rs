@@ -39,6 +39,7 @@ pub mod fetch;
 pub mod flow;
 pub mod instance;
 pub mod lenient;
+pub mod next;
 pub mod push;
 pub mod scaffold;
 pub mod seal;

@@ -807,7 +807,8 @@ only.
   own bite, `cluster_uid` on every key a breaking graph change needing a migration, one events topic or one per cluster the maintainer's to decide;
   (4) the operator not merged: its phases and back-off are lifecycle's, taken into `docs/architecture/lifecycle.md`'s design; (5) the `polar` CLI
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog; (6) `polar-sign next` read
-  against lifecycle's decisions first. (1) DONE 2026-11-07: taken from `2cce4722`/`5189c650`, Docker's rule for the registry host (a tag's dots
+  against lifecycle's decisions first. (6) DONE 2026-11-09 (the maintainer, "Take it, with the push fix"): `polar-sign next` built, with a sealed secret
+  never carried (bound to its version) and `push`'s stale clone fixed (`docs/architecture/polar-sign-next.md`). (1) DONE 2026-11-07: taken from `2cce4722`/`5189c650`, Docker's rule for the registry host (a tag's dots
   are not a host: `neo4j:5.26.2` had been sent to a registry named "neo4j:5.26.2") and a `localhost` registry as the node's own store, never fetched,
   logged "not verified"; changed, hostless means Docker Hub only when a digest pins it, an unpinned hostless name is not verified (the maintainer,
   "Docker Hub only if pinned": a digest proves the image wherever it is fetched, a tag on Docker Hub may not be what a node loaded by that name);

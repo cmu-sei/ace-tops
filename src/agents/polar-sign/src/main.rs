@@ -34,8 +34,8 @@ use polar_env::Env;
 use polar_sign::flow::{Signing, sign_file};
 use polar_sign::scaffold::Scaffold;
 use polar_sign::{
-    author, configuration_payload, evidence, fetch, load_identity, parse_body, parse_change, push,
-    runtime_payload, sign_to_dhall, split_pem, template, verify_source,
+    author, configuration_payload, evidence, fetch, load_identity, next, parse_body, parse_change,
+    push, runtime_payload, sign_to_dhall, split_pem, template, verify_source,
 };
 use std::path::PathBuf;
 
@@ -194,6 +194,39 @@ enum Command {
         #[arg(long)]
         workdir: Option<PathBuf>,
         /// KEY=VALUE for every git command of the push (`git -c`), such as http.curloptResolve.
+        #[arg(long = "git-config", value_name = "KEY=VALUE")]
+        git_config: Vec<String>,
+    },
+    /// Write the file for the next version of a signed runtime section, or of an agent's settings, from the latest version
+    /// in the schedules repository, verified as an agent verifies it (to standard output unless --out is given).
+    ///
+    /// Its body is as it was and its id kept, its version one higher. A sealed secret is not carried, since it is bound to
+    /// its version: it is left null for you to type again, and the file says which. Edit what changes, then `polar-sign
+    /// sign` it. Nothing is signed and no key is read; your certificate is only what reaches the git server.
+    Next {
+        /// The agent's name, as it calls itself.
+        agent: String,
+        /// The runtime section; --settings for the agent's settings instead.
+        section: Option<String>,
+        #[arg(long, conflicts_with = "section")]
+        settings: bool,
+        /// Whose certificate reaches the git server: <dir>/<user>.crt and .key.
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// The CA certificate the latest version must chain to; <dir>/ca.pem by default.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// The schedules repository (anything `git clone` takes); POLAR_SCHEDULES_URL by default.
+        #[arg(long)]
+        repo: Option<String>,
+        /// Where the tool keeps its clone; ~/.cache/polar-sign/schedules by default.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// KEY=VALUE for every git command (`git -c`), such as http.curloptResolve.
         #[arg(long = "git-config", value_name = "KEY=VALUE")]
         git_config: Vec<String>,
     },
@@ -1066,6 +1099,46 @@ fn main() -> Result<()> {
                     tested.details.len()
                 );
             }
+        }
+        Command::Next {
+            agent,
+            section,
+            settings,
+            user,
+            dir,
+            ca,
+            out,
+            repo,
+            workdir,
+            git_config,
+        } => {
+            if section.is_none() && !settings {
+                anyhow::bail!("name the section, or --settings for {agent}'s settings");
+            }
+            let dir = default_dir(dir)?;
+            let trust = read_trust(&ca.unwrap_or_else(|| dir.join("ca.pem")))?;
+            let remote = repo
+                .or_else(|| env_var("POLAR_SCHEDULES_URL"))
+                .context("next reads the schedules repository: --repo, or POLAR_SCHEDULES_URL")?;
+            let workdir = workdir_for(workdir, "schedules")?;
+            let config = git_config_for(&remote, &dir, &user, &git_config)?;
+            let latest = next::latest(
+                &remote,
+                &workdir,
+                &config,
+                &agent,
+                section.as_deref(),
+                &trust,
+                now()?,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let file =
+                next::file_for(&agent, section.as_deref(), &latest).map_err(anyhow::Error::msg)?;
+            let what = format!(
+                "the next version of {agent}'s {}",
+                section.as_deref().unwrap_or("settings")
+            );
+            write_or_print(&file, out.as_deref(), &what)?;
         }
         Command::Verify {
             file,
