@@ -38,8 +38,9 @@ impl PolarAgent for KubeConsumer {
     const PURPOSE: &'static str =
         "Projects the Kubernetes resources the observer publishes into the Polar knowledge graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite, Capability::Encryption];
-    // It still starts and stops its own graph controller, until it moves onto the builder's.
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
+    // The empty state-type nodes its transitions made before the fix (graph-write-path.md).
+    const GRAPH_REPAIRS: &'static [polar::graph::repair::Repair] =
+        &[polar::graph::repair::EMPTY_STATE_TYPE_NODES];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
@@ -130,6 +131,14 @@ mod tests {
     use super::*;
 
     polar_agent_builder::polar_agent_tests!(KubeConsumer);
+
+    /// The builder starts its graph controller and counts its drain, so the least budget, which the catalog renders as
+    /// the pod's grace, is what it was when the agent drained the controller itself: 45 s.
+    #[test]
+    fn its_least_budget_is_its_own_and_the_graph_controllers_drain() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<KubeConsumer>();
+        assert_eq!(scaffold.shutdown_budget_minimum_secs, 45);
+    }
 
     /// Every label it owns is merged on a key its vocabulary names, so each gets its constraint or index at start;
     /// FluxOCIRepository, merged on its uid and, from a reference, on its name and namespace, gets an index for each.
