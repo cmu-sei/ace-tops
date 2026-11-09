@@ -97,7 +97,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # An ssh server for the git handler's fetch over ssh.
 russh.workspace = true
-# A real Neo4j for the graph controller's drain (tests/graph_controller.rs).
+# A real Neo4j for the graph controller's drain at the end (infrastructure.rs).
 polar-test-graph.workspace = true
 
 # A worker is forked only from a process of one thread, and libtest runs tests on threads of its own: its tests are one

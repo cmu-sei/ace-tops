@@ -178,10 +178,6 @@ pub trait PolarAgent: Sized + 'static {
     /// The repairs of what this writer wrote wrong before, which its graph controller runs at the first contact with
     /// the graph, after the constraints (`polar::graph::repair`).
     const GRAPH_REPAIRS: &'static [polar::graph::repair::Repair] = &[];
-    /// For a graph agent not yet moved onto the builder's graph controller: it starts and stops its own, and the
-    /// builder starts none for it. Removed when the last one has moved (remaining-work.md, "The agent builder and
-    /// its migration").
-    const STARTS_OWN_GRAPH_CONTROLLER: bool = false;
 
     /// The agent proper. It is given the configuration the infrastructure judged, and builds
     /// its infrastructure from it (see `AgentBuilder::into_configured`). It returns when the
@@ -609,11 +605,8 @@ fn sections_of<A: PolarAgent>() -> Vec<(Option<Capability>, &'static Section)> {
 }
 
 /// How the builder's graph controller serves `A`: as a writer for `graph-write`, a reader for `graph-read`, and not at
-/// all for an agent that needs neither or still starts its own.
+/// all for an agent that needs neither.
 pub(crate) fn graph_use_of<A: PolarAgent>() -> Option<crate::graph::GraphUse> {
-    if A::STARTS_OWN_GRAPH_CONTROLLER {
-        return None;
-    }
     let needs = needs_of::<A>();
     if needs.contains(&Capability::GraphWrite) {
         Some(crate::graph::GraphUse::Writes)
@@ -2488,22 +2481,9 @@ mod tests {
     }
 
     /// An agent the builder starts a graph controller for has the controller's drain counted in its least budget, so it
-    /// declares only its own; one that needs no graph, or still starts its own controller, has only what it declares.
+    /// declares only its own; one that needs no graph has only what it declares.
     #[test]
     fn the_least_budget_counts_the_graph_controllers_drain_when_the_builder_starts_it() {
-        struct OwnController;
-        impl PolarAgent for OwnController {
-            const NAME: &'static str = "own-controller";
-            const ROLE: Role = Role::Processor;
-            const PURPOSE: &'static str = "Starts its own graph controller";
-            const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
-            const STARTS_OWN_GRAPH_CONTROLLER: bool = true;
-            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(40);
-            async fn start(_: Configured) -> Result<(), StartError> {
-                Ok(())
-            }
-        }
-
         assert_eq!(
             graph_use_of::<Example>(),
             Some(crate::graph::GraphUse::Writes)
@@ -2522,8 +2502,6 @@ mod tests {
         );
         assert_eq!(graph_use_of::<Bare>(), None);
         assert_eq!(least_budget::<Bare>(), Bare::SHUTDOWN_BUDGET);
-        assert_eq!(graph_use_of::<OwnController>(), None);
-        assert_eq!(least_budget::<OwnController>(), Duration::from_secs(40));
     }
 
     #[test]

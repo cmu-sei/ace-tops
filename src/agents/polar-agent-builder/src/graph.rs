@@ -27,9 +27,8 @@
 //! actor by how the agent uses the graph, and drained at the end, before the rest of the
 //! infrastructure stops. The agent writes through its [`GraphHandle`].
 //!
-//! Until each graph agent has moved onto that, it starts its own with [`spawn_graph_controller`],
-//! stops it with [`stop_graph_controller`] and runs the [`Drain`] that precedes the exit or the
-//! handover to the infrastructure supervisor (`PolarAgent::STARTS_OWN_GRAPH_CONTROLLER`).
+//! Also here, for a supervisor with a drain of its own (the build orchestrator's): the [`Drain`]
+//! that precedes its exit or its handover to the infrastructure supervisor.
 
 use crate::infrastructure::InfrastructureSupervisorMessage;
 use polar::graph::controller::{
@@ -145,34 +144,10 @@ impl GraphHandle {
     }
 }
 
-/// Starts the graph controller as a child of `supervisor`, reading the connection from the
-/// builder's snapshot. Each signal it raises is turned into the supervisor's own message by `wrap`.
-/// The controller only builds pool configuration here; `GraphAvailable` is what proves
-/// connectivity, so it does not wait for Cassini.
-pub async fn spawn_graph_controller<M: Message>(
-    supervisor: &ActorRef<M>,
-    name: String,
-    config: &polar_env::Config,
-    wrap: fn(GraphSignal) -> M,
-) -> Result<ActorRef<GraphControllerMsg>, ActorProcessingErr> {
-    let port = Arc::new(OutputPort::<GraphSignal>::default());
-    port.subscribe(supervisor.clone(), move |signal| Some(wrap(signal)));
-    let settings = GraphSettings::from_env(config).map_err(ActorProcessingErr::from)?;
-    let (controller, _) = Actor::spawn_linked(
-        Some(name),
-        GraphControllerActor,
-        GraphControllerArgs::new(port).with_settings(settings),
-        supervisor.get_cell(),
-    )
-    .await
-    .map_err(ActorProcessingErr::from)?;
-    Ok(controller)
-}
-
 /// Stops the controller once it has handled every write already queued, waiting up to `wait`. A
 /// stop would come ahead of the queue and lose those writes; a drain is behind them. A controller
 /// that does not finish in time is logged, not waited on: the process is about to end.
-pub async fn stop_graph_controller(controller: ActorRef<GraphControllerMsg>, wait: Duration) {
+pub(crate) async fn stop_graph_controller(controller: ActorRef<GraphControllerMsg>, wait: Duration) {
     match controller.drain_and_wait(Some(wait)).await {
         Ok(()) => info!("graph controller stopped cleanly"),
         Err(e) => error!(

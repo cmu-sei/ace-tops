@@ -293,10 +293,10 @@ hard floor.
 |---|---|---|---|
 | credentials consumer | 50 s | 60 s | at the start, every subscription let go of and its own actors (record asker, held-request voucher) stopped; 5 s drain window, ledger stop, projection stop (up to 30 s) |
 | credentials observer | 40 s | 50 s | HTTP drain, up to 30 s |
-| kube consumer | 45 s | 55 s | 5 s drain window, graph controller stop (up to 30 s) |
+| kube consumer | 45 s | 55 s | its topics let go of, 15 s its own; the graph controller drained by the infrastructure, up to 30 s (`GRAPH_DRAIN`, counted by the builder) |
 | kube observer | 40 s | 50 s | three watchers stopped in turn, 10 s each |
 | jira observer | 40 s | 50 s | each observer stopped in turn, 10 s each |
-| jira processor | 40 s | 50 s | graph controller stop, up to 30 s |
+| jira processor | 40 s | 50 s | its topics let go of, 10 s its own; the graph controller drained by the infrastructure, up to 30 s |
 
 The four catalog workloads get these from the catalog. The two credentials agents are still
 hand-written charts and carry the same numbers directly until they move to the catalog.
@@ -380,7 +380,11 @@ with exit code 1 and a logged reason, never 137.
 - **Cassini broker shutdown.** Done: the broker has the orderly shutdown below.
 - **Graph-write capability split.** `with_graph_write()` also sets
   `expects_graph`, so health depends on Neo4j whenever an agent writes to it.
-  Tracked separately.
+  Since 2026-11-09 the builder starts every graph agent's controller
+  (`polar-agent-builder/src/graph.rs`): a writer's health depends on the graph,
+  a reader's (`graph-read`) only says it is not connected. The credentials agent,
+  whose graph is a projection of its ledger, keeps its own controller and needs
+  neither capability. Tracked separately.
 
 ## 8. Diagrams
 

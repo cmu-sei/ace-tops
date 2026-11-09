@@ -61,10 +61,7 @@ pub use crypto::{CryptoClient, CryptoError, CryptoHandle, Zeroizing};
 pub use floor::Floor;
 pub mod graph;
 pub mod graph_schema;
-pub use graph::{
-    Drain, GRAPH_DRAIN, GraphClosed, GraphHandle, GraphUse, spawn_graph_controller,
-    stop_graph_controller,
-};
+pub use graph::{Drain, GRAPH_DRAIN, GraphClosed, GraphHandle, GraphUse};
 pub use graph_schema::{EdgeDecl, GraphAccess, GraphDecl};
 pub mod health;
 pub use health::{HealthClient, HealthHandle};
