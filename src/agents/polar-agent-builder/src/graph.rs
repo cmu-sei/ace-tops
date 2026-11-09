@@ -60,13 +60,11 @@ pub async fn spawn_graph_controller<M: Message>(
     Ok(controller)
 }
 
-/// Stops the controller, waiting up to `wait` for a write in flight. A controller that does not
-/// stop in time is logged, not waited on: the process is about to end.
+/// Stops the controller once it has handled every write already queued, waiting up to `wait`. A
+/// stop would come ahead of the queue and lose those writes; a drain is behind them. A controller
+/// that does not finish in time is logged, not waited on: the process is about to end.
 pub async fn stop_graph_controller(controller: ActorRef<GraphControllerMsg>, wait: Duration) {
-    match controller
-        .stop_and_wait(Some("supervisor shutting down".into()), Some(wait))
-        .await
-    {
+    match controller.drain_and_wait(Some(wait)).await {
         Ok(()) => info!("graph controller stopped cleanly"),
         Err(e) => error!(
             "graph controller did not stop cleanly within {}s, exiting anyway: {e:?}",
