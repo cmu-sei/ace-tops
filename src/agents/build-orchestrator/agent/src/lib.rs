@@ -42,6 +42,7 @@ pub mod push;
 pub mod reader;
 pub mod registry;
 pub mod settings;
+pub mod shallow;
 pub mod source;
 pub mod supervisor;
 

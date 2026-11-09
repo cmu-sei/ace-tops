@@ -59,8 +59,8 @@ pub const ARTIFACT_TYPE: &str = "application/vnd.polar.build-dependencies.v1";
 pub const INDEX_TYPE: &str = "application/vnd.polar.build-dependencies.index.v1+json";
 /// A crate as crates.io serves it: a gzipped tar of `<name>-<version>/`.
 pub const CRATE_TYPE: &str = "application/vnd.polar.crate.v1.tar+gzip";
-/// A git dependency: its commit's tree, archived as a build's source is.
-pub const GIT_TYPE: &str = "application/vnd.polar.git-source.v1.tar+gzip";
+/// A git dependency: a shallow bare repository of the commit it pins, as a gzipped tar (`shallow`).
+pub const GIT_TYPE: &str = "application/vnd.polar.git-repository.v1.tar+gzip";
 /// How many crates are asked about, or downloaded, at once.
 const AT_ONCE: usize = 8;
 

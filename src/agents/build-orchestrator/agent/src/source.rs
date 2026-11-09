@@ -36,6 +36,7 @@ use crate::archive::archive;
 use crate::deps::{self, HeldGit};
 use crate::lock::{self, Dependencies};
 use crate::push;
+use crate::shallow;
 use orchestrator_core::types::{SourceArchive, SourceRef};
 use polar_agent_builder::protocol::git::{Fetched, Git, Request};
 use polar_agent_builder::protocol::{
@@ -85,12 +86,21 @@ pub const FETCH_PUBLIC: OperationDecl = OperationDecl {
 /// The remote a repository is fetched from.
 const REMOTE: &str = "origin";
 
-/// What a fetch is for: the clone brought up to date, then `commit`'s archive read from it, and its `locks`.
+/// What a fetch is for: the clone brought up to date, then `commit` read from it, as `as_` says.
 struct Asked {
     request: Request,
     commit: String,
     bound: usize,
-    locks: Vec<String>,
+    as_: Reading,
+}
+
+/// How a fetched commit is read.
+#[derive(Clone)]
+enum Reading {
+    /// A build's source: its archive, and what its `locks` pin.
+    Source { locks: Vec<String> },
+    /// A git dependency: the shallow repository of it (`shallow`).
+    Dependency,
 }
 
 /// What a fetch read: the archive, and what its locks pin.
@@ -98,10 +108,15 @@ type Read = Result<(Vec<u8>, Dependencies), String>;
 
 impl Asked {
     fn read(&self, reply: &Fetched) -> Read {
+        let Reading::Source { locks } = &self.as_ else {
+            let repository = shallow::repository(&reply.repository, &self.commit, self.bound)
+                .map_err(|why| format!("the dependency could not be packed: {why}"))?;
+            return Ok((repository, Dependencies::default()));
+        };
         let archived = archive(&reply.repository, &self.commit, self.bound)
             .map_err(|why| format!("the source could not be archived: {why}"))?;
         let mut pinned = Vec::new();
-        for path in &self.locks {
+        for path in locks {
             let text = lock_at(&reply.repository, &self.commit, path)?;
             pinned.push(lock::read(&text).map_err(|problems| {
                 format!(
@@ -221,7 +236,7 @@ impl GitSource {
         commit: String,
         credential: Option<String>,
         bound: usize,
-        locks: Vec<String>,
+        as_: Reading,
     ) -> Read {
         let clone = self.clone_of(&url);
         let lock = self.lock_of(&clone);
@@ -230,7 +245,7 @@ impl GitSource {
             request: Request::new(url.clone(), &clone, vec![REMOTE.to_string()], None),
             commit,
             bound,
-            locks,
+            as_,
         };
         let fetched = match credential {
             Some(credential) => {
@@ -256,14 +271,15 @@ impl GitSource {
         let each = usize::try_from(bound).unwrap_or(usize::MAX);
         let mut git = Vec::new();
         for source in &pinned.git {
-            // A git dependency is public for now: one that is not fails here, with the reason (D2, for review).
+            // A git dependency is public for now: one that is not fails here, with the reason (D2, for review). It goes as a
+            // shallow repository of its commit, which Cargo's source replacement points at in the pod (D3).
             let (archived, _) = self
                 .fetch(
                     source.url.clone(),
                     source.commit.clone(),
                     None,
                     each,
-                    Vec::new(),
+                    Reading::Dependency,
                 )
                 .await
                 .map_err(|why| format!("a git dependency: {why}"))?;
@@ -292,7 +308,9 @@ impl Source for GitSource {
                 commit_sha.clone(),
                 how.credential.clone(),
                 how.max_source,
-                how.locks.clone(),
+                Reading::Source {
+                    locks: how.locks.clone(),
+                },
             )
             .await
             .map_err(|why| format!("the repository could not be fetched: {why}"))?;

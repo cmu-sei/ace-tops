@@ -305,7 +305,7 @@ async fn a_sources_locked_dependencies_are_brought_into_the_registry_by_digest()
         "{index_reference}"
     );
     let index_digest = index_reference.rsplit_once('@').unwrap().1;
-    let dependency_archive = archive(
+    let dependency_archive = build_orchestrator::shallow::repository(
         &rig.dependency_repository,
         &rig.dependency_commit,
         usize::MAX,

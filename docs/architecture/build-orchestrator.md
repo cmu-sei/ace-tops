@@ -803,6 +803,16 @@ I write Rust code"):
     replacement (crates.io by the vendor directory, each git source, keyed as the lock names it, by its repository); D3c an
     end-to-end test: a crate and a git dependency laid out as the pod lays them out, and the test's own `cargo build --locked` of
     a project that uses both.
+    *D3a DONE 2026-11-08* (`shallow.rs`): a git dependency goes to the registry as a shallow bare repository of the commit its
+    lock pins, a gzipped tar of `HEAD` naming `refs/heads/polar`, that ref, `shallow`, a `config`, and one pack of the commit,
+    its tree and their blobs (libgit2's pack builder, one thread, `insert_commit`, which takes no parent) with the pack's index
+    (libgit2's indexer, in a directory of the clone's own, removed after). The indexer is not asked to check connectivity, since
+    a shallow pack lacks the commit's parents as it should; each object is still checked against its id as it is indexed.
+    Deterministic, every entry with the commit's time and owner 0. The dependency's media type is now
+    `application/vnd.polar.git-repository.v1.tar+gzip`. Tested from a real repository of two commits: it opens as a bare,
+    shallow repository whose ref and `HEAD` are the commit, which it holds with its whole tree, and the parent is not there;
+    made twice it is the same bytes; past its bound, or for a commit the repository lacks, refused, the clone left as it was;
+    and the source step's test now finds the dependency as that repository.
 - **O4** the one read after the pod ends: the log as a registry blob, its digest in the execution event (a wire change), and the reports
   in it judged by the O2d reader and relayed.
 - **O5** absorbed (revised 3): a `build_id` is the orchestrator's, stamped on every report it relays (O2d3, O2e).
