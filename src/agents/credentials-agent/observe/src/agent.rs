@@ -38,6 +38,8 @@ impl PolarAgent for CredentialsObserver {
     const PURPOSE: &'static str = "The HTTP front of the credentials agent: relays certificate, account and admin requests to the consumer over Cassini";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
+    // The infrastructure waits for it to finish its HTTP listener.
+    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::publish(
             credentials_agent_common::CREDENTIALS_ISSUANCE_REQUESTS_TOPIC,

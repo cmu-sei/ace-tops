@@ -37,6 +37,8 @@ impl PolarAgent for SchedulerObserver {
     const PURPOSE: &'static str = "Keeps a checkout of the schedules repository current and publishes each schedule change on Cassini";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
+    // The infrastructure waits for it to finish its watcher and its sync.
+    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC,

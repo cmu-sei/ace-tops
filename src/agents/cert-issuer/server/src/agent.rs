@@ -44,6 +44,8 @@ impl PolarAgent for CertIssuer {
     // A probe over Cassini would make its health wait on the broker.
     const SELF_TEST: bool = false;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
+    // The infrastructure waits for it to finish its listener.
+    const HAS_OWN_DRAIN: bool = true;
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     // The record of every certificate it signs, which the credentials agent asks for, a page at a time
     // (docs/architecture/cert-issuer-isolation.md, "Step 2").

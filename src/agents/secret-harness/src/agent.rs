@@ -37,6 +37,8 @@ impl PolarAgent for SecretHarness {
     const PURPOSE: &'static str = "Checks the credentials agent's secret policy from inside the cluster, as two different identities";
     const NEEDS: &'static [Capability] = &[Capability::Encryption];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
+    // The infrastructure waits for it to finish its scenario, aborted.
+    const HAS_OWN_DRAIN: bool = true;
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
         "Run it twice with different identities. As HARNESS_ROLE=owner it stores a secret, retrieves \

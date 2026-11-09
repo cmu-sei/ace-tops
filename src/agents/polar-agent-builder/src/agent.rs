@@ -178,6 +178,11 @@ pub trait PolarAgent: Sized + 'static {
     /// The repairs of what this writer wrote wrong before, which its graph controller runs at the first contact with
     /// the graph, after the constraints (`polar::graph::repair`).
     const GRAPH_REPAIRS: &'static [polar::graph::repair::Repair] = &[];
+    /// Whether the agent has work of its own to finish when it ends: children to stop, connections or a queue to
+    /// drain, topics to let go of, a task to abort. The infrastructure then tells it (`PrepareShutdown`) and waits for its
+    /// `ProceedWithShutdown`. Without, it tells it and proceeds by itself: the graph controller is drained either way
+    /// (docs/architecture/health-and-shutdown.md).
+    const HAS_OWN_DRAIN: bool = false;
 
     /// The agent proper. It is given the configuration the infrastructure judged, and builds
     /// its infrastructure from it (see `AgentBuilder::into_configured`). It returns when the
@@ -209,6 +214,8 @@ pub struct Configured {
     pub(crate) graph: Option<crate::graph::GraphUse>,
     /// What that controller repairs at the first contact with the graph (`PolarAgent::GRAPH_REPAIRS`).
     pub(crate) graph_repairs: &'static [polar::graph::repair::Repair],
+    /// Whether the infrastructure waits for the agent's `ProceedWithShutdown` (`PolarAgent::HAS_OWN_DRAIN`).
+    pub(crate) has_own_drain: bool,
     /// Every topic the agent uses, its families expanded for the workloads it serves.
     pub(crate) topics: Arc<TopicSet>,
     pub(crate) hooks: Hooks,
@@ -309,6 +316,7 @@ impl Configured {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
+            has_own_drain: true,
             topics: Arc::new(TopicSet::default()),
             hooks: Hooks {
                 process_exit: Arc::new(move |code| exits.lock().unwrap().push(code)),
@@ -1263,6 +1271,7 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         graph_key_indexes: graph_key_indexes::<A>(),
         graph: graph_use_of::<A>(),
         graph_repairs: A::GRAPH_REPAIRS,
+        has_own_drain: A::HAS_OWN_DRAIN,
         hooks: Hooks::real(),
     };
 

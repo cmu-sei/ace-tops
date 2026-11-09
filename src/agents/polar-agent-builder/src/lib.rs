@@ -223,6 +223,10 @@ pub struct AgentBuilder<M: ractor::Message> {
     graph: Option<graph::GraphUse>,
     graph_key_indexes: Vec<polar::graph::schema::KeyIndex>,
     graph_repairs: &'static [polar::graph::repair::Repair],
+    /// Whether the agent has work of its own to finish at the end, so the infrastructure waits for its
+    /// `ProceedWithShutdown` (`PolarAgent::HAS_OWN_DRAIN`). Until the builder is configured from a `PolarAgent`, it
+    /// waits, as it always did.
+    own_drain: bool,
 }
 
 /// Each declared command with its handler.
@@ -291,6 +295,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
             graph: None,
             graph_key_indexes: Vec::new(),
             graph_repairs: &[],
+            own_drain: true,
         }
     }
 
@@ -450,6 +455,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
         self.graph = configured.graph;
         self.graph_key_indexes = configured.graph_key_indexes.clone();
         self.graph_repairs = configured.graph_repairs;
+        self.own_drain = configured.has_own_drain;
         ConfiguredAgent {
             builder: self,
             startup: configured.startup,
@@ -562,6 +568,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 with_client: true,
                 self_test: this.self_test,
                 graph,
+                domain_drains: this.own_drain,
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: true,
                 process_exit: process_exit.clone(),
@@ -638,6 +645,8 @@ pub struct ServiceBuilder<M: ractor::Message> {
     requires: Vec<Capability>,
     shutdown_budget: Option<std::time::Duration>,
     environment: Vec<&'static polar_env::Section>,
+    /// As `AgentBuilder`'s.
+    own_drain: bool,
 }
 
 impl<M: ractor::Message> ServiceBuilder<M> {
@@ -648,6 +657,7 @@ impl<M: ractor::Message> ServiceBuilder<M> {
             requires: Vec::new(),
             shutdown_budget: None,
             environment: Vec::new(),
+            own_drain: true,
         }
     }
 
@@ -668,6 +678,7 @@ impl<M: ractor::Message> ServiceBuilder<M> {
     /// (`Configured::cassini_enabled` is false): takes what `run` already judged.
     pub fn into_configured(mut self, configured: Configured) -> ConfiguredService<M> {
         self.requires = configured.required.clone();
+        self.own_drain = configured.has_own_drain;
         ConfiguredService {
             builder: self,
             startup: configured.startup,
@@ -723,6 +734,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 with_client: false,
                 self_test: false,
                 graph: None,
+                domain_drains: this.own_drain,
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: hooks.listen_for_signals,
                 process_exit: hooks.process_exit.clone(),
@@ -1131,6 +1143,7 @@ mod tests {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
+            has_own_drain: true,
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1177,6 +1190,7 @@ mod tests {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
+            has_own_drain: true,
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1213,6 +1227,7 @@ mod tests {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
+            has_own_drain: true,
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };

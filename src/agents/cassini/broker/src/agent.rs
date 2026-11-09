@@ -49,6 +49,8 @@ impl PolarAgent for CassiniBroker {
     const NEEDS: &'static [Capability] = &[];
     // The shutdown has five phases and each gets a fifth of the budget.
     const SHUTDOWN_BUDGET: Duration = Duration::from_secs(20);
+    // The infrastructure waits for it to finish the broker's own shutdown sequence.
+    const HAS_OWN_DRAIN: bool = true;
     const SECTIONS: &'static [&'static Section] = &[&settings::SECTION];
     const SELF_TEST: bool = false;
     const CASSINI_CLIENT: bool = false;

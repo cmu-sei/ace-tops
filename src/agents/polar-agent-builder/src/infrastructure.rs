@@ -249,6 +249,9 @@ pub struct InfrastructureSupervisorArgs {
     pub(crate) self_test: bool,
     /// For an agent that needs the graph, what its graph controller is started with (`graph.rs`).
     pub(crate) graph: Option<crate::graph::GraphSetup>,
+    /// Whether the domain has work of its own to finish at the end (`PolarAgent::HAS_OWN_DRAIN`): the
+    /// infrastructure then waits for its `ProceedWithShutdown`; otherwise it tells the domain and proceeds.
+    pub(crate) domain_drains: bool,
 }
 
 /// How often the self-test looks at the clock; a probe is sent every `SELF_TEST_INTERVAL`, and
@@ -379,6 +382,10 @@ pub struct InfrastructureSupervisorState {
     last_registered: Option<ClientEvent>,
     /// The agent's graph controller, until it is drained at the end.
     graph: Option<crate::graph::GraphHandle>,
+    /// See `InfrastructureSupervisorArgs::domain_drains`.
+    domain_drains: bool,
+    /// This supervisor, to proceed by itself when the domain has no drain of its own.
+    myself: ActorRef<InfrastructureSupervisorMessage>,
 }
 
 pub struct InfrastructureSupervisor;
@@ -405,6 +412,16 @@ impl InfrastructureSupervisor {
         state
             .infrastructure_events
             .send(InfrastructureEvent::PrepareShutdown);
+        // A domain with no drain of its own has nothing to say back: it is told, and the infrastructure goes on.
+        if !state.domain_drains
+            && let Err(e) = state
+                .myself
+                .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
+        {
+            tracing::error!(
+                "InfrastructureSupervisor: could not proceed by itself ({e}); the watchdog ends it"
+            );
+        }
     }
 
     /// Asks the scheduler for the signed configuration it holds for this agent. Sent on every
@@ -1025,6 +1042,8 @@ impl Actor for InfrastructureSupervisor {
             running_answerer,
             last_registered: None,
             graph,
+            domain_drains: args.domain_drains,
+            myself: myself.clone(),
         })
     }
 
@@ -1610,6 +1629,7 @@ mod tests {
                 &[],
                 Some("soft-state-observer.polar.serviceaccount.cluster.local".to_string()),
                 None,
+                true,
             )
             .await
         }
@@ -1627,6 +1647,7 @@ mod tests {
                 &[],
                 None,
                 Some(setup),
+                true,
             )
             .await
         }
@@ -1656,6 +1677,25 @@ mod tests {
                 runtime,
                 None,
                 None,
+                true,
+            )
+            .await
+        }
+
+        /// A rig whose agent has no drain of its own: the infrastructure proceeds by itself.
+        async fn without_own_drain(service: &str) -> Self {
+            Self::build_with(
+                service,
+                Duration::from_secs(20),
+                &[],
+                false,
+                false,
+                None,
+                vec![],
+                &[],
+                None,
+                None,
+                false,
             )
             .await
         }
@@ -1675,6 +1715,7 @@ mod tests {
             runtime: &'static [&'static crate::runtime::RuntimeSection],
             state_agent: Option<String>,
             graph: Option<crate::graph::GraphSetup>,
+            domain_drains: bool,
         ) -> Self {
             let health_writer = Some(RIG_WRITER.to_string());
             let dir = tempfile::tempdir().unwrap();
@@ -1746,6 +1787,7 @@ mod tests {
                     settings_judge: None,
                     self_test: self_test.is_some(),
                     graph,
+                    domain_drains,
                 },
             )
             .await
@@ -3179,6 +3221,30 @@ mod tests {
         assert_eq!(rig.exits(), [1]);
     }
 
+    // -- an agent with no drain of its own ----------------------------------------------------
+
+    /// The infrastructure tells the agent it is ending and then proceeds by itself: nobody sends
+    /// `ProceedWithShutdown`, and it ends well inside its budget, with no watchdog.
+    #[tokio::test(start_paused = true)]
+    async fn an_agent_with_no_drain_of_its_own_ends_without_being_told_to_proceed() {
+        let mut rig = Rig::without_own_drain("infra-no-drain").await;
+        rig.begin("test");
+        let ended = tokio::time::timeout(Duration::from_secs(15), rig.done.take().unwrap()).await;
+        assert!(
+            ended.is_ok(),
+            "the infrastructure waited for a proceed nobody sends"
+        );
+        assert_eq!(
+            rig.events(),
+            ["prepare_shutdown"],
+            "the agent is still told"
+        );
+        assert!(
+            rig.exits().is_empty(),
+            "no watchdog: it ended inside its 20 s budget"
+        );
+    }
+
     // -- children dying -----------------------------------------------------------------------
 
     #[tokio::test(start_paused = true)]
@@ -3702,6 +3768,7 @@ mod service_tests {
                     settings_judge: None,
                     self_test: false,
                     graph: None,
+                    domain_drains: true,
                 },
             )
             .await
