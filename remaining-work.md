@@ -47,7 +47,8 @@ Each step is taken in bites, each reported before the next.
    ideas taken into lifecycle as area 4. Left from it: our fixes from area 5's review, starting with kube-observer's role derived from what it
    declares, and, from Blitz's plan of 2026-11-09, the provenance record naming every source tree (a list of sources, from a manifest
    where the tree is not a checkout; BUILT 2026-11-10, `deploy-repo.nu` `sources_fact` and `sources.json`, polar-sign reading
-   `deployment_source` and `deployment_source.<name>`; not yet published live, u7c being in use). How Blitz's phases meet this order: `docs/requests/blitz-on-polar-coordination.md` (2026-11-10, a
+   `deployment_source` and `deployment_source.<name>`; seen live on u7c: deployment d716f22's provenance.json has `sources`, one
+   entry, `polar` at 4b3e5e05, and no `source`). How Blitz's phases meet this order: `docs/requests/blitz-on-polar-coordination.md` (2026-11-10, a
    proposal for Vaughn, kept current as steps land).
 10. **Lifecycle, after slice C** (the maintainer, 2026-11-09, "After slice C, sure"): `docs/architecture/lifecycle.md`'s order, the lifecycle
     document and its reader (where the Rust `polar` CLI starts), the agents deriving from it, then the catalog's split (where a downstream
@@ -871,8 +872,9 @@ only.
   kube-observer's role derived from what it declares (DONE 2026-11-10, `ca2e635c`: every Kubernetes role computed from the agent's declared
   operations, `protocol-handlers.md`, "A role is what the operations declare"; seen live on u7c: kube-observer refused Secrets, ConfigMaps
   and `get pods`, its watches feeding the graph, every running pod there; attestation watching; a build made, its pods listed and its log read), `up.nu` requiring the
-  cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree (BUILT
-  2026-11-10, not yet seen live, u7c being in use: `--cluster <uid of kube-system>`, refused when KUBECONFIG reaches another, since every
+  cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree (DONE
+  2026-11-10, seen live on u7c in the branch's run of main through 68ecaf80: the cluster named and taken, the plan naming the seven
+  Secrets with no value, the secrets step finding each unchanged; `--cluster <uid of kube-system>`, refused when KUBECONFIG reaches another, since every
   kubeadm context is kubernetes-admin@kubernetes; apply.nu `why_not_ready` for each pod still pending; plan.nu `plan_secrets`, the target's
   secrets.nu declaring its Secrets as data; secrets-lib.nu `graph_password_problems` before anything is applied), the
   bootstrap CA constrained for new clusters (DONE 2026-11-10: path length 0, key usage keyCertSign and cRLSign, both critical,

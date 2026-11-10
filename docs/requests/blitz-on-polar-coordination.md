@@ -48,7 +48,7 @@ set, and none are given here.
   computed by the builder from the agent's declared cluster operations and printed in its scaffold (`roles`), and none may read a
   Secret. A Blitz agent on the Kubernetes API gets its role the same way, with nothing to write in the catalog.
 - `up.nu`: the cluster always named (never the kubeconfig's current context), a timed-out wait saying why, the plan naming every secret
-  without its value, the graph password's two forms checked to agree before anything is applied. **Built 2026-11-10**: the cluster is
+  without its value, the graph password's two forms checked to agree before anything is applied. **Done 2026-11-10**, seen live: the cluster is
   named by the uid of its `kube-system` namespace (`up.nu <target> --cluster <uid>`; run without it, and it prints the one KUBECONFIG
   reaches), since every kubeadm cluster's context is `kubernetes-admin@kubernetes`. A target's `secrets.nu` now declares its Secrets as
   data (`SECRETS`), which the plan prints; Blitz's overlay targets will want the same shape.
@@ -135,7 +135,7 @@ Two notes:
   description and whether it had changes beside its commit, in place of today's one `source` (`infra/deploy-repo.nu:565`). In your
   overlay, main's tools run in a laid-out derivation, not a git checkout, so the sources cannot come from `git rev-parse HEAD`: they come
   from a manifest the layout writes, and the render refuses a tree that is not a checkout and has no manifest. Until it lands, carry
-  your patch, as your plan says, and publish nothing without both commits. **Built 2026-11-10**: the manifest is `sources.json` at the
+  your patch, as your plan says, and publish nothing without both commits. **Done 2026-11-10**, seen live in a published record: the manifest is `sources.json` at the
   tree's root, a list of `{ name, commit, describe?, uncommitted_changes }` with full commit ids and names in lowercase, digits and
   hyphens; the record's `sources` replaces `source`, and a tree that is a checkout and has `sources.json` too is refused.
 - **Keycloak's realm and theme as overrides of our charts.** The overlay refuses a file that overwrites ours, so these go through the
