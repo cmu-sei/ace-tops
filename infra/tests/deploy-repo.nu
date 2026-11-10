@@ -25,10 +25,40 @@
 
 use std/assert
 use ../deploy-objects.nu [deployment_facts, is_handed_off, next_record, polar_git_repository]
-use ../deploy-repo.nu [ensure_pki, restore_needed, deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
+use ../deploy-repo.nu [sources_fact, dirty_sources, commit_line, ensure_pki, restore_needed, deployment_ca_configmap, cluster_inputs_fact, cert_plan, ext_text, mirror_dir, needs_reissue, pki_dir, repo_name, repos_json, sans_in, serve_dir, server_env, server_manifests, server_name, signing_config, tls_config, tree_files, wrapper_text, DEFAULT_PORT, NAMESPACE, READER, SERVICE, WRITER]
 
 def main [] {
     let tests = [
+        {
+            # Blitz's plan, phase 0, taken in step A: a render records every source tree it was made from. A checkout gives
+            # Polar's own; a tree laid out from several (Blitz's overlay) is no checkout, and its layout writes sources.json.
+            name: "the record names every source tree a render was made from, from the checkout or from sources.json"
+            body: {
+                let a = "0123456789abcdef0123456789abcdef01234567"
+                let b = "89abcdef0123456789abcdef0123456789abcdef"
+                let checkout = { commit: $a, describe: "v3.0.1-12-g0123456", uncommitted_changes: false }
+                assert equal (sources_fact $checkout null) [{ name: "polar", commit: $a, describe: "v3.0.1-12-g0123456", uncommitted_changes: false }]
+                let laid_out = [
+                    { name: "polar", commit: $a, describe: "v3.0.1", uncommitted_changes: false }
+                    { name: "blitz", commit: $b, uncommitted_changes: true }
+                ]
+                let fact = (sources_fact null $laid_out)
+                assert equal ($fact | get name) ["polar" "blitz"]
+                assert equal ($fact | get 1.describe) $b "a source with no description is described by its commit"
+                assert equal (dirty_sources $fact) ["blitz"]
+                assert equal (dirty_sources (sources_fact $checkout null)) []
+                assert equal (commit_line $fact) $"polar v3.0.1 \(($a)\), blitz ($b) \(($b)\)"
+                let refused = {|checkout, manifest| try { sources_fact $checkout $manifest; null } catch {|e| $e.msg } }
+                assert ((do $refused null null) | str contains "sources.json") "neither"
+                assert ((do $refused $checkout $laid_out) | str contains "a checkout") "both"
+                assert ((do $refused null []) | str contains "names no source") "empty"
+                assert ((do $refused null [{ name: "polar", commit: "abc", uncommitted_changes: false }]) | str contains "40") "short commit"
+                assert ((do $refused null [{ name: "polar", commit: $a }]) | str contains "uncommitted_changes") "not said"
+                assert ((do $refused null [($laid_out | first) ($laid_out | first)]) | str contains "twice") "twice"
+                assert ((do $refused null [{ name: "Blitz!", commit: $a, uncommitted_changes: false }]) | str contains "name") "bad name"
+                assert ((do $refused null [($laid_out | first | insert extra 1)]) | str contains "extra") "unknown field"
+            }
+        }
         {
             name: "the PKI lives under the user's polar-deploy directory, one per target"
             body: {

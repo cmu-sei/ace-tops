@@ -267,9 +267,8 @@ fn deployment(dir: &Path, trust: &[String], now: i64) -> Result<Deployment, Stri
     );
     if let Ok(provenance) = std::fs::read_to_string(dir.join("provenance.json"))
         && let Ok(provenance) = serde_json::from_str::<Value>(&provenance)
-        && let Some(source) = provenance["source"]["commit"].as_str()
     {
-        inputs.insert("deployment_source".to_string(), source.to_string());
+        inputs.extend(provenance_inputs(&provenance));
     }
     Ok(Deployment {
         target,
@@ -277,6 +276,30 @@ fn deployment(dir: &Path, trust: &[String], now: i64) -> Result<Deployment, Stri
         model,
         inputs,
     })
+}
+
+/// What a deployment's record says it was made from, as inputs of what is judged: Polar's own source tree as
+/// `deployment_source`, and each other the render was made from (`sources`, Blitz's overlay) as `deployment_source.<name>`.
+/// A record published before `sources` names one `source`, Polar's.
+fn provenance_inputs(provenance: &Value) -> BTreeMap<String, String> {
+    let mut inputs = BTreeMap::new();
+    if let Some(sources) = provenance["sources"].as_array() {
+        for source in sources {
+            let (Some(name), Some(commit)) = (source["name"].as_str(), source["commit"].as_str())
+            else {
+                continue;
+            };
+            let key = if name == "polar" {
+                "deployment_source".to_string()
+            } else {
+                format!("deployment_source.{name}")
+            };
+            inputs.insert(key, commit.to_string());
+        }
+    } else if let Some(commit) = provenance["source"]["commit"].as_str() {
+        inputs.insert("deployment_source".to_string(), commit.to_string());
+    }
+    inputs
 }
 
 /// Every signed runtime document in the schedules, and what was left out.
@@ -488,4 +511,37 @@ pub fn read(sources: &Sources<'_>, trusts: &Trusts<'_>, now: i64) -> Result<Read
         },
         left_out,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A deployment's record names every source tree its render came from (`sources`), Polar's own as `polar`; one published
+    // before names a single `source`, which reads as Polar's.
+    #[test]
+    fn the_deployment_s_sources_are_inputs_of_what_is_judged() {
+        let both = serde_json::json!({ "sources": [
+            { "name": "polar", "commit": "abc", "uncommitted_changes": false },
+            { "name": "blitz", "commit": "def", "uncommitted_changes": false }
+        ]});
+        let inputs = provenance_inputs(&both);
+        assert_eq!(
+            inputs.get("deployment_source").map(String::as_str),
+            Some("abc")
+        );
+        assert_eq!(
+            inputs.get("deployment_source.blitz").map(String::as_str),
+            Some("def")
+        );
+        assert_eq!(inputs.len(), 2);
+        let before = serde_json::json!({ "source": { "commit": "abc" } });
+        let inputs = provenance_inputs(&before);
+        assert_eq!(
+            inputs.get("deployment_source").map(String::as_str),
+            Some("abc")
+        );
+        assert_eq!(inputs.len(), 1);
+        assert!(provenance_inputs(&serde_json::json!({})).is_empty());
+    }
 }

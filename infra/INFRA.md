@@ -524,6 +524,10 @@ can have completely different orderings.
    GnuPG home beside the PKI; it never touches `~/.gnupg` and never prompts). The tree is `layers/<layer>/` (every layer but the `flux`
    one), `flux/` (a GitRepository and a Kustomization per layer), `provenance.json` and a README. It refuses a render that is not there, an
    image not pinned by digest, and a dirty tree unless `up.nu` is given `--allow-dirty`, and it commits nothing when the render has not changed.
+   `provenance.json` names every source tree the render was made from (`sources`, 2026-11-10): this checkout as `polar`, or, for a tree
+   laid out from several that is no checkout (Blitz's overlay of Polar's infra), the list a `sources.json` at its root gives, each
+   `{ name, commit, describe?, uncommitted_changes }`. A tree that is both, or neither, is refused, and one with changes beside a commit is
+   refused unless `--allow-dirty`.
 4. `flux.nu install` clones that repository as the `flux` identity and refuses a head that is not signed by the pipeline's certificate before
    it touches the cluster; then it applies the controllers, the `flux` identity's Secret, and the Flux objects. Flux reaches the server
    by its Service.

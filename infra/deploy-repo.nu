@@ -489,6 +489,49 @@ def load_config [target: string] {
     ^$nu.current-exe $file | from nuon
 }
 
+# What a tree that is not one checkout says it was made from, at the repository's root: a JSON list of { name, commit, describe?,
+# uncommitted_changes }, written by whatever laid the tree out from several (Blitz's overlay of Polar's infra). A checkout has
+# none, and its own commit says it.
+export const SOURCES_FILE = "sources.json"
+
+# Every source tree a render was made from, as the record says it: from the checkout (`checkout`, its commit, description and
+# whether it had changes beside it), named `polar`; or from `manifest` (SOURCES_FILE's list) for a tree that is no checkout.
+# Never both, nor neither: a tree that cannot say what it came from is not published (the provenance trail).
+export def sources_fact [checkout: any, manifest: any] {
+    if $checkout != null and $manifest != null {
+        error make --unspanned { msg: $"the tree is a checkout and has ($SOURCES_FILE) too: a checkout says its own commit, and ($SOURCES_FILE) is for a tree laid out from several; remove one" }
+    }
+    if $checkout == null and $manifest == null {
+        error make --unspanned { msg: $"the tree is not a git checkout and has no ($SOURCES_FILE) saying what it was made from, so its render cannot be recorded" }
+    }
+    if $checkout != null {
+        return [{ name: "polar", commit: $checkout.commit, describe: $checkout.describe, uncommitted_changes: $checkout.uncommitted_changes }]
+    }
+    if not (($manifest | describe) =~ '^(list|table)') or ($manifest | is-empty) {
+        error make --unspanned { msg: $"($SOURCES_FILE) names no source: it is a list of { name, commit, describe?, uncommitted_changes }" }
+    }
+    let names = ($manifest | each {|s| $s.name? | default "" })
+    let twice = ($names | uniq --repeated)
+    if ($twice | is-not-empty) { error make --unspanned { msg: $"($SOURCES_FILE) names ($twice | str join ', ') twice" } }
+    for s in $manifest {
+        let extra = ($s | columns | where {|c| $c not-in ["name" "commit" "describe" "uncommitted_changes"] })
+        if ($extra | is-not-empty) { error make --unspanned { msg: $"($SOURCES_FILE): a source has a field it does not know: ($extra | str join ', ')" } }
+        let name = ($s.name? | default "")
+        if not ($name =~ '^[a-z0-9][a-z0-9-]*$') { error make --unspanned { msg: $"($SOURCES_FILE): a source's name is lowercase letters, digits and hyphens: ($name | to json)" } }
+        if not (($s.commit? | default "") =~ '^[0-9a-f]{40}$') { error make --unspanned { msg: $"($SOURCES_FILE): ($name)'s commit is a full commit id, 40 hexadecimal digits" } }
+        if ($s.uncommitted_changes? | default null | describe) != "bool" { error make --unspanned { msg: $"($SOURCES_FILE): ($name) must say whether it had uncommitted_changes, true or false" } }
+    }
+    $manifest | each {|s| { name: $s.name, commit: $s.commit, describe: ($s.describe? | default $s.commit), uncommitted_changes: $s.uncommitted_changes } }
+}
+
+# The sources that had changes beside their commit, by name.
+export def dirty_sources [sources: list] { $sources | where uncommitted_changes | get name }
+
+# The sources as the deployment commit's message names them.
+export def commit_line [sources: list] {
+    $sources | each {|s| $"($s.name) ($s.describe) \(($s.commit)\)" } | str join ", "
+}
+
 def git_out [args: list<string>] {
     run_ok $"git ($args | first)" { ^git ...$args } | str trim
 }
@@ -549,9 +592,18 @@ def "main publish" [
         }
     }
 
-    let dirty = (git_out [status --porcelain] | is-not-empty)
+    # What the render was made from: this checkout, or the trees a layout names in SOURCES_FILE (Blitz's overlay).
+    let manifest_path = ($config.repo_root | path join $SOURCES_FILE)
+    let manifest = (if ($manifest_path | path exists) { open --raw $manifest_path | from json } else { null })
+    let in_checkout = ((do { ^git -C $config.repo_root rev-parse --is-inside-work-tree } | complete).exit_code == 0)
+    let checkout = (if $in_checkout {
+        { commit: (git_out [rev-parse HEAD]), describe: (git_out [describe --tags --always]), uncommitted_changes: (git_out [status --porcelain] | is-not-empty) }
+    } else { null })
+    let sources = (sources_fact $checkout $manifest)
+    let dirty_ones = (dirty_sources $sources)
+    let dirty = ($dirty_ones | is-not-empty)
     if $dirty and not $allow_dirty {
-        error make --unspanned { msg: "the working tree has uncommitted changes, so the commit it would be published from does not say what was rendered; commit them, or pass --allow-dirty (the provenance records it)" }
+        error make --unspanned { msg: $"($dirty_ones | str join ', ') had uncommitted changes, so the commit it would be published from does not say what was rendered; commit them, or pass --allow-dirty \(the provenance records it\)" }
     }
     let pki = (pki_dir $env.HOME $target)
     if not ($pki | path join "ca.pem" | path exists) { error make --unspanned { msg: $"no deployment PKI at ($pki): run: nu infra/deploy-repo.nu ensure ($target)" } }
@@ -562,7 +614,7 @@ def "main publish" [
     let facts = {
         schema: 1
         target: $target
-        source: { commit: (git_out [rev-parse HEAD]), describe: (git_out [describe --tags --always]), uncommitted_changes: $dirty }
+        sources: $sources
         published_by: "infra/deploy-repo.nu publish"
         cluster_inputs: (cluster_inputs_fact $config $target)
         image_lock: (if ($lock | path exists) { { file: "infra/images.lock.nuon", sha256: (digest_of $lock) } } else { null })
@@ -600,9 +652,9 @@ def "main publish" [
             if (git_out [-C $copy status --porcelain] | is-empty) {
                 { changed: false, commit: (try { git_out [-C $copy rev-parse HEAD] } catch { "" }) }
             } else {
-                let short = ($facts.source.commit | str substring 0..6)
-                let note = if $dirty { ", with uncommitted changes" } else { "" }
-                let msg = $"chore\(deploy\): ($target) from ($short)\n\nRendered from ($facts.source.describe) \(commit ($facts.source.commit)\)($note).\nLayers: ($published | get name | str join ', ')."
+                let short = ($facts.sources | each {|s| $"($s.name) ($s.commit | str substring 0..6)" } | str join ", ")
+                let note = if $dirty { $", with uncommitted changes in ($dirty_ones | str join ', ')" } else { "" }
+                let msg = $"chore\(deploy\): ($target) from ($short)\n\nRendered from (commit_line $facts.sources)($note).\nLayers: ($published | get name | str join ', ')."
                 let sign = (signing_config $signing.wrapper $signing.fingerprint $target)
                 run_ok "committing" { ^git -C $copy ...$sign commit -q -S -m $msg }
                 run_ok "verifying the signature" { ^git -C $copy ...$sign verify-commit HEAD }

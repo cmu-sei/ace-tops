@@ -135,7 +135,9 @@ Two notes:
   description and whether it had changes beside its commit, in place of today's one `source` (`infra/deploy-repo.nu:565`). In your
   overlay, main's tools run in a laid-out derivation, not a git checkout, so the sources cannot come from `git rev-parse HEAD`: they come
   from a manifest the layout writes, and the render refuses a tree that is not a checkout and has no manifest. Until it lands, carry
-  your patch, as your plan says, and publish nothing without both commits.
+  your patch, as your plan says, and publish nothing without both commits. **Built 2026-11-10**: the manifest is `sources.json` at the
+  tree's root, a list of `{ name, commit, describe?, uncommitted_changes }` with full commit ids and names in lowercase, digits and
+  hyphens; the record's `sources` replaces `source`, and a tree that is a checkout and has `sources.json` too is refused.
 - **Keycloak's realm and theme as overrides of our charts.** The overlay refuses a file that overwrites ours, so these go through the
   target's overrides (`targets/<target>/overrides.dhall`, read at `infra/render.nu:92`), not as replacement charts. If something you need cannot be said that way, tell us what,
   and we will look at it as a chart value rather than a file to replace.
