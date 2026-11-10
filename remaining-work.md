@@ -45,7 +45,9 @@ Each step is taken in bites, each reported before the next.
 9. ~~**Merge Vaughn's work from GitHub's main; then build-processor and the build orchestrator, last.**~~ DONE 2026-11-09, as the port's six
    areas (below, under the builder, "Upstream's work, by Vaughn's port"): build-processor and the orchestrator as area 2, the operator's
    ideas taken into lifecycle as area 4. Left from it: our fixes from area 5's review, starting with kube-observer's role derived from what it
-   declares.
+   declares, and, from Blitz's plan of 2026-11-09, the provenance record naming every source tree (a list of sources, from a manifest
+   where the tree is not a checkout). How Blitz's phases meet this order: `docs/requests/blitz-on-polar-coordination.md` (2026-11-10, a
+   proposal for Vaughn, kept current as steps land).
 10. **Lifecycle, after slice C** (the maintainer, 2026-11-09, "After slice C, sure"): `docs/architecture/lifecycle.md`'s order, the lifecycle
     document and its reader (where the Rust `polar` CLI starts), the agents deriving from it, then the catalog's split (where a downstream
     project's workloads get their layer), then the GitOps controller around phases. Where the port's area 5 lands in it: the review on
