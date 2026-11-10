@@ -64,18 +64,31 @@ step 4), so `polar-init` runs again and issues fresh certificates, under the sam
 ## 2. Components
 
 ```
-domain supervisor (per agent)
-└── InfrastructureSupervisor            owns the shutdown pipeline
+domain supervisor (per agent)           the agent's own work, and its own children
+
+InfrastructureSupervisor                the builder's; owns the shutdown pipeline
     ├── HealthCheckActor                judges health, writes the liveness file
     ├── RouterActor
     ├── TcpClientFacade (Cassini client) the stable front; supervises the transport
     │   └── TcpClientActor              the connection; replaced when it dies
-    └── CryptoActor                     only with_encryption(); one for the agent's life
+    ├── CryptoActor                     only with_encryption(); one for the agent's life
+    └── GraphControllerActor            only graph-write or graph-read; drained first at the end
 ```
 
-`polar-agent-builder` wires this. The domain supervisor receives
-`InfrastructureEvent::PrepareShutdown` and replies with
-`InfrastructureSupervisorMessage::ProceedWithShutdown`.
+`polar-agent-builder` wires this. The infrastructure is not the domain supervisor's child (since 2026-11-09):
+the builder watches it, and when it ends, however it ends, the builder stops the domain supervisor, so `run`
+returns non-zero (`shutdown::end_with_infrastructure`; a domain that has not ended 10 s later is ended by an
+exit). The domain hears nothing of the infrastructure but the notice it registered for, before `build()`:
+
+- `with_drain(|| Msg::PrepareShutdown)`: the agent has work of its own to finish (its children, a listener, a
+  queue, topics to let go of). It is sent its message and the infrastructure waits for its
+  `InfrastructureSupervisorMessage::ProceedWithShutdown`, within the shutdown budget.
+- `on_shutdown(|| Msg::PrepareShutdown)`: it only needs to know (to stop starting new work). It is sent its
+  message and the infrastructure goes on.
+- neither: it is not told.
+
+A held agent's supervisor registers `with_drain` and passes the notice to the work it starts
+(`held::WorkStarted`), which answers it.
 
 ## 3. The HealthCheckActor
 
@@ -242,10 +255,12 @@ Design decisions:
   uses its own termination as the signal. Its *unexpected* death is still treated
   as "something is very wrong" and triggers shutdown, but it is the exception path,
   not the protocol.
-- **One pipeline.** `PrepareShutdown` → domain supervisor drains and stops its own
-  children → `ProceedWithShutdown` → infrastructure children stop → the domain
-  supervisor exits non-zero when the infrastructure supervisor ends. Every trigger
-  takes the same steps, and the domain supervisor needs no change to get it.
+- **One pipeline.** The domain is told (if it registered) → a domain that drains
+  finishes its own work and sends `ProceedWithShutdown` (one that does not is not
+  waited for) → the graph controller drains → the other infrastructure children
+  stop → the infrastructure ends, and the builder stops the domain supervisor, so
+  `run` exits non-zero. Every trigger takes the same steps, and the domain
+  supervisor needs no change to get it.
 - **Shutdown is idempotent.** The first trigger starts it; a second while it is
   under way (SIGTERM during a rejuvenation drain, Kubernetes growing impatient) is
   logged and changes nothing. The domain supervisor is told once.
@@ -406,7 +421,7 @@ See `sequences/assets/asset_regeneration.md` to re-render.
 The broker is built on the same infrastructure as the agents, as a service rather than a client
 (`ServiceBuilder`; the `PolarAgent` it implements says `CASSINI_CLIENT = false`). It has the health
 actor, the signal listener, the shutdown funnel with its budget and watchdog, and the
-`PrepareShutdown`/`ProceedWithShutdown` handshake of section 4, and none of the router, the Cassini
+shutdown notice of section 2 (it registers `with_drain`), and none of the router, the Cassini
 client or the subscriptions, since it is what the client connects to. It is told once that Cassini
 is connected, because it has nothing to connect to. The five-phase drain is the broker's own.
 
@@ -419,8 +434,8 @@ agent which builder to use, and the scaffold lists the capability under `optiona
 variables present and tagged. Only Cassini can be optional so far. The git server is the first.
 
 - **What starts a shutdown.** Anything that starts it for an agent: the health actor's verdict or
-  its death, SIGTERM or SIGINT, a child of the infrastructure dying. Each reaches the broker as the
-  `PrepareShutdown` event, which starts the five phases (stop accepting connections, drain
+  its death, SIGTERM or SIGINT, a child of the infrastructure dying. Each reaches the broker as its
+  registered `PrepareForShutdown` message, which starts the five phases (stop accepting connections, drain
   sessions, flush topic queues, terminate subscribers, terminate listeners). A shutdown requested
   over the wire with the shutdown token is validated by the control manager, which starts the
   phases; the broker then asks the infrastructure to begin, so the same budget applies to it. A

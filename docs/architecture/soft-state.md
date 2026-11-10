@@ -339,9 +339,11 @@ properly migrated to the builder"), and making them so for every agent is a rema
 - **At start** (`8635c729`, `polar-agent-builder/src/held.rs`): `held::stay_up(configured, name, reason, message,
   try_again)`. `TryAgain` is a boxed async closure the agent passes; on each `ConfigChanged` it is called with a `Retry`:
   the configuration in force, the resources already built, the held supervisor's cell to link the work under, and
-  whether Cassini has registered the agent. `Ok` means the work started: the hold is released, the work takes the
-  agent's events itself (`events_output`, `infrastructure_events`) and answers the shutdown, and the work's ending ends
-  the agent. `Err(why)` keeps the hold, with `why` as its message. `held::never()` is the closure of an agent no update
+  whether Cassini has registered the agent. `Ok(WorkStarted)` means the work started, and says how to tell it the agent
+  is ending (`WorkStarted::told`, its own message): the hold is released, the work takes the agent's client events
+  itself (`events_output`), the held supervisor (which registered `with_drain`) passes it the shutdown notice and the
+  work answers it, and the work's ending ends the agent (since 2026-11-09; before, the work subscribed to the
+  infrastructure's event port). `Err(why)` keeps the hold, with `why` as its message. `held::never()` is the closure of an agent no update
   can mend. General; jira-observer is its one user (its closure runs `prepare` on the configuration in force and starts
   the observer supervisor on the built infrastructure, `Infrastructure::Built`).
 - **At run time, jira-observer** (`8c2ec420`, `e0901170`, `96ddd517`; `jira.md`, "What it does at start", 6): each
