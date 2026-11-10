@@ -143,7 +143,7 @@ From then on a run has no deployment git server to start. It starts the forwards
 1. *The signature is checked by no one after install* (item 4 of "Not settled"), which is true today and not only after the handoff: whoever can write to the repository can deploy anything. The
    handoff needs `polar-git-server` to refuse a commit to `deploy-T` that the pipeline did not sign. The server's image has no `gpgsm`, so it uses a verifier in Rust: `polar_signing::commit::verify_commit`
    (built 2026-11-02). It reads the BER `gpgsm` writes, and is tested against a real commit with every single-bit change of it refused.
-   The server's side is built too (`polar-git-server`, `signed.rs`; a repository's `signed_by`): a push is read into a quarantine, and git is given it only if every commit it brings and the head of every ref it
+   The server's side is built too (`polar-git-server`, `signed.rs`; a repository's `signed_by`): a push is read into a quarantine, and taken only if every commit it brings and the head of every ref it
    moves is signed. A head's certificate must be valid now, and what is under it when it was made, or a repository could not be copied a year on (for review). `deployment` sets it.
 2. ~~Who makes the copy.~~ *Decided (the maintainer, 2026-11-02):* the configuration agent, which reads the bootstrap repository once with one client certificate from the deployment PKI, and whose
    write access to `deploy-T` is withdrawn when the copy is done. It runs on the low-trust `observers` pool, so item 1 comes first: with it, the agent could copy signed commits and forge none.

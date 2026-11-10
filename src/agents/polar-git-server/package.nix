@@ -56,8 +56,8 @@ let
       };
     };
     configNixPath = ./container.nix;
-    # The server runs git (upload-pack, receive-pack) for every request.
-    extraDerivations = [ server pkgs.git ];
+    # No git: the server speaks git's protocol and keeps its repositories in process (gix-serve, gix).
+    extraDerivations = [ server ];
   };
 in
 {

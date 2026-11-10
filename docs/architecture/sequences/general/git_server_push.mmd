@@ -25,7 +25,7 @@ sequenceDiagram
     autonumber
     actor Client as A pusher (git, over mTLS)
     participant Srv as polar-git-server
-    participant Git as git receive-pack
+    participant Git as gix-serve, in process
     participant Log as push-log.jsonl
     participant Cassini
     participant Sch as Scheduler observer
@@ -34,12 +34,21 @@ sequenceDiagram
     Srv->>Srv: the repository, with write access for this identity, else 403
     Srv->>Srv: read the ref updates ahead of the pack, else 400
     Srv->>Srv: authorize each: the identity may write, under refs/heads/ only, else 403
-    opt the repository names a signer (signed_by: the deployment repository)
-        Srv->>Srv: read the pack into a quarantine, and verify every commit it brings<br/>to the deployment CA. A refusal is a report in git's own form, and nothing stays
-    end
     Srv->>Git: only now, the push
-    Git-->>Client: its report
-    loop each ref that now resolves to the new commit
+    Git->>Git: index the pack into a quarantine beside the repository's objects
+    Git->>Git: git's own rules: no branch deleted (receive.denyDeletes), none moved other than forward<br/>(receive.denyNonFastForwards), every object the new history needs there
+    Git->>Srv: judge it, on the repository with the quarantine
+    Srv->>Srv: the commands read are the ones authorized
+    opt the evidence repository
+        Srv->>Srv: every commit it brings made within ten minutes of the server's clock
+    end
+    opt the repository names a signer (signed_by: the deployment repository)
+        Srv->>Srv: every commit it brings, and each head, signed to the deployment CA
+    end
+    Srv-->>Git: allowed, or why not
+    Git->>Git: allowed: the pack moves in, and the refs, each only from the value the client said
+    Git-->>Client: its report, in git's own form. A refusal leaves nothing
+    loop each ref gix-serve moved: all of the push, or none
         Srv->>Log: time, repo, ref, old, new, pusher
         Srv-)Cassini: RepoChangedEvent on polar-git-repo-changed, if it has a broker
     end

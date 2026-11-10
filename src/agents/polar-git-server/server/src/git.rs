@@ -21,16 +21,17 @@
    DM26-0670
 */
 
-//! Runs `git upload-pack` and `git receive-pack` in their stateless-RPC form for smart HTTP.
+//! git's smart protocol for smart HTTP, served in process by gix-serve (the maintainer's gitoxide fork,
+//! docs/architecture/runtime-attestation.md, C2): `upload-pack` and `receive-pack` in their stateless-RPC form. No program
+//! is run. Each request works on a blocking thread, on the repository opened with its own configuration and nothing else
+//! of the host's, and is stopped where it is when it runs past its time.
 
+use gix_serve::receive_pack::Command;
 use std::path::Path;
-use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
-
-use crate::pktline::pkt_line;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
@@ -55,10 +56,17 @@ impl Service {
         }
     }
 
-    fn subcommand(self) -> &'static str {
+    fn what(self) -> &'static str {
         match self {
             Self::UploadPack => "upload-pack",
             Self::ReceivePack => "receive-pack",
+        }
+    }
+
+    fn served(self) -> gix_serve::Service {
+        match self {
+            Self::UploadPack => gix_serve::Service::UploadPack,
+            Self::ReceivePack => gix_serve::Service::ReceivePack,
         }
     }
 
@@ -77,8 +85,6 @@ pub enum GitError {
     Timeout(&'static str),
     #[error("git {0} failed: {1}")]
     Failed(&'static str, String),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug, Clone)]
@@ -95,75 +101,87 @@ impl Default for GitRunner {
 }
 
 impl GitRunner {
-    /// The `GET info/refs?service=...` response body.
+    /// The `GET info/refs?service=...` response body, in the protocol version the request's `Git-Protocol` header asks
+    /// for.
     pub async fn advertise(
         &self,
         repo: &Path,
         service: Service,
         git_protocol: Option<&str>,
     ) -> Result<Vec<u8>, GitError> {
-        let refs = self
-            .run(repo, service, &["--advertise-refs"], git_protocol, &[])
-            .await?;
-        let mut out = pkt_line(&format!("# service={}\n", service.name()));
-        out.extend(b"0000");
-        out.extend(refs);
-        Ok(out)
+        let protocol = gix_serve::Protocol::from_header(git_protocol);
+        self.run(service.what(), repo, move |repo, _| {
+            let mut out = Vec::new();
+            gix_serve::advertise(&repo, service.served(), protocol, &mut out)?;
+            Ok(out)
+        })
+        .await
     }
 
-    /// The `POST git-<service>` response body for a request body.
-    pub async fn rpc(
+    /// The `POST git-upload-pack` response body for a request body.
+    pub async fn upload_pack(
         &self,
         repo: &Path,
-        service: Service,
         git_protocol: Option<&str>,
-        body: &[u8],
+        body: Vec<u8>,
     ) -> Result<Vec<u8>, GitError> {
-        self.run(repo, service, &[], git_protocol, body).await
+        let protocol = gix_serve::Protocol::from_header(git_protocol);
+        self.run("upload-pack", repo, move |repo, stop| {
+            let mut out = Vec::new();
+            gix_serve::upload_pack::serve(&repo, protocol, &body, &mut out, stop)?;
+            Ok(out)
+        })
+        .await
     }
 
-    async fn run(
+    /// The `POST git-receive-pack` response body for a request body, and the updates it made: all of the request's or
+    /// none. `allow` judges the push after git's own rules (the repository's `receive.denyDeletes` and
+    /// `receive.denyNonFastForwards`, and every object the new history needs being there) and before anything is taken,
+    /// on the repository with the pushed objects in quarantine beside it; its refusal is the reason each ref reports.
+    pub async fn receive_pack(
         &self,
         repo: &Path,
-        service: Service,
-        extra: &[&str],
-        git_protocol: Option<&str>,
-        stdin: &[u8],
-    ) -> Result<Vec<u8>, GitError> {
-        let what = service.subcommand();
-        let mut cmd = Command::new("git");
-        cmd.arg(what)
-            .arg("--stateless-rpc")
-            .args(extra)
-            .arg(repo)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(p) = git_protocol {
-            cmd.env("GIT_PROTOCOL", p);
-        }
-        let mut child = cmd.spawn()?;
-        let mut input = child.stdin.take().expect("stdin is piped");
-        let body = stdin.to_vec();
-        let feed = tokio::spawn(async move {
-            // A process that exits early closes the pipe; its status says what happened.
-            let _ = input.write_all(&body).await;
-            let _ = input.shutdown().await;
+        body: Vec<u8>,
+        allow: impl FnOnce(&gix::Repository, &[Command]) -> Result<(), String> + Send + 'static,
+    ) -> Result<(Vec<u8>, Vec<Command>), GitError> {
+        self.run("receive-pack", repo, move |repo, stop| {
+            let mut out = Vec::new();
+            let made = gix_serve::receive_pack::serve(&repo, &body, &mut out, stop, allow)?;
+            Ok((out, made))
+        })
+        .await
+    }
+
+    /// Runs `work` on the repository at `path` on a blocking thread, and stops it when it runs past the timeout. It is
+    /// waited for even then, so what it leaves (a quarantine) is gone before the answer; and if it finished all the same
+    /// (it was past the last point it stops at, moving refs), its answer is the answer, so a push that was taken is never
+    /// reported as failed.
+    async fn run<T: Send + 'static>(
+        &self,
+        what: &'static str,
+        path: &Path,
+        work: impl FnOnce(gix::Repository, &AtomicBool) -> Result<T, gix_serve::Error> + Send + 'static,
+    ) -> Result<T, GitError> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let path = path.to_path_buf();
+        let flag = Arc::clone(&stop);
+        let mut task = tokio::task::spawn_blocking(move || {
+            let repo = gix::open_opts(&path, gix::open::Options::isolated())
+                .map_err(|e| format!("the repository cannot be opened: {e}"))?;
+            work(repo, &flag).map_err(|e| e.to_string())
         });
-        let out = tokio::time::timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| GitError::Timeout(what))??;
-        let _ = feed.await;
-        if !out.status.success() {
-            return Err(GitError::Failed(
-                what,
-                String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ));
-        }
-        Ok(out.stdout)
+        let done = match tokio::time::timeout(self.timeout, &mut task).await {
+            Ok(done) => done,
+            Err(_) => {
+                stop.store(true, Ordering::Relaxed);
+                match task.await {
+                    Ok(Ok(finished)) => return Ok(finished),
+                    _ => return Err(GitError::Timeout(what)),
+                }
+            }
+        };
+        done.map_err(|e| GitError::Failed(what, e.to_string()))?
+            .map_err(|why| GitError::Failed(what, why))
     }
 }
 

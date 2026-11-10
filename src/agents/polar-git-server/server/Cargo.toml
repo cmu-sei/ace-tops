@@ -35,6 +35,10 @@ cassini-client.workspace = true
 cassini-types.workspace = true
 # git gzips large fetch request bodies; the server must inflate them to read them.
 flate2 = "1"
+# The repositories, in process: gix-serve answers upload-pack and receive-pack, gix keeps the store (src/git.rs,
+# src/store.rs).
+gix.workspace = true
+gix-serve.workspace = true
 hyper-util.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true

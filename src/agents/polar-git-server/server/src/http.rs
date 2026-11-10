@@ -23,12 +23,12 @@
 
 //! Git smart HTTP: `info/refs`, `git-upload-pack` and `git-receive-pack`. The caller's identity
 //! arrives as an extension set by the TLS listener; this module trusts nothing else about who is
-//! asking. Every request is authorized before a git process is started.
+//! asking. Every request is authorized before git's protocol is spoken, and a push before its pack is read.
 
 use crate::access::{Access, Authorizer, Identity, RuntimeAcl, authorize_push};
 use crate::git::{GitError, GitRunner, Service};
 use crate::notify::{Notifier, RepoChanged};
-use crate::pktline::parse_ref_updates;
+use crate::pktline::{RefUpdate, parse_ref_updates};
 use crate::store::RepoStore;
 use axum::Router;
 use axum::body::Body;
@@ -203,7 +203,7 @@ async fn upload_pack(
     };
     match state
         .runner
-        .rpc(&path, Service::UploadPack, protocol(&headers), &body)
+        .upload_pack(&path, protocol(&headers), body)
         .await
     {
         Ok(out) => git_response(Service::UploadPack.content_type(), out),
@@ -228,8 +228,8 @@ async fn receive_pack(
         Err(r) => return *r,
     };
 
-    // The commands precede the pack: decide before git sees anything.
-    let (updates, pack_at) = match parse_ref_updates(&body) {
+    // The commands precede the pack: decide before it is read.
+    let (updates, _) = match parse_ref_updates(&body) {
         Ok(parsed) => parsed,
         Err(e) => return refuse(StatusCode::BAD_REQUEST, &e.to_string()),
     };
@@ -242,53 +242,51 @@ async fn receive_pack(
         info!(who = %who.0, repo, %why, "push denied");
         return refuse(StatusCode::FORBIDDEN, &why);
     }
-    if let Some(policy) = state.signed.policy_of(repo)
-        && let Err(why) = crate::signed::check_push(
-            &path,
-            policy,
-            &updates,
-            &body[pack_at..],
-            crate::signed::wall_clock(),
-        )
-        .await
-    {
-        warn!(who = %who.0, repo, %why, "push refused: not signed as this repository requires");
-        return git_response(
-            Service::ReceivePack.content_type(),
-            crate::pktline::refusal_report(&body, &updates, &why),
-        );
-    }
 
-    let out = match state
-        .runner
-        .rpc(&path, Service::ReceivePack, protocol(&headers), &body)
-        .await
-    {
-        Ok(out) => out,
+    let now = crate::signed::wall_clock();
+    let signed = Arc::clone(&state.signed);
+    let (name, pusher) = (repo.to_string(), who.0.clone());
+    let judge = move |quarantined: &gix::Repository,
+                      commands: &[gix_serve::receive_pack::Command]| {
+        // What is taken is what was authorized: gix-serve read the same commands from the body.
+        if !same_commands(&updates, commands) {
+            return Err("the commands were not read alike".to_string());
+        }
+        if let Some(policy) = signed.policy_of(&name)
+            && let Err(why) = crate::signed::check_push(quarantined, policy, &updates, now)
+        {
+            warn!(who = %pusher, repo = %name, %why, "push refused: not signed as this repository requires");
+            return Err(why);
+        }
+        Ok(())
+    };
+    let (out, made) = match state.runner.receive_pack(&path, body, judge).await {
+        Ok(served) => served,
         Err(e) => return git_failure(e),
     };
 
-    // Git can refuse individual updates (for example a non-fast-forward) and still succeed as a
-    // process, so announce only the refs that now point where the push said they would.
-    for update in updates {
-        if state
-            .store
-            .resolve_ref(repo, &update.refname)
-            .await
-            .as_deref()
-            == Some(update.new.as_str())
-        {
-            state
-                .notifier
-                .repo_changed(RepoChanged {
-                    repo: repo.to_string(),
-                    refname: update.refname,
-                    old: update.old,
-                    new: update.new,
-                    pusher: who.0.clone(),
-                })
-                .await;
-        }
+    // A push is taken whole or not at all; announce what it moved.
+    for command in made {
+        state
+            .notifier
+            .repo_changed(RepoChanged {
+                repo: repo.to_string(),
+                refname: command.name,
+                old: command.old.to_string(),
+                new: command.new.to_string(),
+                pusher: who.0.clone(),
+            })
+            .await;
     }
     git_response(Service::ReceivePack.content_type(), out)
+}
+
+/// Whether gix-serve's commands are the ones authorized: the same updates in the same order.
+fn same_commands(authorized: &[RefUpdate], read: &[gix_serve::receive_pack::Command]) -> bool {
+    authorized.len() == read.len()
+        && authorized.iter().zip(read).all(|(a, r)| {
+            a.refname == r.name
+                && a.old.eq_ignore_ascii_case(&r.old.to_string())
+                && a.new.eq_ignore_ascii_case(&r.new.to_string())
+        })
 }

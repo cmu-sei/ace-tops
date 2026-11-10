@@ -130,6 +130,10 @@ cynic-parser = "0.11"                                   # judges a GraphQL sourc
 futures = "0.3.32"                                       # used in kube-observer
 futures-lite = "2.6.1"
 git2 = "0.20"
+# git's smart protocol served in process (polar-git-server): gix-serve, on the maintainer's gitoxide fork, pinned by rev
+# (docs/architecture/runtime-attestation.md, C2). gix and gix-serve come from the same rev, so they are one gix.
+gix = { git = "https://github.com/daveman1010221/gitoxide", rev = "bcd0efbdb", default-features = false, features = ["revision", "sha1"] }
+gix-serve = { git = "https://github.com/daveman1010221/gitoxide", rev = "bcd0efbdb" }
 hex = "0.4.3"
 # http::Uri, the type hyper-util's proxy matcher takes (polar::egress)
 http = "1.5"

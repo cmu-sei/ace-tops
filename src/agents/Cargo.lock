@@ -234,6 +234,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84a22b5d51209f6de83d37a0b33d320acb8da88823e42a94c075140708f032a5"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "argon2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,6 +986,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
+dependencies = [
+ "memchr",
+ "regex-automata",
+ "serde_core",
+]
+
+[[package]]
 name = "build-fetch"
 version = "1.0.0"
 dependencies = [
@@ -1548,6 +1568,15 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "clru"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "197fd99cb113a8d5d9b6376f3aa817f32c1078f2343b714fff7d2ca44fdf67d5"
+dependencies = [
+ "hashbrown 0.16.1",
+]
 
 [[package]]
 name = "cmov"
@@ -2279,6 +2308,15 @@ dependencies = [
 
 [[package]]
 name = "defmt"
+version = "0.3.101"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4deef977660e373c458df605a913d4ab121db0ccd18d1ad6976dff7d37cddb53"
+dependencies = [
+ "defmt 1.1.1",
+]
+
+[[package]]
+name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2953bfe4f93bbd20cc71198842756f77d161884c99ebbabc41d80231ded88d1"
@@ -2544,6 +2582,12 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "dunce"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "duplicate"
@@ -2817,6 +2861,18 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener",
  "pin-project-lite",
+]
+
+[[package]]
+name = "faster-hex"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04839bdf9d8c10f66806fad16b852fc72aab80873aebc3cb69d85b4fa41543ed"
+dependencies = [
+ "autocfg",
+ "defmt 0.3.101",
+ "heapless",
+ "serde",
 ]
 
 [[package]]
@@ -3319,6 +3375,670 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix"
+version = "0.90.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-actor",
+ "gix-commitgraph",
+ "gix-config",
+ "gix-date",
+ "gix-diff",
+ "gix-discover",
+ "gix-error",
+ "gix-fs",
+ "gix-glob",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-index",
+ "gix-lock",
+ "gix-note",
+ "gix-object",
+ "gix-odb",
+ "gix-pack",
+ "gix-parallel",
+ "gix-path",
+ "gix-protocol",
+ "gix-quote",
+ "gix-ref",
+ "gix-refspec",
+ "gix-revision",
+ "gix-revwalk",
+ "gix-sec",
+ "gix-shallow",
+ "gix-tempfile",
+ "gix-trace",
+ "gix-traverse",
+ "gix-url",
+ "gix-utils",
+ "gix-validate",
+ "gix-worktree-stream",
+ "gix-zlib",
+ "nonempty",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-actor"
+version = "0.45.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-date",
+ "gix-error",
+ "gix-macros",
+]
+
+[[package]]
+name = "gix-attributes"
+version = "0.37.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-glob",
+ "gix-parallel",
+ "gix-path",
+ "gix-quote",
+ "gix-trace",
+ "smallvec",
+ "unicode-bom",
+]
+
+[[package]]
+name = "gix-bitmap"
+version = "0.6.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-error",
+]
+
+[[package]]
+name = "gix-chunk"
+version = "0.10.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-error",
+]
+
+[[package]]
+name = "gix-command"
+version = "0.12.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-path",
+ "gix-quote",
+ "gix-trace",
+]
+
+[[package]]
+name = "gix-commitgraph"
+version = "0.42.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-chunk",
+ "gix-error",
+ "gix-hash",
+ "memmap2",
+ "nonempty",
+]
+
+[[package]]
+name = "gix-config"
+version = "0.62.2"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-config-value",
+ "gix-error",
+ "gix-glob",
+ "gix-parallel",
+ "gix-path",
+ "gix-ref",
+ "gix-sec",
+ "gix-trace",
+ "gix-utils",
+ "smallvec",
+ "unicode-bom",
+]
+
+[[package]]
+name = "gix-config-value"
+version = "0.21.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bitflags 2.13.2",
+ "bstr",
+ "gix-error",
+ "gix-path",
+ "gix-utils",
+ "libc",
+]
+
+[[package]]
+name = "gix-date"
+version = "0.19.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-macros",
+ "itoa",
+ "jiff",
+]
+
+[[package]]
+name = "gix-diff"
+version = "0.70.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-hash",
+ "gix-object",
+]
+
+[[package]]
+name = "gix-discover"
+version = "0.57.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "dunce",
+ "gix-error",
+ "gix-fs",
+ "gix-path",
+ "gix-ref",
+ "gix-sec",
+]
+
+[[package]]
+name = "gix-encoding"
+version = "0.1.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-error",
+ "gix-zlib",
+]
+
+[[package]]
+name = "gix-error"
+version = "0.5.2"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+]
+
+[[package]]
+name = "gix-filter"
+version = "0.36.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-attributes",
+ "gix-command",
+ "gix-encoding",
+ "gix-error",
+ "gix-hash",
+ "gix-object",
+ "gix-packetline",
+ "gix-path",
+ "gix-quote",
+ "gix-trace",
+ "gix-utils",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-fs"
+version = "1.0.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-macros",
+ "gix-parallel",
+ "gix-path",
+ "gix-utils",
+ "libc",
+ "walkdir",
+]
+
+[[package]]
+name = "gix-glob"
+version = "0.29.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bitflags 2.13.2",
+ "bstr",
+ "gix-fs",
+ "gix-path",
+ "gix-trace",
+ "gix-utils",
+]
+
+[[package]]
+name = "gix-hash"
+version = "0.28.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "faster-hex",
+ "gix-error",
+ "gix-macros",
+ "gix-utils",
+ "sha1dc",
+]
+
+[[package]]
+name = "gix-hashtable"
+version = "0.18.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-hash",
+ "hashbrown 0.17.1",
+ "parking_lot",
+]
+
+[[package]]
+name = "gix-index"
+version = "0.58.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bitflags 2.13.2",
+ "bstr",
+ "filetime",
+ "fnv",
+ "gix-bitmap",
+ "gix-error",
+ "gix-fs",
+ "gix-hash",
+ "gix-lock",
+ "gix-object",
+ "gix-parallel",
+ "gix-trace",
+ "gix-traverse",
+ "gix-utils",
+ "gix-validate",
+ "hashbrown 0.17.1",
+ "itoa",
+ "libc",
+ "memmap2",
+ "rustix",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-lock"
+version = "27.0.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-error",
+ "gix-fs",
+ "gix-macros",
+ "gix-tempfile",
+ "gix-utils",
+]
+
+[[package]]
+name = "gix-macros"
+version = "0.2.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "gix-note"
+version = "0.3.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-error",
+ "gix-hash",
+ "gix-object",
+]
+
+[[package]]
+name = "gix-object"
+version = "0.66.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-actor",
+ "gix-date",
+ "gix-error",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-utils",
+ "gix-validate",
+ "itoa",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-odb"
+version = "0.87.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "arc-swap",
+ "crc32fast",
+ "gix-error",
+ "gix-fs",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "gix-pack",
+ "gix-parallel",
+ "gix-path",
+ "gix-quote",
+ "gix-trace",
+ "gix-utils",
+ "gix-zlib",
+ "memmap2",
+ "parking_lot",
+ "tempfile",
+]
+
+[[package]]
+name = "gix-pack"
+version = "0.77.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "clru",
+ "crc32fast",
+ "gix-chunk",
+ "gix-diff",
+ "gix-error",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "gix-parallel",
+ "gix-path",
+ "gix-tempfile",
+ "gix-trace",
+ "gix-traverse",
+ "gix-utils",
+ "gix-zlib",
+ "memmap2",
+ "parking_lot",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-packetline"
+version = "0.24.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "faster-hex",
+ "gix-error",
+ "gix-trace",
+]
+
+[[package]]
+name = "gix-parallel"
+version = "0.50.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "crossbeam-channel",
+ "gix-trace",
+ "once_cell",
+ "parking_lot",
+]
+
+[[package]]
+name = "gix-path"
+version = "0.14.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-trace",
+ "gix-validate",
+ "winreg",
+]
+
+[[package]]
+name = "gix-protocol"
+version = "0.68.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-date",
+ "gix-error",
+ "gix-hash",
+ "gix-macros",
+ "gix-ref",
+ "gix-shallow",
+ "gix-transport",
+ "gix-utils",
+ "nonempty",
+]
+
+[[package]]
+name = "gix-quote"
+version = "0.10.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-utils",
+]
+
+[[package]]
+name = "gix-ref"
+version = "0.69.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-actor",
+ "gix-error",
+ "gix-fs",
+ "gix-hash",
+ "gix-lock",
+ "gix-object",
+ "gix-parallel",
+ "gix-path",
+ "gix-utils",
+ "gix-validate",
+ "memmap2",
+]
+
+[[package]]
+name = "gix-refspec"
+version = "0.47.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-hash",
+ "gix-validate",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-revision"
+version = "0.52.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bitflags 2.13.2",
+ "bstr",
+ "gix-commitgraph",
+ "gix-date",
+ "gix-error",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "gix-revwalk",
+ "gix-trace",
+ "nonempty",
+]
+
+[[package]]
+name = "gix-revwalk"
+version = "0.38.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-commitgraph",
+ "gix-date",
+ "gix-error",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-sec"
+version = "0.16.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bitflags 2.13.2",
+ "gix-path",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "gix-serve"
+version = "0.0.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix",
+ "gix-pack",
+ "gix-packetline",
+]
+
+[[package]]
+name = "gix-shallow"
+version = "0.15.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-hash",
+ "gix-lock",
+ "nonempty",
+]
+
+[[package]]
+name = "gix-tempfile"
+version = "27.0.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-fs",
+ "libc",
+ "parking_lot",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "gix-trace"
+version = "0.3.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+
+[[package]]
+name = "gix-transport"
+version = "0.62.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-command",
+ "gix-error",
+ "gix-packetline",
+ "gix-path",
+ "gix-quote",
+ "gix-sec",
+ "gix-trace",
+ "gix-url",
+ "gix-utils",
+]
+
+[[package]]
+name = "gix-traverse"
+version = "0.64.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bitflags 2.13.2",
+ "gix-commitgraph",
+ "gix-date",
+ "gix-error",
+ "gix-hash",
+ "gix-hashtable",
+ "gix-object",
+ "gix-revwalk",
+ "smallvec",
+]
+
+[[package]]
+name = "gix-url"
+version = "0.40.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+ "gix-path",
+ "gix-utils",
+ "percent-encoding",
+]
+
+[[package]]
+name = "gix-utils"
+version = "0.5.2"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "bytes",
+ "fastrand",
+ "getrandom 0.4.3",
+ "gix-error",
+ "prodash",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "gix-validate"
+version = "0.13.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "bstr",
+ "gix-error",
+]
+
+[[package]]
+name = "gix-worktree-stream"
+version = "0.39.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-attributes",
+ "gix-error",
+ "gix-filter",
+ "gix-fs",
+ "gix-hash",
+ "gix-object",
+ "gix-parallel",
+ "gix-path",
+ "gix-trace",
+ "gix-traverse",
+ "gix-utils",
+ "parking_lot",
+]
+
+[[package]]
+name = "gix-zlib"
+version = "0.4.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=bcd0efbdb#bcd0efbdbf5b1e9b7b6248a88be88d7905502e53"
+dependencies = [
+ "gix-error",
+ "zlib-rs",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3436,6 +4156,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3477,6 +4206,21 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -4134,7 +4878,7 @@ version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ab1baf72f08796de0260609515130699b890ac25f30e610ad894bc5856cafdb"
 dependencies = [
- "defmt",
+ "defmt 1.1.1",
  "jiff-core",
  "jiff-static",
  "jiff-tzdb-platform",
@@ -4151,7 +4895,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
 dependencies = [
- "defmt",
+ "defmt 1.1.1",
  "log",
 ]
 
@@ -4925,6 +5669,15 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "memmap2"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b0ca1155a9ecc25aa12e8313a119f32edf0255fea2f44839c4ac0a12b2ac157"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "miette"
@@ -6486,6 +7239,8 @@ dependencies = [
  "cassini-client",
  "cassini-types",
  "flate2",
+ "gix",
+ "gix-serve",
  "hyper-util",
  "polar-agent-builder",
  "polar-custody",
@@ -7047,6 +7802,15 @@ dependencies = [
  "syn 2.0.119",
  "version_check",
  "yansi",
+]
+
+[[package]]
+name = "prodash"
+version = "31.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf52d87428247c5aa3760ac8e7d8b13ec7b3579b955a8c3f311668b6860acba5"
+dependencies = [
+ "parking_lot",
 ]
 
 [[package]]
@@ -8365,6 +9129,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1dc"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5b0ebf6537e3e8db8bb7d21ecb6d7399738c953c757945c6b95e46c4e95df7b"
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9475,6 +10245,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
+name = "unicode-bom"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7eec5d1121208364f6793f7d2e222bf75a915c19557537745b195b253dd64217"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10307,6 +11083,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

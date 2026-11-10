@@ -271,6 +271,7 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
     "https://github.com/daveman1010221/backoff",
+    "https://github.com/daveman1010221/gitoxide",
     "https://github.com/rust-random/getrandom",
     "https://github.com/neo4j-labs/neo4rs"
 ]

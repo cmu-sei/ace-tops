@@ -457,23 +457,27 @@ only.
 
 - [ ] **`polar-git-server`'s failure handling** (handed over 2026-11-06 by the agentic-control-plane session, at the maintainer's asking, from two read-only reviews,
   one guided by polar-eden's failure-mode catalogue; its write-up is in that branch's `docs/architecture/polar-eden.md`, "Failure modes"; the server has not changed
-  on main since the commit they read, `fe2195a7`). Nothing fixed. "Checked" means that session read the code and it is as stated:
-  - Checked, the most serious: `store.rs` create (~92-121) judges a repository to exist by its `HEAD`, and sets `receive.denyNonFastForwards` and
+  on main since the commit they read, `fe2195a7`). "Checked" means that session read the code and it is as stated. *Fixed or gone with C2 (2026-11-10, the server
+  on gitoxide, `git-server.md`, "Git execution"): the first, the fourth, and of the last, the 500 after refs moved, the quarantines reused and `run_git`.*
+  - ~~Checked, the most serious: `store.rs` create (~92-121) judges a repository to exist by its `HEAD`, and sets `receive.denyNonFastForwards` and
     `receive.denyDeletes` in separate steps after init. A step that fails, or a pod or client that goes in between (`run_git` has no `kill_on_drop`), leaves a repository
     every later create calls existing, without them: a writer could force-push or delete `main`, and in a signed repository move it back to an older commit the
-    pipeline signed whose certificate is still valid, which Flux would roll back to.
+    pipeline signed whose certificate is still valid, which Flux would roll back to.~~ *Fixed with C2:* a repository is built beside its place, settings and all,
+    and moved there whole; one found without the settings is given them by the next create (`store.rs`, `create`, `hold_to_the_rules`).
   - Checked: the TLS serve loop (`tls.rs` ~169-206) has no handshake timeout, no header-read or idle timer and no connection cap: idle connections that never finish a
     handshake exhaust file descriptors while health stays green, and each shutdown waits the full drain.
   - Checked: `ClientIdentities` (`tls.rs` ~94-121) keeps only the deployment CA file's first certificate and prefixes `deployment:` only for leaves it signed directly,
     while the verifier trusts every certificate in the file and chains through intermediates: a leaf from a second certificate (a rotation bundle) or through an
     intermediate gets a plain name, so the deployment PKI could speak as a Polar identity. Latent while that PKI issues from one certificate.
-  - Checked: a push is logged by re-reading each ref after `receive-pack` (`http.rs` ~273-291, `store.rs` `resolve_ref` ~154-167), not from git's report-status, so a
-    concurrent push to the same ref goes unlogged or is credited to the other pusher, and an upper-case object id (`pktline.rs` `is_oid` ~105) may never be logged.
+  - ~~Checked: a push is logged by re-reading each ref after `receive-pack` (`http.rs` ~273-291, `store.rs` `resolve_ref` ~154-167), not from git's report-status, so a
+    concurrent push to the same ref goes unlogged or is credited to the other pusher, and an upper-case object id (`pktline.rs` `is_oid` ~105) may never be logged.~~
+    *Fixed with C2:* what is logged and announced is what gix-serve says it applied, all of the push or none.
   - Checked: the handshake signs through the custody daemon synchronously inside `accept` on a runtime thread, a blocking round trip per ClientHello; it may apply to
     every `server_config` with a custody key.
   - Not re-read by that session: bodies of up to 256 MiB read whole and copied before `is_admin`, with no limit on concurrent requests; and, lesser, a push-log line or
-    event lost on a crash, a 500 after 120 s though refs moved, `access.rs` writing without fsync, quarantine directories leaking and reused across restarts, `run_git`
-    without a timeout, and signing-check errors logged as refusals.
+    event lost on a crash, ~~a 500 after 120 s though refs moved~~ (a request that finishes after its timeout keeps its answer), `access.rs` writing without fsync,
+    quarantine directories leaking ~~and reused across restarts~~ (a quarantine is made fresh for each push; one a crash left is never used, but stays on disk),
+    ~~`run_git` without a timeout~~ (no program is run), and signing-check errors logged as refusals.
 - [ ] **polar-scheduler-observer's git calls have no time bound** (handed over 2026-11-08 by the agentic-control-plane session, found by its
   first rule-review run; its rule `limits calls-out-time-bounded` carries it as a gap, `rules/limits.rules.dhall` at `568f6ba4` there). `git_ops.rs`
   ~64-75 `run()` calls `Command::output()`, unbounded, for clone, fetch, pull and push; its callers await it through `spawn_blocking(...).await`

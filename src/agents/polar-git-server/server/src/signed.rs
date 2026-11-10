@@ -25,20 +25,14 @@
 //! what Flux deploys, so write access to it must not be enough to change what runs: a push is taken only if every commit it brings is signed by the
 //! pipeline's certificate, chaining to the deployment CA. Nothing here is in the way of any other repository.
 //!
-//! Git is given the push only after it passes. The pack is read into a quarantine beside the repository, so what is judged is what would be stored, and a
-//! refused push leaves nothing behind.
+//! A push is judged in gix-serve's quarantine (src/git.rs): its pack is indexed beside the repository's objects, so what is judged is what would be
+//! stored, and a refused push leaves nothing behind.
 
 use crate::config::{RepoSpec, SignedBy};
 use crate::pktline::RefUpdate;
 use polar_signing::Trust;
 use polar_signing::commit::verify_commit;
 use std::collections::{BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 
 /// The rule of one repository.
 pub struct CommitPolicy {
@@ -100,42 +94,92 @@ pub fn wall_clock() -> i64 {
         .unwrap_or(0)
 }
 
-/// How long git is given for one step of judging a push.
-const GIT_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Tells a quarantine's directories apart within one process.
-static QUARANTINES: AtomicU64 = AtomicU64::new(0);
-
-/// Whether a push may be given to git: every commit it brings, and the head of every ref it moves, is signed as the repository requires. (Every
-/// repository refuses a deletion by its own configuration, `store.rs`.) A commit already on the server gets no pass as a head, so a ref cannot be pointed at something taken before the rule was.
-pub async fn check_push(
-    repo: &Path,
+/// Whether a push may be taken: every commit it brings, and the head of every ref it moves, is signed as the repository requires. `repo` is the
+/// repository with the push's objects in quarantine beside it. (Every repository refuses a deletion by its own configuration, `store.rs`, which
+/// gix-serve holds a push to before this.) A commit already on the server gets no pass as a head, so a ref cannot be pointed at something taken before
+/// the rule was.
+pub fn check_push(
+    repo: &gix::Repository,
     policy: &CommitPolicy,
     updates: &[RefUpdate],
-    pack: &[u8],
     now: i64,
 ) -> Result<(), String> {
-    let quarantine = Quarantine::new(repo)?;
-    if !pack.is_empty() {
-        quarantine
-            .git(&["index-pack", "--stdin", "--fix-thin"], pack)
-            .await?;
-    }
-    for update in updates {
-        let listed = quarantine
-            .git(&["rev-list", &update.new, "--not", "--all"], &[])
-            .await?;
-        let listed = String::from_utf8_lossy(&listed);
-        let mut judged: BTreeSet<&str> = listed.lines().collect();
-        judged.insert(update.new.as_str());
-        for commit in judged {
-            let raw = quarantine.git(&["cat-file", "commit", commit], &[]).await?;
-            let at = checked_at(commit == update.new, committer_time(&raw), now);
-            verify_commit(&raw, &policy.trust, &policy.signer, at)
-                .map_err(|why| format!("commit {commit} is refused: {why}"))?;
-        }
+    for pushed in pushed_commits(repo, updates)? {
+        let at = checked_at(pushed.head, committer_time(&pushed.raw), now);
+        verify_commit(&pushed.raw, &policy.trust, &policy.signer, at)
+            .map_err(|why| format!("commit {} is refused: {why}", pushed.commit))?;
     }
     Ok(())
+}
+
+/// A commit a push brings, or points a ref at.
+pub(crate) struct Pushed {
+    pub(crate) commit: String,
+    /// Whether a ref is to point at it.
+    pub(crate) head: bool,
+    /// The commit object, as `git cat-file commit` gives it.
+    pub(crate) raw: Vec<u8>,
+}
+
+/// Every commit a push brings that no ref of the repository reaches, for each of `updates`, and the head of every ref they move, held or not, as
+/// `git rev-list <new> --not --all` lists them. `repo` is the repository with the push's objects in quarantine beside it. A deletion brings nothing.
+pub(crate) fn pushed_commits(
+    repo: &gix::Repository,
+    updates: &[RefUpdate],
+) -> Result<Vec<Pushed>, String> {
+    let held = held_commits(repo)?;
+    let mut pushed = Vec::new();
+    for update in updates {
+        let new = gix::ObjectId::from_hex(update.new.as_bytes())
+            .map_err(|e| format!("{} is not an object id: {e}", update.new))?;
+        if new.is_null() {
+            continue;
+        }
+        if repo.find_header(new).map(|h| h.kind()).ok() != Some(gix::object::Kind::Commit) {
+            return Err(format!("{} is not a commit", update.new));
+        }
+        let mut judged: BTreeSet<gix::ObjectId> = BTreeSet::from([new]);
+        for info in repo
+            .rev_walk([new])
+            .with_hidden(held.iter().copied())
+            .all()
+            .map_err(|e| format!("the history of {new} cannot be walked: {e}"))?
+        {
+            let info = info.map_err(|e| format!("the history of {new} cannot be walked: {e}"))?;
+            judged.insert(info.id);
+        }
+        for commit in judged {
+            let raw = repo
+                .find_object(commit)
+                .map_err(|e| format!("commit {commit} cannot be read: {e}"))?
+                .detach()
+                .data;
+            pushed.push(Pushed {
+                commit: commit.to_string(),
+                head: commit == new,
+                raw,
+            });
+        }
+    }
+    Ok(pushed)
+}
+
+/// The commits the repository's refs point at, through annotated tags: what a push's history is walked back to.
+fn held_commits(repo: &gix::Repository) -> Result<Vec<gix::ObjectId>, String> {
+    let mut held = Vec::new();
+    for reference in repo
+        .references()
+        .and_then(|platform| platform.all().map(|all| all.collect::<Vec<_>>()))
+        .map_err(|e| format!("the refs cannot be listed: {e}"))?
+    {
+        let mut reference = reference.map_err(|e| format!("a ref cannot be read: {e}"))?;
+        if let Ok(id) = reference.peel_to_id()
+            && repo.find_header(id).map(|h| h.kind()).ok() == Some(gix::object::Kind::Commit)
+        {
+            held.push(id.detach());
+        }
+    }
+    Ok(held)
 }
 
 /// When a commit's certificate must have been valid. A head goes live now, so its certificate must be valid now. What is under it was signed when it
@@ -149,80 +193,13 @@ fn checked_at(head: bool, committed: Option<i64>, now: i64) -> i64 {
 }
 
 /// The time on a commit's `committer` header.
-fn committer_time(raw: &[u8]) -> Option<i64> {
+pub(crate) fn committer_time(raw: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(raw).ok()?;
     let line = text
         .lines()
         .take_while(|l| !l.is_empty())
         .find(|l| l.starts_with("committer "))?;
     line.rsplit(' ').nth(1)?.parse().ok()
-}
-
-/// A place beside the repository where a push's objects can be read before they are taken, removed when it goes out of scope.
-struct Quarantine<'a> {
-    repo: &'a Path,
-    dir: PathBuf,
-}
-
-impl<'a> Quarantine<'a> {
-    fn new(repo: &'a Path) -> Result<Self, String> {
-        let dir = repo.join(format!(
-            "polar-quarantine-{}-{}",
-            std::process::id(),
-            QUARANTINES.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(dir.join("pack"))
-            .map_err(|e| format!("cannot make a quarantine: {e}"))?;
-        Ok(Self { repo, dir })
-    }
-
-    /// Runs git in the repository, where what is written goes to the quarantine and what is read comes from there or from the repository.
-    async fn git(&self, args: &[&str], stdin: &[u8]) -> Result<Vec<u8>, String> {
-        let mut command = Command::new("git");
-        command
-            .args(args)
-            .env("GIT_DIR", self.repo)
-            .env("GIT_OBJECT_DIRECTORY", &self.dir)
-            .env(
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-                self.repo.join("objects"),
-            )
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("cannot run git {}: {e}", args[0]))?;
-        let mut input = child.stdin.take().expect("stdin is piped");
-        let body = stdin.to_vec();
-        let feed = tokio::spawn(async move {
-            // A process that exits early closes the pipe; its status says what happened.
-            let _ = input.write_all(&body).await;
-            let _ = input.shutdown().await;
-        });
-        let out = tokio::time::timeout(GIT_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| format!("git {} did not finish in time", args[0]))?
-            .map_err(|e| format!("git {}: {e}", args[0]))?;
-        let _ = feed.await;
-        if !out.status.success() {
-            return Err(format!(
-                "git {}: {}",
-                args[0],
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(out.stdout)
-    }
-}
-
-impl Drop for Quarantine<'_> {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
 }
 
 #[cfg(test)]
