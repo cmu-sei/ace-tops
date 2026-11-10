@@ -297,6 +297,25 @@ def main [] {
             assert ($r.init_mounts | any {|m| $m.path == "/run/polar-custody" })
         }
 
+        # docs/architecture/runtime-attestation.md, slice C, C1: every container of Polar's own runs with a read-only root, no
+        # privilege escalation and the runtime's default seccomp profile. Polar's containers write nothing to their root
+        # (read on u7c, 2026-11-10: only the /etc files the runtime mounts), so none needs a volume for it.
+        "every container of Polar's own runs with a read-only root, no privilege escalation and the default seccomp profile": {
+            for name in ["kube-observer" "cert-issuer" "cassini" "credentials-agent"] {
+                let pod = (pod_of $name "sandbox-local")
+                let containers = (($pod.initContainers? | default []) ++ $pod.containers)
+                assert ($containers | is-not-empty) $name
+                for c in $containers {
+                    let sc = ($c.securityContext? | default {})
+                    let at = $"($name)/($c.name)"
+                    assert equal ($sc.readOnlyRootFilesystem? | default false) true $at
+                    assert equal ($sc.allowPrivilegeEscalation? | default true) false $at
+                    assert equal ($sc.seccompProfile?.type? | default "") "RuntimeDefault" $at
+                    assert equal ($sc.runAsNonRoot? | default false) true $at
+                }
+            }
+        }
+
         "the custody daemon is a native sidecar before polar-init, apart, with IPC_LOCK alone": {
             let pod = (pod_of "kube-observer" "sandbox-local")
             let init = ($pod.initContainers | get name)

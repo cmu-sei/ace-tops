@@ -148,6 +148,17 @@ let DropAllCapSecurityContext =
       , capabilities = Some kubernetes.Capabilities::{ drop = Some [ "ALL" ] }
       }
 
+-- Every container of Polar's own (an agent, polar-init, the custody daemon, cert-issuer): the above, with a read-only root,
+-- no privilege escalation (`NoNewPrivs`) and the runtime's default seccomp profile (docs/architecture/runtime-attestation.md,
+-- slice C, C1). Polar's containers write nothing to their root, only to their volumes.
+let hardening =
+      { allowPrivilegeEscalation = Some False
+      , readOnlyRootFilesystem = Some True
+      , seccompProfile = Some kubernetes.SeccompProfile::{ type = "RuntimeDefault" }
+      }
+
+let HardenedSecurityContext = DropAllCapSecurityContext // hardening
+
 let RejectSidecarAnnotation =
       { mapKey = "sidecar.istio.io/inject", mapValue = "false" }
 
@@ -273,6 +284,8 @@ in  { PolarNamespace
     , ProvenanceLinkerName
     , ProvenanceResolverName
     , DropAllCapSecurityContext
+    , HardenedSecurityContext
+    , hardening
     , RejectSidecarAnnotation
     , JobPodReplacementPolicy
     , RestartAllContainersOnEveryExit

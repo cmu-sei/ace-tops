@@ -201,15 +201,18 @@ let identity =
                         , imagePullPolicy = Some v.pull_policy
                         , restartPolicy = Some "Always"
                         , terminationMessagePolicy = Some Constants.TerminationMessageFromLogs
-                        , securityContext = Some kubernetes.SecurityContext::{
-                          , runAsUser = Some c.daemon_uid
-                          , runAsGroup = Some c.group
-                          , runAsNonRoot = Some True
-                          , capabilities = Some kubernetes.Capabilities::{
-                            , drop = Some [ "ALL" ]
-                            , add = Some [ "IPC_LOCK" ]
-                            }
-                          }
+                        , securityContext = Some
+                            (     kubernetes.SecurityContext::{
+                                  , runAsUser = Some c.daemon_uid
+                                  , runAsGroup = Some c.group
+                                  , runAsNonRoot = Some True
+                                  , capabilities = Some kubernetes.Capabilities::{
+                                    , drop = Some [ "ALL" ]
+                                    , add = Some [ "IPC_LOCK" ]
+                                    }
+                                  }
+                              //  Constants.hardening
+                            )
                         , env = Some
                           [ kubernetes.EnvVar::{
                             , name = "POLAR_CUSTODY_SOCKET"

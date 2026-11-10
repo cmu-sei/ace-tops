@@ -187,7 +187,7 @@ let makePolarInitContainerWith =
         , imagePullPolicy = Some imagePullPolicy
         , command         = Some [ "polar-init" ]
         , terminationMessagePolicy = Some Constants.TerminationMessageFromLogs
-        , securityContext = Some Constants.DropAllCapSecurityContext
+        , securityContext = Some Constants.HardenedSecurityContext
         , env = Some
           (   [ kubernetes.EnvVar::{ name = "POLAR_INIT_CERT_ISSUER_URL", value = Some certIssuerUrl }
               , kubernetes.EnvVar::{ name = "POLAR_INIT_TOKEN_PATH",      value = Some tokenPath      }
