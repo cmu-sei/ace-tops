@@ -240,11 +240,13 @@ forbid(principal == Identity::"mallory", action == Action::"record-evidence", re
 
 The rule is `polar_policy::evidence` (`may_sign` through an `Evaluator`, for a tool), and `admit_evidence` in the builder
 for an agent. Every reader of a record asks it: the git server's intake and `polar-evidence`'s `polar-eden records`
-(on the agentic-control-plane branch). A record is judged by the policy in force when the commit that added it was made
-(the maintainer, 2026-11-10), as its certificate is judged as of that commit: a later forbid stops a signer's next
-records counting and does not rewrite what was already promoted. Migration: a cluster's agents are rebuilt before a
-policy naming `record-evidence` is signed, since an agent built before refuses a policy outside its schema; and the
-records signed before by administrators without the capability count again once a policy permits them, or they hold it.
+(on the agentic-control-plane branch). Forbid forward, permit back (the maintainer, 2026-11-10): a record is judged by
+the policy in force when the commit that added it was made, as its certificate is judged as of that commit, for what that
+policy speaks to; where it was silent, a later permit admits the record; and a later forbid never removes a record that
+counted before it, so it stops a signer's next records and does not rewrite what was already promoted. Migration: a
+cluster's agents are rebuilt before a policy naming `record-evidence` is signed, since an agent built before refuses a
+policy outside its schema; and the records signed before by administrators without the capability, on which the policy
+of their time was silent, count once a policy permits their signers, or they hold it.
 
 The step needs a signer, and signing is the same as for any author: a user certificate holding the capability
 for the document type. Two consequences:
