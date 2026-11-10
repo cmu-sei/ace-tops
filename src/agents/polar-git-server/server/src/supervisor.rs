@@ -34,8 +34,8 @@
 //! 2. The listener stops accepting; connections in flight (a push can take a while) are given up
 //!    to `DRAIN_TIMEOUT`.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
-//! 4. The infrastructure supervisor's termination makes this supervisor exit non-zero, so the
-//!    workload is restarted with fresh certificates.
+//! 4. When the infrastructure has ended the builder stops this supervisor and `run` exits non-zero,
+//!    so the workload is restarted with fresh certificates.
 
 use crate::access::RuntimeAcl;
 use crate::config::ServerFile;
@@ -254,20 +254,11 @@ impl Actor for GitServerSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         message: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure shutdown complete ({reason:?}), exiting");
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, err) => {
-                error!("Child actor {actor:?} failed: {err}; exiting");
-                std::process::exit(1);
-            }
-            _ => {}
+        if let SupervisionEvent::ActorFailed(actor, err) = message {
+            error!("Child actor {actor:?} failed: {err}; exiting");
+            std::process::exit(1);
         }
         Ok(())
     }

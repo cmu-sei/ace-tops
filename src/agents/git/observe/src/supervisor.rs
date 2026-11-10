@@ -242,13 +242,6 @@ impl Actor for RootSupervisor {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started!"),
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 info!("ROOT_SUPERVISOR: {actor:?} terminated. {reason:?}");
-                // The infrastructure is this supervisor's linked child from build(); its ending
-                // means the shutdown handshake is done, or that it failed. Either way exit
-                // non-zero so the Job creates a new pod with fresh certificates.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("ROOT_SUPERVISOR: infrastructure is down, exiting");
-                    std::process::exit(1);
-                }
                 if !state.shutting_down {
                     error!(
                         "ROOT_SUPERVISOR: the repository supervisor ended unexpectedly; exiting"

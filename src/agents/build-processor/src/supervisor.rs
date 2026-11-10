@@ -34,7 +34,7 @@ use polar::ProvenanceEvent;
 use polar::graph::controller::GraphControllerMsg;
 use polar_agent_builder::{
     AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -64,7 +64,6 @@ pub struct ProcessorSupervisor;
 
 pub struct ProcessorState {
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     /// The builder's: it reports the graph's health and drains it at the end.
     graph: GraphHandle,
     /// From `PrepareShutdown` on: what arrives then is not written, and no sweep starts.
@@ -228,7 +227,6 @@ impl Actor for ProcessorSupervisor {
 
         Ok(ProcessorState {
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             graph: resources
                 .graph
                 .ok_or("the builder started no graph controller for a graph-write agent")?,
@@ -287,23 +285,15 @@ impl Actor for ProcessorSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
-            // Its one child is the infrastructure: its ending is the end of the handshake, or a failure, and either way
-            // the process exits non-zero so the pod starts afresh.
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 info!("{actor:?} terminated: {reason:?}");
-                if actor.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ActorFailed(actor, reason) => {
                 error!("{actor:?} failed: {reason:?}");
-                if actor.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
             }
             _ => {}
         }

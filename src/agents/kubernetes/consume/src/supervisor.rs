@@ -581,7 +581,7 @@ impl Actor for ClusterConsumerSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         msg: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(actor_cell) => {
@@ -598,20 +598,6 @@ impl Actor for ClusterConsumerSupervisor {
                     actor_name,
                     actor_cell.get_id()
                 );
-                // The InfrastructureSupervisor is this supervisor's direct
-                // child (the builder spawned it linked); the health check
-                // is its child, not ours, so rejuvenation reaches us as
-                // PrepareShutdown, not as a termination event. Infrastructure
-                // terminating is the end of the handshake -- or infrastructure
-                // dying on its own -- and in both cases the process exits so
-                // the Job starts a new pod with fresh certs. Matched by id,
-                // since the actor is spawned unnamed.
-                if actor_cell.get_id() == state.infrastructure.get_id() {
-                    info!(
-                        "CONSUMER_SUPERVISOR: infrastructure terminated, exiting so the Job restarts the pod"
-                    );
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ActorFailed(actor_cell, e) => {
                 let actor_name = actor_cell.get_name().unwrap_or_default();
@@ -620,11 +606,6 @@ impl Actor for ClusterConsumerSupervisor {
                     actor_name,
                     actor_cell.get_id()
                 );
-                // Its one child is the infrastructure, whose failure leaves the
-                // agent nothing to run on: exit, so the Job starts a new pod.
-                if actor_cell.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ProcessGroupChanged(..) => {}
         }

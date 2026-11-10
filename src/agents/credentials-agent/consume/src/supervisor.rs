@@ -1763,19 +1763,7 @@ impl Actor for ConsumerSupervisor {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure supervisor is a direct child (the builder
-                // spawned it linked; the health check is its child, so
-                // rejuvenation arrives as PrepareShutdown, not as a termination
-                // here). Its termination is the end of the shutdown handshake,
-                // or the infrastructure dying on its own; either way the process
-                // exits so the Job starts a pod with fresh certificates. It is
-                // spawned unnamed, so match by id.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!(
-                        "CONSUMER_SUPERVISOR: infrastructure terminated ({reason:?}), exiting so the Job restarts the pod"
-                    );
-                    std::process::exit(1);
-                } else if actor.get_id() == state.ledger.get_id() && !state.draining {
+                if actor.get_id() == state.ledger.get_id() && !state.draining {
                     // Not our own doing: the ledger is this agent's source of
                     // truth and nothing can safely continue without it.
                     error!(

@@ -33,7 +33,7 @@ use cert_issuer_common::identity::workload_of;
 use polar::graph::controller::NodeShape;
 use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, GraphHandle, HealthClient, HealthHandle,
-    InfrastructureEvent, InfrastructureSupervisorMessage, StartError, Subscription,
+    InfrastructureEvent, StartError, Subscription,
 };
 use polar_http_observer::Observation;
 use polar_projection::{Bounds, Projection, graph};
@@ -156,7 +156,6 @@ pub struct Processor<K>(PhantomData<fn() -> K>);
 
 pub struct ProcessorState {
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     configuration: ConfigurationHandle,
     /// The builder's: it reports the graph's health and drains it at the end.
     graph: GraphHandle,
@@ -218,7 +217,6 @@ impl<K: Kind> Actor for Processor<K> {
         let steps = processing.on(Event::Started);
         let state = ProcessorState {
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             configuration: resources.configuration,
             graph: resources
                 .graph
@@ -288,23 +286,15 @@ impl<K: Kind> Actor for Processor<K> {
         &self,
         _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
-            // Its one child is the infrastructure: its ending is the end of the handshake, or a failure, and either way
-            // the process exits non-zero so the pod starts afresh.
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 info!("{actor:?} terminated: {reason:?}");
-                if actor.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ActorFailed(actor, reason) => {
                 error!("{actor:?} failed: {reason:?}");
-                if actor.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
             }
             _ => {}
         }

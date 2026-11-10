@@ -495,16 +495,6 @@ impl Actor for ObserverSupervisor {
             SupervisionEvent::ActorTerminated(actor_cell, _, reason) => {
                 let actor_name = actor_cell.get_name().unwrap_or_default();
 
-                // InfrastructureSupervisor finishing is the end of the
-                // shutdown handshake. Exit non-zero so the Job controller
-                // starts a new pod with fresh certs.
-                if actor_cell.get_id() == state.infrastructure.get_id() {
-                    info!(
-                        "OBSERVER_SUPERVISOR: infrastructure shutdown complete, exiting for rejuvenation"
-                    );
-                    std::process::exit(1);
-                }
-
                 // An observer we still expect to be running stopped on its
                 // own. A failure in talking to Jira, a rejected token among
                 // them, never stops one (it is retried, or held through the

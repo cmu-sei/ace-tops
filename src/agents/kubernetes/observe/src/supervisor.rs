@@ -136,7 +136,7 @@ impl Actor for ClusterObserverSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         msg: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match msg {
             SupervisionEvent::ActorStarted(_) => (),
@@ -147,22 +147,6 @@ impl Actor for ClusterObserverSupervisor {
                     actor_name,
                     actor_cell.get_id()
                 );
-
-                // InfrastructureSupervisor itself -- this supervisor's
-                // one, real, direct, linked child from AgentBuilder's
-                // own build() call. Its own termination is the real,
-                // genuine signal this supervisor's own graceful
-                // shutdown sequence (see PrepareShutdown's own handler
-                // in handle(), below) is now fully, completely done --
-                // exit so the Job controller creates a new pod with
-                // fresh certs. Matched by real, genuine actor id, not
-                // name (InfrastructureSupervisor is spawned unnamed).
-                if actor_cell.get_id() == state.infrastructure.get_id() {
-                    info!(
-                        "CLUSTER_SUPERVISOR: infrastructure shutdown complete, exiting for rejuvenation"
-                    );
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ActorFailed(actor_cell, e) => {
                 warn!(

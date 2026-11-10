@@ -45,7 +45,7 @@ use git_agent_common::{
 use polar::cassini::TcpClient;
 use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -151,7 +151,6 @@ pub struct RootSupervisor;
 pub struct RootSupervisorState {
     tcp_client: TcpClient,
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     configuration: ConfigurationHandle,
     /// The times in force.
     times: settings::Times,
@@ -313,7 +312,6 @@ impl Actor for RootSupervisor {
         Ok(RootSupervisorState {
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             configuration: resources.configuration,
             times,
             next_republish: None,
@@ -456,13 +454,6 @@ impl Actor for RootSupervisor {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started!"),
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 info!("{actor:?} terminated. {reason:?}");
-                // The infrastructure is this supervisor's linked child from build(); its ending means the
-                // shutdown handshake is done, or that it failed. Either way exit non-zero so the Job creates
-                // a new pod with fresh certificates.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure is down, exiting");
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ActorFailed(actor, reason) => {
                 error!("{actor:?} failed! {reason:?}");
@@ -725,9 +716,6 @@ mod tests {
                 Ok(())
             }
         }
-        let (infrastructure, _) = Actor::spawn(None, Nothing(std::marker::PhantomData), ())
-            .await
-            .unwrap();
         let (health, _) = Actor::spawn(None, Nothing(std::marker::PhantomData), ())
             .await
             .unwrap();
@@ -736,7 +724,6 @@ mod tests {
         let mut state = RootSupervisorState {
             tcp_client: TcpClient::from_actor_ref(client),
             healthcheck: HealthHandle::new(health),
-            infrastructure,
             configuration,
             times,
             next_republish: None,

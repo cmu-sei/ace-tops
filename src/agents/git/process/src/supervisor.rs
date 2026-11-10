@@ -37,12 +37,11 @@ use git_agent_common::status::{GIT_REPO_OBSERVATION_STATUS, ObservationStatus};
 use polar::graph::controller::GraphOp;
 use polar::topics::GIT_REPOSITORY_EVENTS;
 use polar_agent_builder::{
-    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 /// What this agent needs to drain beyond the graph controller, whose drain the builder counts: the
 /// infrastructure's own children stopping, and a margin. Past it the process exits 1 regardless.
@@ -129,7 +128,6 @@ pub struct GitProcessorSupervisor;
 
 pub struct GitProcessorState {
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     graph: GraphHandle,
 }
 
@@ -165,7 +163,6 @@ impl Actor for GitProcessorSupervisor {
 
         Ok(GitProcessorState {
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             graph: resources
                 .graph
                 .ok_or("the builder started no graph controller for a graph-write agent")?,
@@ -204,24 +201,9 @@ impl Actor for GitProcessorSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match event {
-            // Its one child is the infrastructure. Its ending is the end of the handshake, or
-            // infrastructure dying on its own; either way the process exits so the Job starts a
-            // pod with fresh certificates.
-            SupervisionEvent::ActorTerminated(actor, _, reason)
-                if actor.get_id() == state.infrastructure.get_id() =>
-            {
-                info!("infrastructure terminated ({reason:?}), exiting");
-                std::process::exit(1);
-            }
-            SupervisionEvent::ActorFailed(actor, err)
-                if actor.get_id() == state.infrastructure.get_id() =>
-            {
-                error!("infrastructure failed ({err:?}), exiting");
-                std::process::exit(1);
-            }
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 warn!("Actor {:?} terminated: {reason:?}", actor.get_name());
             }

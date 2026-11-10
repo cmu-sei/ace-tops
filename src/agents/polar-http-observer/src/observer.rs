@@ -399,7 +399,7 @@ impl<K: Kind> Actor for Observer<K> {
         &self,
         _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
@@ -407,9 +407,6 @@ impl<K: Kind> Actor for Observer<K> {
             // Either way exit non-zero, so the pod comes back with fresh certificates.
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
                 info!("{actor:?} terminated: {reason:?}");
-                if actor.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
             }
             SupervisionEvent::ActorFailed(actor, reason) => {
                 error!("{actor:?} failed: {reason:?}");

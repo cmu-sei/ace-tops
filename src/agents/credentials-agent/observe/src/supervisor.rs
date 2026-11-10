@@ -53,9 +53,9 @@
 //!    requests, for at most `DRAIN_TIMEOUT`.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which
 //!    stops its children.
-//! 4. The infrastructure supervisor's termination makes this supervisor exit
-//!    non-zero. Exit is never zero: this agent runs as a Job, so a clean exit
-//!    would count as completion and nothing would restart it.
+//! 4. When the infrastructure has ended the builder stops this supervisor and
+//!    `run` exits non-zero. Exit is never zero: this agent runs as a Job, so a
+//!    clean exit would count as completion and nothing would restart it.
 
 use crate::handler::{
     ObserverState, account, admin_action, agent_escrow_key, identity, issue, workload_issue,
@@ -357,26 +357,11 @@ impl Actor for ObserverSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         message: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure supervisor is this supervisor's one
-                // direct child from the builder. Its termination is the end of
-                // the shutdown sequence above (it is spawned unnamed, so match
-                // on id). Exit so the Job starts a pod with fresh certificates.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!(
-                        "infrastructure shutdown complete ({reason:?}), exiting for rejuvenation"
-                    );
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, err) => {
-                error!("Child actor {actor:?} failed: {err}; exiting");
-                std::process::exit(1);
-            }
-            _ => {}
+        if let SupervisionEvent::ActorFailed(actor, err) = message {
+            error!("Child actor {actor:?} failed: {err}; exiting");
+            std::process::exit(1);
         }
         Ok(())
     }

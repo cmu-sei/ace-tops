@@ -31,8 +31,8 @@
 //! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor.
 //! 2. The listener is drained: no new connections, the ones in flight finished within its timeout.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
-//! 4. The infrastructure supervisor's ending stops this supervisor, so the agent's `start` returns and `run` exits
-//!    non-zero: a fresh pod starts with fresh certificates.
+//! 4. When the infrastructure has ended the builder stops this supervisor, so the agent's `start` returns and `run`
+//!    exits non-zero: a fresh pod starts with fresh certificates.
 //!
 //! A listener that ends any other way begins the shutdown, so a CA front that serves nothing cannot look healthy.
 
@@ -117,11 +117,11 @@ pub struct CertIssuerSupervisorState {
     attestation_agent: Option<String>,
 }
 
-/// What a child's ending means: the infrastructure's is the end of the shutdown; the listener's, outside a shutdown,
-/// begins one, so a CA front that serves nothing cannot look healthy, and during one it is the drain's doing.
+/// What a child's ending means: the listener's, outside a shutdown, begins one, so a CA front that serves nothing
+/// cannot look healthy, and during one it is the drain's doing. The infrastructure is not this supervisor's child: the
+/// builder ends this supervisor when it ends.
 pub fn on_child_ended(child: Child, shutting_down: bool, why: &str) -> Ending {
     match child {
-        Child::Infrastructure => Ending::Stop,
         Child::Listener if !shutting_down => {
             Ending::BeginShutdown(format!("the listener ended outside a shutdown ({why})"))
         }
@@ -129,15 +129,9 @@ pub fn on_child_ended(child: Child, shutting_down: bool, why: &str) -> Ending {
     }
 }
 
-/// Which child `ended` is, given the infrastructure's id and the listener's.
-pub fn child_of(
-    ended: ractor::ActorId,
-    infrastructure: ractor::ActorId,
-    listener: Option<ractor::ActorId>,
-) -> Child {
-    if ended == infrastructure {
-        Child::Infrastructure
-    } else if listener == Some(ended) {
+/// Which child `ended` is, given the listener's id.
+pub fn child_of(ended: ractor::ActorId, listener: Option<ractor::ActorId>) -> Child {
+    if listener == Some(ended) {
         Child::Listener
     } else {
         Child::Other
@@ -147,7 +141,6 @@ pub fn child_of(
 /// One of this supervisor's children, as its ending is judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Child {
-    Infrastructure,
     Listener,
     Other,
 }
@@ -155,8 +148,6 @@ pub enum Child {
 /// What this supervisor does when a child ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ending {
-    /// The infrastructure has finished the shutdown: stop, so the agent's `start` returns and `run` exits non-zero.
-    Stop,
     /// Ask the infrastructure for an orderly shutdown, for this reason.
     BeginShutdown(String),
     Nothing,
@@ -577,7 +568,7 @@ impl Actor for CertIssuerSupervisor {
 
     async fn handle_supervisor_evt(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         event: SupervisionEvent,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
@@ -591,16 +582,8 @@ impl Actor for CertIssuerSupervisor {
             SupervisionEvent::ActorFailed(cell, error) => (cell, error.to_string()),
             _ => return Ok(()),
         };
-        let child = child_of(
-            cell.get_id(),
-            state.infrastructure.get_id(),
-            state.listener_id,
-        );
+        let child = child_of(cell.get_id(), state.listener_id);
         match on_child_ended(child, state.shutting_down, &why) {
-            Ending::Stop => {
-                info!("infrastructure shutdown complete ({why}), stopping");
-                myself.stop(Some("the shutdown is complete".to_string()));
-            }
             Ending::BeginShutdown(reason) => {
                 error!("{reason}");
                 let _ = state
@@ -632,29 +615,12 @@ mod tests {
     }
 
     #[test]
-    fn the_infrastructure_ending_stops_the_supervisor_in_or_out_of_a_shutdown() {
-        for shutting_down in [false, true] {
-            assert_eq!(
-                on_child_ended(Child::Infrastructure, shutting_down, "stopped"),
-                Ending::Stop
-            );
-        }
-    }
-
-    #[test]
     fn a_child_is_known_by_its_id() {
         use ractor::ActorId::Local;
+        assert_eq!(child_of(Local(2), Some(Local(2))), Child::Listener);
+        assert_eq!(child_of(Local(3), Some(Local(2))), Child::Other);
         assert_eq!(
-            child_of(Local(1), Local(1), Some(Local(2))),
-            Child::Infrastructure
-        );
-        assert_eq!(
-            child_of(Local(2), Local(1), Some(Local(2))),
-            Child::Listener
-        );
-        assert_eq!(child_of(Local(3), Local(1), Some(Local(2))), Child::Other);
-        assert_eq!(
-            child_of(Local(2), Local(1), None),
+            child_of(Local(2), None),
             Child::Other,
             "before the listener exists"
         );

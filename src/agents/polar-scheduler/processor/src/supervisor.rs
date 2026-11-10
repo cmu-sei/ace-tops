@@ -35,8 +35,8 @@
 //!    what it was handed.
 //! 2. `ProceedWithShutdown` goes to the infrastructure supervisor, which drains the graph
 //!    controller and stops its children.
-//! 3. The infrastructure supervisor's termination makes this supervisor exit non-zero, so the
-//!    workload is restarted with fresh certificates.
+//! 3. When the infrastructure has ended the builder stops this supervisor and `run` exits non-zero,
+//!    so the workload is restarted with fresh certificates.
 
 use crate::processor::ScheduleInfoProcessor;
 use crate::types::ProcessorMsg;
@@ -231,20 +231,10 @@ impl Actor for SchedulerSupervisor {
     ) -> Result<(), ActorProcessingErr> {
         match event {
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure supervisor ending is the end of the handshake, or
-                // infrastructure dying on its own; either way the process exits so the Job
-                // starts a pod with fresh certificates.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure terminated ({reason:?}), exiting");
-                    std::process::exit(1);
-                }
                 warn!("Actor {:?} terminated: {reason:?}", actor.get_name());
             }
             SupervisionEvent::ActorFailed(actor, err) => {
                 error!("Actor {:?} failed: {err:?}", actor.get_name());
-                if actor.get_id() == state.infrastructure.get_id() {
-                    std::process::exit(1);
-                }
                 // The processor: the agent cannot go on, so it ends in order.
                 if let Err(e) =
                     state

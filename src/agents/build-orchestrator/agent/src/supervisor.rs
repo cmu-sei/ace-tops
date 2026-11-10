@@ -583,10 +583,6 @@ impl Actor for OrchestratorSupervisor {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("{actor:?} terminated: {reason:?}");
-                    std::process::exit(1);
-                }
                 if let Some(build_id) = actor.get_name().as_deref().and_then(build_of) {
                     debug!(%build_id, ?reason, "a build's actor ended");
                     Self::ended(&myself, state, build_id).await;

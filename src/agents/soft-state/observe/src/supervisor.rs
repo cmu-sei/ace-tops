@@ -41,7 +41,7 @@ use polar::graph::controller::GraphController;
 use polar_agent_builder::topic_gate::PolicySaid;
 use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, LookupError, PolicyLookup, Subscription,
+    LookupError, PolicyLookup, Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -168,7 +168,6 @@ pub struct StateSupervisor;
 pub struct StateSupervisorState {
     tcp_client: TcpClient,
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     graph: Option<GraphController>,
     graph_timeout: Duration,
     configuration: ConfigurationHandle,
@@ -237,7 +236,6 @@ impl Actor for StateSupervisor {
         Ok(StateSupervisorState {
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             graph: Some(graph),
             graph_timeout,
             configuration: resources.configuration,
@@ -380,12 +378,6 @@ impl Actor for StateSupervisor {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure is this supervisor's linked child from build(); its ending is the end of the
-                // shutdown handshake, or a failure. Either way exit non-zero, so the pod starts afresh.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure is down, exiting");
-                    std::process::exit(1);
-                }
                 if !state.shutting_down {
                     error!("{actor:?} stopped unexpectedly: {reason:?}");
                     std::process::exit(1);
@@ -555,7 +547,6 @@ mod tests {
         let mut state = StateSupervisorState {
             tcp_client: TcpClient::from_actor_ref(nothing().await),
             healthcheck: HealthHandle::new(nothing().await),
-            infrastructure: nothing().await,
             graph: None,
             graph_timeout,
             configuration,

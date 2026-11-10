@@ -279,16 +279,6 @@ impl Actor for ConsumerSupervisor {
                     actor_cell.get_name(),
                     actor_cell.get_id()
                 );
-                // InfrastructureSupervisor is this supervisor's linked child
-                // from build(); the HealthCheckActor is its child, not this
-                // supervisor's. Its termination means the shutdown handshake
-                // is complete, or that infrastructure itself failed. Either
-                // way, exit non-zero so the Job creates a new pod with fresh
-                // certs. Matched by id: it is spawned unnamed.
-                if actor_cell.get_id() == state.infrastructure.get_id() {
-                    info!("CONSUMER_SUPERVISOR: infrastructure is down, exiting");
-                    std::process::exit(1);
-                }
                 // Any other linked actor stopping outside a shutdown is
                 // unexpected.
                 if !state.shutting_down {

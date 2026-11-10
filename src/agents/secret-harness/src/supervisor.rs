@@ -142,20 +142,11 @@ impl Actor for HarnessSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         message: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure shutdown complete ({reason:?}), exiting");
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, err) => {
-                error!("Child actor {actor:?} failed: {err}; exiting");
-                std::process::exit(1);
-            }
-            _ => {}
+        if let SupervisionEvent::ActorFailed(actor, err) = message {
+            error!("Child actor {actor:?} failed: {err}; exiting");
+            std::process::exit(1);
         }
         Ok(())
     }

@@ -42,8 +42,7 @@ use cassini_types::{ClientEvent, WireTraceCtx};
 use polar::cassini::{CassiniClient, TcpClient};
 use polar_agent_builder::protocol::{Delivery, Failure, ProtocolHandle, Streaming};
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent, Subscription,
 };
 use polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC;
 use polar_signing::Trust;
@@ -207,7 +206,6 @@ pub struct AttestationSupervisor;
 pub struct AttestationState {
     tcp_client: TcpClient,
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     protocols: ProtocolHandle,
     /// Each watch in progress: one that ended is not here until it is asked for again.
     watches: BTreeMap<Watch, Streaming>,
@@ -333,7 +331,6 @@ impl Actor for AttestationSupervisor {
         Ok(AttestationState {
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             protocols,
             watches,
             held: Holdings::new(&namespaces),
@@ -512,12 +509,6 @@ impl Actor for AttestationSupervisor {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure is this supervisor's linked child from build(); its ending is the end of the shutdown handshake, or a
-                // failure. Either way exit non-zero, so the pod starts afresh.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure is down, exiting");
-                    std::process::exit(1);
-                }
                 if !state.shutting_down {
                     error!("{actor:?} stopped unexpectedly: {reason:?}");
                     std::process::exit(1);

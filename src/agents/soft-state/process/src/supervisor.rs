@@ -42,7 +42,7 @@ use polar::cassini::{CassiniClient, TcpClient};
 use polar::graph::controller::{GraphController, GraphControllerMsg};
 use polar_agent_builder::{
     Access, AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle,
-    InfrastructureEvent, InfrastructureSupervisorMessage, Subscription, TopicSet,
+    InfrastructureEvent, Subscription, TopicSet,
 };
 use polar_health::HealthReport;
 use polar_health::report::{self, HEALTH_REPLIES_TOPIC, HealthAnswer, HealthQuery};
@@ -153,7 +153,6 @@ pub struct WriterSupervisor;
 pub struct WriterState {
     tcp_client: TcpClient,
     healthcheck: HealthHandle,
-    infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     graph: Option<GraphController>,
     configuration: ConfigurationHandle,
     /// The deployed family: a workload outside it cannot be asked.
@@ -376,7 +375,6 @@ impl Actor for WriterSupervisor {
         let mut state = WriterState {
             tcp_client: resources.tcp_client,
             healthcheck: resources.healthcheck,
-            infrastructure: resources.infrastructure,
             graph: Some(graph),
             configuration: resources.configuration,
             topics,
@@ -513,12 +511,6 @@ impl Actor for WriterSupervisor {
         match event {
             SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
             SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                // The infrastructure is this supervisor's linked child from build(); its ending is the end of the
-                // shutdown handshake, or a failure. Either way exit non-zero, so the pod starts afresh.
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure is down, exiting");
-                    std::process::exit(1);
-                }
                 if !state.shutting_down {
                     error!("{actor:?} stopped unexpectedly: {reason:?}");
                     std::process::exit(1);
@@ -711,7 +703,6 @@ mod tests {
         let mut state = WriterState {
             tcp_client: TcpClient::from_actor_ref(nothing().await),
             healthcheck: HealthHandle::new(nothing().await),
-            infrastructure: nothing().await,
             graph: None,
             configuration,
             topics: Arc::new(TopicSet::default()),

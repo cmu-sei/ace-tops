@@ -37,8 +37,8 @@
 //! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor.
 //! 2. The sync actor and the watcher are stopped.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
-//! 4. The infrastructure supervisor's termination makes this supervisor exit non-zero, so the
-//!    workload is restarted with fresh certificates.
+//! 4. When the infrastructure has ended the builder stops this supervisor and `run` exits non-zero,
+//!    so the workload is restarted with fresh certificates.
 
 use crate::deployment_copy::{DeploymentCopyActor, DeploymentCopyArgs};
 use crate::deployment_record::{DeploymentRecordActor, DeploymentRecordArgs};
@@ -360,20 +360,11 @@ impl Actor for SchedulerObserverSupervisor {
         &self,
         _myself: ActorRef<Self::Msg>,
         message: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure shutdown complete ({reason:?}), exiting");
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, err) => {
-                error!("Child actor {actor:?} failed: {err}; exiting");
-                std::process::exit(1);
-            }
-            _ => {}
+        if let SupervisionEvent::ActorFailed(actor, err) = message {
+            error!("Child actor {actor:?} failed: {err}; exiting");
+            std::process::exit(1);
         }
         Ok(())
     }
