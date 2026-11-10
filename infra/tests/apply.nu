@@ -240,6 +240,17 @@ def main [] {
             assert ($why.2 | str contains "restarted 4 times") $why.2
             assert ($why.3 | str contains "d: agent is running and not ready") $why.3
             assert ($why.4 | str contains "e: being deleted") $why.4
+            # An init container is no agent: one still running has not finished, and nothing is said of a health actor.
+            let initialising = { metadata: { name: "f" }, spec: { initContainers: [{ name: "polar-custody", restartPolicy: "Always" } { name: "polar-init" }] }, status: { phase: "Pending",
+                initContainerStatuses: [
+                    { name: "polar-custody", ready: false, state: { running: {} } }
+                    { name: "polar-init", ready: false, state: { running: {} } }
+                ]
+                containerStatuses: [{ name: "agent", ready: false, state: { waiting: { reason: "PodInitializing" } } }]
+            } }
+            let said = (why_not_ready [$initialising] | first)
+            assert ($said | str contains "polar-init is still running (it has not finished)") $said
+            assert ($said | str contains "polar-custody is running and not ready") $"a sidecar is not an init that has to end: ($said)"
         }
         "a pod still initialising does not count": {
             let p = { metadata: {}, status: { phase: "Pending" } }

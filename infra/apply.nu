@@ -207,11 +207,15 @@ export def why_not_ready [items: list] {
             let c = ($unscheduled | first)
             return $"($name): not scheduled: ($c.reason? | default 'unknown'): (do $first_line $c.message?)"
         }
+        # The init containers that run to an end; a native sidecar (restartPolicy Always, the custody daemon) runs beside the pod.
+        let inits = ($p.spec?.initContainers? | default [] | where {|c| ($c.restartPolicy? | default "") != "Always" } | get -o name | default [])
         let containers = (($p.status?.initContainerStatuses? | default []) ++ ($p.status?.containerStatuses? | default []))
         let said = ($containers | where {|c| not ($c.ready? | default false) } | each {|c|
             let waiting = ($c.state?.waiting? | default null)
             let now = if $waiting != null {
                 $"($c.name) is waiting: ($waiting.reason? | default 'unknown')" + (if ($waiting.message? | default "" | is-empty) { "" } else { $": (do $first_line $waiting.message)" })
+            } else if ($c.state?.running? | default null) != null and ($c.name in $inits) {
+                $"($c.name) is still running \(it has not finished\)"
             } else if ($c.state?.running? | default null) != null {
                 $"($c.name) is running and not ready \(a Polar agent: its health actor has not said it is healthy\)"
             } else {

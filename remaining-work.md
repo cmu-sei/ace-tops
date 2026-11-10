@@ -83,6 +83,15 @@ Each step is taken in bites, each reported before the next.
     - Order: the cluster profile, `new`/`init`, `check` (useful before lifecycle, and what Blitz needs), then `add`, then `install` and
       `promote` after step 10's lifecycle and catalog split. Not yet placed in this order of work.
 
+- [ ] **A ledger written by newer code stops an older credentials agent** (found 2026-11-10, on u7c). The branch's credentials agent wrote
+  events with a certificate type main does not know (`signing`, `WorkloadCertType`); main's agent, replaying
+  `/var/lib/credentials-agent/events.jsonl`, stops on the first ("unknown variant `signing`", line 13406) and crash-loops, so nothing is
+  vouched for, cert-issuer holds every new pod, and Flux stops at polar-identity. The log has no format version and no rule for an event it
+  cannot read; skipping one silently could skip a revocation, so stopping is right, but the stop says only a serde error. To decide: say
+  plainly which version wrote the log and which this is, refuse to start with that (not a crash loop), and record what a rollback needs
+  (a downgrade after a breaking event is a migration, `breaking-changes-need-migrations`). Put right on u7c by the branch merging main and
+  redeploying (the maintainer, 2026-11-10).
+
 ## Runtime attestation
 
 - [ ] **Slices A and B** (the maintainer, 2026-11-02: "I want it done sooner than most of the work I asked you for"; the musl
