@@ -546,15 +546,13 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
             .clone()
             .map(|set| topic_gate::gate(&this.service_name, own.identity, Some(own.pem), set));
 
-        let myself_cell = this.myself.get_cell();
         let process_exit = shutdown::real_process_exit();
 
-        // The real, entire, foundational subtree -- HealthCheckActor,
-        // RouterActor, this agent's own subscriptions, TcpClient, and
-        // (if requested) CryptoActor -- collapsed into one, real,
-        // linked child. See infrastructure::InfrastructureSupervisor's
-        // own, top-level doc comment for the complete, real reasoning.
-        let (infrastructure, ended) = InfrastructureSupervisor::spawn_linked(
+        // The infrastructure: the health check, the router, the subscriptions, the client and the
+        // actors the agent's capabilities bring, under one supervisor of the builder's own. It is
+        // not the domain supervisor's child: the builder watches it (`end_with_infrastructure`),
+        // and the domain hears nothing of it but `PrepareShutdown`.
+        let (infrastructure, ended) = InfrastructureSupervisor::spawn(
             None,
             InfrastructureSupervisor,
             infrastructure::InfrastructureSupervisorArgs {
@@ -580,7 +578,6 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 section_judge: this.section_judge,
                 settings_judge: this.settings_judge,
             },
-            myself_cell,
         )
         .await
         .map_err(ActorProcessingErr::from)?;
@@ -720,7 +717,8 @@ impl<M: ractor::Message> ConfiguredService<M> {
         )
         .with_config(startup.health);
 
-        let (infrastructure, ended) = InfrastructureSupervisor::spawn_linked(
+        // Not the domain supervisor's child, as for an agent: the builder watches it.
+        let (infrastructure, ended) = InfrastructureSupervisor::spawn(
             None,
             InfrastructureSupervisor,
             infrastructure::InfrastructureSupervisorArgs {
@@ -746,7 +744,6 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 section_judge: None,
                 settings_judge: None,
             },
-            this.myself.get_cell(),
         )
         .await
         .map_err(ActorProcessingErr::from)?;
@@ -1300,8 +1297,11 @@ mod the_infrastructure_ending {
     use std::time::Duration;
 
     /// A service's domain supervisor that does nothing when its infrastructure ends: whatever ends it then is the
-    /// builder's doing. Told to `Hang`, it is busy for good, as a domain stuck in a handler is.
+    /// builder's doing. It keeps every supervision event it hears. Told to `Hang`, it is busy for good, as a domain
+    /// stuck in a handler is.
     struct Indifferent;
+
+    type Heard = Arc<Mutex<Vec<String>>>;
 
     enum Domain {
         Hang,
@@ -1310,26 +1310,26 @@ mod the_infrastructure_ending {
     #[ractor::async_trait]
     impl Actor for Indifferent {
         type Msg = Domain;
-        type State = ();
-        type Arguments = crate::Configured;
+        type State = Heard;
+        type Arguments = (crate::Configured, Heard);
 
         async fn pre_start(
             &self,
             myself: ActorRef<Domain>,
-            configured: crate::Configured,
-        ) -> Result<(), ActorProcessingErr> {
+            (configured, heard): (crate::Configured, Heard),
+        ) -> Result<Heard, ActorProcessingErr> {
             ServiceBuilder::new(myself, "indifferent")
                 .into_configured(configured)
                 .build()
                 .await?;
-            Ok(())
+            Ok(heard)
         }
 
         async fn handle(
             &self,
             _myself: ActorRef<Domain>,
             message: Domain,
-            _state: &mut (),
+            _state: &mut Heard,
         ) -> Result<(), ActorProcessingErr> {
             match message {
                 Domain::Hang => std::future::pending::<()>().await,
@@ -1340,9 +1340,10 @@ mod the_infrastructure_ending {
         async fn handle_supervisor_evt(
             &self,
             _myself: ActorRef<Domain>,
-            _event: SupervisionEvent,
-            _state: &mut (),
+            event: SupervisionEvent,
+            heard: &mut Heard,
         ) -> Result<(), ActorProcessingErr> {
+            heard.lock().unwrap().push(format!("{event:?}"));
             Ok(())
         }
     }
@@ -1354,6 +1355,7 @@ mod the_infrastructure_ending {
         domain_ended: ractor::concurrency::JoinHandle<()>,
         resources: ServiceResources,
         exits: Exits,
+        heard: Heard,
         _dir: tempfile::TempDir,
     }
 
@@ -1370,13 +1372,17 @@ mod the_infrastructure_ending {
         let exits = Arc::new(Mutex::new(Vec::new()));
         let (configured, out) =
             crate::Configured::for_service_test(&env, Duration::from_secs(20), exits.clone());
-        let (domain, domain_ended) = Actor::spawn(None, Indifferent, configured).await.unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let (domain, domain_ended) = Actor::spawn(None, Indifferent, (configured, heard.clone()))
+            .await
+            .unwrap();
         let resources = out.lock().unwrap().clone().expect("the service was built");
         Service {
             domain,
             domain_ended,
             resources,
             exits,
+            heard,
             _dir: dir,
         }
     }
@@ -1418,6 +1424,24 @@ mod the_infrastructure_ending {
             "the domain supervisor outlived its infrastructure"
         );
         assert!(service.exits.lock().unwrap().is_empty());
+    }
+
+    /// The infrastructure is the builder's: the domain supervisor is not its supervisor and hears nothing of it,
+    /// failure or end, so its own handling of what it supervises covers its own children alone.
+    #[tokio::test]
+    async fn the_domain_supervisor_hears_nothing_of_its_infrastructure() {
+        let service = service().await;
+        service.resources.infrastructure.kill();
+        let ended = tokio::time::timeout(Duration::from_secs(15), service.domain_ended).await;
+        assert!(
+            ended.is_ok(),
+            "the domain supervisor outlived its infrastructure"
+        );
+        assert!(
+            service.heard.lock().unwrap().is_empty(),
+            "{:?}",
+            service.heard.lock().unwrap()
+        );
     }
 
     /// A domain supervisor that cannot end, stuck in a handler, does not keep the process alive without its
