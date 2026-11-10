@@ -231,6 +231,21 @@ const DOCUMENT_DIR = "/etc/polar"
 const DOCUMENT_FILE = "config.json"
 const DOCUMENT_VOLUME = "polar-config"
 
+# A role's rules: the agent's own, the role its scaffold computes for `capability` from what its cluster operations declare
+# (`roles`, polar-agent-builder/src/capability.rs, `role_of`), never written in the catalog. A scaffold that gives none is
+# refused rather than given a wider role: an image built before roles were computed, or an agent that declares nothing the
+# capability grants.
+def declared_rules [role: record, scaffold: record, capability: string, name: string] {
+    if $role.rules != "declared" {
+        error make { msg: $"capability '($capability)': a role's rules are the agent's, from its scaffold \(rules: \"declared\"\), never written in the catalog" }
+    }
+    let rules = ($scaffold.roles? | default {} | get -o $capability | default [])
+    if ($rules | is-empty) {
+        error make { msg: $"($name): its scaffold gives no role for ($capability): an image built before roles were computed \(rebuild it\), or an agent that declares no cluster operation ($capability) grants" }
+    }
+    $rules
+}
+
 # The scaffold the agent prints about itself (`<agent> --scaffold`): from the binary, never from a copy. The resolver
 # reads it from `POLAR_SCAFFOLD_DIR`, a directory of `<workload>.json` files, and asks nothing itself, so it stays a pure
 # function. The directory is filled by asking each agent's image on the cluster (`collect-scaffolds`, which up.nu runs
@@ -548,13 +563,14 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
             $pvcs = ($pvcs | append { name: (subst $p.name $vars $name), storage_class: $cluster.storage.class, size: $cluster.storage.size })
         }
         for r in ($cap.resources.cluster_roles? | default []) {
-            $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: $r.rules, from: $n })
+            $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: (declared_rules $r $scaffold $n $name), from: $n })
         }
         # A Role in the namespace it names (a key of the cluster's namespaces), or in each namespace Polar attests: its own, and
         # those the target names besides.
         for r in ($cap.resources.namespaced_roles? | default []) {
+            let rules = (declared_rules $r $scaffold $n $name)
             for namespace in (role_namespaces $r $cluster $n) {
-                $namespaced_roles = ($namespaced_roles | append { name: (subst $r.name $vars $name), namespace: $namespace, rules: $r.rules })
+                $namespaced_roles = ($namespaced_roles | append { name: (subst $r.name $vars $name), namespace: $namespace, rules: $rules })
             }
         }
     }

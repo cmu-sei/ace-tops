@@ -854,7 +854,8 @@ only.
   and the Dhall deployment library wait for the catalog conversation, a second deployment system beside the catalog (REVIEWED 2026-11-09: not
   taken as a system; what is taken, what is not and why, the problems for Blitz to fix now, and the options, written on his branch as
   `docs/requests/public-polar-port-deployment-review.md`, `bdf2f096`; the parts taken land in step 10's lifecycle work, and these now, in bites:
-  kube-observer's role derived from what it declares (it reads every Secret today, `infra/config/capabilities.nuon:165`), `up.nu` requiring the
+  kube-observer's role derived from what it declares (BUILT 2026-11-10, every Kubernetes role computed from the agent's declared operations,
+  `protocol-handlers.md`, "A role is what the operations declare"), `up.nu` requiring the
   cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree, the
   bootstrap CA constrained for new clusters, and tests that `polar-sign` and `polar-admin-grant` cannot print a secret); (6) `polar-sign next` read
   against lifecycle's decisions first. (6) DONE 2026-11-09 (the maintainer, "Take it, with the push fix"): `polar-sign next` built, with a sealed secret

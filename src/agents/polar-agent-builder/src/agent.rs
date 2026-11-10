@@ -382,6 +382,11 @@ pub struct AgentDocument {
     /// agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<OperationEntry>,
+    /// The role each of its Kubernetes capabilities gives it, by the capability's name: what its cluster operations
+    /// declare, as RBAC rules ([`crate::capability::roles_of`]). The catalog writes these, never its own. Written only
+    /// when there is one, so every other agent's scaffold is as it was.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub roles: std::collections::BTreeMap<String, Vec<crate::capability::RoleRule>>,
     #[serde(flatten)]
     pub document: Document,
     /// Every problem found, when the document was filled from a file.
@@ -713,6 +718,7 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
         graph: graph_with_keys::<A>(),
         graph_edges: crate::graph_schema::edge_set(A::GRAPH_EDGES),
         operations: A::OPERATIONS.iter().map(OperationEntry::from).collect(),
+        roles: crate::capability::roles_of(&needs_of::<A>(), A::OPERATIONS),
         document: Document::scaffold(&tagged),
         problems: Vec::new(),
     }
@@ -2139,6 +2145,50 @@ mod tests {
     fn an_agent_with_no_operations_has_the_scaffold_it_had() {
         let json = serde_json::to_value(scaffold_document::<Reading>()).unwrap();
         assert!(json.get("operations").is_none(), "{json}");
+        assert!(json.get("roles").is_none(), "{json}");
+    }
+
+    /// The role each Kubernetes capability gives an agent is in its scaffold, computed from what its cluster operations
+    /// declare, keyed by the capability's name: what the catalog writes as the RBAC rules, never by hand.
+    #[test]
+    fn the_scaffold_carries_each_role_its_cluster_operations_make() {
+        use crate::protocol::{Access, Location, OperationDecl, ProtocolKind, Verb};
+        const WATCH: OperationDecl = OperationDecl {
+            name: "cluster.watch",
+            doc: "watches pods",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: &[
+                    Access::new(Verb::Watch, "", "pods"),
+                    Access::new(Verb::Get, "", "namespaces"),
+                ],
+            },
+        };
+        struct Watching;
+        impl PolarAgent for Watching {
+            const NAME: &'static str = "watching";
+            const ROLE: Role = Role::Observer;
+            const PURPOSE: &'static str = "watches the cluster";
+            const NEEDS: &'static [Capability] = &[Capability::KubeApiRead];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const OPERATIONS: &'static [OperationDecl] = &[WATCH];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let doc = scaffold_document::<Watching>();
+        let json = serde_json::to_value(&doc).unwrap();
+        assert_eq!(
+            json["roles"],
+            serde_json::json!({
+                "kube-api-read": [
+                    { "api_groups": [""], "resources": ["namespaces"], "verbs": ["get"] },
+                    { "api_groups": [""], "resources": ["pods"], "verbs": ["list", "watch"] },
+                ]
+            })
+        );
+        let back: AgentDocument = serde_json::from_value(json).unwrap();
+        assert_eq!(back, doc);
     }
 
     #[test]

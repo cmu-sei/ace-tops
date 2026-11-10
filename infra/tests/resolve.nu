@@ -464,9 +464,10 @@ def main [] {
                 let namespaces = ($resources.namespaced_roles | get namespace | sort)
                 # Polar's own and the build namespace, whose pods the credentials agent issues to.
                 assert equal $namespaces ["polar" "polar-auth" "polar-builds" "polar-graph"]
+                # What it declares it watches (attestation.watch), listed first: no get, which it never asks.
                 for role in $resources.namespaced_roles {
                     let verbs = ($role.rules | get verbs | flatten | uniq | sort)
-                    assert equal $verbs ["get" "list" "watch"] $role.namespace
+                    assert equal $verbs ["list" "watch"] $role.namespace
                     let kinds = ($role.rules | get resources | flatten | sort)
                     assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
                 }
@@ -502,7 +503,7 @@ def main [] {
                 assert equal $rules [
                     { res: "events", verbs: ["list"] }
                     { res: "jobs", verbs: ["create" "delete" "get" "list"] }
-                    { res: "pods", verbs: ["get" "list"] }
+                    { res: "pods", verbs: ["list"] }
                     { res: "pods/log", verbs: ["get"] }
                     { res: "podtemplates", verbs: ["get"] }
                 ]
@@ -728,6 +729,43 @@ def main [] {
                     }
                 }
             }
+        }
+
+        # A role holds what the agent's cluster operations declare, as its scaffold computes it, and never a rule the
+        # catalog writes itself: kube-observer reads what it watches, and no Secret or ConfigMap.
+        "kube-observer's ClusterRole is what its scaffold computes, and holds no Secret or ConfigMap": {
+            let resources = (^nu $RESOLVER resources kube-observer | from json)
+            assert equal $resources.namespaced_roles []
+            assert equal ($resources.cluster_roles | get name) ["kube-observer-read"]
+            let rules = ($resources.cluster_roles | first | get rules)
+            let scaffold = (open ($env.POLAR_SCAFFOLD_DIR | path join "kube-observer.json"))
+            assert equal $rules ($scaffold.roles | get "kube-api-read")
+            let resources_named = ($rules | get resources | flatten)
+            for never in ["secrets" "configmaps" "*"] {
+                assert ($never not-in $resources_named) $never
+            }
+            assert ("*" not-in ($rules | get api_groups | flatten))
+        }
+
+        "no capability writes a role's rules itself: each takes them from the agent's scaffold": {
+            let caps = (open ($INFRA | path join "config/capabilities.nuon"))
+            for n in ($caps | columns) {
+                let resources = ($caps | get $n | get -o resources | default {})
+                for r in (($resources.cluster_roles? | default []) ++ ($resources.namespaced_roles? | default [])) {
+                    assert equal $r.rules "declared" $n
+                }
+            }
+        }
+
+        "a role taken from a scaffold that has none is refused, never widened": {
+            let dir = (mktemp --directory)
+            cp ($env.POLAR_SCAFFOLD_DIR | path join "*.json" | into glob) $dir
+            let file = ($dir | path join "kube-observer.json")
+            open $file | reject -o roles | to json | save --force $file
+            let r = (with-env { POLAR_SCAFFOLD_DIR: $dir } { do { ^nu $RESOLVER resources kube-observer } | complete })
+            rm -rf $dir
+            assert ($r.exit_code != 0) $r.stdout
+            assert ($r.stderr | str contains "kube-observer: its scaffold gives no role for kube-api-read") $r.stderr
         }
 
         # The build orchestrator's Role in the build namespace (job-run) is the other, held to its rules above.

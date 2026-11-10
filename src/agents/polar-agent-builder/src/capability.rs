@@ -32,7 +32,9 @@
 //! compares the two and refuses to start on a mismatch, with a message that
 //! names the missing capability.
 
-use crate::protocol::{Access, Verb};
+use crate::protocol::{Access, Location, OperationDecl, Verb};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Environment variable the deployment sets to the comma-separated list of
@@ -50,7 +52,8 @@ pub enum Capability {
     GraphRead,
     /// Encrypts payloads through CryptoActor. Opt-in.
     Encryption,
-    /// Reads the Kubernetes API with the workload's own ServiceAccount token.
+    /// Reads the Kubernetes API across the cluster with the workload's own ServiceAccount token: what its cluster
+    /// operations declare, its ClusterRole computed from them ([`role_of`]), and never Secrets.
     KubeApiRead,
     /// Reads what runs in Polar's own namespaces (pods and what owns them) with the workload's own ServiceAccount token,
     /// and nothing else in the Kubernetes API: the attestation agent's (docs/architecture/runtime-attestation.md).
@@ -68,8 +71,9 @@ pub enum Capability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grants {
     Nothing,
-    /// Get, list and watch on anything: `kube-api-read`'s ClusterRole.
-    ReadAnything,
+    /// Get, list and watch on anything but Secrets: what `kube-api-read`'s ClusterRole may hold. An agent's secrets
+    /// travel escrowed in its signed sections, never through the Kubernetes API.
+    ReadAnythingButSecrets,
     /// These, and no more.
     These(&'static [Access]),
 }
@@ -110,9 +114,61 @@ pub const JOB_RUN_GRANTS: &[Access] = &[
 pub fn granted(needs: &[Capability], access: &Access) -> bool {
     needs.iter().any(|capability| match capability.grants() {
         Grants::Nothing => false,
-        Grants::ReadAnything => !access.verb.writes(),
+        Grants::ReadAnythingButSecrets => !access.verb.writes() && !is_secret(access),
         Grants::These(granted) => granted.contains(access),
     })
+}
+
+fn is_secret(access: &Access) -> bool {
+    access.group.is_empty() && access.resource == "secrets"
+}
+
+/// One rule of a role, as RBAC writes it and the catalog renders it: one group's resource, and the verbs on it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RoleRule {
+    pub api_groups: Vec<String>,
+    pub resources: Vec<String>,
+    pub verbs: Vec<String>,
+}
+
+/// The role `capability` gives an agent whose operations are `operations`: what its cluster operations declare that the
+/// capability grants, as the verbs RBAC checks for it ([`Verb::uses`]), one rule per resource, the verbs sorted and each
+/// once, the rules sorted. What the catalog writes as the RBAC rules, so a role holds what the code declares and no more;
+/// empty for a capability that grants nothing.
+pub fn role_of(capability: Capability, operations: &[OperationDecl]) -> Vec<RoleRule> {
+    let mut by_resource: BTreeMap<(&str, &str), std::collections::BTreeSet<&str>> = BTreeMap::new();
+    for operation in operations {
+        let Location::Cluster { access } = operation.location else {
+            continue;
+        };
+        for wanted in access.iter().filter(|a| granted(&[capability], a)) {
+            by_resource
+                .entry((wanted.group, wanted.resource))
+                .or_default()
+                .extend(wanted.verb.uses().iter().map(|v| v.as_str()));
+        }
+    }
+    by_resource
+        .into_iter()
+        .map(|((group, resource), verbs)| RoleRule {
+            api_groups: vec![group.to_string()],
+            resources: vec![resource.to_string()],
+            verbs: verbs.into_iter().map(str::to_string).collect(),
+        })
+        .collect()
+}
+
+/// Each role `needs` gives an agent whose operations are `operations`, by the capability's name: the ones that hold
+/// something.
+pub fn roles_of(
+    needs: &[Capability],
+    operations: &[OperationDecl],
+) -> BTreeMap<String, Vec<RoleRule>> {
+    needs
+        .iter()
+        .map(|c| (c.as_str().to_string(), role_of(*c, operations)))
+        .filter(|(_, role)| !role.is_empty())
+        .collect()
 }
 
 impl Capability {
@@ -131,7 +187,7 @@ impl Capability {
     /// What it lets an agent do to the Kubernetes API.
     pub const fn grants(self) -> Grants {
         match self {
-            Capability::KubeApiRead => Grants::ReadAnything,
+            Capability::KubeApiRead => Grants::ReadAnythingButSecrets,
             Capability::PodRead => Grants::These(POD_READ_GRANTS),
             Capability::JobRun => Grants::These(JOB_RUN_GRANTS),
             _ => Grants::Nothing,
@@ -388,5 +444,166 @@ mod tests {
             catalog_keys(nuon),
             vec!["alpha".to_string(), "beta-two".to_string()]
         );
+    }
+
+    use crate::protocol::ProtocolKind;
+    use proptest::prelude::*;
+
+    fn cluster(access: &'static [Access]) -> OperationDecl {
+        OperationDecl {
+            name: "op",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster { access },
+        }
+    }
+
+    fn rule(group: &str, resource: &str, verbs: &[&str]) -> RoleRule {
+        RoleRule {
+            api_groups: vec![group.to_string()],
+            resources: vec![resource.to_string()],
+            verbs: verbs.iter().map(|v| v.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn kube_api_read_reads_anything_but_secrets() {
+        assert!(granted(
+            &[Capability::KubeApiRead],
+            &Access::new(Verb::Watch, "apps", "deployments")
+        ));
+        for verb in [Verb::Get, Verb::List, Verb::Watch] {
+            assert!(!granted(
+                &[Capability::KubeApiRead],
+                &Access::new(verb, "", "secrets")
+            ));
+        }
+        assert!(!granted(
+            &[Capability::KubeApiRead],
+            &Access::new(Verb::Create, "batch", "jobs")
+        ));
+    }
+
+    #[test]
+    fn a_role_is_what_the_operations_declare_and_a_watch_lists_first() {
+        const WATCHES: &[Access] = &[
+            Access::new(Verb::Watch, "", "pods"),
+            Access::new(Verb::Watch, "apps", "deployments"),
+        ];
+        const IDENTIFIES: &[Access] = &[
+            Access::new(Verb::Get, "", "namespaces"),
+            Access::new(Verb::Watch, "", "pods"),
+        ];
+        let role = role_of(
+            Capability::KubeApiRead,
+            &[cluster(WATCHES), cluster(IDENTIFIES)],
+        );
+        assert_eq!(
+            role,
+            [
+                rule("", "namespaces", &["get"]),
+                rule("", "pods", &["list", "watch"]),
+                rule("apps", "deployments", &["list", "watch"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_role_holds_only_what_its_capability_grants() {
+        const BOTH: &[Access] = &[
+            Access::new(Verb::Create, "batch", "jobs"),
+            Access::new(Verb::Watch, "", "pods"),
+        ];
+        let operations = [cluster(BOTH)];
+        assert_eq!(
+            role_of(Capability::JobRun, &operations),
+            [rule("batch", "jobs", &["create"])]
+        );
+        assert_eq!(
+            role_of(Capability::KubeApiRead, &operations),
+            [rule("", "pods", &["list", "watch"])]
+        );
+        assert!(role_of(Capability::GraphWrite, &operations).is_empty());
+        assert!(role_of(Capability::KubeApiRead, &[]).is_empty());
+    }
+
+    /// The accesses a declaration draws from: reads, writes and Secrets, in a few groups.
+    const ACCESSES: [Access; 10] = [
+        Access::new(Verb::Watch, "", "pods"),
+        Access::new(Verb::List, "", "pods"),
+        Access::new(Verb::Get, "", "pods"),
+        Access::new(Verb::Watch, "apps", "deployments"),
+        Access::new(Verb::Get, "", "namespaces"),
+        Access::new(Verb::Get, "", "secrets"),
+        Access::new(Verb::Watch, "", "secrets"),
+        Access::new(Verb::Create, "batch", "jobs"),
+        Access::new(Verb::Delete, "batch", "jobs"),
+        Access::new(Verb::Get, "", "pods/log"),
+    ];
+
+    fn declared(accesses: &[Vec<Access>]) -> Vec<OperationDecl> {
+        accesses
+            .iter()
+            .map(|a| cluster(Box::leak(a.clone().into_boxed_slice())))
+            .collect()
+    }
+
+    /// What a role allows, one (group, resource, verb) at a time.
+    fn allows(role: &[RoleRule]) -> std::collections::BTreeSet<(String, String, String)> {
+        role.iter()
+            .flat_map(|r| {
+                r.verbs
+                    .iter()
+                    .map(|v| (r.api_groups[0].clone(), r.resources[0].clone(), v.clone()))
+            })
+            .collect()
+    }
+
+    proptest! {
+        /// A role allows exactly the RBAC verbs of what the operations declare and the capability grants, nothing
+        /// else: one rule per resource, its verbs sorted and each once, the rules sorted, whatever order the operations
+        /// come in. So no role holds a Secret, none holds a write its capability does not grant, and none misses the
+        /// list a declared watch makes.
+        #[test]
+        fn a_role_allows_exactly_what_is_declared_and_granted(
+            capability in proptest::sample::select(Capability::ALL.to_vec()),
+            accesses in proptest::collection::vec(
+                proptest::collection::vec(proptest::sample::select(ACCESSES.to_vec()), 1..4),
+                0..4,
+            ),
+        ) {
+            let role = role_of(capability, &declared(&accesses));
+            let mut expected = std::collections::BTreeSet::new();
+            for access in accesses.iter().flatten().filter(|a| granted(&[capability], a)) {
+                for verb in access.verb.uses() {
+                    expected.insert((access.group.to_string(), access.resource.to_string(), verb.as_str().to_string()));
+                }
+            }
+            prop_assert_eq!(allows(&role), expected);
+            for r in &role {
+                prop_assert_eq!(r.api_groups.len(), 1);
+                prop_assert_eq!(r.resources.len(), 1);
+                let mut verbs = r.verbs.clone();
+                verbs.sort();
+                verbs.dedup();
+                prop_assert_eq!(&verbs, &r.verbs);
+                prop_assert!(!access_is_secret(&r.api_groups[0], &r.resources[0]), "{:?}", role);
+            }
+            let mut sorted = role.clone();
+            sorted.sort();
+            sorted.dedup_by(|a, b| a.api_groups == b.api_groups && a.resources == b.resources);
+            prop_assert_eq!(&sorted, &role);
+
+            let mut reversed = accesses.clone();
+            reversed.reverse();
+            for each in &mut reversed {
+                each.reverse();
+            }
+            prop_assert_eq!(role_of(capability, &declared(&reversed)), role);
+        }
+    }
+
+    fn access_is_secret(group: &str, resource: &str) -> bool {
+        group.is_empty() && resource == "secrets"
     }
 }

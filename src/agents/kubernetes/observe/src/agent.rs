@@ -47,8 +47,8 @@ impl PolarAgent for KubeObserver {
     .because(&[Cause::Outside("the Kubernetes API")])];
     const HELP: Option<&'static str> = Some(
         "kube-observer watches the cluster's resources through the Kubernetes API, with the \
-         service account the deployment gives it (read access to everything, nothing else), and \
-         publishes each change on Cassini for kube-consumer to project into the graph. The \
+         service account the deployment gives it (a ClusterRole computed from what it declares it \
+         watches, never Secrets), and publishes each change on Cassini for kube-consumer to project into the graph. The \
          cluster API address and its token are the ones Kubernetes gives every pod. Its own \
          variables are how long a watch that ended waits before it is asked for again.",
     );
@@ -88,5 +88,48 @@ mod tests {
             assert_eq!(operation.protocol, "kubernetes");
             assert_eq!(operation.location, "cluster");
         }
+    }
+
+    /// Its ClusterRole is what it watches, listed first, and the one get that names the cluster: no Secrets, no
+    /// ConfigMaps, nothing it does not declare.
+    #[test]
+    fn its_role_is_what_it_watches_and_nothing_else() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<KubeObserver>();
+        let role = &scaffold.roles["kube-api-read"];
+        let rules: Vec<(String, String, Vec<String>)> = role
+            .iter()
+            .map(|r| {
+                (
+                    r.api_groups.join(","),
+                    r.resources.join(","),
+                    r.verbs.clone(),
+                )
+            })
+            .collect();
+        let watched = |group: &str, resource: &str| {
+            (
+                group.to_string(),
+                resource.to_string(),
+                vec!["list".to_string(), "watch".to_string()],
+            )
+        };
+        assert_eq!(
+            rules,
+            [
+                (
+                    String::new(),
+                    "namespaces".to_string(),
+                    vec!["get".to_string(), "list".to_string(), "watch".to_string()]
+                ),
+                watched("", "nodes"),
+                watched("", "pods"),
+                watched("apps", "deployments"),
+                watched("apps", "replicasets"),
+                watched("batch", "jobs"),
+                watched("kustomize.toolkit.fluxcd.io", "kustomizations"),
+                watched("source.toolkit.fluxcd.io", "ocirepositories"),
+            ]
+        );
+        assert_eq!(scaffold.roles.len(), 1, "{:?}", scaffold.roles);
     }
 }

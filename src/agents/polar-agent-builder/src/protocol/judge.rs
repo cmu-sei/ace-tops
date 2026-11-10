@@ -163,6 +163,18 @@ impl Verb {
     pub const fn writes(self) -> bool {
         matches!(self, Verb::Create | Verb::Delete)
     }
+
+    /// The verbs RBAC checks when the handler does this: a watch lists first (`kube`'s watcher, in
+    /// `protocol/kubernetes.rs`), and every other verb is itself.
+    pub const fn uses(self) -> &'static [Verb] {
+        match self {
+            Verb::Watch => &[Verb::List, Verb::Watch],
+            Verb::Get => &[Verb::Get],
+            Verb::List => &[Verb::List],
+            Verb::Create => &[Verb::Create],
+            Verb::Delete => &[Verb::Delete],
+        }
+    }
 }
 
 impl Access {

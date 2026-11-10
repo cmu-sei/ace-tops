@@ -2359,7 +2359,7 @@ pub(crate) mod tests {
             "{all}"
         );
 
-        // A write is granted by job-run alone, and kube-api-read, which reads anything, grants none.
+        // A write is granted by job-run alone, and kube-api-read, which reads anything but Secrets, grants none.
         let makes = [OperationDecl {
             name: "makes",
             doc: "",
@@ -2556,7 +2556,7 @@ pub(crate) mod tests {
 
     proptest! {
         /// A cluster operation's access is a problem exactly when none of the capabilities the agent needs grants it:
-        /// kube-api-read any read, pod-read and job-run their Roles' rules, and nothing else anything.
+        /// kube-api-read any read but of Secrets, pod-read and job-run their Roles' rules, and nothing else anything.
         #[test]
         fn what_a_cluster_operation_may_do_is_what_its_capabilities_grant(
             access in proptest::sample::select(ACCESSES.to_vec()),
@@ -2565,7 +2565,7 @@ pub(crate) mod tests {
             let found = problems("a", declared_with(access), None, &[], true, &needs);
             let refused = found.iter().any(|p| p.contains("grants it"));
             let grants = needs.iter().any(|c| match c {
-                crate::Capability::KubeApiRead => !access.verb.writes(),
+                crate::Capability::KubeApiRead => !access.verb.writes() && access.resource != "secrets",
                 crate::Capability::PodRead => crate::capability::POD_READ_GRANTS.contains(&access),
                 crate::Capability::JobRun => crate::capability::JOB_RUN_GRANTS.contains(&access),
                 _ => false,

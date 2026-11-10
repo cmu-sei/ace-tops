@@ -133,7 +133,8 @@ replaced under the same name is not the one deleted.
 ## What exists, and what each control needs
 
 - **Kubernetes RBAC.** The catalog's capabilities produce a ClusterRole and ClusterRoleBinding only
-  (`infra/schema/resources.dhall`), and the only one is `kube-api-read`, `*/*` get, list and watch, cluster-wide. Both
+  (`infra/schema/resources.dhall`), and the only one is `kube-api-read`, `*/*` get, list and watch, cluster-wide (since
+  2026-11-10 every role holds only what its agent declares: `protocol-handlers.md`, "A role is what the operations declare"). Both
   agents need namespaced Roles with narrow rules, so `resources.dhall` gains a Role and a RoleBinding per namespace, and the
   catalog gains two capabilities (with their `Capability` variants in `polar-agent-builder`, which a test keeps in step).
 - **Admission.** None exists in the repository. The policy and its binding would be rendered with the Reaper's chart, in a

@@ -48,8 +48,10 @@
 #                 given to polar-init, besides the certificates it issues
 #   resources   pvcs: [{ name }]   (storage class and size are the cluster's)
 #               sa_token_secret: name of a service-account-token Secret
-#               cluster_roles: [{ name, rules: [{ api_groups, resources, verbs }] }]
-#                 (each role is bound to the workload's ServiceAccount)
+#               cluster_roles: [{ name, rules: "declared" }]
+#               namespaced_roles: [{ name, namespace?, rules: "declared" }]
+#                 (each role is bound to the workload's ServiceAccount; its rules are always the agent's, the role its
+#                 scaffold computes from what its cluster operations declare, `roles.<capability>`, never written here)
 #
 # Text values may use {<service>.dns}, {<service>.port}, {<service>.addr} and
 # {workload}, the workload's own name.
@@ -146,9 +148,10 @@
     resources: {}
   }
 
-  # Read access to the Kubernetes API with the workload's own ServiceAccount
-  # token (a Secret, mounted where Kubernetes clients look for it). The Job
-  # leaves automountServiceAccountToken unset because of this mount.
+  # Reads the Kubernetes API across the cluster with the workload's own ServiceAccount token (a Secret, mounted where
+  # Kubernetes clients look for it): a ClusterRole holding what its cluster operations declare, which never includes
+  # Secrets (polar-agent-builder/src/capability.rs, `role_of`). The Job leaves automountServiceAccountToken unset
+  # because of this mount.
   kube-api-read: {
     pod: {
       # No KUBE_TOKEN: nothing reads it. The client finds the API and the token itself, from the
@@ -162,13 +165,14 @@
     resources: {
       sa_token_secret: "{workload}-sa-token"
       cluster_roles: [
-        { name: "{workload}-read", rules: [ { api_groups: ["*"], resources: ["*"], verbs: ["get", "list", "watch"] } ] }
+        { name: "{workload}-read", rules: "declared" }
       ]
     }
   }
 
-  # What runs in Polar's own namespaces, and nothing else in the Kubernetes API: a Role in each of them, get, list and watch on pods and
-  # what owns them, with the workload's own ServiceAccount token. The attestation agent's (docs/architecture/runtime-attestation.md).
+  # What runs in Polar's own namespaces, and nothing else in the Kubernetes API: a Role in each of them, holding what its cluster
+  # operations declare of pods and what owns them (the most it may: get, list and watch on those), with the workload's own
+  # ServiceAccount token. The attestation agent's (docs/architecture/runtime-attestation.md).
   pod-read: {
     pod: {
       volumes: [ { name: "{workload}-sa-token", secret: "{workload}-sa-token" } ]
@@ -182,21 +186,17 @@
       namespaced_roles: [
         {
           name: "{workload}-read"
-          rules: [
-            { api_groups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] }
-            { api_groups: ["apps"], resources: ["replicasets", "deployments", "statefulsets"], verbs: ["get", "list", "watch"] }
-            { api_groups: ["batch"], resources: ["jobs"], verbs: ["get", "list", "watch"] }
-          ]
+          rules: "declared"
         }
       ]
     }
   }
 
   # Runs work as Kubernetes Jobs in the build namespace, and nothing else in the Kubernetes API: a Role there alone (its
-  # `namespace`, a key of the cluster's namespaces), with the workload's own ServiceAccount token. Never listed by hand: the
-  # builder adds it for an agent whose cluster operations declare a write, and holds each operation's access to these rules
-  # (polar-agent-builder/src/capability.rs, JOB_RUN_GRANTS). No Secret: a build's source comes by digest
-  # (docs/architecture/build-orchestrator.md).
+  # `namespace`, a key of the cluster's namespaces), holding what its cluster operations declare, with the workload's own
+  # ServiceAccount token. Never listed by hand: the builder adds it for an agent whose cluster operations declare a write,
+  # and holds each operation's access to the most it may (polar-agent-builder/src/capability.rs, JOB_RUN_GRANTS). No
+  # Secret: a build's source comes by digest (docs/architecture/build-orchestrator.md).
   job-run: {
     pod: {
       volumes: [ { name: "{workload}-sa-token", secret: "{workload}-sa-token" } ]
@@ -211,13 +211,7 @@
         {
           name: "{workload}-jobs"
           namespace: "builds"
-          rules: [
-            { api_groups: ["batch"], resources: ["jobs"], verbs: ["create", "get", "list", "delete"] }
-            { api_groups: [""], resources: ["pods"], verbs: ["get", "list"] }
-            { api_groups: [""], resources: ["pods/log"], verbs: ["get"] }
-            { api_groups: [""], resources: ["events"], verbs: ["list"] }
-            { api_groups: [""], resources: ["podtemplates"], verbs: ["get"] }
-          ]
+          rules: "declared"
         }
       ]
     }

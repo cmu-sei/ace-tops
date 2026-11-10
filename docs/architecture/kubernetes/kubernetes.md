@@ -80,8 +80,12 @@ The ClusterSupervisor watches all child actors and manages their lifecycles.
 
 Should its children fail for some reason, it will likely restart them, depending on the cause.
 
-In deployment, the container for the kube-observer will need to be able to authenticate with the kubernetes API server, to enable this, we have to specify
-a ServiceAccount, a ClusterRole for that account that speicifies desired permissions, and a ClusterRoleBinding for that account. In the future, operators may desire more or less permissions than our standard, so we will aim to make this more configurable.
+In deployment, kube-observer authenticates to the Kubernetes API with its own ServiceAccount, bound to a ClusterRole that
+holds what it declares and no more (2026-11-10): its operations (`kube.cluster`, `kube.watch` in `observe/src/watches.rs`)
+name each verb and kind, the builder computes the role from them, a watch with the list it starts from, and prints it in
+the scaffold (`roles`), and the catalog writes that role (`kube-api-read`, `infra/config/capabilities.nuon`). So it may
+get namespaces and list and watch the eight kinds it watches, and never read a Secret or a ConfigMap. A kind it starts to
+watch is a change to its code, and its role follows.
 
 **Observers** (Kube.rs watchers)
  - Wraps a kube_runtime::watcher for a specific resource type.

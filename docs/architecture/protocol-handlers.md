@@ -240,6 +240,15 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
   **`Location::Cluster`, decided while building, to review.** None of the three locations was true of it. The address is not a variable of the agent's and the token is not a section's, and it is hardly arbitrary. So a fourth: Kubernetes says where, the
   request can name no host at all, and it goes only over TLS. The capability says it has a token to go with: an agent with such an operation and neither `kube-api-read` nor `pod-read` does not pass `polar_agent_tests!`. What a watch is of is not on the record, which has hosts only, and the Role or ClusterRole is what bounds it.
 
+  **A role is what the operations declare (2026-11-10).** The Role or ClusterRole is no longer written in the catalog. The
+  builder computes it for each Kubernetes capability from the agent's cluster operations, as the verbs RBAC checks for each
+  (`Verb::uses`: a watch lists first), one rule per resource, and prints it in the scaffold (`roles`, `capability::role_of`);
+  the catalog's `rules: "declared"` takes it from there, and a scaffold that gives none is refused, never widened. Each
+  capability still bounds what may be declared (`Grants`): `kube-api-read` any read but of Secrets, which travel escrowed;
+  `pod-read` and `job-run` their lists. So kube-observer, which had get, list and watch on everything, Secrets included,
+  holds what it watches; the attestation agent's Roles lost `get`, which it never asks; the build orchestrator's lost
+  `get pods`.
+
   **No create gives a pod its node, whatever is declared** (2026-11-08, `build-orchestrator.md`, 5d and O2c). The judge refuses a create whose object would give a pod privileged mode, the host's network, PID or IPC namespace, a host port, a host path, an unconfined seccomp or AppArmor profile, an unmasked `/proc` or a Windows host process (`Denial::ReachesTheNode`), before anything is sent; no operation can declare an exception. The Kubernetes protocol reads it from the whole object, not from the path its kind puts a pod at (`kubernetes::reaches_node`), so no kind, nesting or container list is a way round it; a value of an unexpected type counts as asking, and the maps of anyone's names (labels, data) are not read for it. It is Polar's own floor, held in the handler for every agent that may create, so that a bug in a domain, or a domain that is compromised and stays inside its handler, cannot make a pod that reaches its node.
 
   **A stream is paced, and ends once.** What is published can have to wait (`cassini-backpressure.md`), and a watch that piled up in a mailbox would undo that. So each message holds a `Delivery`, and the next change is not read until the actor has let go of it, which it does by finishing with the message. One stream's wait holds no other's. Decided while building, to review.
