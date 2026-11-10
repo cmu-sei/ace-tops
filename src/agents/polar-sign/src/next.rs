@@ -32,7 +32,7 @@
 //! refuses until it is typed again, and the file says which. What the file form cannot hold (a version range, migrations)
 //! is named, not silently left behind.
 
-use crate::push::{head, place, up_to_date};
+use crate::push::{head, up_to_date};
 use crate::verify_source;
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -172,7 +172,9 @@ fn unseal(value: &mut Value, at: String, found: &mut Vec<String>) {
 }
 
 /// The latest signed version of `agent`'s `section` (its settings for `None`) in the repository at `remote`, read in the
-/// tool's clone at `workdir` brought up to date, and verified against `trust`.
+/// tool's clone at `workdir` brought up to date, and verified against `trust`. Read as the agents read it: every signed
+/// document under `permanent/`, whatever its file is called (the seed writes `permanent/<agent>-<section>.dhall`, `sign --push`
+/// writes [`crate::push::place`]), the highest version for that agent and section winning; a file that does not verify is no version.
 pub fn latest(
     remote: &str,
     workdir: &Path,
@@ -183,17 +185,51 @@ pub fn latest(
     now: i64,
 ) -> Result<Latest, String> {
     up_to_date(remote, workdir, config)?;
-    let relative = place(agent, section);
-    let Ok(text) = std::fs::read_to_string(workdir.join(&relative)) else {
+    let mut files = Vec::new();
+    dhall_files(&workdir.join("permanent"), &mut files);
+    files.sort();
+    let mut unverified = Vec::new();
+    let mut best: Option<(u64, polar_signing::SignerInfo, Value)> = None;
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let (who, payload) = match verify_source(&text, trust, now) {
+            Ok(verified) => verified,
+            Err(_) => {
+                unverified.push(
+                    path.strip_prefix(workdir)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string(),
+                );
+                continue;
+            }
+        };
+        if !is_of(&payload, agent, section) {
+            continue;
+        }
+        let version = payload["version"].as_u64().unwrap_or(0);
+        if best.as_ref().is_none_or(|(held, _, _)| version > *held) {
+            best = Some((version, who, payload));
+        }
+    }
+    let Some((_, who, payload)) = best else {
+        let unverified = if unverified.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} that do not verify were passed over: {})",
+                unverified.len(),
+                unverified.join(", ")
+            )
+        };
         return Err(format!(
-            "{relative} is not in the repository: nothing of {agent}'s {} is signed yet; start from `polar-sign template \
-             {agent}{}`",
+            "nothing of {agent}'s {} is signed yet under permanent/{unverified}; start from `polar-sign template {agent}{}`",
             section.unwrap_or("settings"),
             section.map(|s| format!(" {s}")).unwrap_or_default()
         ));
     };
-    let (who, payload) = verify_source(&text, trust, now)
-        .map_err(|e| format!("{relative} does not verify, so nothing is made from it: {e}"))?;
     Ok(Latest {
         payload,
         signer: who
@@ -204,13 +240,41 @@ pub fn latest(
     })
 }
 
+/// Whether a verified payload is `agent`'s `section` (its settings for `None`).
+fn is_of(payload: &Value, agent: &str, section: Option<&str>) -> bool {
+    if payload["target"]["agent"].as_str() != Some(agent) {
+        return false;
+    }
+    match section {
+        Some(section) => {
+            payload["type"] == "runtime" && payload["section"].as_str() == Some(section)
+        }
+        None => payload["type"] == "configuration",
+    }
+}
+
+/// Every `.dhall` file under `dir`, as the scheduler observer finds them.
+fn dhall_files(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            dhall_files(&path, found);
+        } else if path.extension().is_some_and(|e| e == "dhall") {
+            found.push(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Identity;
     use crate::author::{Document, read_input};
     use crate::flow::{Signing, sign_file};
-    use crate::push::{Plan, push};
+    use crate::push::{Plan, place, push};
     use crate::scaffold::Scaffold;
     use crate::split_pem;
     use polar_signing::testing::{EscrowSpec, Spec, escrow_certificate_for, now, root, signer};
@@ -515,5 +579,79 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Pushes `files` (path, content), one commit each, to a new schedules repository.
+    fn repository_of(files: &[(&str, String)]) -> (tempfile::TempDir, String) {
+        let root = tempfile::tempdir().unwrap();
+        let bare = root.path().join("schedules.git");
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "--bare", "--initial-branch=main"])
+                .arg(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let remote = bare.to_string_lossy().to_string();
+        let cfg = config();
+        for (relative, content) in files {
+            push(&Plan {
+                remote: &remote,
+                workdir: &root.path().join("author"),
+                relative,
+                content,
+                message: "feat: a document",
+                author_name: "alice",
+                author_email: "alice@example.org",
+                git_config: &cfg,
+            })
+            .unwrap();
+        }
+        (root, remote)
+    }
+
+    // The agents read every signed document under permanent/ and take a section's highest version, whatever its file is
+    // called (the seed writes permanent/<agent>-<section>.dhall, `sign --push` permanent/<agent>/<section>.dhall); `next`
+    // reads it as they do, and a version that does not verify is no version.
+    #[test]
+    fn the_latest_version_is_the_highest_that_verifies_wherever_it_is() {
+        let w = world();
+        // Higher, and not this section's: the agent's settings.
+        let settings =
+            json!({"agent": AGENT, "version": 50, "settings": {"RUST_LOG": "debug"}}).to_string();
+        let edited = signed(&w, &watch(12)).replace("github.com", "evil.example");
+        let (root, remote) = repository_of(&[
+            (&place(AGENT, Some("watch")), signed(&w, &watch(7))),
+            (
+                &format!("permanent/{AGENT}-watch.dhall"),
+                signed(&w, &watch(9)),
+            ),
+            ("permanent/tampered.dhall", edited),
+            (&place(AGENT, None), signed(&w, &settings)),
+        ]);
+        let latest = latest(
+            &remote,
+            &root.path().join("tool"),
+            &config(),
+            AGENT,
+            Some("watch"),
+            &split_pem(&w.ca.pem),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(latest.payload["version"], 9);
+        assert_eq!(latest.payload["section"], "watch");
+        let settings = super::latest(
+            &remote,
+            &root.path().join("tool"),
+            &config(),
+            AGENT,
+            None,
+            &split_pem(&w.ca.pem),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(settings.payload["version"], 50);
     }
 }

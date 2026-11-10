@@ -89,8 +89,10 @@ What it does, in order:
 
 1. **Brings its clone up to date.** If the workdir is a clone of the same remote, `git fetch`, then reset to `origin`'s head. Otherwise
    clone. `push()` should do the same, which removes the "Not possible to fast-forward" failure for `sign --push` too.
-2. **Reads the signed document** at `permanent/<agent>/<section>.dhall` (`push::place`). If there is none, it says so and points to
-   `polar-sign template`.
+2. **Reads the signed document** as the agents do (2026-11-10): every signed document under `permanent/`, whatever its file is called,
+   the highest version for the agent and section that verifies. The seed writes `permanent/<agent>-<section>.dhall` and `sign --push`
+   `permanent/<agent>/<section>.dhall` (`push::place`); reading only the second hid a seeded version from `next` (found by polar-cc on
+   u7c). If there is none, it says so, names any file that did not verify, and points to `polar-sign template`.
 3. **Verifies it as `polar-sign verify` does**: the layout, the chain to the CA (`--ca`, or `<dir>/ca.pem`), the signer's certificate
    and the signature. A document that does not verify produces no file. The tool never copies forward what it has not checked.
 4. **Writes version N+1.** The body is the payload's, unchanged. Sealed secrets stay ciphertext: `seal.rs` already leaves a value that
