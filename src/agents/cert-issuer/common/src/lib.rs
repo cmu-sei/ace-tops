@@ -33,6 +33,7 @@ pub mod ca_root;
 pub mod capability;
 pub mod csr_san;
 pub mod custody;
+pub mod evidence;
 pub mod group;
 pub mod held;
 pub mod hierarchy;
