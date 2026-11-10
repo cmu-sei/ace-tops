@@ -85,6 +85,21 @@ Each step is taken in bites, each reported before the next.
       until admins hold it and the collectors re-run; a customer cluster after 3.0.0 needs that in its migration notes.
     - Order: the cluster profile, `new`/`init`, `check` (useful before lifecycle, and what Blitz needs), then `add`, then `install` and
       `promote` after step 10's lifecycle and catalog split. Not yet placed in this order of work.
+12. **Disaster recovery, after Polar's GitOps controller** (the maintainer, 2026-11-10: "it's pretty clear we have some design work
+    to do"; design, not built, and not started until the controller is). What 2026-11-10 on u7c showed, as material for it:
+    - *A cycle in the trust base.* Flux reads the deployment from Polar's git server; the git server's pod starts only once the
+      credentials agent vouches for it; so when the credentials agent cannot start, no fix can be published to the place the
+      cluster reads from, and the cluster cannot heal itself. What broke it was ordinary: main's credentials agent could not replay
+      a ledger the branch had written (the item below).
+    - *Recovery depended on one machine.* `up.nu --bootstrap-again` served the deployment from the mirror on the maintainer's
+      machine and brought the branch's credentials agent back; with that machine or its mirror gone, there was no way back short
+      of a new cluster. Which state is the record (the ledger, the signed deployment history, polar-schedules, polar-evidence,
+      the CA, the deployment PKI), where each is kept apart from the cluster, and how each is restored are not written down.
+    - *Nothing says what version wrote what.* A rollback after a breaking event is a migration
+      (`breaking-changes-need-migrations-after-3-0-0`), and nothing refuses one plainly.
+    - The questions for the design: what the controller does when the deployment source is unreachable; a recovery path that does
+      not pass through what failed (the bootstrap path, kept tested); backups of each record and a restore that is rehearsed;
+      rollback across a breaking change; and how the cluster says it is in recovery, so a person is not left reading crash loops.
 
 - [ ] **A ledger written by newer code stops an older credentials agent** (found 2026-11-10, on u7c). The branch's credentials agent wrote
   events with a certificate type main does not know (`signing`, `WorkloadCertType`); main's agent, replaying
