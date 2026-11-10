@@ -438,13 +438,17 @@ pub fn parse_body(text: &str) -> Result<Value, String> {
     }
 }
 
-/// `NAME=VALUE`, as given on a command line.
+/// `NAME=VALUE`, as given on a command line. One that is not is refused without repeating it, since what was typed
+/// may be a value.
 pub fn parse_change(arg: &str) -> Result<(String, String), String> {
     match arg.split_once('=') {
         Some((name, value)) if !name.trim().is_empty() => {
             Ok((name.trim().to_string(), value.to_string()))
         }
-        _ => Err(format!("`{arg}` is not NAME=VALUE")),
+        _ => Err(
+            "a change is not NAME=VALUE (it is not repeated here, in case it holds a value)"
+                .to_string(),
+        ),
     }
 }
 

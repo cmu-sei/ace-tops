@@ -34,8 +34,8 @@ use polar_env::Env;
 use polar_sign::flow::{Signing, sign_file};
 use polar_sign::scaffold::Scaffold;
 use polar_sign::{
-    author, configuration_payload, evidence, fetch, load_identity, next, parse_body, parse_change,
-    push, runtime_payload, sign_to_dhall, split_pem, template, verify_source,
+    author, evidence, fetch, load_identity, next, parse_body, parse_change, push, runtime_payload,
+    sign_to_dhall, split_pem, template, verify_source,
 };
 use std::path::PathBuf;
 
@@ -63,10 +63,14 @@ enum Command {
         /// Must be higher than the last version the agent applied.
         #[arg(long)]
         version: u64,
-        /// A change, NAME=VALUE. Only variables the agent declares dynamic can be changed. The document replaces the
-        /// last one: a setting it does not name goes back to its rendered value.
+        /// A change, NAME=VALUE. Only variables the agent declares dynamic can be changed, and never a secret one. The
+        /// document replaces the last one: a setting it does not name goes back to its rendered value.
         #[arg(long = "set", value_name = "NAME=VALUE", required = true)]
         changes: Vec<String>,
+        /// The agent's scaffold (`<agent> --scaffold`), which the changes are judged by; <dir>/scaffolds/<agent>.json by
+        /// default. Nothing is signed without it.
+        #[arg(long)]
+        scaffold: Option<PathBuf>,
         /// The item's id; a new one if not given.
         #[arg(long)]
         id: Option<String>,
@@ -109,8 +113,9 @@ enum Command {
         /// scaffold: the body, in place of --body or --body-file.
         #[arg(long, conflicts_with_all = ["body", "body_file"])]
         projection: Option<PathBuf>,
-        /// With --projection, the agent's scaffold (`<agent> --scaffold`); <dir>/scaffolds/<agent>.json by default.
-        #[arg(long, requires = "projection")]
+        /// The agent's scaffold (`<agent> --scaffold`), which the section is judged by; <dir>/scaffolds/<agent>.json by
+        /// default. Nothing is signed without it.
+        #[arg(long)]
         scaffold: Option<PathBuf>,
         #[arg(long)]
         id: Option<String>,
@@ -690,6 +695,7 @@ fn main() -> Result<()> {
             agent,
             version,
             changes,
+            scaffold,
             id,
             from,
             below,
@@ -702,13 +708,25 @@ fn main() -> Result<()> {
                 .map(|c| parse_change(c))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(anyhow::Error::msg)?;
-            let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let range = polar_sign::range_of(from.as_deref(), below.as_deref())
                 .map_err(anyhow::Error::msg)?;
-            let payload = polar_sign::for_versions(
-                configuration_payload(&agent, version, &id, &changes),
-                &range,
-            );
+            // Judged by the agent's scaffold as `sign` judges it: never a secret setting, never one fixed while it runs.
+            let scaffold = load_scaffold(&agent, scaffold, &default_dir(dir.clone())?)?;
+            let settings = changes
+                .iter()
+                .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+                .collect::<serde_json::Map<_, _>>();
+            let input = author::Input {
+                agent: agent.clone(),
+                version,
+                id,
+                document: author::Document::Settings {
+                    settings: serde_json::Value::Object(settings),
+                },
+            };
+            let prepared = author::prepare_sealed(input, &scaffold)
+                .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?;
+            let payload = polar_sign::for_versions(prepared.payload, &range);
             let identity = load_identity(&default_dir(dir)?, &user).map_err(anyhow::Error::msg)?;
             let file = sign_to_dhall(payload, &identity).map_err(anyhow::Error::msg)?;
             match out {
@@ -772,27 +790,39 @@ fn main() -> Result<()> {
                     .with_context(|| format!("cannot read {}", path.display()))?,
                 _ => bail!("give the body with --body or --body-file"),
             };
-            let body = match projection {
+            // Judged as the agent would judge it, by its scaffold: nothing is signed blind.
+            let scaffold = load_scaffold(&agent, scaffold, &default_dir(dir.clone())?)?;
+            let payload = match projection {
                 Some(path) => {
                     let source = std::fs::read_to_string(&path)
                         .with_context(|| format!("cannot read {}", path.display()))?;
-                    // Judged as the agent would judge it, by its scaffold: a projection is never signed blind.
-                    let scaffold = load_scaffold(&agent, scaffold, &default_dir(dir.clone())?)?;
-                    polar_sign::projection_for(&scaffold, &section, &source)
-                        .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?
+                    let body = polar_sign::projection_for(&scaffold, &section, &source)
+                        .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?;
+                    // Nothing is signed that every agent would refuse.
+                    polar_sign::runtime_problems(&section, &body).map_err(anyhow::Error::msg)?;
+                    let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    runtime_payload(&agent, &section, version, &id, body)
                 }
-                None => parse_body(&text).map_err(anyhow::Error::msg)?,
+                None => {
+                    let body = parse_body(&text).map_err(anyhow::Error::msg)?;
+                    polar_sign::runtime_problems(&section, &body).map_err(anyhow::Error::msg)?;
+                    // As `sign` judges it, and a secret must already be sealed: one in plaintext is refused, never signed.
+                    let input = author::Input {
+                        agent: agent.clone(),
+                        version,
+                        id,
+                        document: author::Document::Runtime {
+                            section: section.clone(),
+                            body,
+                        },
+                    };
+                    author::prepare_sealed(input, &scaffold)
+                        .map_err(|problems| anyhow::anyhow!(problems.join("\n")))?
+                        .payload
+                }
             };
-            // Nothing is signed that every agent would refuse.
-            polar_sign::runtime_problems(&section, &body).map_err(anyhow::Error::msg)?;
-            let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let payload = polar_sign::with_migrations(
-                polar_sign::for_versions(
-                    runtime_payload(&agent, &section, version, &id, body),
-                    &range,
-                ),
-                &named,
-            );
+            let payload =
+                polar_sign::with_migrations(polar_sign::for_versions(payload, &range), &named);
             let identity = load_identity(&default_dir(dir)?, &user).map_err(anyhow::Error::msg)?;
             let file = sign_to_dhall(payload, &identity).map_err(anyhow::Error::msg)?;
             match out {

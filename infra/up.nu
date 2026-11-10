@@ -838,9 +838,9 @@ def seed_under_test [target: string, username: string, repo: string, existing: l
     mut added = []
     for doc in $documents {
         note $"signing ($doc.section) for ($doc.agent), version ($doc.version), under test"
-        let common = [runtime --agent $doc.agent --section $doc.section --version ($doc.version | into string) --user $username]
+        let common = [runtime --agent $doc.agent --section $doc.section --version ($doc.version | into string) --user $username --scaffold ($scaffolds | path join $"($doc.agent).json")]
         let signed = if $doc.projection != null {
-            ^($sign | first) ...($sign | skip 1) ...$common --projection $doc.projection --scaffold ($scaffolds | path join $"($doc.agent).json")
+            ^($sign | first) ...($sign | skip 1) ...$common --projection $doc.projection
         } else {
             ^$nu.current-exe $doc.make | ^($sign | first) ...($sign | skip 1) ...$common --body-file -
         }
@@ -999,6 +999,13 @@ def step_seed [target: string, config: record, username: string, mail: string, a
     let existing = (^git -C $repo ls-files | lines)
     let todo = (seed missing (seed documents) $existing)
     let sign = (tools command "polar-sign")
+    # The agents' own scaffolds, which polar-sign judges every section by and signs nothing without (cached under each
+    # image's digest by the render).
+    let scaffolds = ($work | path join "scaffolds")
+    if ($todo | is-not-empty) {
+        let collected = (do { ^$nu.current-exe ($root | path join "infra/resolve.nu") scaffolds $scaffolds --target $target } | complete)
+        if $collected.exit_code != 0 { fail $"cannot collect the agents' scaffolds for the seed: ($collected.stderr | str trim | lines | last 1 | str join)" }
+    }
     # Before the documents are written to the clone: the sections it finds are the ones already pushed.
     let jira = (seed_jira_credential $target $config $username $repo $existing $work $sign)
     let tested = (seed_under_test $target $username $repo $existing $work $sign)
@@ -1013,7 +1020,7 @@ def step_seed [target: string, config: record, username: string, mail: string, a
             seed first_groups (open ($root | path join $d.file)) $username
         } else { null })
         let signed = (seed body_json $d $root $body
-            | ^($sign | first) ...($sign | skip 1) runtime --agent $d.agent --section $d.section --version $d.version --body-file - --user $username)
+            | ^($sign | first) ...($sign | skip 1) runtime --agent $d.agent --section $d.section --version $d.version --body-file - --user $username --scaffold ($scaffolds | path join $"($d.agent).json"))
         if $env.LAST_EXIT_CODE != 0 { fail "polar-sign runtime failed" }
         let target_file = ($repo | path join $d.path)
         mkdir ($target_file | path dirname)

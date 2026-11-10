@@ -274,6 +274,14 @@ here, "authenticated by the author's user certificate", could not be built as wr
    `permanent/<agent>/<section>.dhall` (a configuration document: `permanent/<agent>/configuration.dhall`), commits
    it and pushes with the author's certificate. Without `--push` it only writes the file.
 
+`sign` is the only command that seals. `polar-sign runtime` (a body given as JSON, what the seed uses) and
+`configuration` (`--set NAME=VALUE`) sign what was already sealed, judged by the same scaffold and the same checks as
+`sign` (`author::prepare_sealed`, 2026-11-10): neither signs without the agent's scaffold, `runtime` refuses a secret
+field still in plaintext (or `-`) by its field and points at `sign`, `configuration` refuses a secret setting or one
+fixed while the agent runs, and a change that is not `NAME=VALUE` is refused without repeating it. Before, both signed
+blind, so a credential put through either was signed in the clear. Tests run the binary and look for the secret in what
+it prints (`polar-sign/tests/secrets_never_signed_or_printed.rs`).
+
 **Built 2026-10-15** (`polar-sign` `template`, `sign`, `--push`; the gateway route; `verify_escrow_certificate`;
 `nu infra/resolve.nu scaffolds <dir>`). Not yet seen on a cluster. What an author does, with the observer's
 credentials as the example:

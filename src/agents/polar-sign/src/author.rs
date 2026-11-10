@@ -234,6 +234,18 @@ pub fn prepare(
     }
 }
 
+/// Checks `input` against `scaffold` as [`prepare`] does, for a document whose secrets the author already sealed
+/// (`polar-sign runtime` and `configuration`): a secret still in plaintext, or a dash for standard input, is refused by
+/// its field and pointed at `polar-sign sign`, which seals it. Nothing is sealed here, so no plaintext secret is ever
+/// signed by these commands, and none is repeated.
+pub fn prepare_sealed(input: Input, scaffold: &Scaffold) -> Result<Prepared, Vec<String>> {
+    let refuse = "a plaintext secret is never signed as it is: put it in a file from `polar-sign template` and \
+                  `polar-sign sign` it, which seals it to the agent";
+    let mut encrypt = |_: &[u8], _: &[u8]| -> Result<String, String> { Err(refuse.to_string()) };
+    let mut read_secret = || -> Result<String, String> { Err(refuse.to_string()) };
+    prepare(input, scaffold, &mut encrypt, &mut read_secret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +521,80 @@ mod tests {
             p[0].contains("no runtime section `nope`") && p[0].contains("credentials"),
             "{p:?}"
         );
+    }
+
+    fn real_ciphertext() -> String {
+        use rsa::pkcs8::EncodePublicKey;
+        let mut rng = rand::rng();
+        let key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let pem = key
+            .to_public_key()
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
+        polar_escrow::EscrowedSecret::encrypt_bound(b"x", &pem, b"ctx")
+            .unwrap()
+            .to_document_text()
+            .unwrap()
+    }
+
+    // `polar-sign runtime` and `configuration` sign what an author already sealed: the same judgement as `sign`, and a
+    // plaintext secret is refused by field, never sealed and never repeated, so nothing reaches a signed document in
+    // the clear.
+    #[test]
+    fn a_document_signed_as_it_is_refuses_a_plaintext_secret_and_never_repeats_it() {
+        let plain = input(
+            r#"{"agent": "git-repo-observer", "version": 1, "section": "credentials",
+                "body": {"credentials": [{"name": "gh", "secret": "hunter2"}]}}"#,
+        );
+        let problems = prepare_sealed(plain, &scaffold()).unwrap_err();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("credentials[0].secret"),
+            "{problems:?}"
+        );
+        assert!(problems[0].contains("polar-sign sign"), "{problems:?}");
+        assert!(!problems.join(" ").contains("hunter2"), "{problems:?}");
+
+        // A dash is not read from standard input here: the body came from there, or a file.
+        let dash = input(
+            r#"{"agent": "git-repo-observer", "version": 1, "section": "credentials",
+                "body": {"credentials": [{"name": "gh", "secret": "-"}]}}"#,
+        );
+        let problems = prepare_sealed(dash, &scaffold()).unwrap_err();
+        assert!(problems[0].contains("polar-sign sign"), "{problems:?}");
+
+        let ciphertext = real_ciphertext();
+        let sealed = input(&format!(
+            r#"{{"agent": "git-repo-observer", "version": 1, "section": "credentials",
+                "body": {{"credentials": [{{"name": "gh", "secret": "{ciphertext}"}}]}}}}"#
+        ));
+        let prepared = prepare_sealed(sealed, &scaffold()).unwrap();
+        assert_eq!(prepared.sealed.already, 1);
+        assert_eq!(prepared.sealed.encrypted, 0);
+        assert!(prepared.payload.to_string().contains(&ciphertext));
+    }
+
+    #[test]
+    fn a_settings_change_signed_as_it_is_is_judged_as_sign_judges_it() {
+        let secret = input(
+            r#"{"agent": "git-repo-observer", "version": 1, "settings": {"TOKEN": "hunter2"}}"#,
+        );
+        let problems = prepare_sealed(secret, &scaffold()).unwrap_err();
+        assert!(
+            problems[0].contains("`TOKEN` is a secret setting"),
+            "{problems:?}"
+        );
+        assert!(!problems.join(" ").contains("hunter2"), "{problems:?}");
+        let fixed =
+            input(r#"{"agent": "git-repo-observer", "version": 1, "settings": {"BUDGET": "9"}}"#);
+        let problems = prepare_sealed(fixed, &scaffold()).unwrap_err();
+        assert!(
+            problems[0].contains("cannot be changed while"),
+            "{problems:?}"
+        );
+        let fine = input(
+            r#"{"agent": "git-repo-observer", "version": 1, "settings": {"RUST_LOG": "debug"}}"#,
+        );
+        assert!(prepare_sealed(fine, &scaffold()).is_ok());
     }
 }
