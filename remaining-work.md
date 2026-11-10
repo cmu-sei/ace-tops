@@ -63,8 +63,11 @@ Each step is taken in bites, each reported before the next.
       platform version, the CA) signed at publish beside `deployment-record.json` with the pipeline's certificate; live adds what
       exists only after bring-up (`cluster_uid`).
     - Evidence is polar-eden's (`.elide.dhall` intent, signed records in `polar-evidence`, computed debt), agreed with polar-cc:
-      promotion counts only records whose signer's certificate carries a new evidence capability (`c:record-evidence`: granted to
-      admins, computed from the scaffold for collector workloads), not anyone the cluster CA issued; the author's records, under a CA
+      promotion counts only records whose signer's certificate carries a new evidence capability, not anyone the cluster CA issued,
+      scoped by record type (the maintainer, 2026-11-09): `c:record-evidence` alone is any type (admins, people who run collectors),
+      `c:record-evidence:<type>` that type only, computed from the scaffold for collector workloads, and they add up. Reading it is
+      on main (`e9e22751`: `cert_issuer_common::evidence::may_record`, for custody's signer, the git server's intake and
+      `polar-eden records`); issuing it (grants, and the computed types in the issuance floor) is not; the author's records, under a CA
       the package brings, are shown beside the debt as claims and never meet a binding. Records name the rev and the source digest,
       not the image: `promote` rebuilds from the rev and checks the image's digest, only the cluster's under-test records name the
       image, a record made with changes beside its commit (`changed_beside_it`) is refused, and `promote` signs the debt's figures
