@@ -93,7 +93,7 @@ pub const CUSTODY_KEYS: Optional<CustodyKeys> = Optional::new(
 pub struct CustodyKeys {
     /// The workload's escrow keypair, which its crypto actor opens through the daemon.
     pub escrow: bool,
-    /// A key of its own for signing records (planned: the daemon holds none yet).
+    /// The pod's own key for signing records, in the daemon's signer slot.
     pub signing: bool,
 }
 
@@ -313,14 +313,6 @@ impl InitSettings {
                 CustodyKeys::default()
             }
         };
-        // Planned, not built: the daemon has no slot for it yet (docs/architecture/key-custody.md, "Workload signing
-        // keys"), and a pod asking for it would start without what it was promised.
-        if custody_keys.signing {
-            note(format!(
-                "{} asks for `signing`, a key the custody daemon does not hold yet",
-                CUSTODY_KEYS.name()
-            ));
-        }
 
         if !problems.is_empty() {
             return Err(problems.join("; "));
@@ -434,16 +426,23 @@ mod tests {
         }
     }
 
-    /// The daemon has no slot for a signing key yet (docs/architecture/key-custody.md, "Workload signing keys"): a pod
-    /// asking for one is told so, rather than started without it.
+    /// docs/architecture/key-custody.md, "Workload signing keys": the daemon holds a signing key in a slot of its own,
+    /// so a pod may ask its custodian for one.
     #[test]
-    fn a_signing_key_is_refused_until_the_daemon_holds_one() {
-        let error = InitSettings::from_env(&with(&[
+    fn a_signing_key_is_asked_for_beside_the_escrow_key() {
+        let keys = InitSettings::from_env(&with(&[
             OWN,
             &[("POLAR_INIT_CUSTODY_KEYS", "escrow,signing")],
         ]))
-        .unwrap_err();
-        assert!(error.contains("`signing`"), "{error}");
+        .unwrap()
+        .custody_keys;
+        assert_eq!(
+            keys,
+            CustodyKeys {
+                escrow: true,
+                signing: true
+            }
+        );
     }
 
     #[test]

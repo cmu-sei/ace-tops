@@ -295,7 +295,9 @@ async fn polar_init_gives_the_plan_waits_for_ready_and_the_workload_unwraps_thro
         request.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
         let certificate = request.signed_by(&ca.issuer).unwrap().pem();
         client.install(Slot::Custodian, vec![certificate]).unwrap();
-        client.bootstrap(IDENTITY, false, None, true).unwrap();
+        client
+            .bootstrap(IDENTITY, false, None, true, false)
+            .unwrap();
         assert!(!client.ready().unwrap(), "nothing fetched yet");
         // What the custodian does: the escrow key retrieved into it.
         {

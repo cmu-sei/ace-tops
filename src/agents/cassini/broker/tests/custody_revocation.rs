@@ -94,7 +94,7 @@ async fn pod(broker: &TestBroker) -> Pod {
     let csr = tokio::task::block_in_place(|| daemon.make_csr(Slot::Client, POD, &[])).unwrap();
     let issued = broker.pki.certify_client_csr(&csr);
     tokio::task::block_in_place(|| daemon.install(Slot::Client, vec![issued.clone()])).unwrap();
-    tokio::task::block_in_place(|| daemon.bootstrap(POD, false, None, false)).unwrap();
+    tokio::task::block_in_place(|| daemon.bootstrap(POD, false, None, false, false)).unwrap();
     let certificate = dir.path().join("cert.pem");
     std::fs::write(&certificate, &issued).unwrap();
     let serial = cert_issuer_common::serial::serial_from_pem(&issued).unwrap();
@@ -444,7 +444,7 @@ async fn the_custodian_asks_for_its_workload_s_certificate_and_installs_it_throu
     bound.recv().unwrap();
     let daemon = CustodyClient::new(&socket);
     let custodian_certificate = custodian(&broker, &daemon, &[CustodyPermission::Client]);
-    tokio::task::block_in_place(|| daemon.bootstrap(POD, true, None, false)).unwrap();
+    tokio::task::block_in_place(|| daemon.bootstrap(POD, true, None, false, false)).unwrap();
     assert!(!tokio::task::block_in_place(|| daemon.ready()).unwrap());
     let pod = Pod {
         _dir: dir,

@@ -63,7 +63,8 @@ pub enum Request {
     /// certificate names (`c:record-evidence`). The workload's.
     SignRecord { record: String },
     /// What the custodian is to fetch for `identity`, the workload, once its own certificate is installed: its client
-    /// certificate, its server certificate with these names, its escrow key. Only what the custodian's certificate
+    /// certificate, its server certificate with these names, its escrow key, its pod's signing key (made in the signer
+    /// slot, docs/architecture/key-custody.md, "Workload signing keys"). Only what the custodian's certificate
     /// names. `polar-init`'s, once (the same plan again, from its run again in the same pod, is taken and changes
     /// nothing); the slots it names are the custodian's to fill from then on.
     Bootstrap {
@@ -71,6 +72,7 @@ pub enum Request {
         client: bool,
         server: Option<Vec<String>>,
         escrow: bool,
+        signing: bool,
     },
     /// Whether the custodian has fetched everything it was asked to: `polar-init`'s, before it writes the bundle.
     Ready,

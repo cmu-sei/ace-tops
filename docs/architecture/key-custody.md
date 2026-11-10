@@ -1589,9 +1589,8 @@ above already plans to split it, for the same reason.
    second would come with its own capability. `Sign` on the slot is refused, and polar-init may neither make a key
    there nor install one (the custodian fills it, `workload_csr` and `install_workload`). Its certificate must be a
    documentSigning one with no TLS purpose (`any`, client or server auth refused) that may record something.
-   Revocation of its serial destroys every key, as any slot's. Not yet: the custodian's plan asking for it (the
-   daemon's bootstrap maps every slot but `Server` to a client certificate, so `Signer` needs its own type there),
-   and the client's call for the infrastructure's signer. Issuance: item 5.
+   Revocation of its serial destroys every key, as any slot's. Not yet: the client's call for the infrastructure's
+   signer. Issuance: item 5.
 4. **A signer in the infrastructure, never the domain's own.** Since 1218efd6 the infrastructure is the builder's, not
    the domain supervisor's child, so it can end a domain and still sign a record saying it did. The signer is spawned
    unnamed (as the `CryptoActor` is, `infrastructure.rs`), so `registry::where_is` cannot find it; the builder hands the
@@ -1617,9 +1616,15 @@ above already plans to split it, for the same reason.
    least one scoped record type and nothing else but instance names: never the bare `c:record-evidence`, a topic, a
    group, another capability or a custody name (`pod_signing_names_refusal`, decided here for review: a workload signs
    its own kinds of record, item 6). Such a certificate lives the default (client) lifetime, cut to the custodian's
-   end; the credentials agent's own keeps the server lifetime. Not yet: the custodian's plan asking for it
-   (`polar-init`, the daemon's bootstrap certificate type), and a test of a signing certificate issued end to end
-   through the custodian's handler, which needs `Workload.records`.
+   end; the credentials agent's own keeps the server lifetime. Not yet: a test of a signing certificate issued end to
+   end through the custodian's handler, which needs `Workload.records`.
+   *Built 2026-11-10 (`polar-init`, `polar-custody`, the daemon):* `POLAR_INIT_CUSTODY_KEYS=signing` is taken (no
+   longer refused); the custodian's plan carries `signing`, its certificate is asked for with `p:custody:signing`, and
+   the daemon takes such a plan only from a custodian whose certificate names it, and is not ready until it has the key's
+   certificate. The custodian makes the key in `Slot::Signer`, after the client and server certificates and before the
+   escrow key, asks for it as `WorkloadCertType::Signing` with no names of its own (they are the credentials agent's to
+   give), and installs it as the slot judges it: a certificate it will not take (one that may record nothing) fails the
+   bootstrap, and the pod starts again. Nothing of it is written for the workload, which reaches it through the daemon.
 6. **What it may sign: `c:record-evidence` scoped to record types** (the maintainer, 2026-11-09, narrowing the morning's
    decision): `c:record-evidence:attestation-report,attestation`, from the catalog. The signer refuses a type its
    certificate does not name, and so does the git server. A confused or compromised domain forges at most its own kind

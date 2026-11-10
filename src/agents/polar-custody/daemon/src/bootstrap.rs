@@ -160,6 +160,11 @@ impl Bootstrap {
         if let Some(names) = &plan.server {
             steps.push_back(Step::Certificate(Slot::Server, names.clone(), None));
         }
+        // The pod's signing key: made in the signer slot, its certificate's names the credentials agent's to give
+        // (docs/architecture/key-custody.md, "Workload signing keys").
+        if plan.signing {
+            steps.push_back(Step::Certificate(Slot::Signer, Vec::new(), None));
+        }
         if plan.escrow {
             steps.push_back(Step::RetrieveEscrow);
         }
@@ -244,7 +249,8 @@ impl Bootstrap {
             Step::Certificate(slot, names, Some(csr)) => {
                 let cert_type = match slot {
                     Slot::Server => WorkloadCertType::Server,
-                    _ => WorkloadCertType::Client,
+                    Slot::Signer => WorkloadCertType::Signing,
+                    Slot::Client | Slot::Custodian => WorkloadCertType::Client,
                 };
                 encode(
                     &correlation_id,
@@ -536,6 +542,16 @@ mod tests {
 
     /// A custody whose custodian holds a certificate naming everything, given `plan`.
     fn custody_planned(client: bool, server: Option<Vec<String>>, escrow: bool) -> RwLock<Custody> {
+        custody_given(client, server, escrow, false)
+    }
+
+    /// [`custody_planned`], the plan asking for the pod's signing key too when `signing`.
+    fn custody_given(
+        client: bool,
+        server: Option<Vec<String>>,
+        escrow: bool,
+        signing: bool,
+    ) -> RwLock<Custody> {
         let mut custody = Custody::new(&ca().pem).unwrap();
         let Reply::Csr(csr) = custody.handle(
             INSTALLER,
@@ -571,6 +587,7 @@ mod tests {
                     client,
                     server,
                     escrow,
+                    signing,
                 },
                 unix_now(),
             ),
@@ -818,6 +835,86 @@ mod tests {
             ),
             Reply::Unwrapped(_)
         ));
+    }
+
+    /// What cert-issuer signs for a pod's signing key: documentSigning alone, naming `uris` (its record types).
+    fn signed_for_signing(csr_pem: &str, uris: &[&str]) -> String {
+        let mut csr = rcgen::CertificateSigningRequestParams::from_pem(csr_pem).unwrap();
+        for uri in uris {
+            csr.params
+                .subject_alt_names
+                .push(rcgen::SanType::URI(uri.to_string().try_into().unwrap()));
+        }
+        let now = unix_now();
+        csr.params.not_before =
+            rcgen::date_time_ymd(1970, 1, 1) + Duration::from_secs((now - 60) as u64);
+        csr.params.not_after =
+            rcgen::date_time_ymd(1970, 1, 1) + Duration::from_secs((now + 3600) as u64);
+        csr.params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        csr.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::Other(
+            cert_issuer_common::OID_DOCUMENT_SIGNING.to_vec(),
+        )];
+        csr.signed_by(&ca().issuer).unwrap().pem()
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": the pod's signing key is made in the signer slot and
+    // its certificate asked for as a signing certificate, after the client certificate; installed, the plan is done. A
+    // certificate the slot will not take (one that may record nothing) fails the bootstrap, and says why.
+    #[test]
+    fn it_fetches_the_client_certificate_then_the_signing_certificate_and_is_ready() {
+        for (names, takes) in [
+            (vec!["c:record-evidence:attestation"], true),
+            (vec![], false),
+        ] {
+            let custody = custody_given(true, None, false, true);
+            let plan = read(&custody).plan().unwrap();
+            let mut bootstrap = Bootstrap::new(&plan);
+            let now = Instant::now();
+            let asked = sent(bootstrap.next(&custody, None, now));
+            let envelope = request::<CustodianIssuanceRequest>(&asked);
+            assert_eq!(envelope.payload.cert_type, WorkloadCertType::Client);
+            let client = reply(
+                &envelope.correlation_id,
+                issued(signed(&envelope.payload.csr_pem, &[])),
+            );
+            let asked = sent(bootstrap.on_reply(
+                CREDENTIALS_CUSTODIAN_ISSUANCE_REPLIES_TOPIC,
+                &client,
+                &custody,
+                None,
+                now,
+            ));
+            assert_eq!(asked.topic, CREDENTIALS_CUSTODIAN_ISSUANCE_REQUESTS_TOPIC);
+            let envelope = request::<CustodianIssuanceRequest>(&asked);
+            assert_eq!(envelope.payload.cert_type, WorkloadCertType::Signing);
+            assert!(
+                envelope.payload.names.is_empty(),
+                "its names are the model's"
+            );
+            assert_eq!(
+                cert_issuer_common::csr_san::csr_dns_sans(&envelope.payload.csr_pem).unwrap(),
+                vec![X.to_string()]
+            );
+            let certificate = signed_for_signing(&envelope.payload.csr_pem, &names);
+            let progress = bootstrap.on_reply(
+                CREDENTIALS_CUSTODIAN_ISSUANCE_REPLIES_TOPIC,
+                &reply(&envelope.correlation_id, issued(certificate.clone())),
+                &custody,
+                None,
+                now,
+            );
+            if takes {
+                assert_eq!(progress, Progress::Done);
+                assert_eq!(read(&custody).chain(Slot::Signer), Some(vec![certificate]));
+                assert!(read(&custody).is_ready());
+            } else {
+                let Progress::Failed(why) = progress else {
+                    panic!("expected a failure, got {progress:?}")
+                };
+                assert!(why.contains("record"), "{why}");
+                assert!(!read(&custody).is_ready());
+            }
+        }
     }
 
     #[test]

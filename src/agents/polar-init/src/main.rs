@@ -430,7 +430,7 @@ async fn main() {
             // The token buys the custodian's certificate and nothing else: the custodian fetches the rest
             // (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian").
             if let Some(daemon) = &custody {
-                let plan = custodian_plan(&cert_requests, settings.custody_keys.escrow);
+                let plan = custodian_plan(&cert_requests, settings.custody_keys);
                 if let Err(why) = custodian_via_observer(
                     &observer,
                     &sa_token,
@@ -1227,16 +1227,17 @@ async fn issue_cert_via_observer(
 // The custodian (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian")
 // ---------------------------------------------------------------------------
 
-/// What the custodian is to fetch: the `--cert`s whose key is the daemon's, and the escrow key if the workload escrows
-/// one.
+/// What the custodian is to fetch: the `--cert`s whose key is the daemon's, the escrow key if the workload escrows
+/// one, and the pod's signing key if it signs records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CustodianPlan {
     client: bool,
     server: Option<Vec<String>>,
     escrow: bool,
+    signing: bool,
 }
 
-fn custodian_plan(requests: &[CertRequest], escrow: bool) -> CustodianPlan {
+fn custodian_plan(requests: &[CertRequest], keys: environment::CustodyKeys) -> CustodianPlan {
     let ours = |cert_type: CertType| {
         requests
             .iter()
@@ -1245,7 +1246,8 @@ fn custodian_plan(requests: &[CertRequest], escrow: bool) -> CustodianPlan {
     CustodianPlan {
         client: ours(CertType::Client).is_some(),
         server: ours(CertType::Server).map(|req| req.extra_sans.clone()),
-        escrow,
+        escrow: keys.escrow,
+        signing: keys.signing,
     }
 }
 
@@ -1256,6 +1258,7 @@ fn custody_names(plan: &CustodianPlan) -> Vec<String> {
         (plan.client, CustodyPermission::Client),
         (plan.server.is_some(), CustodyPermission::Server),
         (plan.escrow, CustodyPermission::Escrow),
+        (plan.signing, CustodyPermission::Signing),
     ]
     .into_iter()
     .filter(|(wanted, _)| *wanted)
@@ -1297,7 +1300,13 @@ async fn install_custodian(
     }
     let (identity, given) = (dns_identity.to_string(), plan.clone());
     of_the_daemon(daemon, "take the custodian's plan", delay, move |daemon| {
-        daemon.bootstrap(&identity, given.client, given.server.clone(), given.escrow)
+        daemon.bootstrap(
+            &identity,
+            given.client,
+            given.server.clone(),
+            given.escrow,
+            given.signing,
+        )
     })
     .await?;
     tracing::info!(
@@ -1383,6 +1392,7 @@ async fn custodian_from_cert_issuer(
         client: false,
         server: None,
         escrow: false,
+        signing: false,
     };
     if held_custodian(daemon, dns_identity, pinned_ca, delay).await? {
         return install_custodian(daemon, dns_identity, None, &plan, delay).await;
@@ -2340,6 +2350,7 @@ mod tests {
                 client: true,
                 server: None,
                 escrow: false,
+                signing: false,
             }
         }
 
@@ -2348,34 +2359,58 @@ mod tests {
             let parse = |certs: &[&str]| -> Vec<CertRequest> {
                 certs.iter().map(|c| c.parse().unwrap()).collect()
             };
+            let all = environment::CustodyKeys {
+                escrow: true,
+                signing: true,
+            };
             let plan = custodian_plan(
                 &parse(&[
                     "client:/a:custody:",
                     "server:/b:custody:x.svc,y.svc",
                     "client:/c:ecdsa-p256:",
                 ]),
-                true,
+                all,
             );
             assert_eq!(
                 plan,
                 CustodianPlan {
                     client: true,
                     server: Some(vec!["x.svc".to_string(), "y.svc".to_string()]),
-                    escrow: true
+                    escrow: true,
+                    signing: true,
                 }
             );
             assert_eq!(
                 custody_names(&plan),
-                vec!["p:custody:client", "p:custody:server", "p:custody:escrow"]
+                vec![
+                    "p:custody:client",
+                    "p:custody:server",
+                    "p:custody:escrow",
+                    "p:custody:signing"
+                ]
+            );
+            // Each key alone is its own custody name.
+            let signing_only = environment::CustodyKeys {
+                escrow: false,
+                signing: true,
+            };
+            let plan = custodian_plan(&parse(&["client:/a:custody:"]), signing_only);
+            assert_eq!(
+                custody_names(&plan),
+                vec!["p:custody:client", "p:custody:signing"]
             );
             // A cert whose key is made here is not the custodian's to fetch.
-            let plan = custodian_plan(&parse(&["client:/c:ecdsa-p256:"]), false);
+            let plan = custodian_plan(
+                &parse(&["client:/c:ecdsa-p256:"]),
+                environment::CustodyKeys::default(),
+            );
             assert_eq!(
                 plan,
                 CustodianPlan {
                     client: false,
                     server: None,
-                    escrow: false
+                    escrow: false,
+                    signing: false,
                 }
             );
             assert!(custody_names(&plan).is_empty());

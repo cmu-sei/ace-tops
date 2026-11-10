@@ -2363,6 +2363,7 @@ mod tests {
                     client: false,
                     server: None,
                     escrow: true,
+                    signing: false,
                 },
                 now,
             ),

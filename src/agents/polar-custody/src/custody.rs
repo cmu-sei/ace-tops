@@ -67,6 +67,8 @@ pub struct Plan {
     /// The server certificate's names, if it is to have one.
     pub server: Option<Vec<String>>,
     pub escrow: bool,
+    /// The pod's signing key, made in the signer slot, and its certificate.
+    pub signing: bool,
 }
 
 pub struct Custody {
@@ -197,11 +199,13 @@ impl Custody {
                 client,
                 server,
                 escrow,
+                signing,
             } if roles.installer => self.bootstrap(Plan {
                 identity,
                 client,
                 server,
                 escrow,
+                signing,
             }),
             Request::MakeCsr {
                 slot,
@@ -310,6 +314,7 @@ impl Custody {
             (plan.client, CustodyPermission::Client),
             (plan.server.is_some(), CustodyPermission::Server),
             (plan.escrow, CustodyPermission::Escrow),
+            (plan.signing, CustodyPermission::Signing),
         ] {
             if wanted && !names.contains(&permission) {
                 return Reply::Refused(Refusal::BadRequest(format!(
@@ -318,7 +323,7 @@ impl Custody {
                 )));
             }
         }
-        self.ready = !plan.client && plan.server.is_none() && !plan.escrow;
+        self.ready = !plan.client && plan.server.is_none() && !plan.escrow && !plan.signing;
         self.plan = Some(plan);
         Reply::Installed
     }
@@ -1076,14 +1081,16 @@ pub(crate) mod tests {
                     "[a-z.-]{1,30}",
                     any::<bool>(),
                     prop::option::of(prop::collection::vec("[a-z.]{1,12}", 0..2)),
+                    any::<bool>(),
                     any::<bool>()
                 )
-                    .prop_map(|(identity, client, server, escrow)| {
+                    .prop_map(|(identity, client, server, escrow, signing)| {
                         Request::Bootstrap {
                             identity,
                             client,
                             server,
                             escrow,
+                            signing,
                         }
                     }),
                 Just(Request::Ready),
@@ -1255,6 +1262,7 @@ mod custodian_tests {
             client,
             server,
             escrow,
+            signing: false,
         }
     }
 
@@ -1333,6 +1341,7 @@ mod custodian_tests {
             client: true,
             server: None,
             escrow: false,
+            signing: false,
         };
         assert!(matches!(
             custody.handle(INSTALLER, other, time_now()),
@@ -1371,6 +1380,7 @@ mod custodian_tests {
                 client: true,
                 server: None,
                 escrow: false,
+                signing: false,
             })
         );
         // And the workload's slots are the custodian's to fill now, not polar-init's.
@@ -1384,6 +1394,49 @@ mod custodian_tests {
             time_now(),
         );
         assert_eq!(reply, Reply::Refused(Refusal::Sealed));
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": a plan asking for the pod's signing key needs the
+    // custodian's certificate to name it, and is not ready until the custodian has fetched it.
+    #[test]
+    fn a_plan_asking_for_a_signing_key_needs_its_custodian_to_name_it() {
+        let ca = test_ca();
+        let signing_plan = || Request::Bootstrap {
+            identity: IDENTITY.to_string(),
+            client: true,
+            server: None,
+            escrow: false,
+            signing: true,
+        };
+        let (mut unnamed, _) = with_custodian(&ca, &[CustodyPermission::Client]);
+        assert!(matches!(
+            unnamed.handle(INSTALLER, signing_plan(), time_now()),
+            Reply::Refused(Refusal::BadRequest(why)) if why.contains("p:custody:signing")
+        ));
+        let (mut custody, _) = with_custodian(
+            &ca,
+            &[CustodyPermission::Client, CustodyPermission::Signing],
+        );
+        assert_eq!(
+            custody.handle(INSTALLER, signing_plan(), time_now()),
+            Reply::Installed
+        );
+        assert!(custody.plan().is_some_and(|plan| plan.signing));
+        assert!(!custody.is_ready());
+        // A signing plan alone is not ready at once either.
+        let (mut alone, _) = with_custodian(&ca, &[CustodyPermission::Signing]);
+        let only_signing = Request::Bootstrap {
+            identity: IDENTITY.to_string(),
+            client: false,
+            server: None,
+            escrow: false,
+            signing: true,
+        };
+        assert_eq!(
+            alone.handle(INSTALLER, only_signing, time_now()),
+            Reply::Installed
+        );
+        assert!(!alone.is_ready());
     }
 
     #[test]
@@ -1610,7 +1663,7 @@ mod custodian_tests {
                     prop::collection::vec(any::<u8>(), 0..120).prop_map(|message| Request::Sign { slot: Slot::Custodian, message }),
                     Just(Request::Sign { slot: Slot::Custodian, message: certificate_verify_input(CLIENT_CONTEXT, &[3; 32]) }),
                     "[a-z.-]{1,30}".prop_map(|identity| Request::MakeCsr { slot: Slot::Custodian, identity, names: vec![] }),
-                    Just(Request::Bootstrap { identity: IDENTITY.to_string(), client: false, server: None, escrow: true }),
+                    Just(Request::Bootstrap { identity: IDENTITY.to_string(), client: false, server: None, escrow: true, signing: false }),
                     prop::collection::vec(any::<u8>(), 0..120).prop_map(|wrapped| Request::Unwrap { wrapped }),
                 ],
                 any::<bool>(),
@@ -1718,6 +1771,7 @@ mod signer_tests {
             client: false,
             server: None,
             escrow: false,
+            signing: false,
         };
         assert_eq!(
             custody.handle(INSTALLER, plan, time_now()),

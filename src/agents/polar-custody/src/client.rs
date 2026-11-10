@@ -157,12 +157,14 @@ impl CustodyClient {
         client: bool,
         server: Option<Vec<String>>,
         escrow: bool,
+        signing: bool,
     ) -> Result<(), ClientError> {
         match self.request(Request::Bootstrap {
             identity: identity.to_string(),
             client,
             server,
             escrow,
+            signing,
         })? {
             Reply::Installed => Ok(()),
             other => Err(refused_or_unexpected(other)),
