@@ -700,6 +700,10 @@ impl Handler {
                     // the pod that asked has gone, and which is never issued twice for an identity. What protects it
                     // is to be revocation, once built, not a tight expiry; the lifetime is to be revisited then.
                     cert_issuer_common::CertType::Service => self.service_lifetime,
+                    // A pod's, as short-lived as its client certificate.
+                    cert_issuer_common::CertType::Signing if instance_binding.is_some() => {
+                        self.default_lifetime
+                    }
                     // The same: the agent's own, renewed by it.
                     cert_issuer_common::CertType::Signing
                     | cert_issuer_common::CertType::Checkpoint => self.server_lifetime,
@@ -802,21 +806,29 @@ impl Handler {
             }
         };
 
-        // ---- Step 1.5: a signing certificate is the caller's own ----
+        // ---- Step 1.5: a signing certificate is the caller's own, or a pod's ----
         //
         // The caller asserts the identity of everything else it asks for here; a key to sign with it may have
-        // only for itself.
+        // only for itself, or for a pod on its custodian's behalf (docs/architecture/key-custody.md, "Workload signing
+        // keys"): for that pod and never past the custodian's end, naming the record types it may sign and no other
+        // authority.
         if request.cert_type == cert_issuer_common::CertType::Signing && request.identity != caller
         {
-            warn!(
-                peer_identity = %caller,
-                identity = %request.identity,
-                "internal issuance refused: a signing certificate for another identity"
-            );
-            return error_response(
-                IssueOutcome::CallerNotAuthorized,
-                "a signing certificate is issued only for the caller's own identity",
-            );
+            if request.instance_binding.is_none() || request.expires_by.is_none() {
+                warn!(
+                    peer_identity = %caller,
+                    identity = %request.identity,
+                    "internal issuance refused: a signing certificate for another identity, for no pod"
+                );
+                return error_response(
+                    IssueOutcome::CallerNotAuthorized,
+                    "a signing certificate is issued only for the caller's own identity, or a pod's on its custodian's behalf",
+                );
+            }
+            if let Some(detail) = pod_signing_names_refusal(&request.extra_sans) {
+                warn!(peer_identity = %caller, identity = %request.identity, "internal issuance refused: {detail}");
+                return error_response(IssueOutcome::InvalidCsr, &detail);
+            }
         }
 
         // ---- Step 1.5, for a checkpoint certificate: the caller's own, naming nothing else ----
@@ -1163,6 +1175,34 @@ fn custody_names_refusal(
             .find(|name| names_custody(name))
             .map(|name| format!("a custody name is a custodian's certificate's alone: `{name}`"))
     }
+}
+
+/// Why a pod's signing certificate may not carry `extra_sans`, or none: at least one record type it may sign
+/// (`c:record-evidence:<type>`), and nothing else but its pod's instance names, which `instance_names_refusal` holds to
+/// the pod (docs/architecture/key-custody.md, "Workload signing keys"). Never the bare name, any record type: a
+/// workload signs its own kinds of record.
+fn pod_signing_names_refusal(extra_sans: &[String]) -> Option<String> {
+    use cert_issuer_common::evidence::EvidenceCapability;
+    let mut types = 0;
+    for name in extra_sans {
+        if cert_issuer_common::instance::names_instance(name) {
+            continue;
+        }
+        match EvidenceCapability::from_san_string(name) {
+            Ok(EvidenceCapability::Type(_)) => types += 1,
+            Ok(EvidenceCapability::Any) => {
+                return Some(format!(
+                    "a pod's signing certificate names the record types it may sign, not `{name}`"
+                ));
+            }
+            Err(_) => {
+                return Some(format!(
+                    "a pod's signing certificate carries record types only, not `{name}`"
+                ));
+            }
+        }
+    }
+    (types == 0).then(|| "a pod's signing certificate names no record type".to_string())
 }
 
 /// Why a request's instance names (`i:`, `cert_issuer_common::instance`) are refused, or none: they must read as one

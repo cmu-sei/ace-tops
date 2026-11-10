@@ -53,7 +53,7 @@ pub fn is_reserved(identity: &str) -> bool {
 }
 
 /// What a custodian may ask the credentials agent for on its workload's behalf, carried in its certificate as
-/// `p:custody:client`, `p:custody:server` or `p:custody:escrow`.
+/// `p:custody:client`, `p:custody:server`, `p:custody:escrow` or `p:custody:signing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CustodyPermission {
     /// The workload's mTLS client certificate.
@@ -62,25 +62,30 @@ pub enum CustodyPermission {
     Server,
     /// The workload's escrow key: retrieved, or issued and escrowed if there is none.
     Escrow,
+    /// The signing certificate of the workload's pod, for the key the daemon makes for it and never lets go
+    /// (docs/architecture/key-custody.md, "Workload signing keys").
+    Signing,
 }
 
 /// Why a name is not a custody permission.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "`{0}` is not a custody permission (p:custody:client, p:custody:server or p:custody:escrow)"
+    "`{0}` is not a custody permission (p:custody:client, p:custody:server, p:custody:escrow or p:custody:signing)"
 )]
 pub struct NotACustodyPermission(pub String);
 
 const CUSTODY_PERMISSION_PREFIX: &str = "p:custody:";
 
 impl CustodyPermission {
-    pub const ALL: [CustodyPermission; 3] = [Self::Client, Self::Server, Self::Escrow];
+    pub const ALL: [CustodyPermission; 4] =
+        [Self::Client, Self::Server, Self::Escrow, Self::Signing];
 
     fn word(self) -> &'static str {
         match self {
             Self::Client => "client",
             Self::Server => "server",
             Self::Escrow => "escrow",
+            Self::Signing => "signing",
         }
     }
 
@@ -139,7 +144,11 @@ mod tests {
     }
 
     #[test]
-    fn a_custody_permission_is_one_of_three_names_exactly() {
+    fn a_custody_permission_is_one_of_four_names_exactly() {
+        assert_eq!(
+            CustodyPermission::from_san_string("p:custody:signing"),
+            Ok(CustodyPermission::Signing)
+        );
         for permission in CustodyPermission::ALL {
             assert_eq!(
                 CustodyPermission::from_san_string(&permission.to_san_string()),
@@ -153,6 +162,8 @@ mod tests {
             "p:custody:client ",
             "p:custody:clientx",
             "p:custody:client:more",
+            "p:custody:Signing",
+            "p:custody:sign",
             "p:custodyclient",
             "p:sub:polar-authority-updates",
             "custody:client",
@@ -201,7 +212,7 @@ mod tests {
         }
 
         #[test]
-        fn only_the_three_names_parse_as_custody_permissions(name in "p:custody:[a-z:]{0,12}|.{0,24}") {
+        fn only_the_custody_names_parse_as_custody_permissions(name in "p:custody:[a-z:]{0,12}|.{0,24}") {
             match CustodyPermission::from_san_string(&name) {
                 Ok(permission) => prop_assert_eq!(permission.to_san_string(), name),
                 Err(_) => prop_assert!(CustodyPermission::ALL.iter().all(|p| p.to_san_string() != name)),

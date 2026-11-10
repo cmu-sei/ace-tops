@@ -149,8 +149,8 @@ fn permission_for(cert_type: WorkloadCertType) -> Option<CustodyPermission> {
     match cert_type {
         WorkloadCertType::Client => Some(CustodyPermission::Client),
         WorkloadCertType::Server => Some(CustodyPermission::Server),
-        // Main issues no pod signing certificate (WorkloadCertType::Signing): there is no permission to ask under.
-        WorkloadCertType::Custody | WorkloadCertType::Signing => None,
+        WorkloadCertType::Signing => Some(CustodyPermission::Signing),
+        WorkloadCertType::Custody => None,
     }
 }
 
@@ -226,6 +226,19 @@ impl CustodianIssuanceHandler {
             }
         };
         let identity = custodian.workload.clone();
+        // A pod's signing certificate names the record types the model gives its workload; one that names none could
+        // sign nothing, and is refused before the type is used up (docs/architecture/key-custody.md, "Workload signing
+        // keys").
+        if request.cert_type == WorkloadCertType::Signing
+            && self
+                .authority_model
+                .as_ref()
+                .and_then(|model| model.issued_by_the_credentials_agent(&identity))
+                .is_none_or(|names| names.records.is_empty())
+        {
+            warn!(%identity, "refused a signing certificate: the model gives the workload no record type to sign");
+            return refused(IssuanceRefusalReason::RequestNotPermitted);
+        }
         // ---- Step 2.5: the instance check, before the renewal rule, which records what it admits ----
         let admitted = match crate::instance_check::check_instance(
             self.instance_asker.as_ref(),
@@ -371,17 +384,6 @@ pub(crate) mod tests {
     use proptest::prelude::*;
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// A custodian asking for a pod signing certificate, which main does not issue, is asked under no permission, and
-    /// so refused before cert-issuer is asked.
-    #[test]
-    fn no_permission_asks_for_a_signing_certificate() {
-        assert_eq!(permission_for(WorkloadCertType::Signing), None);
-        assert_eq!(
-            permission_for(WorkloadCertType::Client),
-            Some(CustodyPermission::Client)
-        );
-    }
 
     pub(crate) const X: &str = "kube-consumer.polar.serviceaccount.cluster.local";
     pub(crate) const CUSTODIAN: &str = "custody.kube-consumer.polar.serviceaccount.cluster.local";
@@ -856,6 +858,68 @@ pub(crate) mod tests {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
+    // docs/architecture/key-custody.md, "Workload signing keys": a pod's signing certificate is asked for only by a
+    // custodian naming `p:custody:signing`, and only for a workload the model gives record types to sign; refused, it
+    // has not used up the type, and cert-issuer is never asked.
+    #[tokio::test]
+    async fn a_custodian_is_refused_a_signing_certificate_its_workload_could_sign_nothing_with() {
+        let server = cert_issuer_signing_for(X).await;
+        // its certificate does not name signing
+        let ledger = ledger_with_custodian(&[CustodyPermission::Client], 0).await;
+        let reply = handler(ledger, &server)
+            .handle(
+                asking(WorkloadCertType::Signing),
+                Some(CUSTODIAN.to_string()),
+            )
+            .await;
+        assert_eq!(reason(&reply), Some(IssuanceRefusalReason::NotACustodian));
+        // it does, and the model gives the workload no record type (no model; and one giving it none)
+        let ledger = ledger_with_custodian(&[CustodyPermission::Signing], 0).await;
+        for model in [
+            None,
+            crate::issuance::tests::model_with_kube_consumer_many(),
+        ] {
+            let handler = CustodianIssuanceHandler {
+                authority_model: model,
+                ..handler(ledger.clone(), &server)
+            };
+            let reply = handler
+                .handle(
+                    asking(WorkloadCertType::Signing),
+                    Some(CUSTODIAN.to_string()),
+                )
+                .await;
+            assert_eq!(
+                reason(&reply),
+                Some(IssuanceRefusalReason::RequestNotPermitted)
+            );
+        }
+        let mut named = asking(WorkloadCertType::Signing);
+        named.names = vec!["c:record-evidence:attestation".to_string()];
+        let reply = handler(ledger.clone(), &server)
+            .handle(named, Some(CUSTODIAN.to_string()))
+            .await;
+        assert_eq!(
+            reason(&reply),
+            Some(IssuanceRefusalReason::RequestNotPermitted),
+            "a custodian names nothing for it"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(
+            crate::issuance::call_admit(
+                &ledger,
+                X,
+                POD,
+                WorkloadCertType::Signing,
+                "fake-csr",
+                polar::time::now_millis()
+            )
+            .await
+            .unwrap(),
+            "the type is not used up"
+        );
+    }
+
     #[tokio::test]
     async fn a_revoked_custodian_is_answered_nothing() {
         let ledger = ledger_with_custodian(&[CustodyPermission::Client], 0).await;
@@ -890,7 +954,7 @@ pub(crate) mod tests {
         // window, for something its certificate names, and then for its own pod instance and end.
         #[test]
         fn a_custodian_is_answered_only_by_the_rule(
-            named in prop::collection::btree_set(a_permission(), 0..=3),
+            named in prop::collection::btree_set(a_permission(), 0..=4),
             needs in a_permission(),
             age_secs in 0i64..(2 * CUSTODIAN_WINDOW_SECS),
             revoked in any::<bool>(),

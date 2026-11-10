@@ -89,10 +89,17 @@ pub fn check_request_shape(
                 _ => Err(RequestNotPermitted),
             }
         }
-        // Read from a ledger another branch wrote, never issued here (WorkloadCertType::Signing).
-        WorkloadCertType::Signing => Err(RequestNotPermitted),
         WorkloadCertType::Client => {
             if names.is_empty() {
+                Ok(())
+            } else {
+                Err(RequestNotPermitted)
+            }
+        }
+        // A pod's, so a Kubernetes credential's; its names are the model's to give (`extra_sans_for`), never the
+        // asker's.
+        WorkloadCertType::Signing => {
+            if kind == CredentialKind::Kubernetes && names.is_empty() {
                 Ok(())
             } else {
                 Err(RequestNotPermitted)
@@ -113,7 +120,9 @@ pub fn check_request_shape(
 
 /// The extra names the certificate is signed with: a client certificate carries the permissions of its grant and
 /// the topics and groups the authority model gives its workload (none for a requester the model does not have the
-/// credentials agent issue, a person's for one), a server certificate the names it asked for and nothing else.
+/// credentials agent issue, a person's for one), a server certificate the names it asked for and nothing else, and a
+/// pod's signing certificate the record types the model gives its workload, as evidence capabilities, and nothing else
+/// (docs/architecture/key-custody.md, "Workload signing keys").
 pub(crate) fn extra_sans_for(
     cert_type: WorkloadCertType,
     names: &[String],
@@ -126,9 +135,10 @@ pub(crate) fn extra_sans_for(
             .map(|p| p.to_san_string())
             .chain(model_gives.map(|n| n.san_strings()).unwrap_or_default())
             .collect(),
-        WorkloadCertType::Server | WorkloadCertType::Custody | WorkloadCertType::Signing => {
-            names.to_vec()
-        }
+        WorkloadCertType::Server | WorkloadCertType::Custody => names.to_vec(),
+        WorkloadCertType::Signing => model_gives
+            .map(|n| n.signing_san_strings())
+            .unwrap_or_default(),
     }
 }
 
@@ -204,7 +214,11 @@ impl IssuanceHandler {
         //
         // Judged on the request alone, so a request this credential may not make is refused before any
         // introspection or call to cert-issuer.
-        if check_request_shape(kind, request.cert_type, &request.names).is_err() {
+        // A pod's signing certificate is its custodian's to ask for (docs/architecture/key-custody.md, "Workload signing
+        // keys"): a token buys none.
+        if request.cert_type == WorkloadCertType::Signing
+            || check_request_shape(kind, request.cert_type, &request.names).is_err()
+        {
             warn!(
                 cert_type = ?request.cert_type,
                 names = request.names.len(),
@@ -890,19 +904,6 @@ pub(crate) mod tests {
     /// workload's certificate names its pod by name beside its UID, required: a UUID alone is never what a person reads.
     /// A token that names no pod is refused, saying why; a single-instance workload's certificates, and any server
     /// certificate, name no instance, as before.
-    /// A pod's signing certificate is read from a ledger agentic-control-plane wrote, and never issued here, whatever
-    /// is asked for with it.
-    #[test]
-    fn main_issues_no_signing_certificate() {
-        for kind in [CredentialKind::Kubernetes, CredentialKind::LikelyIdp] {
-            for names in [vec![], vec!["c:record-evidence:attestation".to_string()]] {
-                assert!(
-                    check_request_shape(kind, WorkloadCertType::Signing, &names).is_err(),
-                    "{kind:?} {names:?}"
-                );
-            }
-        }
-    }
 
     #[test]
     fn a_multi_instance_workload_s_certificate_requires_its_pod_s_name() {
@@ -1428,7 +1429,7 @@ pub(crate) mod tests {
 
     // ---- the two kinds of pod-instance certificate ---------------------------------------------------------
 
-    use credentials_agent_common::issuance::WorkloadCertType::{Client, Server};
+    use credentials_agent_common::issuance::WorkloadCertType::{Client, Server, Signing};
 
     pub(crate) const K8S: &str = "https://kubernetes.default.svc.cluster.local";
     pub(crate) const CASSINI_NAME: &str = "cassini-ip-svc.polar.svc.cluster.local";
@@ -1505,6 +1506,40 @@ pub(crate) mod tests {
             extra_sans_for(Server, &names(&[CASSINI_NAME]), &grant, None),
             names(&[CASSINI_NAME])
         );
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": a pod's signing certificate carries the record types
+    // the model gives its workload, and no grant's permissions, topics or groups.
+    #[test]
+    fn a_signing_certificate_carries_its_workload_s_record_types_and_nothing_else() {
+        let grant = vec![cert_issuer_common::permission::Permission {
+            scope: cert_issuer_common::permission::PermissionScope::ServiceToService,
+            target: None,
+        }];
+        let model_gives = credentials_agent_model::CertificateNames {
+            publish: names(&["polar.attestation"]),
+            groups: names(&["encryption"]),
+            records: names(&["attestation", "attestation-report"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            extra_sans_for(Signing, &[], &grant, Some(model_gives)),
+            names(&[
+                "c:record-evidence:attestation",
+                "c:record-evidence:attestation-report"
+            ])
+        );
+        assert!(extra_sans_for(Signing, &[], &grant, None).is_empty());
+        assert!(check_request_shape(CredentialKind::Kubernetes, Signing, &[]).is_ok());
+        assert!(
+            check_request_shape(
+                CredentialKind::Kubernetes,
+                Signing,
+                &names(&["c:record-evidence"])
+            )
+            .is_err()
+        );
+        assert!(check_request_shape(CredentialKind::LikelyIdp, Signing, &[]).is_err());
     }
 
     /// A cert-issuer that signs the CSR it is sent, as the real one does, so the certificate is of the key asked for,
@@ -1957,6 +1992,9 @@ pub(crate) mod tests {
         assert!(refused(
             handler.handle(request_for(Client, &[CASSINI_NAME])).await
         ));
+        // A pod's signing certificate, which only its custodian asks for (docs/architecture/key-custody.md, "Workload
+        // signing keys"): a token buys none.
+        assert!(refused(handler.handle(request_for(Signing, &[])).await));
         // A server request with names that are not names.
         for bad in [
             "*.polar.svc.cluster.local",

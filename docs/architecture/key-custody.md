@@ -1591,7 +1591,7 @@ above already plans to split it, for the same reason.
    documentSigning one with no TLS purpose (`any`, client or server auth refused) that may record something.
    Revocation of its serial destroys every key, as any slot's. Not yet: the custodian's plan asking for it (the
    daemon's bootstrap maps every slot but `Server` to a client certificate, so `Signer` needs its own type there),
-   issuance, and the client's call for the infrastructure's signer.
+   and the client's call for the infrastructure's signer. Issuance: item 5.
 4. **A signer in the infrastructure, never the domain's own.** Since 1218efd6 the infrastructure is the builder's, not
    the domain supervisor's child, so it can end a domain and still sign a record saying it did. The signer is spawned
    unnamed (as the `CryptoActor` is, `infrastructure.rs`), so `registry::where_is` cannot find it; the builder hands the
@@ -1605,6 +1605,21 @@ above already plans to split it, for the same reason.
    custody name, `p:custody:signing`, in its five-minute window, with the attestation check and the renewal rule of the
    mTLS certificate, and an hour's life like it. cert-issuer's "`Signing` only for the caller" gains the custodian's
    path. The credentials agent records it in its ledger (today it records no `Signing` certificate).
+   *Built 2026-11-10 (cert-issuer, the credentials agent):* `p:custody:signing`; `WorkloadCertType::Signing`, a type of
+   its own in the ledger (one per pod instance beside the client and server certificates; a new pod's supersedes the
+   old pod's); asked for by a custodian naming it and never on a token (`check_request_shape`, and the token path
+   refuses it outright). Its names are the record types the authority model gives the workload,
+   `CertificateNames.records` written by `signing_san_strings` as `c:record-evidence:<type>` (the shape agreed with
+   main's session: main's render fills `Workload.records` from a collector's scaffold; until then it is empty), plus
+   the pod's instance names for a multi-instance workload. A workload the model gives no record type is refused before
+   the type is used up, since its certificate could sign nothing. cert-issuer signs `Signing` for an identity other
+   than the caller's only for a pod (`instance_binding` and the custodian's end, `expires_by`, both given), naming at
+   least one scoped record type and nothing else but instance names: never the bare `c:record-evidence`, a topic, a
+   group, another capability or a custody name (`pod_signing_names_refusal`, decided here for review: a workload signs
+   its own kinds of record, item 6). Such a certificate lives the default (client) lifetime, cut to the custodian's
+   end; the credentials agent's own keeps the server lifetime. Not yet: the custodian's plan asking for it
+   (`polar-init`, the daemon's bootstrap certificate type), and a test of a signing certificate issued end to end
+   through the custodian's handler, which needs `Workload.records`.
 6. **What it may sign: `c:record-evidence` scoped to record types** (the maintainer, 2026-11-09, narrowing the morning's
    decision): `c:record-evidence:attestation-report,attestation`, from the catalog. The signer refuses a type its
    certificate does not name, and so does the git server. A confused or compromised domain forges at most its own kind

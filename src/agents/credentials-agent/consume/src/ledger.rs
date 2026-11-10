@@ -510,7 +510,7 @@ pub enum LedgerMessage {
     },
     /// Whether `(identity, instance_binding)` currently holds a valid,
     /// unrevoked certificate of this type. Asked per type, since a pod
-    /// instance may hold one client and one server certificate. Not the
+    /// instance may hold one certificate of each type. Not the
     /// renewal rule, which is [`LedgerMessage::Admit`].
     CheckRenewal {
         identity: String,

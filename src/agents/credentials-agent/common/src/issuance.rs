@@ -55,9 +55,10 @@ pub struct IssuanceRequest {
     pub names: Vec<String>,
 }
 
-/// The two kinds of pod-instance certificate a workload may ask the credentials agent for. A client certificate
+/// The kinds of pod-instance certificate a workload may ask the credentials agent for. A client certificate
 /// is the mTLS identity it connects with; a server certificate is the one a listener presents (Cassini, Neo4j,
-/// the git server). Each pod instance may be issued one of each, and not a second of either.
+/// the git server); a signing certificate is what its evidence records are signed under. Each pod instance may be
+/// issued one of each, and not a second of any.
 #[derive(
     minicbor::Encode,
     minicbor::Decode,
@@ -84,12 +85,12 @@ pub enum WorkloadCertType {
     Server,
     /// The custody daemon's own certificate (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian"):
     /// what the pod's token buys, once per pod instance, named `custody.<X>`. Its names are the custody permissions it
-    /// asks for (`p:custody:client`, `server`, `escrow`).
+    /// asks for (`p:custody:client`, `server`, `escrow`, `signing`).
     #[n(2)]
     Custody,
-    /// A pod's signing certificate, as agentic-control-plane issues one for the key its custody daemon makes
-    /// (docs/architecture/key-custody.md, "Workload signing keys", on that branch). Main issues none: it is here so that a
-    /// ledger that branch wrote, on a cluster both deploy to, is read and not refused, at that branch's index.
+    /// The pod's signing certificate (docs/architecture/key-custody.md, "Workload signing keys"), for the key the
+    /// custody daemon makes and never lets go: asked for by its custodian alone, never on a token, and naming the
+    /// evidence record types its workload may sign.
     #[n(3)]
     Signing,
 }

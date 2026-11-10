@@ -362,6 +362,169 @@ async fn a_checkpoint_certificate_for_anyone_but_the_caller_or_naming_more_is_re
     }
 }
 
+// ---- a pod's signing key, on its custodian's behalf (docs/architecture/key-custody.md, "Workload signing keys") ----
+
+/// The credentials agent asking, on a custodian's behalf, for `WORKLOAD`'s pod's signing certificate naming `names`.
+fn pod_signing_request(names: &[&str]) -> InternalIssueRequest {
+    InternalIssueRequest {
+        instance_binding: Some(POD.to_string()),
+        expires_by: Some(time::OffsetDateTime::now_utc().unix_timestamp() + 7200),
+        cert_type: CertType::Signing,
+        extra_sans: names.iter().map(|n| n.to_string()).collect(),
+        ..request_for(WORKLOAD, WORKLOAD)
+    }
+}
+
+#[tokio::test]
+async fn a_pod_s_signing_certificate_is_signed_for_its_custodian_naming_its_record_types_for_an_hour()
+ {
+    use cert_issuer_common::evidence::{MayRecord, may_record};
+    let h = handler(real_ca(), vec![ALLOWED_CALLER]);
+    for names in [
+        vec!["c:record-evidence:attestation"],
+        // a multi-instance workload's pod, named as its client certificate names it
+        vec![
+            "c:record-evidence:attestation",
+            "c:record-evidence:attestation-report",
+            "i:uid:pod-uid-1",
+            "i:pod:attestation-7f9c-x2",
+        ],
+    ] {
+        let response = h
+            .handle_internal_issue(Some(ALLOWED_CALLER), pod_signing_request(&names))
+            .await;
+        assert_eq!(response.status, 200, "{names:?}");
+        let HandlerBody::Success(issued) = response.body else {
+            panic!("expected success for {names:?}")
+        };
+        let left = issued.expires_at - time::OffsetDateTime::now_utc();
+        assert!(
+            left <= time::Duration::seconds(3600),
+            "the default lifetime, a pod's, not the server lifetime: {left}"
+        );
+        let types = names
+            .iter()
+            .filter_map(|n| n.strip_prefix("c:record-evidence:"))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            may_record(&issued.certificate_pem).unwrap(),
+            MayRecord::Only(types)
+        );
+        let names_in_it = uri_names(&issued.certificate_pem);
+        for name in &names {
+            assert!(names_in_it.contains(&name.to_string()), "{name}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_signing_certificate_for_another_is_refused_unless_for_a_pod_naming_only_its_record_types()
+ {
+    let h = handler(Arc::new(PanicCa), vec![ALLOWED_CALLER]);
+    let without_pod = InternalIssueRequest {
+        instance_binding: None,
+        ..pod_signing_request(&["c:record-evidence:attestation"])
+    };
+    let without_end = InternalIssueRequest {
+        expires_by: None,
+        ..pod_signing_request(&["c:record-evidence:attestation"])
+    };
+    let mut cases = vec![("no pod", without_pod), ("no end", without_end)];
+    for (why, names) in [
+        ("no record type", vec![]),
+        ("any record type", vec!["c:record-evidence"]),
+        (
+            "any record type beside one",
+            vec!["c:record-evidence", "c:record-evidence:attestation"],
+        ),
+        (
+            "a malformed record type",
+            vec!["c:record-evidence:Attestation"],
+        ),
+        (
+            "a topic",
+            vec!["c:record-evidence:attestation", "p:pub:polar.attestation"],
+        ),
+        (
+            "a group",
+            vec!["c:record-evidence:attestation", "g:encryption"],
+        ),
+        (
+            "another capability",
+            vec!["c:record-evidence:attestation", "c:revoke"],
+        ),
+        (
+            "a custody name",
+            vec!["c:record-evidence:attestation", "p:custody:client"],
+        ),
+        (
+            "another pod",
+            vec!["c:record-evidence:attestation", "i:uid:pod-uid-2"],
+        ),
+    ] {
+        cases.push((why, pod_signing_request(&names)));
+    }
+    for (why, request) in cases {
+        let response = h.handle_internal_issue(Some(ALLOWED_CALLER), request).await;
+        assert_ne!(response.status, 200, "{why}");
+        assert!(
+            matches!(&response.body, HandlerBody::Error(e)
+                if matches!(e.outcome, IssueOutcome::CallerNotAuthorized | IssueOutcome::InvalidCsr)),
+            "{why}: {:?}",
+            response.body
+        );
+    }
+}
+
+mod pod_signing_props {
+    use super::*;
+    use proptest::prelude::*;
+
+    const SCOPED: [&str; 2] = [
+        "c:record-evidence:attestation",
+        "c:record-evidence:attestation-report",
+    ];
+
+    fn a_name() -> impl Strategy<Value = &'static str> {
+        prop::sample::select(vec![
+            SCOPED[0],
+            SCOPED[1],
+            "c:record-evidence",
+            "c:record-evidence:Bad",
+            "c:record-evidence:",
+            "c:grant",
+            "p:pub:polar.attestation",
+            "p:sub:polar.attestation",
+            "g:encryption",
+            "p:custody:signing",
+        ])
+    }
+
+    proptest! {
+        // The rule, for every set of names asked for: a pod's signing certificate is signed exactly when it names at
+        // least one record type and nothing but record types, and then it may record those types and no others.
+        #[test]
+        fn a_pod_s_signing_certificate_is_signed_exactly_when_it_names_record_types_alone(
+            names in prop::collection::vec(a_name(), 0..5)
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let h = handler(real_ca(), vec![ALLOWED_CALLER]);
+            let response = runtime.block_on(
+                h.handle_internal_issue(Some(ALLOWED_CALLER), pod_signing_request(&names)),
+            );
+            let lawful = !names.is_empty() && names.iter().all(|n| SCOPED.contains(n));
+            prop_assert_eq!(response.status == 200, lawful, "{:?}", names);
+            if let HandlerBody::Success(issued) = response.body {
+                prop_assert_eq!(
+                    cert_issuer_common::evidence::may_record(&issued.certificate_pem).unwrap(),
+                    cert_issuer_common::evidence::MayRecord::of_names(names.iter().copied())
+                );
+            }
+        }
+    }
+}
+
 // ---- authoritative account subject (uid, mail) ----
 
 const OID_UID: &str = "0.9.2342.19200300.100.1.1";

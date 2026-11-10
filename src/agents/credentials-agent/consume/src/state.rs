@@ -167,8 +167,8 @@ pub struct CredentialsState {
     /// instance_binding, type)` -- exactly what the renewal-prevention
     /// check needs (see credentials-agent-architecture.md, "Pods
     /// cannot request their own renewal"): a pod instance may hold one
-    /// client certificate and one server certificate, and may not be
-    /// issued a second of either.
+    /// client certificate, one server certificate and one signing
+    /// certificate, and may not be issued a second of any.
     valid_certificates: HashMap<(String, String, WorkloadCertType), CertificateRecord>,
 
     /// `serial -> (identity, instance_binding, type)`, so a `Revoke` event
@@ -280,7 +280,7 @@ impl CredentialsState {
             .insert(identity.to_string(), record);
     }
 
-    /// Records a client or server certificate, issued or reported, and returns the serials it supersedes.
+    /// Records a client, server or signing certificate, issued or reported, and returns the serials it supersedes.
     #[allow(clippy::too_many_arguments)]
     fn record_workload_certificate(
         &mut self,
@@ -1520,9 +1520,9 @@ pub(crate) mod tests {
         assert!(!state.has_valid_certificate("bob", "pod-uid-1", WorkloadCertType::Client));
     }
 
-    // ---- a pod instance holds one client and one server certificate ----------------------------------------
+    // ---- a pod instance holds one client, one server and one signing certificate ----------------------------
 
-    use credentials_agent_common::issuance::WorkloadCertType::{Client, Server};
+    use credentials_agent_common::issuance::WorkloadCertType::{Client, Server, Signing};
 
     #[test]
     fn a_pod_instance_may_hold_one_client_and_one_server_certificate() {
@@ -1531,6 +1531,22 @@ pub(crate) mod tests {
         state.apply(&issued_as("git-server", "pod-1", "server-1", Server));
         assert!(state.has_valid_certificate("git-server", "pod-1", Client));
         assert!(state.has_valid_certificate("git-server", "pod-1", Server));
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": a pod's signing certificate is a type of its own,
+    // recorded beside its client certificate and retiring neither it nor the reverse; a new pod's retires the old pod's.
+    #[test]
+    fn a_pod_s_signing_certificate_is_a_type_of_its_own() {
+        let mut state = CredentialsState::new();
+        state.apply(&issued_as("attestation", "pod-1", "client-1", Client));
+        let superseded = state.apply(&issued_as("attestation", "pod-1", "signing-1", Signing));
+        assert!(superseded.is_empty(), "{superseded:?}");
+        assert!(state.has_valid_certificate("attestation", "pod-1", Client));
+        assert!(state.has_valid_certificate("attestation", "pod-1", Signing));
+        assert!(!state.has_valid_certificate("attestation", "pod-1", Server));
+        let superseded = state.apply(&issued_as("attestation", "pod-2", "signing-2", Signing));
+        assert_eq!(superseded, vec!["signing-1".to_string()]);
+        assert!(state.has_valid_certificate("attestation", "pod-1", Client));
     }
 
     #[test]
