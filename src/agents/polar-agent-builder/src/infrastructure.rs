@@ -211,6 +211,8 @@ pub struct InfrastructureSupervisorArgs {
     pub config: Arc<polar_env::Config>,
     pub subscriptions: Vec<Subscription>,
     pub wants_crypto: bool,
+    /// For an agent with the `signing` capability: the builder starts a signer for it (`signer.rs`).
+    pub wants_signer: bool,
     /// For an agent with the `soft-state` capability, the state agent's identity, which its replies must come from:
     /// the builder starts a state actor for it (`state.rs`).
     pub(crate) state_agent: Option<String>,
@@ -310,6 +312,7 @@ pub(crate) fn names_an_instance(path: &str) -> bool {
 struct ClientSetup {
     subscriptions: Vec<Subscription>,
     wants_crypto: bool,
+    wants_signer: bool,
     state_agent: Option<String>,
     self_test: bool,
     tcp_spawner: Arc<dyn TcpClientSpawner>,
@@ -330,6 +333,7 @@ struct ClientParts {
     crypto: Option<CryptoHandle>,
     /// What the protocol handler asks the crypto actor with: nothing else ever has it.
     credential_port: Option<polar_crypto::CredentialPort>,
+    signer: Option<crate::signer::SignerHandle>,
     /// The agent's protocol handler, if it declares operations or credentials.
     protocols: Option<crate::protocol::ProtocolHandle>,
     state: Option<crate::state::StateHandle>,
@@ -656,7 +660,7 @@ impl InfrastructureSupervisor {
                             .map_err(ActorProcessingErr::from)?,
                     )
                     .with_credential_pass(pass.clone()),
-                myself_cell,
+                myself_cell.clone(),
             )
             .await
             .map_err(ActorProcessingErr::from)?;
@@ -666,6 +670,35 @@ impl InfrastructureSupervisor {
             )
         } else {
             (None, None)
+        };
+
+        // Unnamed, as the crypto actor is: nothing finds it by name, and only the domain's handle asks it
+        // (docs/architecture/key-custody.md, "Workload signing keys", item 4). It needs no Cassini, and is started here
+        // so the domain has it in its resources beside the crypto actor.
+        let signer = if setup.wants_signer {
+            let socket = setup
+                .config
+                .read(&polar_custody::environment::CUSTODY_SOCKET)
+                .map_err(|e| ActorProcessingErr::from(e.to_string()))?
+                .ok_or_else(|| {
+                    ActorProcessingErr::from(format!(
+                        "{} is required to sign records: the signing key is the custody daemon's",
+                        polar_custody::environment::CUSTODY_SOCKET.name()
+                    ))
+                })?;
+            let (signer, _) = Actor::spawn_linked(
+                None,
+                crate::signer::SignerActor,
+                crate::signer::SignerArgs {
+                    client: Arc::new(polar_custody::client::CustodyClient::new(socket)),
+                },
+                myself_cell,
+            )
+            .await
+            .map_err(ActorProcessingErr::from)?;
+            Some(crate::signer::SignerHandle::new(signer))
+        } else {
+            None
         };
 
         let state = match state_replies {
@@ -697,6 +730,7 @@ impl InfrastructureSupervisor {
                 one_of_many,
                 crypto,
                 credential_port,
+                signer,
                 protocols: None,
                 state,
             },
@@ -751,6 +785,13 @@ impl InfrastructureSupervisor {
             .is_some_and(|crypto| crypto.actor().get_id() == id)
         {
             Child::Other("the crypto actor".to_string())
+        } else if state
+            .client
+            .as_ref()
+            .and_then(|client| client.signer.as_ref())
+            .is_some_and(|signer| signer.actor().get_id() == id)
+        {
+            Child::Other("the signer".to_string())
         } else if state
             .client
             .as_ref()
@@ -934,6 +975,7 @@ impl Actor for InfrastructureSupervisor {
                 ClientSetup {
                     subscriptions: args.subscriptions,
                     wants_crypto: args.wants_crypto,
+                    wants_signer: args.wants_signer,
                     state_agent: args.state_agent.clone(),
                     self_test: args.self_test,
                     tcp_spawner: args.tcp_spawner,
@@ -1283,6 +1325,7 @@ impl Actor for InfrastructureSupervisor {
                         tcp_client: client.tcp_client.clone(),
                         healthcheck: state.healthcheck.clone(),
                         crypto: client.crypto.clone(),
+                        signer: client.signer.clone(),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
                         workers: state.workers.clone(),
@@ -1604,6 +1647,25 @@ mod tests {
             .await
         }
 
+        /// A rig whose agent signs evidence records: the builder starts a signer for it.
+        async fn with_signer(service: &str) -> Self {
+            Self::build_with(
+                service,
+                Duration::from_secs(20),
+                &[],
+                false,
+                false,
+                None,
+                vec![],
+                &[],
+                None,
+                None,
+                Told::AndWaitedFor,
+                true,
+            )
+            .await
+        }
+
         /// A rig whose agent reads its own soft state: the builder starts a state actor for it.
         async fn with_state(service: &str) -> Self {
             Self::build_with(
@@ -1618,6 +1680,7 @@ mod tests {
                 Some("soft-state-observer.polar.serviceaccount.cluster.local".to_string()),
                 None,
                 Told::AndWaitedFor,
+                false,
             )
             .await
         }
@@ -1636,6 +1699,7 @@ mod tests {
                 None,
                 Some(setup),
                 Told::AndWaitedFor,
+                false,
             )
             .await
         }
@@ -1666,6 +1730,7 @@ mod tests {
                 None,
                 None,
                 Told::AndWaitedFor,
+                false,
             )
             .await
         }
@@ -1684,6 +1749,7 @@ mod tests {
                 None,
                 None,
                 told,
+                false,
             )
             .await
         }
@@ -1704,6 +1770,7 @@ mod tests {
             state_agent: Option<String>,
             graph: Option<crate::graph::GraphSetup>,
             told: Told,
+            signing: bool,
         ) -> Self {
             let events = Arc::new(Mutex::new(Vec::new()));
             let health_writer = Some(RIG_WRITER.to_string());
@@ -1742,6 +1809,18 @@ mod tests {
             if state_agent.is_some() {
                 required.push(crate::Capability::SoftState);
             }
+            // An agent that signs: its keys are the custody daemon's, so it names the daemon's socket and no key file.
+            if signing {
+                vars.remove("TLS_CLIENT_KEY");
+                vars.insert(
+                    "POLAR_CUSTODY_SOCKET".to_string(),
+                    dir.path()
+                        .join("custody.sock")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                required.push(crate::Capability::Signing);
+            }
             let startup = crate::startup::prepare(&vars, &[], &required, None).unwrap();
 
             let exits = Arc::new(Mutex::new(Vec::new()));
@@ -1761,6 +1840,7 @@ mod tests {
                     config: startup.config,
                     subscriptions: vec![],
                     wants_crypto: crypto,
+                    wants_signer: signing,
                     state_agent,
                     health_writer,
                     with_client: true,
@@ -3513,6 +3593,27 @@ mod tests {
         assert_eq!(rig.events(), ["prepare_shutdown"]);
     }
 
+    // docs/architecture/key-custody.md, "Workload signing keys", item 4: an agent with the `signing` capability is given a
+    // signer, one without none; the signer is the infrastructure's, and its end ends the agent, as the crypto actor's does.
+    #[tokio::test]
+    async fn an_agent_that_signs_is_given_a_signer_and_its_end_ends_the_agent() {
+        let plain = Rig::with_crypto("infra-no-signer").await;
+        assert!(plain.resources.signer.is_none());
+        let rig = Rig::with_signer("infra-signer-dies").await;
+        let signer = rig
+            .resources
+            .signer
+            .clone()
+            .expect("a signing agent has one");
+        assert!(
+            signer.actor().get_name().is_none(),
+            "unnamed: nothing finds it by name"
+        );
+        signer.actor().kill();
+        rig.settle().await;
+        assert_eq!(rig.events(), ["prepare_shutdown"]);
+    }
+
     // -- the graph controller -----------------------------------------------------------------
 
     /// What a writer's controller is started with, reaching `settings`.
@@ -3768,6 +3869,7 @@ mod service_tests {
                     config: startup.config,
                     subscriptions: vec![],
                     wants_crypto: false,
+                    wants_signer: false,
                     state_agent: None,
                     health_writer: None,
                     with_client: false,

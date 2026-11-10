@@ -85,6 +85,8 @@ pub mod runtime;
 pub use runtime::{RuntimeChanged, RuntimeSection, RuntimeValue};
 pub mod selftest;
 pub mod shutdown;
+pub mod signer;
+pub use signer::{EvidenceRecord, RecordSigner, SignError, SignerHandle};
 pub mod state;
 pub use state::{SoftValue, StateClient, StateError, StateHandle, StateQuery};
 pub mod signed;
@@ -153,6 +155,8 @@ pub struct AgentResources {
     pub tcp_client: TcpClient,
     pub healthcheck: crate::health::HealthHandle,
     pub crypto: Option<crate::crypto::CryptoHandle>,
+    /// What the agent signs its evidence records with, for one with the `signing` capability ([`signer`]).
+    pub signer: Option<crate::signer::SignerHandle>,
     /// The agent's way to the outside, for one that declares operations or credentials ([`protocol::ProtocolHandle`]).
     pub protocols: Option<protocol::ProtocolHandle>,
     /// The agent's way to its own soft state, for an agent with the `soft-state` capability (it declares a graph
@@ -603,6 +607,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 config: startup.config,
                 subscriptions: this.subscriptions,
                 wants_crypto: this.wants_crypto,
+                wants_signer: this.requires.contains(&Capability::Signing),
                 state_agent,
                 health_writer,
                 with_client: true,
@@ -785,6 +790,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 config: startup.config,
                 subscriptions: Vec::new(),
                 wants_crypto: false,
+                wants_signer: false,
                 state_agent: None,
                 health_writer: None,
                 with_client: false,

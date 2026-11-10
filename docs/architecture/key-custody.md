@@ -1589,8 +1589,8 @@ above already plans to split it, for the same reason.
    second would come with its own capability. `Sign` on the slot is refused, and polar-init may neither make a key
    there nor install one (the custodian fills it, `workload_csr` and `install_workload`). Its certificate must be a
    documentSigning one with no TLS purpose (`any`, client or server auth refused) that may record something.
-   Revocation of its serial destroys every key, as any slot's. Not yet: the client's call for the infrastructure's
-   signer. Issuance: item 5.
+   Revocation of its serial destroys every key, as any slot's. The client's call for the infrastructure's signer: item 4.
+   Issuance: item 5.
 4. **A signer in the infrastructure, never the domain's own.** Since 1218efd6 the infrastructure is the builder's, not
    the domain supervisor's child, so it can end a domain and still sign a record saying it did. The signer is spawned
    unnamed (as the `CryptoActor` is, `infrastructure.rs`), so `registry::where_is` cannot find it; the builder hands the
@@ -1599,6 +1599,16 @@ above already plans to split it, for the same reason.
    built from its own observations, never from content it received (a confused deputy would sign another's words in
    its name): a review rule, and a property where a handler can be tested for it. This separates authority and
    lifecycle, not memory: a domain corrupted in memory shares the process, so the daemon's rule (3) is the floor.
+   *Built 2026-11-10 (`polar-agent-builder`, `polar-custody`):* `signer.rs`: the `SignerActor`, spawned unnamed and
+   linked to the infrastructure for an agent whose capabilities include `signing` (its end ends the agent, as the crypto
+   actor's does), and the domain's `SignerHandle` in `AgentResources::signer`, behind a `RecordSigner` trait a domain's
+   tests can fake. It signs an `EvidenceRecord` (a record type, `[a-z0-9-]+`, and fields that do not name another) and
+   returns the `polar_signing::Document` that goes in the evidence repository; nothing reaches the actor or signs bytes
+   (compile-fail doc tests). Through the client's `CustodyClient::sign_record`, which asks the daemon to sign and
+   assembles the document: the signature in its fixed form, the signer slot's chain. The builder refuses to start a
+   signing agent without `POLAR_CUSTODY_SOCKET` (the `signer` section). It is started with the Cassini client's parts,
+   though it needs none of them, so that the domain finds it beside the crypto actor. The confused-deputy rule is in the
+   module's documentation; no handler signs yet, so no property holds a handler to it (bite B's records will).
 5. **The certificate.** cert-issuer's existing `Signing` kind (documentSigning, digital signature; the broker refuses it
    for TLS in either role, `tls_refuses_a_signing_cert_in_either_role`). The custodian asks for it under a fourth
    custody name, `p:custody:signing`, in its five-minute window, with the attestation check and the renewal rule of the

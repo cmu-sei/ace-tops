@@ -7233,6 +7233,7 @@ dependencies = [
  "libc",
  "polar",
  "polar-crypto",
+ "polar-custody",
  "polar-env",
  "polar-escrow",
  "polar-health",

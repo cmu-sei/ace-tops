@@ -80,6 +80,43 @@ async fn polar_init_installs_and_the_workload_signs_through_the_socket() {
     .unwrap();
 }
 
+// docs/architecture/key-custody.md, "Workload signing keys": the workload has a record signed through the socket and
+// gets it back as a document, which verifies as evidence under the signer's certificate; a record of a type the
+// certificate does not name is refused, and nothing is signed.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_workload_has_a_record_signed_through_the_socket_as_a_document() {
+    let ca = test_ca();
+    let daemon = daemon(&ca, both()).await;
+    let certificate = fill_signer(&daemon, &ca, &["c:record-evidence:attestation"]);
+    let socket = daemon.socket.clone();
+    let ca_pem = ca.pem.clone();
+    tokio::task::spawn_blocking(move || {
+        let client = CustodyClient::new(socket);
+        let record = serde_json::json!({ "type": "attestation", "subject": { "pod": "p" } });
+        let document = client.sign_record(&record).unwrap();
+        assert_eq!(document.payload, record);
+        assert_eq!(document.signature.certificate_chain, vec![certificate]);
+        let trust = polar_signing::Trust::from_pem(&[ca_pem]).unwrap();
+        let signer = polar_signing::verify_in(
+            polar_signing::Domain::EVIDENCE_RECORD,
+            &document,
+            &trust,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )
+        .unwrap();
+        assert_eq!(signer.identity.as_deref(), Some(IDENTITY));
+        assert!(matches!(
+            client.sign_record(&serde_json::json!({ "type": "projection-test" })),
+            Err(ClientError::Refused(Refusal::NotItsRecordType(t))) if t == "projection-test"
+        ));
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_caller_that_is_neither_the_installer_nor_the_workload_is_turned_away() {
     let ca = test_ca();

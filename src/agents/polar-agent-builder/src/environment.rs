@@ -151,10 +151,8 @@ pub fn sections_for(capabilities: &[Capability]) -> Vec<&'static Section> {
                 Some(&polar::graph::environment::SECTION)
             }
             Capability::Encryption => Some(&polar_crypto::environment::SECTION),
-            Capability::KubeApiRead
-            | Capability::PodRead
-            | Capability::JobRun
-            | Capability::Signing => None,
+            Capability::Signing => Some(&crate::signer::SECTION),
+            Capability::KubeApiRead | Capability::PodRead | Capability::JobRun => None,
             Capability::SoftState => Some(&crate::state::SECTION),
         })
         .collect()
@@ -344,6 +342,22 @@ mod tests {
         );
         keyless.push(("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"));
         assert_eq!(check_environment(&env(&keyless)), Vec::<String>::new());
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": the signing key is the custody daemon's, so an agent
+    // that signs records needs the daemon's socket, and a key file will not do.
+    #[test]
+    fn signing_demands_the_custody_daemon_s_socket() {
+        let mut with_file = CASSINI_ENV.to_vec();
+        with_file.push(("POLAR_CAPABILITIES", "cassini,signing"));
+        let problems = check_environment(&env(&with_file));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("POLAR_CUSTODY_SOCKET"), "{problems:?}");
+
+        let mut with_socket = with_file.clone();
+        with_socket.retain(|(k, _)| *k != "TLS_CLIENT_KEY");
+        with_socket.push(("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"));
+        assert_eq!(check_environment(&env(&with_socket)), Vec::<String>::new());
     }
 
     #[test]

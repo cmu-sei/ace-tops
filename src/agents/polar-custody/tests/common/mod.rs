@@ -149,3 +149,82 @@ pub fn first_dns_name(der: &[u8]) -> String {
         })
         .unwrap()
 }
+
+/// What cert-issuer signs for a pod's signing key: documentSigning alone, naming `names` (its record types).
+pub fn certify_signer(ca: &TestCa, csr_pem: &str, names: &[&str]) -> String {
+    let mut csr = rcgen::CertificateSigningRequestParams::from_pem(csr_pem).unwrap();
+    for name in names {
+        csr.params
+            .subject_alt_names
+            .push(rcgen::SanType::URI((*name).to_string().try_into().unwrap()));
+    }
+    let epoch = rcgen::date_time_ymd(1970, 1, 1);
+    csr.params.not_before = epoch + std::time::Duration::from_secs((now() - 60) as u64);
+    csr.params.not_after = epoch + std::time::Duration::from_secs((now() + 3600) as u64);
+    csr.params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+    csr.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::Other(
+        cert_issuer_common::OID_DOCUMENT_SIGNING.to_vec(),
+    )];
+    csr.signed_by(&ca.issuer).unwrap().pem()
+}
+
+/// The daemon's signer slot filled as its custodian fills it (docs/architecture/key-custody.md, "Workload signing
+/// keys"): a custodian installed, a plan given, the key made and its certificate, naming `names`, installed. The
+/// certificate.
+pub fn fill_signer(daemon: &Daemon, ca: &TestCa, names: &[&str]) -> String {
+    use cert_issuer_common::custody::{CustodyPermission, custodian_identity};
+    use polar_custody::custody::Roles;
+    use polar_custody::protocol::{Reply, Request, Slot};
+    let installer = Roles {
+        installer: true,
+        workload: false,
+    };
+    let mut custody = daemon.custody.write().unwrap();
+    let Reply::Csr(csr) = custody.handle(
+        installer,
+        Request::MakeCsr {
+            slot: Slot::Custodian,
+            identity: custodian_identity(IDENTITY),
+            names: vec![],
+        },
+        now(),
+    ) else {
+        panic!("a custodian's CSR")
+    };
+    let custodian = certify_signer(
+        ca,
+        &csr,
+        &[CustodyPermission::Signing.to_san_string().as_str()],
+    );
+    assert_eq!(
+        custody.handle(
+            installer,
+            Request::Install {
+                slot: Slot::Custodian,
+                chain_pem: vec![custodian],
+            },
+            now(),
+        ),
+        Reply::Installed
+    );
+    assert_eq!(
+        custody.handle(
+            installer,
+            Request::Bootstrap {
+                identity: IDENTITY.to_string(),
+                client: false,
+                server: None,
+                escrow: false,
+                signing: true,
+            },
+            now(),
+        ),
+        Reply::Installed
+    );
+    let csr = custody.workload_csr(Slot::Signer, vec![]).unwrap();
+    let certificate = certify_signer(ca, &csr, names);
+    custody
+        .install_workload(Slot::Signer, vec![certificate.clone()], now())
+        .unwrap();
+    certificate
+}

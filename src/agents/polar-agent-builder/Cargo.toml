@@ -50,6 +50,8 @@ polar-topics.workspace = true
 # The state agent's questions and answers, which the state actor asks and hears (state.rs).
 soft-state-common.workspace = true
 polar-signing.workspace = true
+# The signer asks the custody daemon to sign the agent's evidence records with the pod's signing key (signer.rs).
+polar-custody.workspace = true
 # What `--version` prints and the scaffold carries as `agent.version`.
 polar-version.workspace = true
 rand.workspace = true
