@@ -43,9 +43,10 @@
 use rkyv::{Archive, Deserialize, Serialize};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
-/// How the claimant proves who they are.
+/// How the claimant proves who they are. Its `Debug` withholds the bootstrap token, so a claimant, or a request that
+/// carries one, can be logged or put in an error without it.
 #[derive(
-    Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize, SerdeSerialize, SerdeDeserialize,
+    Clone, PartialEq, Eq, Archive, Serialize, Deserialize, SerdeSerialize, SerdeDeserialize,
 )]
 pub enum Claimant {
     /// A native user: username and email must match what the admin
@@ -55,10 +56,47 @@ pub enum Claimant {
     Bootstrap { credential: String },
 }
 
+impl Claimant {
+    /// The secret it proves itself with, if it has one: the bootstrap token.
+    pub fn credential(&self) -> Option<&str> {
+        match self {
+            Claimant::Native { .. } => None,
+            Claimant::Bootstrap { credential } => Some(credential),
+        }
+    }
+}
+
+impl std::fmt::Debug for Claimant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Claimant::Native { username, email } => f
+                .debug_struct("Native")
+                .field("username", username)
+                .field("email", email)
+                .finish(),
+            Claimant::Bootstrap { .. } => f
+                .debug_struct("Bootstrap")
+                .field("credential", &format_args!("<withheld>"))
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Archive, Serialize, Deserialize, SerdeSerialize, SerdeDeserialize)]
 pub enum AccountRequest {
     Begin { claimant: Claimant },
     Complete { claimant: Claimant, csr_pem: String },
+}
+
+impl AccountRequest {
+    /// Who it is from.
+    pub fn claimant(&self) -> &Claimant {
+        match self {
+            AccountRequest::Begin { claimant } | AccountRequest::Complete { claimant, .. } => {
+                claimant
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Archive, Serialize, Deserialize, SerdeSerialize, SerdeDeserialize)]
@@ -135,5 +173,41 @@ mod tests {
             }
             other => panic!("expected Complete, got {other:?}"),
         }
+    }
+
+    // The bootstrap token proves the bootstrap identity: a claimant, and a request that carries one, never print it,
+    // whoever formats it with `{:?}`, here or in the observer.
+    #[test]
+    fn a_bootstrap_claimant_never_prints_its_token() {
+        let claimant = Claimant::Bootstrap {
+            credential: "eyJ-the-token".to_string(),
+        };
+        let printed = [
+            format!("{claimant:?}"),
+            format!(
+                "{:?}",
+                AccountRequest::Begin {
+                    claimant: claimant.clone()
+                }
+            ),
+            format!(
+                "{:?}",
+                AccountRequest::Complete {
+                    claimant: claimant.clone(),
+                    csr_pem: "csr".to_string(),
+                }
+            ),
+        ];
+        for line in &printed {
+            assert!(!line.contains("eyJ-the-token"), "{line}");
+            assert!(line.contains("<withheld>"), "{line}");
+        }
+        assert_eq!(claimant.credential(), Some("eyJ-the-token"));
+        let native = Claimant::Native {
+            username: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+        };
+        assert!(format!("{native:?}").contains("alice"));
+        assert_eq!(native.credential(), None);
     }
 }

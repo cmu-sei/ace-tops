@@ -67,11 +67,19 @@ pub enum KeypairError {
 
 /// The output of a successful CSR generation: the PEM-encoded CSR
 /// ready to POST to the cert issuer, and the private key to write
-/// to the shared volume alongside the issued cert.
-#[derive(Debug)]
+/// to the shared volume alongside the issued cert. Its `Debug` withholds the key.
 pub struct CsrOutput {
     pub csr_pem: String,
     pub private_key_pem: String,
+}
+
+impl std::fmt::Debug for CsrOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CsrOutput")
+            .field("csr_pem", &self.csr_pem)
+            .field("private_key_pem", &format_args!("<withheld>"))
+            .finish()
+    }
 }
 
 /// Generate a keypair and a CSR with `identity` as the sole DNS SAN.
@@ -245,5 +253,14 @@ mod tests {
             Some(rcgen::SanType::DnsName(identity.try_into().unwrap()))
         );
         assert!(csr_for_private_key_pem(identity, &[], "not a key").is_err());
+    }
+
+    #[test]
+    fn a_csr_s_output_never_prints_its_private_key() {
+        let out = generate_csr("account-1", &KeyAlgorithm::Ed25519, &[]).unwrap();
+        let printed = format!("{out:?}");
+        assert!(!printed.contains("PRIVATE KEY"), "{printed}");
+        assert!(!printed.contains(out.private_key_pem.trim()), "{printed}");
+        assert!(printed.contains("<withheld>"), "{printed}");
     }
 }

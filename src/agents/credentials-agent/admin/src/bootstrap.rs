@@ -203,7 +203,11 @@ pub(crate) async fn post(
         .map_err(|e| format!("cannot reach the observer at {url}: {e}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let mut body = response.text().await.unwrap_or_default();
+        // An observer, or something in front of it, may answer with what it was sent: the token is never repeated.
+        if let Some(credential) = request.claimant().credential().filter(|c| !c.is_empty()) {
+            body = body.replace(credential, "<withheld>");
+        }
         return Err(format!("the observer answered {status}: {body}"));
     }
     response
@@ -229,4 +233,57 @@ pub(crate) fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Stri
 pub(crate) fn emit_fallback(certificate_pem: &str, ca_chain_pem: &str) {
     println!("{certificate_pem}");
     println!("{ca_chain_pem}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An observer that refuses a request and answers with the request itself, which a proxy or a debugging observer
+    /// might: what the tool says of the refusal names the status and the reply, and withholds the token it sent.
+    #[tokio::test]
+    async fn a_refusal_that_repeats_the_token_is_reported_without_it() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
+            let mut buffer = [0u8; 4096];
+            // Headers, then the body: enough to hold the request this test sends.
+            while !String::from_utf8_lossy(&seen).contains("}}") {
+                let n = socket.read(&mut buffer).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buffer[..n]);
+            }
+            let text = String::from_utf8_lossy(&seen).to_string();
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+            let reply = format!(
+                "HTTP/1.1 400 Bad Request\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(reply.as_bytes()).await.unwrap();
+        });
+        let request = AccountRequest::Begin {
+            claimant: Claimant::Bootstrap {
+                credential: "eyJ-the-token".to_string(),
+            },
+        };
+        let error = post(
+            &reqwest::Client::new(),
+            &format!("http://{address}/account"),
+            &request,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("400"), "{error}");
+        assert!(
+            error.contains("Bootstrap"),
+            "the reply is still shown: {error}"
+        );
+        assert!(!error.contains("eyJ-the-token"), "{error}");
+        assert!(error.contains("<withheld>"), "{error}");
+    }
 }

@@ -51,7 +51,9 @@ set, and none are given here.
   without its value, the graph password's two forms checked to agree before anything is applied.
 - The bootstrap CA constrained (path length, key usage) for new clusters. **Done 2026-11-10**: path length 0 and key usage
   `keyCertSign`, `cRLSign`, both critical. Name constraints wait for your findings (phase 0, question 5).
-- Tests that `polar-sign` and `polar-admin-grant` cannot print a secret.
+- Tests that `polar-sign` and `polar-admin-grant` cannot print a secret. **Done 2026-11-10.** Doing it found that `polar-sign
+  runtime` and `configuration` signed a plaintext secret given to them; both are now judged by the agent's scaffold as `sign` is,
+  so they need it (`--scaffold`, or `<dir>/scaffolds/<agent>.json`), and refuse a secret not already sealed.
 - **New, from your phase 0:** the signed provenance record names every source tree a render was made from (below, "Provenance").
 
 **Step B, in flight: the GitLab agents' move to the builder, then runtime attestation's slice C**
