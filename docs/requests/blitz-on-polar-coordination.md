@@ -69,8 +69,12 @@ needs from it.
   (`Decommissioned`) and releases its secrets.
 
 **Step D: the catalog's split.** Today the catalog holds three things: declarations (what a kind is), a cluster's intent (what runs
-here, and how), and facts about what is running. They split by what changes when.
+here, and how), and facts about what is running. They split by what changes when, and the split is built around lifecycle, which is
+why it waits for step C.
 - Declarations come from the images' scaffolds, released with their evidence.
+- A cluster's intent is step C's signed lifecycle document plus the target (and its configurations under test): which workloads run here,
+  in which phase.
+- What is running is reported by the agents and recorded in the graph, not kept in files the tooling edits.
 - **The downstream layer lands here**: a downstream project's kinds declared by their own images, released into the same evidence, and
   named in a cluster's intent beside Polar's core. Several applications on one core follow from it.
 - A dependency graph the catalog derives replaces hand-kept layers, proved on Flux first.
