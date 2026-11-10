@@ -967,13 +967,19 @@ hand). If the variable is unset, for example when running outside the cluster,
 the builder logs a warning and starts anyway; it only refuses on a real mismatch.
 
 `encryption` is **opt-in**: an agent that never encrypts a payload (the observers)
-does not declare it. Its one footprint is in init: `POLAR_INIT_ESCROW_BOOTSTRAP=true`,
+does not declare it. Its one footprint is in init: `escrow` in `POLAR_INIT_CUSTODY_KEYS`,
 so the custody daemon's custodian fetches the workload's escrow keypair, which the
 daemon keeps and only the agent's crypto actor uses (through the daemon, since
 2026-10-28; `docs/architecture/key-custody.md`). It needs the daemon: set without a
 certificate of the daemon's, polar-init stops. No other workload runs the bootstrap: the credentials agent serves it and the
 broker carries it, and neither needs encryption (decided 2026-10-22,
 `docs/architecture/policy-enforcement.md`, "Decisions").
+
+`signing` (planned, `docs/architecture/key-custody.md`, "Workload signing keys") puts
+`signing` in the same list: a key of the pod's own for evidence records, which the daemon
+holds and never escrows. Each capability names its key as `init.custody` in `capabilities.nuon`;
+the render gathers them into the one list and refuses it for a pod without the daemon
+(`rules.nu`, `custody_key_problems`). polar-init refuses `signing` until the daemon holds one.
 
 Health configuration is no longer passed from Rust: the builder derives
 `expects_graph` from the capabilities and reads the dependency endpoints from

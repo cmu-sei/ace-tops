@@ -76,16 +76,59 @@ pub const CREDENTIALS_AGENT_IDENTITY: Optional<String> = Optional::text(
     "the credentials agent's identity (`<name>.<namespace>.serviceaccount.<domain>`): a session offer is sealed to only if a signing certificate naming it, under the CA, signed the offer; required when POLAR_INIT_ISSUER is `credentials-agent`",
 );
 
-/// Asks the custodian to fetch the escrow keypair into the custody daemon (docs/architecture/key-custody.md, "Part A's
-/// bootstrap: the custodian"). Only an agent with a crypto actor reads the escrowed keypair, so the render sets it for
-/// a workload whose code needs encryption (the `encryption` capability), and for no other: the core services, which
-/// the custodian's requests travel through or ask, never do (docs/architecture/policy-enforcement.md, "Decisions",
-/// 2026-10-22).
-pub const ESCROW_BOOTSTRAP: Defaulted<bool> = Defaulted::flag(
-    "POLAR_INIT_ESCROW_BOOTSTRAP",
-    "whether the custody daemon's custodian fetches this workload's escrow keypair before it starts: true for a workload whose agent needs encryption, which the render derives from its scaffold; it needs a certificate whose key is the daemon's",
-    "false",
+/// The keys the custody daemon's custodian fetches into the daemon besides the certificates `--cert` names: keys the
+/// daemon alone holds and the pod gets no file of (docs/architecture/key-custody.md, "Workload signing keys", item 1).
+/// The render derives it from the agent's needs, one list in place of a flag per key: `escrow` for an agent that needs
+/// encryption, `signing` for one that signs records. The core services, which the custodian's requests travel through
+/// or ask, ask for none (docs/architecture/policy-enforcement.md, "Decisions", 2026-10-22).
+pub const CUSTODY_KEYS: Optional<CustodyKeys> = Optional::new(
+    "POLAR_INIT_CUSTODY_KEYS",
+    "the keys the custody daemon's custodian fetches before the workload starts, besides its certificates: `escrow` for a workload whose agent needs encryption, `signing` for one that signs records, as the render derives them from its scaffold; each needs a certificate whose key is the daemon's",
+    "comma-separated: escrow, signing",
+    parse_custody_keys,
 );
+
+/// What [`CUSTODY_KEYS`] asks the custodian for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CustodyKeys {
+    /// The workload's escrow keypair, which its crypto actor opens through the daemon.
+    pub escrow: bool,
+    /// A key of its own for signing records (planned: the daemon holds none yet).
+    pub signing: bool,
+}
+
+impl CustodyKeys {
+    /// Whether any is asked for.
+    pub fn any(&self) -> bool {
+        self.escrow || self.signing
+    }
+}
+
+/// Each name once, from the two known: a name the daemon does not hold, a blank between commas or a name said twice is
+/// a mistake in the render, said rather than passed over.
+fn parse_custody_keys(text: &str) -> Result<CustodyKeys, String> {
+    let mut keys = CustodyKeys::default();
+    if text.trim().is_empty() {
+        return Ok(keys);
+    }
+    for name in text.split(',').map(str::trim) {
+        let held = match name {
+            "escrow" => &mut keys.escrow,
+            "signing" => &mut keys.signing,
+            "" => return Err("a blank between commas".to_string()),
+            other => {
+                return Err(format!(
+                    "`{other}` is not a key the custody daemon holds (escrow, signing)"
+                ));
+            }
+        };
+        if *held {
+            return Err(format!("`{name}` is named twice"));
+        }
+        *held = true;
+    }
+    Ok(keys)
+}
 
 /// Where polar-init leaves the one-use marker its workload takes as it starts (docs/architecture/deployments.md, step 4):
 /// set for a pod that restarts in place, at the path the workload is told (`POLAR_START_MARKER`).
@@ -101,7 +144,7 @@ static VARIABLES: &[&dyn Described] = &[
     &TOKEN_PATH,
     &CA_CERT,
     &CREDENTIALS_AGENT_IDENTITY,
-    &ESCROW_BOOTSTRAP,
+    &CUSTODY_KEYS,
     &START_MARKER,
     &polar_health::vars::REJUVENATION_SECS,
 ];
@@ -169,9 +212,9 @@ pub enum Issuance {
 pub struct InitSettings {
     pub issuance: Issuance,
     pub token_path: String,
-    /// Whether the custodian's plan asks for the escrow key: the custodian fetches it into the daemon, and polar-init
-    /// itself connects to nothing for it (docs/architecture/key-custody.md, step 9).
-    pub escrow: bool,
+    /// The keys the custodian's plan asks for besides the certificates: the custodian fetches them into the daemon, and
+    /// polar-init itself connects to nothing for them (docs/architecture/key-custody.md, step 9).
+    pub custody_keys: CustodyKeys,
     /// The custody daemon's socket, through which a certificate whose key is the daemon's is made and installed
     /// (docs/architecture/key-custody.md, step 3). The Cassini client's variable: the daemon is the pod's.
     pub custody_socket: Option<String>,
@@ -263,13 +306,21 @@ impl InitSettings {
                 ca_cert_path,
             },
         };
-        let escrow = match ESCROW_BOOTSTRAP.read(env) {
-            Ok(value) => value,
+        let custody_keys = match CUSTODY_KEYS.read(env) {
+            Ok(value) => value.unwrap_or_default(),
             Err(error) => {
                 note(error.to_string());
-                false
+                CustodyKeys::default()
             }
         };
+        // Planned, not built: the daemon has no slot for it yet (docs/architecture/key-custody.md, "Workload signing
+        // keys"), and a pod asking for it would start without what it was promised.
+        if custody_keys.signing {
+            note(format!(
+                "{} asks for `signing`, a key the custody daemon does not hold yet",
+                CUSTODY_KEYS.name()
+            ));
+        }
 
         if !problems.is_empty() {
             return Err(problems.join("; "));
@@ -277,7 +328,7 @@ impl InitSettings {
         Ok(Self {
             issuance,
             token_path,
-            escrow,
+            custody_keys,
             custody_socket,
             start_marker,
             must_outlast,
@@ -311,8 +362,8 @@ mod tests {
         env(&parts.concat())
     }
 
-    /// Asks for the bootstrap, as the `encryption` capability's init footprint does.
-    const ESCROW: &[(&str, &str)] = &[("POLAR_INIT_ESCROW_BOOTSTRAP", "true")];
+    /// Asks for the escrow key, as the render does for an agent that needs encryption.
+    const ESCROW: &[(&str, &str)] = &[("POLAR_INIT_CUSTODY_KEYS", "escrow")];
 
     /// A kept certificate must outlast the point its agent rejuvenates at: what the deployment says, the agents' default otherwise.
     #[test]
@@ -363,33 +414,75 @@ mod tests {
             }
         );
         assert_eq!(s.token_path, DEFAULT_TOKEN_PATH);
-        assert!(!s.escrow, "not asked");
+        assert!(!s.custody_keys.any(), "not asked");
     }
 
     #[test]
-    fn the_bootstrap_runs_only_when_asked_and_a_value_that_is_not_a_flag_is_a_problem() {
-        let s = InitSettings::from_env(&with(&[OWN, &[("POLAR_INIT_ESCROW_BOOTSTRAP", "false")]]))
-            .unwrap();
-        assert!(!s.escrow, "false does not ask");
+    fn a_key_is_fetched_only_when_named_and_a_name_the_daemon_does_not_hold_is_a_problem() {
+        let s = InitSettings::from_env(&with(&[OWN, &[("POLAR_INIT_CUSTODY_KEYS", "")]])).unwrap();
+        assert!(!s.custody_keys.any(), "an empty list asks for nothing");
         assert!(
             InitSettings::from_env(&with(&[OWN, ESCROW]))
                 .unwrap()
+                .custody_keys
                 .escrow
         );
-        let error = InitSettings::from_env(&with(&[OWN, &[("POLAR_INIT_ESCROW_BOOTSTRAP", "1x")]]))
-            .unwrap_err();
-        assert!(error.contains("POLAR_INIT_ESCROW_BOOTSTRAP"), "{error}");
+        for bad in ["true", "escrow,", "escrow,escrow", "Escrow", "escrow, tls"] {
+            let error = InitSettings::from_env(&with(&[OWN, &[("POLAR_INIT_CUSTODY_KEYS", bad)]]))
+                .unwrap_err();
+            assert!(error.contains("POLAR_INIT_CUSTODY_KEYS"), "{bad}: {error}");
+        }
+    }
+
+    /// The daemon has no slot for a signing key yet (docs/architecture/key-custody.md, "Workload signing keys"): a pod
+    /// asking for one is told so, rather than started without it.
+    #[test]
+    fn a_signing_key_is_refused_until_the_daemon_holds_one() {
+        let error = InitSettings::from_env(&with(&[
+            OWN,
+            &[("POLAR_INIT_CUSTODY_KEYS", "escrow,signing")],
+        ]))
+        .unwrap_err();
+        assert!(error.contains("`signing`"), "{error}");
     }
 
     #[test]
-    fn the_old_skip_variable_means_nothing_now() {
-        // A pod rendered before the switch was inverted sets it; it is not declared, so it is not even read.
+    fn the_old_flags_mean_nothing_now() {
+        // A pod rendered before the list replaced them sets one; neither is declared, so neither is even read.
         let s = InitSettings::from_env(&snapshot(&with(&[
             OWN,
-            &[("POLAR_INIT_SKIP_ESCROW_BOOTSTRAP", "")],
+            &[
+                ("POLAR_INIT_SKIP_ESCROW_BOOTSTRAP", ""),
+                ("POLAR_INIT_ESCROW_BOOTSTRAP", "true"),
+            ],
         ])))
         .unwrap();
-        assert!(!s.escrow);
+        assert!(!s.custody_keys.any());
+    }
+
+    proptest::proptest! {
+        /// The list is a set: any order of the names gives the same keys, and spaces around a name are nothing.
+        #[test]
+        fn the_keys_are_the_names_given_in_any_order(escrow: bool, signing: bool, reversed: bool, spaced: bool) {
+            let mut names: Vec<&str> = [(escrow, "escrow"), (signing, "signing")]
+                .into_iter()
+                .filter(|(asked, _)| *asked)
+                .map(|(_, name)| name)
+                .collect();
+            if reversed {
+                names.reverse();
+            }
+            let text = names.join(if spaced { " , " } else { "," });
+            proptest::prop_assert_eq!(parse_custody_keys(&text), Ok(CustodyKeys { escrow, signing }));
+        }
+
+        /// A name that is not one of the two is refused, whatever else the list holds.
+        #[test]
+        fn an_unknown_name_is_refused(name in "[a-z]{1,8}", first: bool) {
+            proptest::prop_assume!(name != "escrow" && name != "signing");
+            let text = if first { format!("{name},escrow") } else { format!("escrow,{name}") };
+            proptest::prop_assert!(parse_custody_keys(&text).is_err());
+        }
     }
 
     /// The escrow key is the custodian's to fetch (docs/architecture/key-custody.md, step 9), so asking for it reads
@@ -405,7 +498,7 @@ mod tests {
             ],
         ]))
         .unwrap();
-        assert!(s.escrow);
+        assert!(s.custody_keys.escrow);
         assert_eq!(
             s.issuance,
             Issuance::CertIssuer {
@@ -419,8 +512,8 @@ mod tests {
     #[test]
     fn every_problem_is_reported_together_before_anything_waits() {
         let error =
-            InitSettings::from_env(&with(&[&[("POLAR_INIT_ESCROW_BOOTSTRAP", "1x")]])).unwrap_err();
-        for name in ["POLAR_INIT_CERT_ISSUER_URL", "POLAR_INIT_ESCROW_BOOTSTRAP"] {
+            InitSettings::from_env(&with(&[&[("POLAR_INIT_CUSTODY_KEYS", "1x")]])).unwrap_err();
+        for name in ["POLAR_INIT_CERT_ISSUER_URL", "POLAR_INIT_CUSTODY_KEYS"] {
             assert!(error.contains(name), "{name}: {error}");
         }
     }

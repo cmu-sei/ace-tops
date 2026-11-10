@@ -165,8 +165,8 @@ let credentialsAgentIssuerEnv =
           }
         ]
 
--- The custodian fetches the escrow key only when `extraEnv` asks for it (POLAR_INIT_ESCROW_BOOTSTRAP): the
--- catalog's `encryption` capability does, for an agent that needs encryption, and no hand chart does.
+-- The custodian fetches a key only the daemon holds only when `extraEnv` asks for it (POLAR_INIT_CUSTODY_KEYS): the
+-- render does, from the catalog's `encryption` (escrow) and `signing` capabilities, and no hand chart does.
 -- As `makePolarInitContainer`, the client's environment given: `Constants.commonClientEnv` with a key file, or
 -- `Constants.custodyClientEnv` when the key is the custody daemon's (docs/architecture/key-custody.md, step 4);
 -- polar-init reads only the daemon's socket of it.

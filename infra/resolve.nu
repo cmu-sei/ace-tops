@@ -494,6 +494,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     mut role_keys: list<string> = []
     mut pvcs: list<any> = []
     mut init_env: list<any> = []
+    mut custody_keys: list<string> = []
     mut ports: list<any> = []
     mut exposed: list<any> = []
 
@@ -531,6 +532,11 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
             for file in ($c.watch? | default ["cert.pem"]) {
                 $cert_dirs = ($cert_dirs | append $"($c.dir)/($file)")
             }
+        }
+
+        # custody: a key the daemon alone holds, which its custodian fetches; gathered into one list below.
+        if ($cap.init.custody? | is-not-empty) {
+            $custody_keys = ($custody_keys | append $cap.init.custody)
         }
 
         # init: what polar-init gets besides the certificates it issues.
@@ -773,10 +779,15 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         # Whose signature on a session offer it believes (docs/architecture/core-restarts.md, "1c in detail").
         | append { name: "POLAR_INIT_CREDENTIALS_AGENT_IDENTITY", value: (identity_of "credentials-agent" $target $kinds $cluster), secret: null, key: null, from: "issuer" }
     } else { $init_env })
-    let escrow = (escrow_problems $custody $init_env)
-    if ($escrow | is-not-empty) {
-        error make { msg: $"($name): ($escrow | str join '; ')" }
+    # The keys only the daemon holds, one list for polar-init (key-custody.md, "Workload signing keys", item 1).
+    let custody_keys = ($custody_keys | uniq | sort)
+    let keys_wrong = (custody_key_problems $custody $custody_keys)
+    if ($keys_wrong | is-not-empty) {
+        error make { msg: $"($name): ($keys_wrong | str join '; ')" }
     }
+    let init_env = (if ($custody_keys | is-empty) { $init_env } else {
+        $init_env | append { name: "POLAR_INIT_CUSTODY_KEYS", value: ($custody_keys | str join ","), secret: null, key: null, from: "custody" }
+    })
     # Many pods at once, each an instance of the one identity (docs/architecture/authority-model.md, "Multi-instance
     # workloads"): only for what the credentials agent issues, which writes each pod's instance into its certificates.
     let instances_wrong = (instances_problems $name $spec)

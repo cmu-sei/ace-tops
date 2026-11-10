@@ -132,17 +132,18 @@ def main [] {
             assert ($mixed.0 | str contains "custodian") $mixed.0
         }
 
-        # The escrow key is only the custody daemon's custodian's to fetch (key-custody.md, step 9): a pod whose polar-init
-        # is asked to fetch it and that has no daemon is refused, as polar-init would refuse it (the maintainer, 2026-10-28).
-        "a pod asked to escrow its key needs the custody daemon": {
-            let escrow = [{ name: "POLAR_INIT_ESCROW_BOOTSTRAP", value: "true" }]
-            let off = (escrow_problems false $escrow)
+        # A key only the daemon holds (escrow, signing) is only its custodian's to fetch (key-custody.md, step 9 and
+        # "Workload signing keys"): a pod asked to fetch one and that has no daemon is refused, as polar-init would refuse
+        # it (the maintainer, 2026-10-28).
+        "a pod asked for a key only the custody daemon holds needs the daemon": {
+            let off = (custody_key_problems false ["escrow" "signing"])
             assert equal ($off | length) 1
             assert ($off.0 | str contains "custody") $off.0
-            assert equal (escrow_problems true $escrow) []
-            assert equal (escrow_problems false []) []
-            assert equal (escrow_problems false [{ name: "POLAR_INIT_ESCROW_BOOTSTRAP", value: "false" }]) []
-            assert equal (escrow_problems false [{ name: "POLAR_INIT_CA_CERT", value: "true" }]) []
+            assert ($off.0 | str contains "escrow, signing") $off.0
+            assert equal (custody_key_problems true ["escrow"]) []
+            assert equal (custody_key_problems true ["signing"]) []
+            assert equal (custody_key_problems false []) []
+            assert equal (custody_key_problems false ["signing"] | length) 1
         }
 
         # docs/architecture/placement.md: a workload goes to its pool's node only on a target that declares the pool,

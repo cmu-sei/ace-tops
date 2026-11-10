@@ -359,15 +359,14 @@ export def memory_problems [memory: any, who: string]: nothing -> list<string> {
     } else { [] }
 }
 
-# What is wrong with a pod whose polar-init is asked to fetch the escrow key (`POLAR_INIT_ESCROW_BOOTSTRAP`, from the
-# `encryption` capability) when it has no custody daemon: only the daemon's custodian fetches the escrow key
-# (docs/architecture/key-custody.md, step 9), and polar-init would stop at once. `custody` is whether the pod has the
-# daemon; `init_env` is polar-init's environment, as records with `name` and `value`. Decided by the maintainer,
-# 2026-10-28: the render refuses it, and key files stay a supported mode for agents that do not encrypt.
-export def escrow_problems [custody: bool, init_env: list]: nothing -> list<string> {
-    let escrow = ($init_env | any {|e| $e.name == "POLAR_INIT_ESCROW_BOOTSTRAP" and ($e.value? | default "") == "true" })
-    if $escrow and (not $custody) {
-        ["it encrypts, and its escrow key is fetched only by the custody daemon's custodian, which this pod does not have: turn custody on for it, or leave it out of this target"]
+# What is wrong with a pod whose polar-init is asked to fetch keys only the custody daemon holds (`keys`, gathered from
+# its needs' `init.custody` in capabilities.nuon: `escrow` for `encryption`, `signing` for `signing`) when it has no daemon:
+# only the daemon's custodian fetches them (docs/architecture/key-custody.md, step 9, and "Workload signing keys"), and
+# polar-init would stop at once. `custody` is whether the pod has the daemon. Decided by the maintainer, 2026-10-28: the
+# render refuses it, and key files stay a supported mode for agents that hold no such key.
+export def custody_key_problems [custody: bool, keys: list<string>]: nothing -> list<string> {
+    if ($keys | is-not-empty) and (not $custody) {
+        [$"it holds keys \(($keys | str join ', ')\) that only the custody daemon's custodian fetches, and this pod does not have the daemon: turn custody on for it, or leave it out of this target"]
     } else { [] }
 }
 

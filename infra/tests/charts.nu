@@ -297,8 +297,7 @@ def main [] {
             let text = (open --raw ($out | path join "neo4j-statefulset.yaml"))
             assert ($text | str contains "server:/etc/neo4j-tls:ecdsa-p256:")
             let vars = (init_env ($out | path join "neo4j-statefulset.yaml"))
-            assert (($vars | where name == "POLAR_INIT_ESCROW_BOOTSTRAP") | is-empty)
-            assert (($vars | where name == "POLAR_INIT_SKIP_ESCROW_BOOTSTRAP") | is-empty)
+            assert (($vars | where name in ["POLAR_INIT_CUSTODY_KEYS" "POLAR_INIT_ESCROW_BOOTSTRAP" "POLAR_INIT_SKIP_ESCROW_BOOTSTRAP"]) | is-empty)
         }
 
         "Neo4j's configuration reaches its ConfigMap exactly, whatever characters it has": {

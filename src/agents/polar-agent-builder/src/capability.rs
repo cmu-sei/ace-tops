@@ -52,6 +52,10 @@ pub enum Capability {
     GraphRead,
     /// Encrypts payloads through CryptoActor. Opt-in.
     Encryption,
+    /// Signs evidence records with a key of its own, which the custody daemon holds and never escrows
+    /// (docs/architecture/key-custody.md, "Workload signing keys"). Planned: its key and signer are not built yet, so no
+    /// agent declares it.
+    Signing,
     /// Reads the Kubernetes API across the cluster with the workload's own ServiceAccount token: what its cluster
     /// operations declare, its ClusterRole computed from them ([`role_of`]), and never Secrets.
     KubeApiRead,
@@ -208,11 +212,12 @@ pub fn role_namespaces_of(
 
 impl Capability {
     /// Every capability, in the order the catalog lists them.
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 9] = [
         Capability::Cassini,
         Capability::GraphWrite,
         Capability::GraphRead,
         Capability::Encryption,
+        Capability::Signing,
         Capability::KubeApiRead,
         Capability::PodRead,
         Capability::SoftState,
@@ -260,6 +265,7 @@ impl Capability {
             Capability::GraphWrite => "graph-write",
             Capability::GraphRead => "graph-read",
             Capability::Encryption => "encryption",
+            Capability::Signing => "signing",
             Capability::KubeApiRead => "kube-api-read",
             Capability::PodRead => "pod-read",
             Capability::SoftState => "soft-state",

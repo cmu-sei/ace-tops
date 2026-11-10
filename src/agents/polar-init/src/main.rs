@@ -45,9 +45,9 @@
 //!                                verified against from the first request.
 //!                                If unset, the CA is fetched once from
 //!                                GET /ca without verification and pinned.
-//!   POLAR_INIT_ESCROW_BOOTSTRAP  `true` has the custodian fetch the escrow key
-//!                                (default: false); set for an agent that needs
-//!                                encryption, and needs a `custody` --cert
+//!   POLAR_INIT_CUSTODY_KEYS      the keys the custodian fetches besides the
+//!                                certificates: `escrow`, `signing` (default:
+//!                                none); each needs a `custody` --cert
 //!   POLAR_CUSTODY_SOCKET         The custody daemon's socket; required when a
 //!                                --cert's key is `custody`, the daemon's
 
@@ -275,7 +275,7 @@ async fn main() {
     let custody = custody_for(
         &cert_requests,
         settings.custody_socket.as_deref(),
-        settings.escrow,
+        settings.custody_keys.any(),
     )
     .unwrap_or_else(|why| stop(why));
 
@@ -368,9 +368,9 @@ async fn main() {
             // A bootstrap service's custodian, for its daemon's own session: it fetches nothing, since the service's
             // certificates come from cert-issuer as above.
             if let Some(daemon) = &custody {
-                if settings.escrow {
+                if settings.custody_keys.any() {
                     stop(
-                        "a bootstrap service escrows no key: its escrow key would be its custodian's to fetch, \
+                        "a bootstrap service holds no escrow or signing key: it would be its custodian's to fetch, \
                          from the credentials agent it comes up before"
                             .to_string(),
                     );
@@ -430,7 +430,7 @@ async fn main() {
             // The token buys the custodian's certificate and nothing else: the custodian fetches the rest
             // (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian").
             if let Some(daemon) = &custody {
-                let plan = custodian_plan(&cert_requests, settings.escrow);
+                let plan = custodian_plan(&cert_requests, settings.custody_keys.escrow);
                 if let Err(why) = custodian_via_observer(
                     &observer,
                     &sa_token,
@@ -463,7 +463,7 @@ async fn main() {
 
     // The escrow key, when asked for, is the custody daemon's, fetched by its custodian above: the custodian's plan
     // asked for it, and the daemon was Ready only once it held it (docs/architecture/key-custody.md, step 9).
-    if settings.escrow {
+    if settings.custody_keys.escrow {
         tracing::info!("the escrow key is the custody daemon's, fetched by its custodian");
     }
 
@@ -659,23 +659,24 @@ async fn issue_cert(
 // ---------------------------------------------------------------------------
 
 /// The daemon's client for the certificates whose key is its own: `None` when none is, and why not when one is and
-/// there is no socket, or another has a key file, or two of one type ask for its one slot of that type, or the escrow
-/// key is asked for and there is no daemon's custodian to fetch it. Said before anything waits.
+/// there is no socket, or another has a key file, or two of one type ask for its one slot of that type, or a key only
+/// the daemon holds (`daemon_keys`: escrow, signing) is asked for and there is no daemon's custodian to fetch it. Said
+/// before anything waits.
 fn custody_for(
     requests: &[CertRequest],
     socket: Option<&str>,
-    escrow: bool,
+    daemon_keys: bool,
 ) -> Result<Option<Arc<CustodyClient>>, String> {
     let custody: Vec<&CertRequest> = requests
         .iter()
         .filter(|req| matches!(req.key, KeyMaker::Custody))
         .collect();
     if custody.is_empty() {
-        if escrow {
+        if daemon_keys {
             return Err(format!(
-                "{} asks for the escrow key, which only the custody daemon's custodian fetches, and no --cert's key \
-                 is the daemon's",
-                environment::ESCROW_BOOTSTRAP.name()
+                "{} asks for a key only the custody daemon's custodian fetches (escrow, signing), and no --cert's \
+                 key is the daemon's",
+                environment::CUSTODY_KEYS.name()
             ));
         }
         return Ok(None);

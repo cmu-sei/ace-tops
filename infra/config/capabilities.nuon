@@ -140,11 +140,26 @@
   # (key-custody.md, step 9; policy-enforcement.md, "Decisions", 2026-10-22). The core services (the
   # credentials agent, which serves the escrow keypair, and the broker, which carries it) do not need
   # encryption, so they never ask for it.
+  #
+  # `init.custody` names a key the daemon alone holds: the render gathers every need's into one list for
+  # polar-init (POLAR_INIT_CUSTODY_KEYS) and refuses it for a pod without the daemon (key-custody.md,
+  # "Workload signing keys", item 1: one list, the maintainer, 2026-11-09).
   encryption: {
     pod: {}
     identity: {}
     dependency: {}
-    init: { env: [ { name: "POLAR_INIT_ESCROW_BOOTSTRAP", value: "true" } ] }
+    init: { custody: "escrow" }
+    resources: {}
+  }
+
+  # The agent signs evidence records with a key of its own: per pod, held by the custody daemon in a
+  # slot of its own, never escrowed (key-custody.md, "Workload signing keys"). Planned: polar-init
+  # refuses it until the daemon holds such a key, and no agent declares it yet.
+  signing: {
+    pod: {}
+    identity: {}
+    dependency: {}
+    init: { custody: "signing" }
     resources: {}
   }
 

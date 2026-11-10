@@ -417,8 +417,9 @@ The plan:
    key is in the pod's volume, readable by the workload, so a compromised workload can copy it and be the agent
    elsewhere until its certificate expires or is revoked (the table in "What it protects").
    *Except an agent that encrypts (since step 9, 2026-10-28):* its escrow key is fetched only by the daemon's custodian,
-   so without the daemon it has none, and the render refuses it (`rules.nu`, `escrow_problems`), as `polar-init` would
-   (`custody_for`); the maintainer decided so rather than give key-file mode an escrow path of its own.
+   so without the daemon it has none, and the render refuses it (`rules.nu`, `custody_key_problems` since 2026-11-09,
+   for a signing key as well), as `polar-init` would (`custody_for`); the maintainer decided so rather than give
+   key-file mode an escrow path of its own.
 2. *The choice is the target's, rendered.* Step 4 gives the target a `custody` setting, on by default. Off renders
    every pod without the sidecar, its `--cert` as `ecdsa-p256`, and its key variables as files. A deployment that
    cannot run our daemon image, or uses stock neo4rs, sets it off. It can be per workload as well, so that only the
@@ -1541,6 +1542,98 @@ credentials agent's key stays RSA until part B, so for the whole of part A the e
 - **No migration** (the maintainer, 2026-10-27): the change ships with a fresh install, and what was sealed to an
   agent's RSA key is sealed again (`polar-sign seal`). A daemon handed an RSA key from escrow refuses it, naming the key
   type.
+
+## Workload signing keys, the plan (2026-11-09; its three questions decided by the maintainer the same day)
+
+*Why.* The attestation agent's verdicts are to become evidence records (`polar-eden.md`, "Attestation verdicts as
+records"), signed by the agent that observed them, so that a record proves itself away from the cluster: on the
+`polar-evidence` mirror, to an auditor who trusts neither the git server's history nor the broker. No workload can sign
+one today. A pod holds an mTLS key, which the daemon lets sign TLS 1.3 handshakes alone ("TLS 1.3 handshakes only"),
+and, if it encrypts, an escrow key, which only decrypts. The credentials agent's `Signing` certificates are its own
+(cert-issuer issues `Signing` only to the identity asking, `handler.rs`). Every signature Polar verifies otherwise is a
+person's.
+
+*One key, one purpose.* Not the mTLS key: a handshake signature proves "this identity, now, on this connection"; a
+record's is a lasting statement in the agent's name, and the daemon's rule keeps a compromised workload from turning
+one into the other. Not the escrow key: an encryption key must survive (escrow exists so what was sealed to it outlives
+the pod), a signing key must never be copied (one held in escrow could be used by whoever holds the escrow, and its
+signatures would prove nothing). NIST SP 800-57 asks one key per purpose; X.509 says it as key usage. The credentials
+agent's escrow key also signs authority updates ("One key, not two", `authority-distribution.md`, 2026-10-12); part B
+above already plans to split it, for the same reason.
+
+*The design, as discussed with the maintainer 2026-11-09:*
+1. **A need the builder computes.** A `signing` capability, beside `encryption`: an agent built with a signer declares
+   it, the scaffold carries it, the render passes it to `polar-init`, and the render refuses it without the daemon, as
+   `escrow_problems` refuses escrow (`infra/rules.nu`). Since a second init flag beside `POLAR_INIT_ESCROW_BOOTSTRAP`
+   would be a second special case on one mechanism, the flags become one list of what the custodian fetches (client,
+   server, escrow, signing), derived from the needs. *Decided (the maintainer, 2026-11-09): one list.*
+   *Built 2026-11-09:* `POLAR_INIT_CUSTODY_KEYS` (`escrow`, `signing`), which the render gathers from each need's
+   `init.custody` in `capabilities.nuon` and refuses for a pod without the daemon (`rules.nu`, `custody_key_problems`), in
+   place of `POLAR_INIT_ESCROW_BOOTSTRAP`; the builder and the catalog know `signing`, and polar-init refuses it until
+   the daemon holds such a key. The list names the keys only the daemon holds; the client and server certificates
+   stay in polar-init's `--cert`s, since those also say where their files go and which names they carry (decided
+   here on reading polar-init, for review).
+2. **A key per pod, in a slot of its own (`Slot::Signer`).** Made in the daemon, never leaving it, never escrowed, gone
+   with the pod. Not one per workload: sharing a key between pods means handing it from one to another, which is escrow
+   by another name. Each record then names the instance that made it, which a crash's diagnosis wants.
+3. **The daemon signs a record whole, nothing else, on that slot.** As part B's `AuthoritySign` signs only an authority
+   payload: `SignRecord { domain, payload }`, the daemon building the signing input itself
+   (`polar_signing::signing_input_in`), refusing a domain its certificate does not allow. The TLS slots still sign
+   handshakes alone, and `Signer` never signs one. *Decided (the maintainer, 2026-11-09): this relaxes "nothing in
+   the agent's name" for an agent that declares `signing`, as planned.*
+4. **A signer in the infrastructure, never the domain's own.** Since 1218efd6 the infrastructure is the builder's, not
+   the domain supervisor's child, so it can end a domain and still sign a record saying it did. The signer is spawned
+   unnamed (as the `CryptoActor` is, `infrastructure.rs`), so `registry::where_is` cannot find it; the builder hands the
+   domain a typed handle (`sign(record: EvidenceRecord)`), never "sign these bytes"; it takes no topic, and the
+   workspace has no `ractor_cluster`, so nothing outside the process reaches it. What the domain asks to sign must be
+   built from its own observations, never from content it received (a confused deputy would sign another's words in
+   its name): a review rule, and a property where a handler can be tested for it. This separates authority and
+   lifecycle, not memory: a domain corrupted in memory shares the process, so the daemon's rule (3) is the floor.
+5. **The certificate.** cert-issuer's existing `Signing` kind (documentSigning, digital signature; the broker refuses it
+   for TLS in either role, `tls_refuses_a_signing_cert_in_either_role`). The custodian asks for it under a fourth
+   custody name, `p:custody:signing`, in its five-minute window, with the attestation check and the renewal rule of the
+   mTLS certificate, and an hour's life like it. cert-issuer's "`Signing` only for the caller" gains the custodian's
+   path. The credentials agent records it in its ledger (today it records no `Signing` certificate).
+6. **What it may sign: `c:record-evidence` scoped to record types** (the maintainer, 2026-11-09, narrowing the morning's
+   decision): `c:record-evidence:attestation-report,attestation`, from the catalog. The signer refuses a type its
+   certificate does not name, and so does the git server. A confused or compromised domain forges at most its own kind
+   of record.
+7. **Verified as of when it was added, not as of now.** The certificate lives an hour; `verify_in` checks the leaf at
+   the time it is given. The git server verifies a record when it arrives (bite A's `place`) and commits it; a reader
+   verifies it against the time of the commit that added it, which the git server's history fixes. The same holds for a
+   person's record, whose certificate also ends. Revocation after the fact is not seen by a reader outside the cluster.
+   *Decided (the maintainer, 2026-11-09): revocations become evidence,* a bite of their own after the signing keys:
+   when the credentials agent revokes a certificate that carries `c:record-evidence`, a revocation record goes to
+   `polar-evidence`; `polar-eden` then refuses that certificate's records added after it and marks those added before
+   it for review. A person's certificate likewise.
+8. **The signer is the sender.** The git server takes a workload's record only from that workload: the record's
+   signer is the broker-stamped sender (tracked as "the signer-vs-sender check").
+
+*What changes where it is counted:*
+- "A pod instance may hold one client certificate and one server certificate" (`credentials-agent/consume/src/state.rs`)
+  becomes one of each of three; the custodian's "one certificate of each type" stands.
+- The custody names, three to four: cert-issuer (`CustodyPermission::ALL`, `custody_names_refusal`), `polar-init`
+  (`custodian_plan`, `custody_names`, `slot_of`), the daemon's plan check.
+- The `Slot` enum and what enumerates it: the daemon's bootstrap and revocation, `polar-health`'s custody check, the
+  rustls signers, the proptest generator.
+- The `c:` set, eight to nine (`cert-issuer/common/src/capability.rs`), with a parameter for the record types.
+- This document's "TLS 1.3 handshakes only", revised as above.
+- Unchanged: escrow's one key per workload (`authority-model.md`).
+
+*Found while mapping it (2026-11-09), to fix with it:*
+- `verify_in` checks key usage, not extended key usage (`polar-signing/src/verify.rs`): any certificate that can sign
+  digitally verifies evidence, an mTLS one included. A workload's record should require documentSigning; a person's
+  keeps their account certificate.
+- The custodian's custody names come from the pod's own request; the credentials agent checks their form only
+  (`consume/src/issuance.rs`, `check_request_shape`), where "Part A's bootstrap" says the catalog writes them. With
+  signing among them it matters more.
+- Two believers of an escrow certificate with different rules: `polar-crypto`'s `believed_key` (one-level chain, first
+  DNS name, no key-usage check) and `polar-signing`'s `verify_escrow_certificate`.
+
+*Build order, each tests first:* the capability and the render rule; the daemon's slot and `SignRecord`, with
+properties (a record's signature verifies under the slot's certificate; no handshake input is signed on it; no domain
+outside the certificate's is); issuance and the ledger; `polar-init` and the custodian; the infrastructure's signer and
+its handle; verification as of the commit; then the attestation agent's records (`polar-eden.md`, bite B).
 
 ## Build order, each tests first
 

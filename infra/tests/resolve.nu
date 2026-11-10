@@ -1314,17 +1314,19 @@ def main [] {
             # jira-observer since 3.0.0: its credential is an escrowed secret its crypto actor opens (jira.md, "The credential").
             for name in ["kube-consumer" "jira-observer"] {
                 let r = (resolve $name)
-                assert equal (init_env_value $r "POLAR_INIT_ESCROW_BOOTSTRAP") "true" $"($name) escrows its key"
+                assert equal (init_env_value $r "POLAR_INIT_CUSTODY_KEYS") "escrow" $"($name) escrows its key"
                 assert ("encryption" in $r.needs) $"($name) needs encryption"
             }
             for name in ["kube-observer" "credentials-agent" "credentials-agent-observer"] {
                 let r = (resolve $name)
                 assert ("encryption" not-in $r.needs) $"($name) does not need encryption"
-                assert equal (init_env_value $r "POLAR_INIT_ESCROW_BOOTSTRAP") null $"($name) escrows nothing"
+                assert equal (init_env_value $r "POLAR_INIT_CUSTODY_KEYS") null $"($name) escrows nothing"
             }
-            # and the old switch is gone from every pod
+            # and the old switches are gone from every pod: one list replaced them (key-custody.md, "Workload signing
+            # keys", item 1)
             for name in ["kube-consumer" "credentials-agent" "cassini"] {
-                assert ((resolve $name).init_env | where name == "POLAR_INIT_SKIP_ESCROW_BOOTSTRAP" | is-empty)
+                let init = (resolve $name).init_env
+                assert ($init | where name in ["POLAR_INIT_SKIP_ESCROW_BOOTSTRAP" "POLAR_INIT_ESCROW_BOOTSTRAP"] | is-empty)
             }
         }
 
@@ -1411,7 +1413,7 @@ def main [] {
         }
 
         "the broker starts without the escrow bootstrap, which needs the broker": {
-            assert equal (init_env_value (resolve "cassini") "POLAR_INIT_ESCROW_BOOTSTRAP") null
+            assert equal (init_env_value (resolve "cassini") "POLAR_INIT_CUSTODY_KEYS") null
         }
 
         "the broker's Service has the name its clients use, selects the broker, and exposes the one port it listens on": {
