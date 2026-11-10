@@ -28,6 +28,8 @@ use harness_common::lanes::LANES;
 use polar_agent_builder::{Capability, Configured, PolarAgent, Role, StartError, TopicDecl};
 use polar_env::Section;
 use ractor::Actor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const SENDS: &str = "the run's messages, when this producer's index puts it on this lane";
@@ -42,6 +44,8 @@ impl PolarAgent for HarnessProducer {
     const PURPOSE: &'static str = "Sends a run's messages to Cassini at a given rate and size, for the load harness to measure the broker";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
+    // A Job that finishes: done, `start` returns `Ok` and the process exits 0.
+    const COMPLETES: bool = true;
     const SECTIONS: &'static [&'static Section] = &[
         &harness_common::settings::SECTION,
         &crate::settings::SECTION,
@@ -66,17 +70,23 @@ impl PolarAgent for HarnessProducer {
 
     async fn start(configured: Configured) -> Result<(), StartError> {
         configured.init_logging(SERVICE_NAME);
+        let done = Arc::new(AtomicBool::new(false));
         let (_supervisor, handle) = Actor::spawn(
             Some(format!("{SERVICE_NAME}.supervisor")),
             ProducerSupervisor,
-            configured,
+            (configured, done.clone()),
         )
         .await
         .map_err(|e| format!("the producer's supervisor did not start: {e}"))?;
         handle
             .await
             .map_err(|e| format!("the producer's supervisor task failed: {e}"))?;
-        Err("the producer's supervisor stopped".into())
+        // A Job: done is a success (`COMPLETES`, so `run` exits 0), anything else ending it is not.
+        if done.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err("the producer's supervisor stopped before its run was done".into())
+        }
     }
 }
 

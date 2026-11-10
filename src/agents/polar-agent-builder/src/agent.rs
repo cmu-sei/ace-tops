@@ -122,6 +122,10 @@ pub trait PolarAgent: Sized + 'static {
     /// "The model", revised 2026-10-23), sets this off: its client connects, reconnects and passes the topic gate as
     /// any other, and a lost session, or one never made, is reported and never marks it unhealthy or fails it.
     const DEPENDS_ON_CASSINI: bool = true;
+    /// Whether the agent is a run that finishes (a Job of the catalog's `run` kind, the load harness's producer and
+    /// sink): its `start` returns `Ok` once its work is done, and `run` exits 0, so the Job is complete. Any other end,
+    /// an `Err` from `start` or the end of an agent that does not complete, exits 1, so it is started again.
+    const COMPLETES: bool = false;
     /// Capabilities the agent uses when its deployment provides them and does without when it
     /// does not, so one binary can run as part of a cluster or on its own. Only `Cassini` may be
     /// optional so far, and then `CASSINI_CLIENT` must be off: the agent is a Cassini client
@@ -1277,13 +1281,23 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
         }
     };
     match runtime.block_on(A::start(configured)) {
-        Ok(()) => eprintln!(
-            "{} ended; an agent that ends has failed, exiting 1",
-            A::NAME
-        ),
-        Err(error) => eprintln!("{} failed: {error}", A::NAME),
+        // A run that finishes, done.
+        Ok(()) if A::COMPLETES => {
+            eprintln!("{} finished its run, exiting 0", A::NAME);
+            0
+        }
+        Ok(()) => {
+            eprintln!(
+                "{} ended; an agent that ends has failed, exiting 1",
+                A::NAME
+            );
+            1
+        }
+        Err(error) => {
+            eprintln!("{} failed: {error}", A::NAME);
+            1
+        }
     }
-    1
 }
 
 #[cfg(test)]
@@ -2596,6 +2610,50 @@ mod tests {
             run_with::<Example>(&strings(&["--check", "--config", &config]), with_secrets()),
             1
         );
+    }
+
+    /// `Example`, but a run that finishes: its `start` returns what `FINISHED_WELL` says.
+    struct Finishing;
+
+    static FINISHED_WELL: AtomicBool = AtomicBool::new(true);
+
+    impl PolarAgent for Finishing {
+        const NAME: &'static str = Example::NAME;
+        const ROLE: Role = Example::ROLE;
+        const PURPOSE: &'static str = Example::PURPOSE;
+        const NEEDS: &'static [Capability] = Example::NEEDS;
+        const SHUTDOWN_BUDGET: Duration = Example::SHUTDOWN_BUDGET;
+        const SECTIONS: &'static [&'static Section] = Example::SECTIONS;
+        const TOPICS: &'static [TopicDecl] = Example::TOPICS;
+        const COMPLETES: bool = true;
+
+        async fn start(_: Configured) -> Result<(), StartError> {
+            if FINISHED_WELL.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err("the run did not finish".into())
+            }
+        }
+    }
+
+    /// A run that finishes exits 0 when its `start` says it is done, so its Job is complete, and 1 when it says
+    /// otherwise, so it is started again.
+    #[test]
+    fn a_run_that_finishes_exits_zero_when_done_and_nonzero_otherwise() {
+        let path = populated_file("finishing", &[], "cassini,graph-write");
+        let config = path.display().to_string();
+        let process = move |name: &str| {
+            if name == "POLAR_CONFIG" {
+                Some(config.clone())
+            } else {
+                name.strip_prefix("SECRET_FOR_")
+                    .map(|_| "hunter2".to_string())
+            }
+        };
+        FINISHED_WELL.store(true, Ordering::SeqCst);
+        assert_eq!(run_with::<Finishing>(&[], process.clone()), 0, "done");
+        FINISHED_WELL.store(false, Ordering::SeqCst);
+        assert_eq!(run_with::<Finishing>(&[], process), 1, "not done");
     }
 
     #[test]

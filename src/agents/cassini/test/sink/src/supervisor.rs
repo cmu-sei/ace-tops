@@ -38,6 +38,8 @@ use polar_agent_builder::{
     Subscription,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -71,15 +73,15 @@ pub struct SinkState {
     settings: SinkSettings,
     measure: Measure,
     ready: Option<Instant>,
-    done: bool,
+    /// Whether the run is done: set once, read by the agent's `start` when this supervisor has ended.
+    done: Arc<AtomicBool>,
 }
 
 impl SinkState {
     fn finish(&mut self, ended: &str) {
-        if self.done {
+        if self.done.swap(true, Ordering::SeqCst) {
             return;
         }
-        self.done = true;
         info!(
             "{}",
             Report::Sink(self.measure.report(&self.run, ended)).line()
@@ -96,12 +98,12 @@ impl SinkState {
 impl Actor for SinkSupervisor {
     type Msg = SinkMessage;
     type State = SinkState;
-    type Arguments = Configured;
+    type Arguments = (Configured, Arc<AtomicBool>);
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        configured: Configured,
+        (configured, done): (Configured, Arc<AtomicBool>),
     ) -> Result<Self::State, ActorProcessingErr> {
         let run = Run::read(configured.config())?;
         let settings = SinkSettings::read(configured.config())?;
@@ -148,7 +150,7 @@ impl Actor for SinkSupervisor {
             run,
             settings,
             ready: None,
-            done: false,
+            done,
         })
     }
 
@@ -160,7 +162,7 @@ impl Actor for SinkSupervisor {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             SinkMessage::Arrived { stamp, at_ns, at } => {
-                if !state.done {
+                if !state.done.load(Ordering::SeqCst) {
                     state.measure.receive(stamp, at_ns, at);
                     if state.measure.complete() {
                         state.finish("complete");
@@ -207,17 +209,6 @@ impl Actor for SinkSupervisor {
             }
         }
         Ok(())
-    }
-
-    /// The builder stops this supervisor once its infrastructure has ended. A Job: done is a success,
-    /// anything else ending it is not, so it exits here, where `run` would exit 1 for any agent that ends.
-    async fn post_stop(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        info!("the run's infrastructure has ended, exiting");
-        std::process::exit(if state.done { 0 } else { 1 });
     }
 
     async fn handle_supervisor_evt(

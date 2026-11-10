@@ -40,6 +40,7 @@ use polar_agent_builder::{
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::{error, info, warn};
 
@@ -66,19 +67,20 @@ pub struct ProducerState {
     settings: ProducerSettings,
     progress: Arc<Progress>,
     sending: Option<tokio::task::JoinHandle<()>>,
-    done: bool,
+    /// Whether the run is done: set once, read by the agent's `start` when this supervisor has ended.
+    done: Arc<AtomicBool>,
 }
 
 #[async_trait]
 impl Actor for ProducerSupervisor {
     type Msg = ProducerMessage;
     type State = ProducerState;
-    type Arguments = Configured;
+    type Arguments = (Configured, Arc<AtomicBool>);
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        configured: Configured,
+        (configured, done): (Configured, Arc<AtomicBool>),
     ) -> Result<Self::State, ActorProcessingErr> {
         let run = Run::read(configured.config())?;
         let settings = ProducerSettings::read(configured.config())?;
@@ -118,7 +120,7 @@ impl Actor for ProducerSupervisor {
             settings,
             progress,
             sending: None,
-            done: false,
+            done,
         })
     }
 
@@ -132,7 +134,7 @@ impl Actor for ProducerSupervisor {
             ProducerMessage::Registered => {
                 let _ = state.healthcheck.cassini_connected();
                 // A reconnect does not start the run again.
-                if state.sending.is_none() && !state.done {
+                if state.sending.is_none() && !state.done.load(Ordering::SeqCst) {
                     state.sending = Some(tokio::spawn(produce(
                         myself,
                         state.client.clone(),
@@ -158,7 +160,7 @@ impl Actor for ProducerSupervisor {
             }
             ProducerMessage::Finished(report) => {
                 info!("{}", report.line());
-                state.done = true;
+                state.done.store(true, Ordering::SeqCst);
                 let _ = state
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::BeginShutdown {
@@ -175,17 +177,6 @@ impl Actor for ProducerSupervisor {
             }
         }
         Ok(())
-    }
-
-    /// The builder stops this supervisor once its infrastructure has ended. A Job: done is a success,
-    /// anything else ending it is not, so it exits here, where `run` would exit 1 for any agent that ends.
-    async fn post_stop(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        info!("the run's infrastructure has ended, exiting");
-        std::process::exit(if state.done { 0 } else { 1 });
     }
 
     async fn handle_supervisor_evt(
