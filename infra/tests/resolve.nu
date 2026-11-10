@@ -1483,13 +1483,16 @@ def main [] {
                     }] }
                 ] }
             }
-            with_target { workloads: $jira } {|t|
+            # A registry in the cluster, as sandbox-local keeps: the build orchestrator, on with the rest, names it
+            # (`{pod-registry}`), and a target without one is refused before the floor is reached.
+            let registry = { node_port: 30500, local_port: 5001 }
+            with_target { cluster: { registry_in_cluster: $registry }, workloads: $jira } {|t|
                 let off = (^nu $RESOLVER check --target $t | complete)
                 assert equal $off.exit_code 0 $off.stderr
                 assert ($off.stdout | str contains "pending")
                 assert ($off.stdout | str contains "kube-consumer")
             }
-            with_target { cluster: { issuance: { floor_enforced: true } }, workloads: $jira } {|t|
+            with_target { cluster: { issuance: { floor_enforced: true }, registry_in_cluster: $registry }, workloads: $jira } {|t|
                 let on = (^nu $RESOLVER check --target $t | complete)
                 assert ($on.exit_code != 0)
                 assert ($on.stderr | str contains "kube-consumer")
