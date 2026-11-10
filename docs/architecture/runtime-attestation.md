@@ -403,6 +403,22 @@ and polar-scheduler-observer run `git`.
   nftables dataplane, rootless, IPv4) is done beside the sensor, both being node work in `nix-usernetes`, and the builds'
   policy and canary (N1, N2) follow it.
 
+**When a node cannot give a protection (decided, the maintainer, 2026-11-10: "run, report, policy may require").** Nothing
+here is assumed of a node: each protection is probed where it is used, an agent runs with what its node gives, says exactly what
+it lacks, and attestation records that per pod, so a gap is visible and never pretended. A cluster's signed policy may require a
+protection, and then a pod without it is refused its certificate. Probed on whitey, 2026-11-10: kernel 7.3, Landlock ABI 11
+(`lsm=landlock,yama,bpf`), seccomp available; u7c's nodes share that kernel.
+
+| Bite | Needs of the node | How its absence is found | Then |
+|---|---|---|---|
+| C1 | a runtime that supports seccomp profiles (a read-only root and no new privileges are core) | the pod does not start under the profile, or reads `Seccomp: 0` | it runs unconfined, recorded as a named gap, not as a tampered pod |
+| C2 | nothing | | |
+| C3 | seccomp filters (Linux 3.5); Landlock (5.13, enabled among the LSMs), by ABI version | probed at start: seccomp's action check, Landlock's ABI | the lock is as much as the kernel offers; the agent says which (seccomp, Landlock ABI n or none) in its health answer and to the sensor; attestation records it |
+| C4, Canal | a cluster whose CNI Polar chooses (true of `nix-usernetes`, not of most managed clusters) | the canary (N2) | standard NetworkPolicy, so any enforcing CNI serves; where none enforces, the canary says so, builds of foreign code are refused (N2), and the cluster's status names it |
+| C4, the sensor | pods allowed `hostPID` (Pod Security `privileged` for its namespace; refused on some managed clusters) | the DaemonSet's pod does not run, or a node sends no report | that node's pods are recorded as having no process evidence; the API's checks stand |
+| N1, N2 | an enforcing CNI | the canary | as decided: no build of foreign code where enforcement is not proved |
+| C5 | pod addresses reaching Cassini unchanged (no SNAT, no mesh rewriting the source) | a canary session at bring-up; Cassini counting mismatches | the binding is turned off for that cluster by a signed setting, never silently, and the record says so |
+
 **The bites, each seen on u7c before the next:**
 1. *C1, the pod hardened and checked.* Every Polar container gets a read-only root, `allowPrivilegeEscalation: false` and
    the runtime's default seccomp profile, what an agent writes on volumes; the attestation agent holds a pod to them as it
