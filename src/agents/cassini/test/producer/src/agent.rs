@@ -42,8 +42,6 @@ impl PolarAgent for HarnessProducer {
     const PURPOSE: &'static str = "Sends a run's messages to Cassini at a given rate and size, for the load harness to measure the broker";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its sending task, aborted.
-    const HAS_OWN_DRAIN: bool = true;
     const SECTIONS: &'static [&'static Section] = &[
         &harness_common::settings::SECTION,
         &crate::settings::SECTION,

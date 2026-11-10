@@ -42,8 +42,6 @@ impl PolarAgent for JiraProcessor {
         "Writes the Jira projects, groups, users and issues the observer publishes into the graph";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its topics, let go of.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             jira_common::JIRA_PROJECTS_CONSUMER_TOPIC,

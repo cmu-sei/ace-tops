@@ -25,7 +25,7 @@
 //! the subscriptions and the graph controller come from `AgentBuilder`.
 //!
 //! Each event the observer publishes is turned into graph operations (`ops`) and handed to the
-//! controller. It has no children of its own and no drain (`HAS_OWN_DRAIN` is false): at the end
+//! controller. It has no children of its own and registers no drain: at the end
 //! the infrastructure drains the controller of what was handed to it, then ends.
 
 use crate::SERVICE_NAME;

@@ -33,15 +33,14 @@
 //! agent's [`TryAgain`] is called with the configuration in force and the resources already built: it judges the
 //! configuration again and, if it can work, starts the agent's work, linked under this supervisor, and the hold is
 //! released. An update that leaves the problem in place keeps the hold, with the new message. Once the work runs it
-//! takes the agent's events itself ([`crate::AgentResources::events_output`], `infrastructure_events`), and this
-//! supervisor only ends with the infrastructure or the work.
+//! takes the agent's client events itself ([`crate::AgentResources::events_output`]); the notice that the agent is
+//! ending comes to this supervisor, which registered for it, and goes on to the work ([`WorkStarted`]), which answers
+//! it. This supervisor only ends with the infrastructure or the work.
 //!
 //! In `PolarAgent::start`: `return polar_agent_builder::held::stay_up(configured, NAME, HoldReason::Configuration,
 //! why, try_again).await;`
 
-use crate::{
-    AgentBuilder, AgentResources, Configured, InfrastructureEvent, InfrastructureSupervisorMessage,
-};
+use crate::{AgentBuilder, AgentResources, Configured, InfrastructureSupervisorMessage};
 use cassini_types::ClientEvent;
 use polar_health::HoldReason;
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -61,10 +60,37 @@ pub struct Retry {
     pub cassini_registered: bool,
 }
 
-/// The agent's way out of a hold: judge `Retry::config` again and, if it can work, start the work and say `Ok`; if it
-/// still cannot, say why, which becomes the hold's message.
-pub type TryAgain =
-    Box<dyn Fn(Retry) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+/// The work a held agent started, and how to tell it the agent is ending: it drains, then sends the infrastructure
+/// `ProceedWithShutdown` itself, as an agent that registered `AgentBuilder::with_drain` does.
+pub struct WorkStarted {
+    tell: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl WorkStarted {
+    /// The work is `work`, told with its own `message`.
+    pub fn told<M: ractor::Message>(
+        work: ActorRef<M>,
+        message: impl Fn() -> M + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            tell: Arc::new(move || {
+                if let Err(e) = work.cast(message()) {
+                    tracing::warn!(
+                        "the held agent's work could not be told the agent is ending: {e}"
+                    );
+                }
+            }),
+        }
+    }
+}
+
+/// The agent's way out of a hold: judge `Retry::config` again and, if it can work, start the work and say how to tell
+/// it the agent is ending; if it still cannot, say why, which becomes the hold's message.
+pub type TryAgain = Box<
+    dyn Fn(Retry) -> Pin<Box<dyn Future<Output = Result<WorkStarted, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A [`TryAgain`] that never gets out: for an agent whose refusal no update can mend.
 pub fn never() -> TryAgain {
@@ -126,8 +152,8 @@ pub(crate) struct HeldState {
     try_again: TryAgain,
     /// Cassini has registered the agent, and has not dropped it since.
     registered: bool,
-    /// The work has started: it takes the agent's events, and answers the shutdown.
-    started: bool,
+    /// The work, once it has started: it takes the agent's events, and answers the shutdown it is told of.
+    work: Option<WorkStarted>,
 }
 
 impl HeldState {
@@ -143,14 +169,14 @@ impl HeldState {
             resources,
             try_again,
             registered: false,
-            started: false,
+            work: None,
         }
     }
 
     /// The configuration changed: while held, the agent is asked whether it can start its work now. It does, and the
     /// hold is released; or it cannot, and the hold stays, with its new message.
     pub(crate) async fn configuration_changed(&mut self, supervisor: ActorCell) {
-        if self.started {
+        if self.work.is_some() {
             return;
         }
         let config = match self.resources.configuration.current().await {
@@ -170,12 +196,12 @@ impl HeldState {
             cassini_registered: self.registered,
         };
         match (self.try_again)(retry).await {
-            Ok(()) => {
+            Ok(work) => {
                 tracing::info!(
                     "{}: a signed update mended what held it; its work has started",
                     self.service_name
                 );
-                self.started = true;
+                self.work = Some(work);
                 self.resources.healthcheck.release(self.reason);
             }
             Err(why) => {
@@ -189,9 +215,10 @@ impl HeldState {
     }
 
     /// The infrastructure asks the agent to finish: a held agent has nothing to finish and lets it go at once, unless
-    /// its work runs, which answers for itself. True if this supervisor let it go.
+    /// its work runs, which is told and answers for itself. True if this supervisor let it go.
     pub(crate) fn prepare_shutdown(&self) -> bool {
-        if self.started {
+        if let Some(work) = &self.work {
+            (work.tell)();
             return false;
         }
         let _ = self
@@ -220,15 +247,11 @@ impl Actor for HeldSupervisor {
     ) -> Result<Self::State, ActorProcessingErr> {
         let resources = AgentBuilder::new(myself.clone(), args.service_name.clone())
             .with_lifecycle_handler(|event| Some(HeldMessage::Client(event)))
+            .with_drain(|| HeldMessage::PrepareShutdown)
             .into_configured(args.configured)
             .build()
             .await?;
         resources.healthcheck.hold(args.reason, args.message);
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(HeldMessage::PrepareShutdown),
-            });
         resources
             .configuration
             .changes()
@@ -266,13 +289,13 @@ impl Actor for HeldSupervisor {
         match message {
             HeldMessage::Client(ClientEvent::Registered { .. }) => {
                 state.registered = true;
-                if !state.started {
+                if state.work.is_none() {
                     let _ = state.resources.healthcheck.cassini_connected();
                 }
             }
             HeldMessage::Client(ClientEvent::TransportError { .. }) => {
                 state.registered = false;
-                if !state.started {
+                if state.work.is_none() {
                     let _ = state.resources.healthcheck.cassini_disconnected();
                 }
             }
@@ -300,7 +323,7 @@ impl Actor for HeldSupervisor {
         {
             if actor.get_id() == state.resources.infrastructure.get_id() {
                 myself.stop(Some("the infrastructure has ended".to_string()));
-            } else if state.started {
+            } else if state.work.is_some() {
                 myself.stop(Some("the agent's work has ended".to_string()));
             }
         }

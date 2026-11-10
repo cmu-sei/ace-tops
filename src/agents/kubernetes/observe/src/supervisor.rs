@@ -30,8 +30,7 @@ use cassini_types::ClientEvent;
 use polar::cassini::TcpClient;
 use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -58,11 +57,9 @@ pub enum ObserverSupervisorMessage {
     ClientEvent {
         event: ClientEvent,
     },
-    /// InfrastructureSupervisor's own InfrastructureEvent::PrepareShutdown,
-    /// forwarded here -- HealthCheckActor (now InfrastructureSupervisor's
-    /// own, direct child, not this supervisor's) has genuinely,
-    /// cleanly terminated for rejuvenation. Stop the watches first,
-    /// then send InfrastructureSupervisorMessage::ProceedWithShutdown.
+    /// The agent is ending, as registered with the builder (`with_drain`). Stop
+    /// the watches first, then send
+    /// InfrastructureSupervisorMessage::ProceedWithShutdown.
     PrepareShutdown,
 }
 
@@ -103,6 +100,7 @@ impl Actor for ClusterObserverSupervisor {
         // that against POLAR_CAPABILITIES before anything starts.
         let resources = AgentBuilder::new(myself.clone(), TCP_CLIENT_NAME)
             .with_lifecycle_handler(|event| Some(ObserverSupervisorMessage::ClientEvent { event }))
+            .with_drain(|| ObserverSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
@@ -111,13 +109,6 @@ impl Actor for ClusterObserverSupervisor {
         // own, real respawn/shutdown protocol -- subscribed directly,
         // the same, established pattern every other real port in this
         // codebase already uses.
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ObserverSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         let protocols = resources.protocols.clone().ok_or(
             "the builder started no protocol handler, though the agent declares an operation",

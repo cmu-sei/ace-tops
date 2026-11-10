@@ -38,9 +38,7 @@ use cassini_types::ControlOp;
 use cassini_types::DisconnectReason;
 use cassini_types::{BrokerMessage, ShutdownPhase};
 
-use polar_agent_builder::{
-    Configured, InfrastructureEvent, InfrastructureSupervisorMessage, ServiceBuilder,
-};
+use polar_agent_builder::{Configured, InfrastructureSupervisorMessage, ServiceBuilder};
 
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -279,7 +277,11 @@ impl Actor for Broker {
                 .config()
                 .read(&polar_agent_builder::environment::AUTHORITY_PUBLISHER)
                 .map_err(|e| ActorProcessingErr::from(e.to_string()))?;
+            let token_for_infrastructure = args.shutdown_auth_token.clone();
             let infrastructure = ServiceBuilder::new(myself.clone(), "cassini")
+                .with_drain(move || BrokerMessage::PrepareForShutdown {
+                    auth_token: token_for_infrastructure.clone(),
+                })
                 .into_configured(args.configured)
                 .build()
                 .await
@@ -287,17 +289,6 @@ impl Actor for Broker {
                     error!(error = ?e, "Broker startup failed: the infrastructure did not start");
                     e
                 })?;
-            let token_for_infrastructure = args.shutdown_auth_token.clone();
-            infrastructure.infrastructure_events.subscribe(
-                myself.clone(),
-                move |event| match event {
-                    InfrastructureEvent::PrepareShutdown => {
-                        Some(BrokerMessage::PrepareForShutdown {
-                            auth_token: token_for_infrastructure.clone(),
-                        })
-                    }
-                },
-            );
 
             // Create SessionManager without listener manager (will set later)
             let (session_mgr, _) = Actor::spawn_linked(

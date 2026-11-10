@@ -33,7 +33,7 @@ use cert_issuer_common::identity::workload_of;
 use polar::graph::controller::NodeShape;
 use polar_agent_builder::{
     AgentBuilder, ConfigurationHandle, Configured, GraphHandle, HealthClient, HealthHandle,
-    InfrastructureEvent, StartError, Subscription,
+    StartError, Subscription,
 };
 use polar_http_observer::Observation;
 use polar_projection::{Bounds, Projection, graph};
@@ -199,14 +199,10 @@ impl<K: Kind> Actor for Processor<K> {
         let resources = AgentBuilder::new(myself.clone(), K::NAME)
             .with_subscription(observed)
             .with_lifecycle_handler(|event| Some(ProcessorMessage::ClientEvent { event }))
+            .on_shutdown(|| ProcessorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(ProcessorMessage::PrepareShutdown),
-            });
         resources
             .configuration
             .runtime_changes()

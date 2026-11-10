@@ -71,9 +71,7 @@ pub mod held;
 /// about its health.
 pub use polar_health::{HealthReason, HealthReport, HoldReason, ReportStatus};
 pub mod infrastructure;
-pub use infrastructure::{
-    InfrastructureEvent, InfrastructureSupervisor, InfrastructureSupervisorMessage,
-};
+pub use infrastructure::{InfrastructureSupervisor, InfrastructureSupervisorMessage};
 pub mod message;
 pub use message::{Encrypted, Outbound, Plaintext};
 pub mod policy_authority;
@@ -168,10 +166,6 @@ pub struct AgentResources {
     /// same, established pattern as prepare_shutdown_port/
     /// graph_signal_port.
     pub events_output: Arc<ractor::OutputPort<ClientEvent>>,
-    /// The "infra → domain" half of InfrastructureSupervisor's own,
-    /// real shutdown-coordination and TCP-client-respawn protocol --
-    /// see infrastructure::InfrastructureEvent's own doc comment.
-    pub infrastructure_events: Arc<ractor::OutputPort<crate::infrastructure::InfrastructureEvent>>,
     /// The real, direct way to send
     /// infrastructure::InfrastructureSupervisorMessage::ProceedWithShutdown
     /// once your own, domain-specific children have genuinely, fully
@@ -223,10 +217,33 @@ pub struct AgentBuilder<M: ractor::Message> {
     graph: Option<graph::GraphUse>,
     graph_key_indexes: Vec<polar::graph::schema::KeyIndex>,
     graph_repairs: &'static [polar::graph::repair::Repair],
-    /// Whether the agent has work of its own to finish at the end, so the infrastructure waits for its
-    /// `ProceedWithShutdown` (`PolarAgent::HAS_OWN_DRAIN`). Until the builder is configured from a `PolarAgent`, it
-    /// waits, as it always did.
-    own_drain: bool,
+    /// How the domain is told the agent is to end, and whether it is waited for ([`with_drain`](Self::with_drain),
+    /// [`on_shutdown`](Self::on_shutdown)).
+    shutdown: Option<Shutdown<M>>,
+}
+
+/// What a domain asked for at the end: its own message, made each time it is told, and whether the infrastructure
+/// waits for its `ProceedWithShutdown`.
+struct Shutdown<M> {
+    message: Arc<dyn Fn() -> M + Send + Sync>,
+    wait: bool,
+}
+
+impl<M: ractor::Message> Shutdown<M> {
+    /// The infrastructure's notice: `message` sent to `domain`.
+    fn notice(self, domain: ActorRef<M>) -> infrastructure::ShutdownNotice {
+        let message = self.message;
+        infrastructure::ShutdownNotice {
+            tell: Arc::new(move || {
+                if let Err(e) = domain.cast(message()) {
+                    tracing::warn!(
+                        "the domain supervisor could not be told the agent is ending: {e}"
+                    );
+                }
+            }),
+            wait: self.wait,
+        }
+    }
 }
 
 /// Each declared command with its handler.
@@ -295,8 +312,32 @@ impl<M: ractor::Message> AgentBuilder<M> {
             graph: None,
             graph_key_indexes: Vec::new(),
             graph_repairs: &[],
-            own_drain: true,
+            shutdown: None,
         }
+    }
+
+    /// The agent has work of its own to finish when it ends (children to stop, a listener or a queue to drain, topics
+    /// to let go of): when it is to end, for whatever reason, the infrastructure sends the domain supervisor `message`
+    /// and waits for its `ProceedWithShutdown`, as long as the shutdown budget allows. The graph controller is drained
+    /// after it. Registered before `build`, so a notice that comes while the domain is still starting waits in its
+    /// mailbox.
+    pub fn with_drain(mut self, message: impl Fn() -> M + Send + Sync + 'static) -> Self {
+        self.shutdown = Some(Shutdown {
+            message: Arc::new(message),
+            wait: true,
+        });
+        self
+    }
+
+    /// The agent only needs to know it is ending (to stop starting new work): the infrastructure sends the domain
+    /// supervisor `message` and goes on without waiting. An agent that registers neither this nor
+    /// [`with_drain`](Self::with_drain) is not told.
+    pub fn on_shutdown(mut self, message: impl Fn() -> M + Send + Sync + 'static) -> Self {
+        self.shutdown = Some(Shutdown {
+            message: Arc::new(message),
+            wait: false,
+        });
+        self
     }
 
     /// Registers the handler that runs the command `name`, which the agent must have declared in
@@ -455,7 +496,6 @@ impl<M: ractor::Message> AgentBuilder<M> {
         self.graph = configured.graph;
         self.graph_key_indexes = configured.graph_key_indexes.clone();
         self.graph_repairs = configured.graph_repairs;
-        self.own_drain = configured.has_own_drain;
         ConfiguredAgent {
             builder: self,
             startup: configured.startup,
@@ -566,7 +606,9 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 with_client: true,
                 self_test: this.self_test,
                 graph,
-                domain_drains: this.own_drain,
+                notice: this
+                    .shutdown
+                    .map(|shutdown| shutdown.notice(this.myself.clone())),
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: true,
                 process_exit: process_exit.clone(),
@@ -621,9 +663,6 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
 #[derive(Clone)]
 pub struct ServiceResources {
     pub healthcheck: crate::health::HealthHandle,
-    /// The infrastructure's side of the shutdown handshake: `PrepareShutdown` arrives here, for
-    /// whatever reason the service is to end (a health verdict, SIGTERM, a child's death).
-    pub infrastructure_events: Arc<ractor::OutputPort<crate::infrastructure::InfrastructureEvent>>,
     /// Where to send `ProceedWithShutdown` once the service has drained, and `BeginShutdown` to
     /// ask for the service to end (a shutdown requested over the wire, for example).
     pub infrastructure: ActorRef<crate::infrastructure::InfrastructureSupervisorMessage>,
@@ -643,7 +682,7 @@ pub struct ServiceBuilder<M: ractor::Message> {
     shutdown_budget: Option<std::time::Duration>,
     environment: Vec<&'static polar_env::Section>,
     /// As `AgentBuilder`'s.
-    own_drain: bool,
+    shutdown: Option<Shutdown<M>>,
 }
 
 impl<M: ractor::Message> ServiceBuilder<M> {
@@ -654,8 +693,26 @@ impl<M: ractor::Message> ServiceBuilder<M> {
             requires: Vec::new(),
             shutdown_budget: None,
             environment: Vec::new(),
-            own_drain: true,
+            shutdown: None,
         }
+    }
+
+    /// As [`AgentBuilder::with_drain`].
+    pub fn with_drain(mut self, message: impl Fn() -> M + Send + Sync + 'static) -> Self {
+        self.shutdown = Some(Shutdown {
+            message: Arc::new(message),
+            wait: true,
+        });
+        self
+    }
+
+    /// As [`AgentBuilder::on_shutdown`].
+    pub fn on_shutdown(mut self, message: impl Fn() -> M + Send + Sync + 'static) -> Self {
+        self.shutdown = Some(Shutdown {
+            message: Arc::new(message),
+            wait: false,
+        });
+        self
     }
 
     /// Declares the variables the service's own code reads, as `AgentBuilder::with_environment`.
@@ -675,7 +732,6 @@ impl<M: ractor::Message> ServiceBuilder<M> {
     /// (`Configured::cassini_enabled` is false): takes what `run` already judged.
     pub fn into_configured(mut self, configured: Configured) -> ConfiguredService<M> {
         self.requires = configured.required.clone();
-        self.own_drain = configured.has_own_drain;
         ConfiguredService {
             builder: self,
             startup: configured.startup,
@@ -732,7 +788,9 @@ impl<M: ractor::Message> ConfiguredService<M> {
                 with_client: false,
                 self_test: false,
                 graph: None,
-                domain_drains: this.own_drain,
+                notice: this
+                    .shutdown
+                    .map(|shutdown| shutdown.notice(this.myself.clone())),
                 shutdown_budget: startup.shutdown_budget,
                 listen_for_signals: hooks.listen_for_signals,
                 process_exit: hooks.process_exit.clone(),
@@ -1140,7 +1198,6 @@ mod tests {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
-            has_own_drain: true,
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1187,7 +1244,6 @@ mod tests {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
-            has_own_drain: true,
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1224,7 +1280,6 @@ mod tests {
             graph_key_indexes: Vec::new(),
             graph: None,
             graph_repairs: &[],
-            has_own_drain: true,
             topics: Default::default(),
             hooks: crate::agent::Hooks::real(),
         };
@@ -1441,6 +1496,89 @@ mod the_infrastructure_ending {
             service.heard.lock().unwrap().is_empty(),
             "{:?}",
             service.heard.lock().unwrap()
+        );
+    }
+
+    /// A service that drains registers its own message for the notice; it is sent it, its proceed ends the
+    /// infrastructure, and the builder then ends the service. No port, no subscription after `build`.
+    #[tokio::test]
+    async fn a_domain_that_registers_a_drain_is_told_in_its_own_message_and_its_proceed_ends_it() {
+        struct Draining;
+        enum Polite {
+            Told,
+        }
+        struct Held {
+            told: Arc<std::sync::atomic::AtomicUsize>,
+            infrastructure: Option<ActorRef<InfrastructureSupervisorMessage>>,
+        }
+        #[ractor::async_trait]
+        impl Actor for Draining {
+            type Msg = Polite;
+            type State = Held;
+            type Arguments = (crate::Configured, Arc<std::sync::atomic::AtomicUsize>);
+            async fn pre_start(
+                &self,
+                myself: ActorRef<Polite>,
+                (configured, told): (crate::Configured, Arc<std::sync::atomic::AtomicUsize>),
+            ) -> Result<Held, ActorProcessingErr> {
+                let resources = ServiceBuilder::new(myself, "draining")
+                    .with_drain(|| Polite::Told)
+                    .into_configured(configured)
+                    .build()
+                    .await?;
+                Ok(Held {
+                    told,
+                    infrastructure: Some(resources.infrastructure),
+                })
+            }
+            async fn handle(
+                &self,
+                _myself: ActorRef<Polite>,
+                message: Polite,
+                held: &mut Held,
+            ) -> Result<(), ActorProcessingErr> {
+                match message {
+                    Polite::Told => {
+                        held.told.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if let Some(infrastructure) = &held.infrastructure {
+                            infrastructure
+                                .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let env: HashMap<String, String> = [(
+            "POLAR_HEALTH_FILE".to_string(),
+            dir.path()
+                .join("health.json")
+                .to_string_lossy()
+                .into_owned(),
+        )]
+        .into();
+        let exits = Arc::new(Mutex::new(Vec::new()));
+        let (configured, out) =
+            crate::Configured::for_service_test(&env, Duration::from_secs(20), exits.clone());
+        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (_domain, domain_ended) = Actor::spawn(None, Draining, (configured, told.clone()))
+            .await
+            .unwrap();
+        let resources = out.lock().unwrap().clone().expect("the service was built");
+        resources
+            .infrastructure
+            .cast(InfrastructureSupervisorMessage::BeginShutdown {
+                reason: "test".to_string(),
+            })
+            .unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(15), domain_ended).await;
+        assert!(ended.is_ok(), "the service never ended");
+        assert_eq!(told.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            exits.lock().unwrap().is_empty(),
+            "no watchdog, no grace exit"
         );
     }
 

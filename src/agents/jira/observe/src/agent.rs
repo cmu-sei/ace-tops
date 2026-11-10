@@ -29,7 +29,7 @@ use crate::settings::{self, JiraSettings};
 use crate::supervisor::{
     Infrastructure, ObserverSupervisor, ObserverSupervisorArgs, SHUTDOWN_BUDGET,
 };
-use polar_agent_builder::held::Retry;
+use polar_agent_builder::held::{Retry, WorkStarted};
 use polar_agent_builder::{
     Cause, Configured, GraphDecl, HoldReason, PolarAgent, Role, StartError, TopicDecl,
 };
@@ -113,7 +113,7 @@ pub(crate) fn log_anonymous(prepared: &Prepared) {
 /// supervisor started on the infrastructure the held agent built, linked under it.
 fn try_again(
     retry: Retry,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkStarted, String>> + Send>> {
     Box::pin(async move {
         let prepared = prepare(&retry.config)?;
         log_anonymous(&prepared);
@@ -129,7 +129,12 @@ fn try_again(
             retry.supervisor,
         )
         .await
-        .map(|_| ())
+        // The held supervisor registered the drain; it tells the work, which drains and proceeds.
+        .map(|(work, _)| {
+            WorkStarted::told(work, || {
+                crate::supervisor::ObserverSupervisorMessage::PrepareShutdown
+            })
+        })
         .map_err(|e| {
             format!("the settings work now, but {JIRA_OBSERVER_SUPERVISOR} did not start: {e}")
         })
@@ -148,8 +153,6 @@ impl PolarAgent for JiraObserver {
         Some(&crate::credentials::CREDENTIALS);
     const OPERATIONS: &'static [polar_agent_builder::protocol::OperationDecl] = crate::OPERATIONS;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its observers, stopped in turn.
-    const HAS_OWN_DRAIN: bool = true;
     const SETTINGS_JUDGE: Option<polar_agent_builder::configuration::SettingsJudge> =
         Some(settings_work);
     const TOPICS: &'static [TopicDecl] = &[

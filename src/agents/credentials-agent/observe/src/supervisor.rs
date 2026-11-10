@@ -48,7 +48,7 @@
 //! Shutdown, in order, when the health check ends the pod's life for
 //! rejuvenation:
 //!
-//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor.
+//! 1. Its `PrepareShutdown`, registered with the builder (`with_drain`), reaches this supervisor.
 //! 2. The HTTP server is told to stop accepting and to finish in-flight
 //!    requests, for at most `DRAIN_TIMEOUT`.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which
@@ -77,8 +77,8 @@ use credentials_agent_common::{
 };
 use polar::request_reply::{Envelope, ReplyRouter};
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::sync::Arc;
@@ -284,15 +284,11 @@ impl Actor for ObserverSupervisor {
             builder = builder.with_subscription(subscription);
         }
         let settings = ObserverSettings::read(configured.config())?;
-        let resources = builder.into_configured(configured).build().await?;
-
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ObserverSupervisorMessage::PrepareShutdown)
-                }
-            });
+        let resources = builder
+            .with_drain(|| ObserverSupervisorMessage::PrepareShutdown)
+            .into_configured(configured)
+            .build()
+            .await?;
 
         let observer = Arc::new(ObserverState {
             broker_client: resources.tcp_client.as_actor_ref().into(),

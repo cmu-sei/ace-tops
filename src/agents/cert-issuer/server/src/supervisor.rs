@@ -28,7 +28,7 @@
 //!
 //! Shutdown, in order, for whatever reason the agent is to end:
 //!
-//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor.
+//! 1. Its `PrepareShutdown`, registered with the builder (`with_drain`), reaches this supervisor.
 //! 2. The listener is drained: no new connections, the ones in flight finished within its timeout.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
 //! 4. When the infrastructure has ended the builder stops this supervisor, so the agent's `start` returns and `run`
@@ -54,8 +54,7 @@ use attestation_common::asker::{
 use cassini_types::ClientEvent;
 use cert_issuer_common::held::{HELD_REPLIES_TOPIC, HELD_REQUESTS_TOPIC, HeldOffer, HeldReply};
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent};
 use std::path::Path;
@@ -356,16 +355,10 @@ impl Actor for CertIssuerSupervisor {
                     });
                 },
             ))
+            .with_drain(|| CertIssuerSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(CertIssuerSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         let tcp = tokio::net::TcpListener::bind(&config.bind_addr)
             .await

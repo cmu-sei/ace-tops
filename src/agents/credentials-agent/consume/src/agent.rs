@@ -48,8 +48,6 @@ impl PolarAgent for CredentialsConsumer {
     // truth and the graph only a projection).
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its subscriptions, its own actors, the ledger and the projection.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             credentials_agent_common::CREDENTIALS_ADMIN_ACTION_REQUESTS_TOPIC,

@@ -36,8 +36,7 @@ use harness_common::schedule::window;
 use harness_common::settings::Run;
 use polar::cassini::CassiniClient;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::sync::Arc;
@@ -103,14 +102,10 @@ impl Actor for ProducerSupervisor {
                 }
                 _ => None,
             })
+            .with_drain(|| ProducerMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(ProducerMessage::PrepareShutdown),
-            });
         info!(
             "{SERVICE_NAME} {} of run `{}`: {} message(s) of {} bytes on `{topic}` at {} a second",
             run.index, run.id, run.count, settings.size, settings.rate

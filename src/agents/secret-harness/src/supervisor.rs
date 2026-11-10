@@ -29,8 +29,7 @@ use crate::scenario;
 use crate::settings::HarnessSettings;
 use cassini_types::ClientEvent;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::time::Duration;
@@ -75,16 +74,10 @@ impl Actor for HarnessSupervisor {
         let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
             .with_encryption()
             .with_lifecycle_handler(|event| Some(HarnessSupervisorMessage::ClientEvent { event }))
+            .with_drain(|| HarnessSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(HarnessSupervisorMessage::PrepareShutdown)
-                }
-            });
         let crypto = resources.crypto.ok_or_else(|| {
             ActorProcessingErr::from(
                 "with_encryption() was called but the builder returned no CryptoHandle",

@@ -37,7 +37,7 @@ use polar_agent_builder::protocol::{
     Failure, Operation, OperationDecl, ProtocolHandle, ReadFailure,
 };
 use polar_agent_builder::{
-    AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
+    AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle,
     InfrastructureSupervisorMessage, StartError,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -299,14 +299,10 @@ impl<K: Kind> Actor for Observer<K> {
         debug!("{myself:?} starting");
         let resources = AgentBuilder::new(myself.clone(), K::NAME)
             .with_lifecycle_handler(|event| Some(ObserverMessage::ClientEvent { event }))
+            .with_drain(|| ObserverMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(ObserverMessage::PrepareShutdown),
-            });
         resources
             .configuration
             .runtime_changes()

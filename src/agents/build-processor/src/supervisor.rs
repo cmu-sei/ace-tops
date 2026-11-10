@@ -33,8 +33,7 @@ use chrono::Utc;
 use polar::ProvenanceEvent;
 use polar::graph::controller::GraphControllerMsg;
 use polar_agent_builder::{
-    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
-    Subscription,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -194,14 +193,10 @@ impl Actor for ProcessorSupervisor {
             .with_subscription(Self::stream(polar::topics::PROVENANCE_EXECUTIONS, &myself))
             .with_subscription(Self::stream(polar::topics::PROVENANCE_RESOLUTIONS, &myself))
             .with_lifecycle_handler(|event| Some(ProcessorMessage::ClientEvent { event }))
+            .on_shutdown(|| ProcessorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(ProcessorMessage::PrepareShutdown),
-            });
         let lost_after = match resources
             .configuration
             .follow_group(

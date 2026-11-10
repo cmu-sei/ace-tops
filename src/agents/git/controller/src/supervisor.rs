@@ -44,11 +44,10 @@ use git_agent_common::{
 };
 use polar::cassini::TcpClient;
 use polar_agent_builder::{
-    AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    Subscription,
+    AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, Subscription,
 };
 use ractor::concurrency::Duration;
-use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
+use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
 use tracing::{debug, error, info, warn};
 
 /// Nothing is held that needs draining, so this is the margin for the handshake alone.
@@ -270,17 +269,11 @@ impl Actor for RootSupervisor {
         let resources = AgentBuilder::new(myself.clone(), crate::agent::AGENT_NAME)
             .with_subscription(proposals)
             .with_lifecycle_handler(|event| Some(RootSupervisorMessage::ClientEvent { event }))
+            .on_shutdown(|| RootSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
 
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(RootSupervisorMessage::PrepareShutdown)
-                }
-            });
         resources
             .configuration
             .runtime_changes()
@@ -440,28 +433,6 @@ impl Actor for RootSupervisor {
                 info!("PrepareShutdown received -- nothing to drain");
                 state.shutting_down = true;
             }
-        }
-        Ok(())
-    }
-
-    async fn handle_supervisor_evt(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        event: SupervisionEvent,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match event {
-            SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started!"),
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                info!("{actor:?} terminated. {reason:?}");
-            }
-            SupervisionEvent::ActorFailed(actor, reason) => {
-                error!("{actor:?} failed! {reason:?}");
-                if !state.shutting_down {
-                    std::process::exit(1);
-                }
-            }
-            _ => (),
         }
         Ok(())
     }

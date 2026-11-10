@@ -31,7 +31,7 @@
 //!
 //! Shutdown, in order:
 //!
-//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor, which drains the processor of
+//! 1. Its `PrepareShutdown`, registered with the builder (`with_drain`), reaches this supervisor, which drains the processor of
 //!    what it was handed.
 //! 2. `ProceedWithShutdown` goes to the infrastructure supervisor, which drains the graph
 //!    controller and stops its children.
@@ -42,8 +42,8 @@ use crate::processor::ScheduleInfoProcessor;
 use crate::types::ProcessorMsg;
 use cassini_types::ClientEvent;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use polar_scheduler_common::{
     CONFIGURATION_OUTCOME_TOPIC, ConfigurationOutcome, GitScheduleChange, SCHEDULER_IN_TOPIC,
@@ -142,15 +142,11 @@ impl Actor for SchedulerSupervisor {
         for subscription in subscriptions(&myself) {
             builder = builder.with_subscription(subscription);
         }
-        let resources = builder.into_configured(configured).build().await?;
-
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(SchedulerSupervisorMessage::PrepareShutdown)
-                }
-            });
+        let resources = builder
+            .with_drain(|| SchedulerSupervisorMessage::PrepareShutdown)
+            .into_configured(configured)
+            .build()
+            .await?;
 
         let graph = resources
             .graph

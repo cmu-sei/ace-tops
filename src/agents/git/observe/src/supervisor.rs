@@ -36,8 +36,8 @@ use cassini_types::ClientEvent;
 use git_agent_common::{GIT_REPO_CONFIG_EVENTS, RepositorySet};
 use polar::cassini::{CassiniClient, TcpClient, UnsubscribeRequest};
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -119,17 +119,10 @@ impl Actor for RootSupervisor {
         let resources = AgentBuilder::new(myself.clone(), crate::agent::AGENT_NAME)
             .with_subscription(configuration)
             .with_lifecycle_handler(|event| Some(RootSupervisorMessage::ClientEvent { event }))
+            .with_drain(|| RootSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(RootSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         // Started for the operations the agent declares: an egress CA that cannot be used has stopped the agent by now, and
         // git has it before any clone or fetch.

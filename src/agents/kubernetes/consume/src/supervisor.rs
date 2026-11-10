@@ -42,7 +42,7 @@ use polar::graph::nodes::builds::ArtifactNodeKey;
 use polar::graph::nodes::kube::KubeNodeKey;
 use polar::topics::KUBERNETES_RESOLUTION_EVENTS;
 use polar_agent_builder::{
-    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle,
     InfrastructureSupervisorMessage, Subscription,
 };
 use ractor::Actor;
@@ -470,6 +470,7 @@ impl Actor for ClusterConsumerSupervisor {
         }
         let resources = builder
             .with_lifecycle_handler(|event| Some(ConsumerSupervisorMessage::ClientEvent { event }))
+            .with_drain(|| ConsumerSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
@@ -477,13 +478,6 @@ impl Actor for ClusterConsumerSupervisor {
         // The "infrastructure -> domain" half of the respawn/shutdown
         // protocol. Without this subscription the InfrastructureSupervisor
         // would wait forever for a ProceedWithShutdown after rejuvenation.
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ConsumerSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         // The encryption capability must have produced the crypto actor; nothing here uses it.
         resources.crypto.as_ref().ok_or_else(|| {

@@ -50,8 +50,8 @@ use polar::graph::nodes::git::RepoId;
 use polar_agent_builder::configuration::ConfigurationHandle;
 use polar_agent_builder::protocol::ProtocolHandle;
 use polar_agent_builder::{
-    AgentBuilder, Configured, Drain, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, Drain, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -400,14 +400,10 @@ impl Actor for OrchestratorSupervisor {
                 },
             ))
             .with_lifecycle_handler(|event| Some(OrchestratorMessage::ClientEvent { event }))
+            .with_drain(|| OrchestratorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(OrchestratorMessage::PrepareShutdown),
-            });
         let reader = resources
             .workers
             .get(READER)

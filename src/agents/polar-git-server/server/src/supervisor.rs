@@ -30,7 +30,7 @@
 //!
 //! Shutdown, in order, when the health check ends the pod's life:
 //!
-//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor.
+//! 1. Its `PrepareShutdown`, registered with the builder (`with_drain`), reaches this supervisor.
 //! 2. The listener stops accepting; connections in flight (a push can take a while) are given up
 //!    to `DRAIN_TIMEOUT`.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
@@ -47,8 +47,8 @@ use crate::store::RepoStore;
 use crate::tls::{ClientIdentities, serve_tls, server_config};
 use cassini_types::ClientEvent;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, ServiceBuilder,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    ServiceBuilder,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::path::Path;
@@ -106,40 +106,29 @@ impl Actor for GitServerSupervisor {
         let settings = GitServerSettings::read(configured.config())?;
         // In a cluster the deployment provides Cassini and the server is a client of the broker;
         // on its own it has the health check and the shutdown handshake and no broker.
-        let (healthcheck, infrastructure_events, infrastructure, tcp_client) =
-            if configured.cassini_enabled() {
-                let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
-                    .with_lifecycle_handler(|event| {
-                        Some(GitServerSupervisorMessage::ClientEvent { event })
-                    })
-                    .into_configured(configured)
-                    .build()
-                    .await?;
-                (
-                    resources.healthcheck,
-                    resources.infrastructure_events,
-                    resources.infrastructure,
-                    Some(resources.tcp_client),
-                )
-            } else {
-                info!("{SERVICE_NAME} is running on its own: pushes are logged, not published");
-                let resources = ServiceBuilder::new(myself.clone(), SERVICE_NAME)
-                    .into_configured(configured)
-                    .build()
-                    .await?;
-                (
-                    resources.healthcheck,
-                    resources.infrastructure_events,
-                    resources.infrastructure,
-                    None,
-                )
-            };
-
-        infrastructure_events.subscribe(myself.clone(), |event| match event {
-            InfrastructureEvent::PrepareShutdown => {
-                Some(GitServerSupervisorMessage::PrepareShutdown)
-            }
-        });
+        let (healthcheck, infrastructure, tcp_client) = if configured.cassini_enabled() {
+            let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
+                .with_lifecycle_handler(|event| {
+                    Some(GitServerSupervisorMessage::ClientEvent { event })
+                })
+                .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
+                .into_configured(configured)
+                .build()
+                .await?;
+            (
+                resources.healthcheck,
+                resources.infrastructure,
+                Some(resources.tcp_client),
+            )
+        } else {
+            info!("{SERVICE_NAME} is running on its own: pushes are logged, not published");
+            let resources = ServiceBuilder::new(myself.clone(), SERVICE_NAME)
+                .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
+                .into_configured(configured)
+                .build()
+                .await?;
+            (resources.healthcheck, resources.infrastructure, None)
+        };
 
         let file = ServerFile::parse(&settings.repos)?.with_admins(settings.admins.clone());
 

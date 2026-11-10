@@ -32,7 +32,7 @@ use jira_common::{
 use polar::cassini::{CassiniClient, TcpClient};
 use polar::graph::controller::GraphController;
 use polar_agent_builder::{
-    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle, InfrastructureEvent,
+    AgentBuilder, Configured, GraphHandle, HealthClient, HealthHandle,
     InfrastructureSupervisorMessage, Subscription,
 };
 use ractor::Actor;
@@ -174,18 +174,12 @@ impl Actor for ConsumerSupervisor {
         }
         let resources = builder
             .with_lifecycle_handler(|event| Some(ConsumerSupervisorMessage::ClientEvent { event }))
+            .with_drain(|| ConsumerSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
 
         // The infrastructure half of the respawn and shutdown protocol.
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ConsumerSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         Ok(ConsumerSupervisorState {
             broker_client: resources.tcp_client,

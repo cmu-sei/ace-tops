@@ -41,13 +41,11 @@ use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
 use polar::cassini::{CassiniClient, TcpClient};
 use polar_agent_builder::protocol::{Delivery, Failure, ProtocolHandle, Streaming};
-use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent, Subscription,
-};
+use polar_agent_builder::{AgentBuilder, Configured, HealthClient, HealthHandle, Subscription};
 use polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC;
 use polar_signing::Trust;
 use ractor::concurrency::Duration;
-use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
+use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
 use std::collections::BTreeMap;
 use tracing::{debug, error, info, warn};
 
@@ -198,7 +196,6 @@ pub enum AttestationMessage {
     },
     /// Time to hold what is deployed to the record.
     Compare,
-    PrepareShutdown,
 }
 
 pub struct AttestationSupervisor;
@@ -218,7 +215,6 @@ pub struct AttestationState {
     reporting: Reporting,
     /// Whether its verdicts are to be believed.
     proved: Result<Proved, Doubt>,
-    shutting_down: bool,
 }
 
 /// Asks for `watch`, whose changes come to `myself`.
@@ -305,11 +301,6 @@ impl Actor for AttestationSupervisor {
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(AttestationMessage::PrepareShutdown),
-            });
 
         let protocols = resources.protocols.clone().ok_or(
             "the builder started no protocol handler, though the agent declares an operation",
@@ -340,7 +331,6 @@ impl Actor for AttestationSupervisor {
             drift: DriftWatch::new(DRIFT_GRACE_SECS),
             reporting: Reporting::default(),
             proved: Err(Doubt::NotYet),
-            shutting_down: false,
         })
     }
 
@@ -492,35 +482,6 @@ impl Actor for AttestationSupervisor {
                     warn!("could not answer on {topic}: {e:?}");
                 }
             }
-            AttestationMessage::PrepareShutdown => {
-                info!("PrepareShutdown received");
-                state.shutting_down = true;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_supervisor_evt(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        event: SupervisionEvent,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match event {
-            SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if !state.shutting_down {
-                    error!("{actor:?} stopped unexpectedly: {reason:?}");
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, reason) => {
-                error!("{actor:?} failed: {reason:?}");
-                if !state.shutting_down {
-                    std::process::exit(1);
-                }
-            }
-            _ => (),
         }
         Ok(())
     }

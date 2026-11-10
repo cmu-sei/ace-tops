@@ -75,8 +75,6 @@ impl PolarAgent for GitlabObserver {
     const PURPOSE: &'static str = "Reads what its signed sources ask of GitLab's GraphQL API and publishes each page for the processor";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = polar_http_observer::observer::SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its observers.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
         OBSERVATIONS_TOPIC,
         "each page as it came, for the processor",

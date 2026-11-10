@@ -35,7 +35,7 @@ use polar::cassini::TcpClient;
 use polar_agent_builder::protocol::{CredentialsApplied, ProtocolHandle};
 use polar_agent_builder::{
     AgentBuilder, AgentResources, ConfigurationHandle, Configured, HealthClient, HealthHandle,
-    HoldReason, InfrastructureEvent, InfrastructureSupervisorMessage, StateClient,
+    HoldReason, InfrastructureSupervisorMessage, StateClient,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorId, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -349,6 +349,7 @@ impl Actor for ObserverSupervisor {
                     .with_lifecycle_handler(|event| {
                         Some(ObserverSupervisorMessage::ClientEvent { event })
                     })
+                    .with_drain(|| ObserverSupervisorMessage::PrepareShutdown)
                     .into_configured(configured)
                     .build()
                     .await?,
@@ -366,13 +367,6 @@ impl Actor for ObserverSupervisor {
             }
         };
 
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ObserverSupervisorMessage::PrepareShutdown)
-                }
-            });
         let prepared =
             ObserverSupervisor::follow_settings(&resources.configuration, &myself).await?;
         let protocols = resources.protocols.clone().ok_or(

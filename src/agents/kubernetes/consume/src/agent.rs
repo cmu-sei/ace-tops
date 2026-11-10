@@ -42,8 +42,6 @@ impl PolarAgent for KubeConsumer {
     const GRAPH_REPAIRS: &'static [polar::graph::repair::Repair] =
         &[polar::graph::repair::EMPTY_STATE_TYPE_NODES];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its topics, let go of.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             kube_common::KUBERNETES_CONSUMER,

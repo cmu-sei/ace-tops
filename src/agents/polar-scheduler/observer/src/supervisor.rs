@@ -34,7 +34,7 @@
 //!
 //! Shutdown, in order, when the health check ends the pod's life:
 //!
-//! 1. `InfrastructureEvent::PrepareShutdown` reaches this supervisor.
+//! 1. Its `PrepareShutdown`, registered with the builder (`with_drain`), reaches this supervisor.
 //! 2. The sync actor and the watcher are stopped.
 //! 3. `ProceedWithShutdown` goes to the infrastructure supervisor, which stops its children.
 //! 4. When the infrastructure has ended the builder stops this supervisor and `run` exits non-zero,
@@ -49,8 +49,8 @@ use crate::watcher::{GitWatcherActor, GitWatcherMsg};
 use cassini_client::TcpClientMessage;
 use cassini_types::ClientEvent;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use polar_git_server_common::{POLAR_GIT_REPO_CHANGED_TOPIC, RepoChangedEvent};
 use polar_scheduler_common::{CONFIGURATION_REPLAY_TOPIC, ConfigurationReplayRequest};
@@ -152,17 +152,10 @@ impl Actor for SchedulerObserverSupervisor {
             .with_lifecycle_handler(|event| Some(SchedulerObserverMessage::ClientEvent { event }))
             .with_subscription(repo_changed_subscription(myself.clone()))
             .with_subscription(replay_request_subscription(myself.clone()))
+            .with_drain(|| SchedulerObserverMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(SchedulerObserverMessage::PrepareShutdown)
-                }
-            });
 
         let tls = GitTls {
             ca_cert: settings.git_ca_cert.map(PathBuf::from),

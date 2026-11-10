@@ -32,8 +32,7 @@ use polar::ProvenanceEvent;
 use polar::cassini::{CassiniClient, UnsubscribeRequest};
 use polar::topics::PROVENANCE_DISCOVERY;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, InfrastructureEvent, InfrastructureSupervisorMessage,
-    Subscription,
+    AgentBuilder, Configured, HealthClient, InfrastructureSupervisorMessage, Subscription,
 };
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -111,17 +110,10 @@ impl Actor for ResolverSupervisor {
         let resources = AgentBuilder::new(myself.clone(), BROKER_CLIENT_NAME)
             .with_subscription(discovery)
             .with_lifecycle_handler(|event| Some(ResolverSupervisorMessage::ClientEvent { event }))
+            .with_drain(|| ResolverSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ResolverSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         // Started for the operations the agent declares, and with its client the way out and the CA: one that cannot be used
         // has stopped the agent by now.

@@ -41,8 +41,8 @@ use polar::Supervisor;
 use polar::cassini::{CassiniClient, TcpClient, UnsubscribeRequest};
 use polar::request_reply::Envelope;
 use polar_agent_builder::{
-    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    InfrastructureSupervisorMessage, Subscription,
+    AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
+    Subscription,
 };
 use ractor::registry::where_is;
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
@@ -940,7 +940,9 @@ impl Actor for ConsumerSupervisor {
         for subscription in Self::request_subscriptions(&myself) {
             builder = builder.with_subscription(subscription);
         }
-        let configured = builder.into_configured(judged);
+        let configured = builder
+            .with_drain(|| ConsumerSupervisorMessage::PrepareShutdown)
+            .into_configured(judged);
         let graph_settings =
             polar::graph::environment::GraphSettings::from_env(&**configured.config())
                 .map_err(ActorProcessingErr::from)?;
@@ -1316,13 +1318,6 @@ impl Actor for ConsumerSupervisor {
         // The "infrastructure -> domain" half of the respawn/shutdown protocol.
         // Without this subscription the infrastructure supervisor would wait
         // forever for a ProceedWithShutdown after rejuvenation.
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(ConsumerSupervisorMessage::PrepareShutdown)
-                }
-            });
 
         // The authority publisher. The sections it publishes arrive as signed documents, so it is told when
         // one is replaced, and once now for any already held; the ledger tells it when a certificate is

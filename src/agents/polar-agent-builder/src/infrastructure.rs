@@ -43,12 +43,12 @@
 //! or any child ending unexpectedly. The Cassini client is the front
 //! (`cassini_client::facade`), which replaces its own transports and does not end
 //! for the broker's absence, so its ending is a fault in the front itself. The funnel is idempotent and logs the reason.
-//! The domain supervisor's own, separate children (a graph controller, watcher
-//! trees) may still need the router and TCP client alive while they shut down
-//! cleanly, so the funnel runs a two-way handshake with it: see
-//! InfrastructureEvent::PrepareShutdown and
-//! InfrastructureSupervisorMessage::ProceedWithShutdown. A watchdog bounds the
-//! handshake: if the process is still alive when the shutdown budget runs out, it
+//! The domain supervisor's own work (its children, a listener, topics to let go
+//! of) may still need the router and the client while it finishes, so the funnel
+//! tells it, in its own message, and, for a domain that drains, waits for its
+//! InfrastructureSupervisorMessage::ProceedWithShutdown ([`ShutdownNotice`]). Then
+//! the graph controller drains and the rest of the infrastructure stops. A watchdog
+//! bounds it: if the process is still alive when the shutdown budget runs out, it
 //! exits 1 regardless. See shutdown.rs for the decisions themselves.
 
 use crate::configuration::ConfigurationHandle;
@@ -70,20 +70,17 @@ use std::time::Duration;
 /// How long the supervisor waits for its children to stop once told to proceed.
 const STOP_CHILDREN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The "infra → domain" direction -- a real agent subscribes to this
-/// via AgentResources's own events_output/infrastructure_events
-/// fields, using its own, real mapping closure, exactly mirroring
-/// the established prepare_shutdown_port/graph_signal_port pattern.
+/// How the infrastructure tells the domain supervisor that the agent is to end, for whatever reason (the health
+/// actor's verdict, SIGTERM, a child of the infrastructure dying), and whether it then waits for the domain's
+/// `ProceedWithShutdown`. The domain registers it with the builder before `build()`: `AgentBuilder::with_drain` (told,
+/// and waited for, as long as the shutdown budget allows) or `AgentBuilder::on_shutdown` (told only). A domain that
+/// registers neither is not told, and the infrastructure goes on.
 #[derive(Clone)]
-pub enum InfrastructureEvent {
-    /// The agent is to end, for whatever reason: the health actor gave a verdict,
-    /// Kubernetes sent SIGTERM, or a child of this supervisor died. The domain
-    /// supervisor should begin coordinating its own shutdown now (its own domain
-    /// children first), then send
-    /// InfrastructureSupervisorMessage::ProceedWithShutdown once
-    /// that's genuinely, fully done. Sent at most once. If it does not answer
-    /// within the shutdown budget the process exits 1 regardless.
-    PrepareShutdown,
+pub(crate) struct ShutdownNotice {
+    /// Sends the domain its own message saying the agent is to end. Once, at most.
+    pub(crate) tell: Arc<dyn Fn() + Send + Sync>,
+    /// Whether the infrastructure waits for the domain's `ProceedWithShutdown`.
+    pub(crate) wait: bool,
 }
 
 pub enum InfrastructureSupervisorMessage {
@@ -249,9 +246,8 @@ pub struct InfrastructureSupervisorArgs {
     pub(crate) self_test: bool,
     /// For an agent that needs the graph, what its graph controller is started with (`graph.rs`).
     pub(crate) graph: Option<crate::graph::GraphSetup>,
-    /// Whether the domain has work of its own to finish at the end (`PolarAgent::HAS_OWN_DRAIN`): the
-    /// infrastructure then waits for its `ProceedWithShutdown`; otherwise it tells the domain and proceeds.
-    pub(crate) domain_drains: bool,
+    /// How the domain is told the agent is to end, and whether it is waited for; none, not told.
+    pub(crate) notice: Option<ShutdownNotice>,
 }
 
 /// How often the self-test looks at the clock; a probe is sent every `SELF_TEST_INTERVAL`, and
@@ -367,7 +363,6 @@ pub struct InfrastructureSupervisorState {
     configuration: ConfigurationHandle,
     commands: crate::command_actor::CommandHandle,
     authority: Option<crate::authority::AuthorityHandle>,
-    infrastructure_events: Arc<OutputPort<InfrastructureEvent>>,
     client: Option<ClientParts>,
     healthcheck: HealthHandle,
     service_name: String,
@@ -382,9 +377,9 @@ pub struct InfrastructureSupervisorState {
     last_registered: Option<ClientEvent>,
     /// The agent's graph controller, until it is drained at the end.
     graph: Option<crate::graph::GraphHandle>,
-    /// See `InfrastructureSupervisorArgs::domain_drains`.
-    domain_drains: bool,
-    /// This supervisor, to proceed by itself when the domain has no drain of its own.
+    /// See `InfrastructureSupervisorArgs::notice`.
+    notice: Option<ShutdownNotice>,
+    /// This supervisor, to proceed by itself when the domain is not waited for.
     myself: ActorRef<InfrastructureSupervisorMessage>,
 }
 
@@ -409,11 +404,15 @@ impl InfrastructureSupervisor {
         Self::start_watchdog(state.shutdown_budget, state.process_exit.clone(), &reason);
         // Nothing new is started while the agent is going down.
         state.commands.drain();
-        state
-            .infrastructure_events
-            .send(InfrastructureEvent::PrepareShutdown);
-        // A domain with no drain of its own has nothing to say back: it is told, and the infrastructure goes on.
-        if !state.domain_drains
+        // The domain is told, if it asked to be; unless it drains, the infrastructure goes on.
+        let wait = match &state.notice {
+            Some(notice) => {
+                (notice.tell)();
+                notice.wait
+            }
+            None => false,
+        };
+        if !wait
             && let Err(e) = state
                 .myself
                 .cast(InfrastructureSupervisorMessage::ProceedWithShutdown)
@@ -928,8 +927,6 @@ impl Actor for InfrastructureSupervisor {
             tracing::warn!("InfrastructureSupervisor: the log filters: {why}");
         }
 
-        let infrastructure_events = Arc::new(OutputPort::default());
-
         let (mut client, self_test) = if args.with_client {
             let (client, self_test) = Self::spawn_client_parts(
                 &myself,
@@ -1030,7 +1027,6 @@ impl Actor for InfrastructureSupervisor {
             configuration,
             commands,
             authority,
-            infrastructure_events,
             client,
             healthcheck,
             service_name: args.service_name,
@@ -1042,7 +1038,7 @@ impl Actor for InfrastructureSupervisor {
             running_answerer,
             last_registered: None,
             graph,
-            domain_drains: args.domain_drains,
+            notice: args.notice,
             myself: myself.clone(),
         })
     }
@@ -1292,7 +1288,6 @@ impl Actor for InfrastructureSupervisor {
                         workers: state.workers.clone(),
                         graph: state.graph.clone(),
                         events_output: client.events_output.clone(),
-                        infrastructure_events: state.infrastructure_events.clone(),
                         infrastructure: myself.clone(),
                         config: state.config.clone(),
                         configuration: state.configuration.clone(),
@@ -1309,7 +1304,6 @@ impl Actor for InfrastructureSupervisor {
             InfrastructureSupervisorMessage::GetService { reply } => {
                 let _ = reply.send(crate::ServiceResources {
                     healthcheck: state.healthcheck.clone(),
-                    infrastructure_events: state.infrastructure_events.clone(),
                     infrastructure: myself.clone(),
                     config: state.config.clone(),
                     configuration: state.configuration.clone(),
@@ -1471,34 +1465,28 @@ mod tests {
         }
     }
 
-    // -- a record of what the domain supervisor is told ----------------------------
+    // -- what the domain supervisor is told ------------------------------------------------
 
-    struct EventLog;
+    /// How a rig's domain asked to be told that the agent is to end.
+    #[derive(Clone, Copy)]
+    enum Told {
+        /// `with_drain`: told, and waited for.
+        AndWaitedFor,
+        /// `on_shutdown`: told only.
+        Only,
+        /// Neither.
+        Not,
+    }
 
-    #[async_trait]
-    impl Actor for EventLog {
-        type Msg = InfrastructureEvent;
-        type State = Arc<Mutex<Vec<String>>>;
-        type Arguments = Self::State;
-
-        async fn pre_start(
-            &self,
-            _myself: ActorRef<Self::Msg>,
-            seen: Self::State,
-        ) -> Result<Self::State, ActorProcessingErr> {
-            Ok(seen)
-        }
-
-        async fn handle(
-            &self,
-            _myself: ActorRef<Self::Msg>,
-            event: Self::Msg,
-            seen: &mut Self::State,
-        ) -> Result<(), ActorProcessingErr> {
-            seen.lock().unwrap().push(match event {
-                InfrastructureEvent::PrepareShutdown => "prepare_shutdown".to_string(),
-            });
-            Ok(())
+    /// The notice for `told`, recording "prepare_shutdown" in `events` each time the domain is told.
+    fn notice(told: Told, events: &Arc<Mutex<Vec<String>>>) -> Option<ShutdownNotice> {
+        let events = events.clone();
+        let tell: Arc<dyn Fn() + Send + Sync> =
+            Arc::new(move || events.lock().unwrap().push("prepare_shutdown".to_string()));
+        match told {
+            Told::AndWaitedFor => Some(ShutdownNotice { tell, wait: true }),
+            Told::Only => Some(ShutdownNotice { tell, wait: false }),
+            Told::Not => None,
         }
     }
 
@@ -1629,7 +1617,7 @@ mod tests {
                 &[],
                 Some("soft-state-observer.polar.serviceaccount.cluster.local".to_string()),
                 None,
-                true,
+                Told::AndWaitedFor,
             )
             .await
         }
@@ -1647,7 +1635,7 @@ mod tests {
                 &[],
                 None,
                 Some(setup),
-                true,
+                Told::AndWaitedFor,
             )
             .await
         }
@@ -1677,13 +1665,13 @@ mod tests {
                 runtime,
                 None,
                 None,
-                true,
+                Told::AndWaitedFor,
             )
             .await
         }
 
-        /// A rig whose agent has no drain of its own: the infrastructure proceeds by itself.
-        async fn without_own_drain(service: &str) -> Self {
+        /// A rig whose domain asked to be told `told`.
+        async fn told(service: &str, told: Told) -> Self {
             Self::build_with(
                 service,
                 Duration::from_secs(20),
@@ -1695,7 +1683,7 @@ mod tests {
                 &[],
                 None,
                 None,
-                false,
+                told,
             )
             .await
         }
@@ -1715,8 +1703,9 @@ mod tests {
             runtime: &'static [&'static crate::runtime::RuntimeSection],
             state_agent: Option<String>,
             graph: Option<crate::graph::GraphSetup>,
-            domain_drains: bool,
+            told: Told,
         ) -> Self {
+            let events = Arc::new(Mutex::new(Vec::new()));
             let health_writer = Some(RIG_WRITER.to_string());
             let dir = tempfile::tempdir().unwrap();
             let certificate = dir.path().join("cert.pem");
@@ -1787,7 +1776,7 @@ mod tests {
                     settings_judge: None,
                     self_test: self_test.is_some(),
                     graph,
-                    domain_drains,
+                    notice: notice(told, &events),
                 },
             )
             .await
@@ -1798,10 +1787,6 @@ mod tests {
             })
             .unwrap()
             .expect("a supervisor with a Cassini client");
-
-            let events = Arc::new(Mutex::new(Vec::new()));
-            let (log, _) = Actor::spawn(None, EventLog, events.clone()).await.unwrap();
-            resources.infrastructure_events.subscribe(log, Some);
 
             Self {
                 infra,
@@ -2475,14 +2460,44 @@ mod tests {
 
     /// An agent held at start (`held::stay_up`) is asked to try again on each configuration change, with the
     /// configuration in force: while its answer is no, the hold stays with the new message; once yes, the hold is
-    /// released, its work answers the shutdown itself, and it is not asked again.
+    /// released, the notice that the agent is ending goes to its work, which answers the shutdown itself, and it is not
+    /// asked again.
     #[tokio::test(start_paused = true)]
     async fn a_held_agent_starts_its_work_when_an_update_mends_it_and_keeps_its_hold_until_then() {
         use polar_health::{HealthReason, HoldReason};
+
+        /// Stands in for the work: counts the notices it is sent.
+        struct Work;
+        #[async_trait]
+        impl Actor for Work {
+            type Msg = ();
+            type State = Arc<AtomicUsize>;
+            type Arguments = Arc<AtomicUsize>;
+            async fn pre_start(
+                &self,
+                _: ActorRef<()>,
+                told: Arc<AtomicUsize>,
+            ) -> Result<Arc<AtomicUsize>, ActorProcessingErr> {
+                Ok(told)
+            }
+            async fn handle(
+                &self,
+                _: ActorRef<()>,
+                _: (),
+                told: &mut Arc<AtomicUsize>,
+            ) -> Result<(), ActorProcessingErr> {
+                told.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
         let rig = Rig::new("held-retry", Duration::from_secs(20), &[], false).await;
+        let told = Arc::new(AtomicUsize::new(0));
+        let (work, _) = Actor::spawn(None, Work, told.clone()).await.unwrap();
         let asked: Arc<Mutex<Vec<String>>> = Arc::default();
         let seen = asked.clone();
         let try_again: crate::held::TryAgain = Box::new(move |retry| {
+            let work = work.clone();
             let filter = retry
                 .config
                 .read(&polar::logging::CONSOLE_FILTER)
@@ -2490,7 +2505,7 @@ mod tests {
             seen.lock().unwrap().push(filter.clone());
             Box::pin(async move {
                 if filter == "debug" {
-                    Ok(())
+                    Ok(crate::held::WorkStarted::told(work, || ()))
                 } else {
                     Err(format!("still wrong with {filter}"))
                 }
@@ -2533,6 +2548,8 @@ mod tests {
             "{report:?}"
         );
         assert!(!held.prepare_shutdown(), "the work answers the shutdown");
+        rig.settle().await;
+        assert_eq!(told.load(Ordering::SeqCst), 1, "the work is told");
 
         // Not asked again once the work runs.
         held.configuration_changed(cell).await;
@@ -3223,26 +3240,49 @@ mod tests {
 
     // -- an agent with no drain of its own ----------------------------------------------------
 
-    /// The infrastructure tells the agent it is ending and then proceeds by itself: nobody sends
-    /// `ProceedWithShutdown`, and it ends well inside its budget, with no watchdog.
+    /// A domain that asked only to be told is told, and the infrastructure proceeds by itself: nobody
+    /// sends `ProceedWithShutdown`, and it ends well inside its budget, with no watchdog.
     #[tokio::test(start_paused = true)]
-    async fn an_agent_with_no_drain_of_its_own_ends_without_being_told_to_proceed() {
-        let mut rig = Rig::without_own_drain("infra-no-drain").await;
+    async fn an_agent_told_only_is_told_and_not_waited_for() {
+        let mut rig = Rig::told("infra-told-only", Told::Only).await;
         rig.begin("test");
         let ended = tokio::time::timeout(Duration::from_secs(15), rig.done.take().unwrap()).await;
         assert!(
             ended.is_ok(),
             "the infrastructure waited for a proceed nobody sends"
         );
-        assert_eq!(
-            rig.events(),
-            ["prepare_shutdown"],
-            "the agent is still told"
-        );
+        assert_eq!(rig.events(), ["prepare_shutdown"], "the agent is told");
         assert!(
             rig.exits().is_empty(),
             "no watchdog: it ended inside its 20 s budget"
         );
+    }
+
+    /// A domain that asked for nothing is not told, and the infrastructure ends without it.
+    #[tokio::test(start_paused = true)]
+    async fn an_agent_that_asked_for_nothing_is_not_told_and_not_waited_for() {
+        let mut rig = Rig::told("infra-untold", Told::Not).await;
+        rig.begin("test");
+        let ended = tokio::time::timeout(Duration::from_secs(15), rig.done.take().unwrap()).await;
+        assert!(
+            ended.is_ok(),
+            "the infrastructure waited for a proceed nobody sends"
+        );
+        assert!(rig.events().is_empty(), "{:?}", rig.events());
+        assert!(rig.exits().is_empty(), "no watchdog");
+    }
+
+    /// A domain that drains is told and waited for: without its proceed the infrastructure does not end,
+    /// and only the watchdog ends the process, at the budget.
+    #[tokio::test(start_paused = true)]
+    async fn an_agent_that_drains_is_told_and_waited_for() {
+        let mut rig = Rig::told("infra-drains", Told::AndWaitedFor).await;
+        rig.begin("test");
+        let ended = tokio::time::timeout(Duration::from_secs(15), rig.done.take().unwrap()).await;
+        assert!(ended.is_err(), "it ended without the domain's proceed");
+        assert_eq!(rig.events(), ["prepare_shutdown"]);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert_eq!(rig.exits(), [1], "the watchdog, at its 20 s budget");
     }
 
     // -- children dying -----------------------------------------------------------------------
@@ -3694,31 +3734,6 @@ mod service_tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    struct Seen;
-
-    #[async_trait]
-    impl Actor for Seen {
-        type Msg = InfrastructureEvent;
-        type State = Arc<Mutex<Vec<String>>>;
-        type Arguments = Self::State;
-        async fn pre_start(
-            &self,
-            _: ActorRef<Self::Msg>,
-            seen: Self::State,
-        ) -> Result<Self::State, ActorProcessingErr> {
-            Ok(seen)
-        }
-        async fn handle(
-            &self,
-            _: ActorRef<Self::Msg>,
-            _: Self::Msg,
-            seen: &mut Self::State,
-        ) -> Result<(), ActorProcessingErr> {
-            seen.lock().unwrap().push("prepare_shutdown".to_string());
-            Ok(())
-        }
-    }
-
     struct ServiceRig {
         infra: ActorRef<InfrastructureSupervisorMessage>,
         done: Option<ractor::concurrency::JoinHandle<()>>,
@@ -3743,6 +3758,7 @@ mod service_tests {
             let startup = crate::startup::prepare(&vars, &[], &[], None).unwrap();
             let exits = Arc::new(Mutex::new(Vec::new()));
             let recorded = exits.clone();
+            let events = Arc::new(Mutex::new(Vec::new()));
             let (infra, done) = Actor::spawn(
                 None,
                 InfrastructureSupervisor,
@@ -3768,7 +3784,15 @@ mod service_tests {
                     settings_judge: None,
                     self_test: false,
                     graph: None,
-                    domain_drains: true,
+                    notice: Some(ShutdownNotice {
+                        tell: {
+                            let events = events.clone();
+                            Arc::new(move || {
+                                events.lock().unwrap().push("prepare_shutdown".to_string())
+                            })
+                        },
+                        wait: true,
+                    }),
                 },
             )
             .await
@@ -3777,9 +3801,6 @@ mod service_tests {
                 InfrastructureSupervisorMessage::GetService { reply }
             })
             .unwrap();
-            let events = Arc::new(Mutex::new(Vec::new()));
-            let (log, _) = Actor::spawn(None, Seen, events.clone()).await.unwrap();
-            service.infrastructure_events.subscribe(log, Some);
             Self {
                 infra,
                 done: Some(done),

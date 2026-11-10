@@ -40,8 +40,6 @@ impl PolarAgent for KubeObserver {
     const SECTIONS: &'static [&'static polar_env::Section] = &[&crate::settings::SECTION];
     const OPERATIONS: &'static [OperationDecl] = &[crate::watches::IDENTIFY, crate::watches::WATCH];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its watchers, stopped in turn.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
         kube_common::KUBERNETES_CONSUMER,
         "every change it sees to a watched resource, of any kind, as a RawKubeEvent (JSON)",

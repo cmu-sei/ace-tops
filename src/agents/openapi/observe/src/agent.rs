@@ -53,8 +53,6 @@ impl PolarAgent for OpenApiObserver {
     const PURPOSE: &'static str = "Reads the OpenAPI and Swagger documents its signed sources name and publishes them for the processor";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = polar_http_observer::observer::SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its observers.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
         OBSERVATIONS_TOPIC,
         "each document as it came, for the processor",

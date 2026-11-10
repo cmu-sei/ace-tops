@@ -42,12 +42,12 @@ use polar::cassini::{CassiniClient, TcpClient};
 use polar::graph::controller::{GraphController, GraphControllerMsg};
 use polar_agent_builder::{
     Access, AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle,
-    InfrastructureEvent, Subscription, TopicSet,
+    Subscription, TopicSet,
 };
 use polar_health::HealthReport;
 use polar_health::report::{self, HEALTH_REPLIES_TOPIC, HealthAnswer, HealthQuery};
 use ractor::concurrency::Duration;
-use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
+use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
 use soft_state_common::PROCESSOR_NAME;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -341,14 +341,10 @@ impl Actor for WriterSupervisor {
         let resources = AgentBuilder::new(myself.clone(), PROCESSOR_NAME)
             .with_subscription(answers)
             .with_lifecycle_handler(|event| Some(WriterMessage::ClientEvent { event }))
+            .on_shutdown(|| WriterMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => Some(WriterMessage::PrepareShutdown),
-            });
         resources
             .configuration
             .runtime_changes()
@@ -498,31 +494,6 @@ impl Actor for WriterSupervisor {
                 state.shutting_down = true;
                 state.graph = None;
             }
-        }
-        Ok(())
-    }
-
-    async fn handle_supervisor_evt(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        event: SupervisionEvent,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match event {
-            SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if !state.shutting_down {
-                    error!("{actor:?} stopped unexpectedly: {reason:?}");
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, reason) => {
-                error!("{actor:?} failed: {reason:?}");
-                if !state.shutting_down {
-                    std::process::exit(1);
-                }
-            }
-            _ => (),
         }
         Ok(())
     }

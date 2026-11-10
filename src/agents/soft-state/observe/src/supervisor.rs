@@ -40,11 +40,11 @@ use polar::cassini::{CassiniClient, TcpClient};
 use polar::graph::controller::GraphController;
 use polar_agent_builder::topic_gate::PolicySaid;
 use polar_agent_builder::{
-    AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, InfrastructureEvent,
-    LookupError, PolicyLookup, Subscription,
+    AgentBuilder, ConfigurationHandle, Configured, HealthClient, HealthHandle, LookupError,
+    PolicyLookup, Subscription,
 };
 use ractor::concurrency::Duration;
-use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
+use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};
 use soft_state_common::{
     Envelope, OBSERVER_NAME, REQUESTS_TOPIC, StateReply, StateRequest, decode_request,
     encode_reply, replies_topic,
@@ -201,17 +201,11 @@ impl Actor for StateSupervisor {
         let resources = AgentBuilder::new(myself.clone(), OBSERVER_NAME)
             .with_subscription(requests)
             .with_lifecycle_handler(|event| Some(StateSupervisorMessage::ClientEvent { event }))
+            .on_shutdown(|| StateSupervisorMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
         let graph_timeout = follow_graph_timeout(&resources.configuration, &myself).await?;
-        resources
-            .infrastructure_events
-            .subscribe(myself.clone(), |event| match event {
-                InfrastructureEvent::PrepareShutdown => {
-                    Some(StateSupervisorMessage::PrepareShutdown)
-                }
-            });
         resources
             .configuration
             .runtime_changes()
@@ -365,31 +359,6 @@ impl Actor for StateSupervisor {
                 state.shutting_down = true;
                 state.graph = None;
             }
-        }
-        Ok(())
-    }
-
-    async fn handle_supervisor_evt(
-        &self,
-        _myself: ActorRef<Self::Msg>,
-        event: SupervisionEvent,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match event {
-            SupervisionEvent::ActorStarted(actor) => debug!("{actor:?} started"),
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if !state.shutting_down {
-                    error!("{actor:?} stopped unexpectedly: {reason:?}");
-                    std::process::exit(1);
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, reason) => {
-                error!("{actor:?} failed: {reason:?}");
-                if !state.shutting_down {
-                    std::process::exit(1);
-                }
-            }
-            _ => (),
         }
         Ok(())
     }

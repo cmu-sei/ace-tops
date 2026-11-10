@@ -38,8 +38,6 @@ impl PolarAgent for GitServer {
     const OPTIONAL: &'static [Capability] = &[Capability::Cassini];
     const CASSINI_CLIENT: bool = false;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its listener's connections.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[TopicDecl::publish(
         polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC,
         "each push it accepted (repository, ref, old and new commit, pusher), when it has a broker",

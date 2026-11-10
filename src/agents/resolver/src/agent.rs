@@ -43,8 +43,6 @@ impl PolarAgent for OciResolver {
     const PURPOSE: &'static str = "Follows image references other agents discover to their registry and publishes the verified manifest";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its topic, let go of, and the resolution in flight.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             polar::topics::PROVENANCE_DISCOVERY,

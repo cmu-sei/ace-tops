@@ -60,8 +60,6 @@ impl PolarAgent for BuildOrchestrator {
     // Its Kubernetes calls are its operations; `job-run` is computed from their writes.
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its drain window: the waiting builds given up, the running left for the next orchestrator.
-    const HAS_OWN_DRAIN: bool = true;
     const OPERATIONS: &'static [OperationDecl] = OPERATIONS;
     const WORKERS: &'static [WorkerDecl] = &[crate::reader::DECL];
     const TOPICS: &'static [TopicDecl] = &[

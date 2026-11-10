@@ -46,8 +46,6 @@ impl PolarAgent for GitObserver {
         "Watches git repositories it is told of and publishes their commits and ref updates";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its repository observers.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             git_agent_common::GIT_REPO_CONFIG_EVENTS,

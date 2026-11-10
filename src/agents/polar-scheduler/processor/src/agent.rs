@@ -40,8 +40,6 @@ impl PolarAgent for SchedulerProcessor {
         "Records schedule changes in the graph and notifies the agents they concern";
     const NEEDS: &'static [Capability] = &[Capability::GraphWrite];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
-    // The infrastructure waits for it to finish its processor's queue.
-    const HAS_OWN_DRAIN: bool = true;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             polar_scheduler_common::SCHEDULER_IN_TOPIC,
