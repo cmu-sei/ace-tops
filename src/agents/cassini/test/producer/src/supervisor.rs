@@ -182,25 +182,26 @@ impl Actor for ProducerSupervisor {
         Ok(())
     }
 
+    /// The builder stops this supervisor once its infrastructure has ended. A Job: done is a success,
+    /// anything else ending it is not, so it exits here, where `run` would exit 1 for any agent that ends.
+    async fn post_stop(
+        &self,
+        _myself: ActorRef<Self::Msg>,
+        state: &mut Self::State,
+    ) -> Result<(), ActorProcessingErr> {
+        info!("the run's infrastructure has ended, exiting");
+        std::process::exit(if state.done { 0 } else { 1 });
+    }
+
     async fn handle_supervisor_evt(
         &self,
         _myself: ActorRef<Self::Msg>,
         message: SupervisionEvent,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        match message {
-            SupervisionEvent::ActorTerminated(actor, _, reason) => {
-                if actor.get_id() == state.infrastructure.get_id() {
-                    info!("infrastructure shutdown complete ({reason:?}), exiting");
-                    // A Job: done is a success; anything else ending it is not.
-                    std::process::exit(if state.done { 0 } else { 1 });
-                }
-            }
-            SupervisionEvent::ActorFailed(actor, err) => {
-                error!("Child actor {actor:?} failed: {err}; exiting");
-                std::process::exit(1);
-            }
-            _ => {}
+        if let SupervisionEvent::ActorFailed(actor, err) = message {
+            error!("Child actor {actor:?} failed: {err}; exiting");
+            std::process::exit(1);
         }
         Ok(())
     }
