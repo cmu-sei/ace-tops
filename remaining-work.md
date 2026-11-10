@@ -1073,8 +1073,13 @@ only.
     stayed up, its health saying "graph disconnected" each tick. Seen on the way: 13 pods deleted while kube-observer was itself evicted
     (a full /home, my workspace build) are still `Running` in the graph, K5 live; and a `kubectl rollout restart` of a Flux-managed
     workload is undone by Flux at its next reconcile, a second rollout (delete the pod instead).
-  - **The handshake: open.** With the controller the builder's, most of these agents have no children of their own left, and their half is
-    "proceed at once"; whether the builder then proceeds by itself is the next question.
+  - **The handshake: DONE 2026-11-09** (the maintainer: "Simple, correct"). The infrastructure is the builder's, not the domain
+    supervisor's child (`1218efd6`): the builder watches it and, when it ends however it ends, stops the domain supervisor so `run`
+    returns non-zero, or exits if the domain has not ended 10 s later (`d71c2c0e`); the domains' handlers for it are gone (`74695e90`).
+    The notice that the agent is ending is the domain's own message, registered with the builder before `build()`: `with_drain` (told,
+    and its proceed waited for), `on_shutdown` (told only), or neither (`a256de55`), replacing the infrastructure's event port and the
+    `HAS_OWN_DRAIN` constant of the hour before. Found on the way: a finished harness Job would have exited 1 (`2f994184`), and a held
+    agent's work took its notice from the port (now `held::WorkStarted`). Not yet seen live.
   Since 2026-10-12 the graph start, stop and drain are shared in polar-agent-builder (`graph.rs`).
 - [ ] **cert-issuer's `conf/` describes a file it no longer reads (found 2026-10-23).** `src/agents/cert-issuer/server/conf/dev.dhall` and `cert-issuer.dhall` render the JSON configuration file cert-issuer read before it moved onto the builder (and were already out of date: one `issuer`, where it reads a list). Its settings are declared variables now (`settings.rs`; `cert-issuer --help`). Remove them, or replace them with a development configuration document for `--config`, once the move onto the builder and into the catalog is complete and validated by testing (the maintainer, 2026-10-23).
 - [ ] **Scaffolding a new agent** (ideas of 2026-10-07 and 2026-10-09; the first is the catalog-entry half of the second and should
