@@ -75,6 +75,12 @@ pub enum Capability {
     /// not `UpdatePolicy`, which writes the rules that refer to groups. Appended; consumers are redeployed
     /// before any certificate carries it.
     UpdateGroups,
+    /// Sign evidence records of any type: the bare `c:record-evidence` of `crate::evidence`, for a person (an
+    /// administrator, or someone who runs collectors). What decides is policy first (`Action::"record-evidence"` on
+    /// `Evidence::"<type>"`, `polar_policy::evidence`); this is the certificate's answer where policy says nothing.
+    /// A workload's scoped names (`c:record-evidence:<type>`) are not capabilities: they are computed from its
+    /// scaffold. Appended; consumers are redeployed before any certificate carries it.
+    RecordEvidence,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -86,7 +92,7 @@ pub enum CapabilityParseError {
 }
 
 impl Capability {
-    pub const ALL: [Capability; 8] = [
+    pub const ALL: [Capability; 9] = [
         Capability::ProvisionAccount,
         Capability::Grant,
         Capability::Revoke,
@@ -95,6 +101,7 @@ impl Capability {
         Capability::UpdateConfiguration,
         Capability::UpdateRuntime,
         Capability::UpdateGroups,
+        Capability::RecordEvidence,
     ];
 
     fn name(self) -> &'static str {
@@ -107,6 +114,7 @@ impl Capability {
             Self::UpdateConfiguration => "update-configuration",
             Self::UpdateRuntime => "update-runtime",
             Self::UpdateGroups => "update-groups",
+            Self::RecordEvidence => "record-evidence",
         }
     }
 
@@ -220,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn update_groups_is_its_own_capability_and_comes_last() {
+    fn update_groups_is_its_own_capability_after_update_runtime() {
         assert_eq!(Capability::UpdateGroups.to_san_string(), "c:update-groups");
         assert_eq!(
             Capability::from_san_string("c:update-groups"),
@@ -229,12 +237,47 @@ mod tests {
         // Appended after update-runtime, which keeps its place.
         assert_eq!(Capability::ALL[7], Capability::UpdateGroups);
         assert_eq!(Capability::ALL[6], Capability::UpdateRuntime);
-        assert_eq!(Capability::ALL.len(), 8);
         // Putting someone in a group is not granting them permissions, and not writing the rules about
         // groups: three authorities.
         assert_ne!(Capability::UpdateGroups, Capability::Grant);
         assert_ne!(Capability::UpdateGroups, Capability::UpdatePolicy);
         assert!(Capability::from_san_string("c:update-group").is_err());
+    }
+
+    // The bare evidence name (cert_issuer_common::evidence): a person's certificate may carry it where policy says
+    // nothing of their evidence (docs/architecture/key-custody.md on the branch, "Workload signing keys"; the
+    // maintainer, 2026-11-10: policy decides first). Appended, so every grant archived before it reads as it did.
+    #[test]
+    fn record_evidence_is_the_bare_evidence_name_and_comes_last() {
+        assert_eq!(
+            Capability::RecordEvidence.to_san_string(),
+            crate::evidence::RECORD_EVIDENCE
+        );
+        assert_eq!(
+            Capability::from_san_string("c:record-evidence"),
+            Ok(Capability::RecordEvidence)
+        );
+        assert_eq!(Capability::ALL[8], Capability::RecordEvidence);
+        assert_eq!(Capability::ALL.len(), 9);
+        // The two readers of the name agree: a certificate carrying it may record any type.
+        assert_eq!(
+            crate::evidence::MayRecord::of_names([Capability::RecordEvidence
+                .to_san_string()
+                .as_str()]),
+            crate::evidence::MayRecord::Any
+        );
+        // A scoped name is never a capability: it is a workload's, computed from its scaffold.
+        assert!(Capability::from_san_string("c:record-evidence:mutation").is_err());
+    }
+
+    // Grants are archived in the ledger (an admin action's rkyv body): each capability keeps the byte it was archived
+    // with, so appending one changes none of the others.
+    #[test]
+    fn each_capability_keeps_the_byte_it_was_archived_with() {
+        for (byte, capability) in Capability::ALL.into_iter().enumerate() {
+            let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&capability).unwrap();
+            assert_eq!(bytes.as_slice(), [byte as u8], "{capability:?}");
+        }
     }
 
     #[test]

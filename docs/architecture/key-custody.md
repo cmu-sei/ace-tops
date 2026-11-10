@@ -1097,8 +1097,8 @@ step not waited at.* *Done (2026-10-27), on `u7c` (nodes `cp` and `core`), from 
      server "did not answer". Stopped by PID, and the run passed.
   2. *The daemon logs nothing at info.* With no `RUST_LOG` its filter is errors only, so "serving" and "watching" never
      appear; the other agents log at info. Its errors appear, so the revocation did.
-  3. *No admin can revoke.* `just admin-provision` gives no `c:revoke`, so no account made by the documented flow can
-     revoke. For this run an account `revoker` was provisioned (signed by the maintainer's), holding `c:revoke` and the
+  3. *No admin can revoke.* `just admin-provision` gave no `c:revoke` (it has since 2026-10-27), so no account made by the
+     documented flow could revoke. For this run an account `revoker` was provisioned (signed by the maintainer's), holding `c:revoke` and the
      one permission the tool requires (`p:u2s:credentials-agent-observer…`).
   4. *A git server supersession at its start* (21:12:02), of a session that had subscriptions: by its look, its
      polar-init's escrow session not having said goodbye in time. Not a watcher, which cannot supersede; not chased.

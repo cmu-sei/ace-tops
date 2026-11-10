@@ -71,8 +71,10 @@ Each step is taken in bites, each reported before the next.
       `c:record-evidence:<type>` that type only, computed from the scaffold for collector workloads, and they add up. Reading it is
       on main (`e9e22751`: `cert_issuer_common::evidence::may_record`, for custody's signer, the git server's intake and
       `polar-eden records`); the computed types are (2026-11-10: `PolarAgent::RECORDS`, the scaffold's `records`, the authority
-      model's `Workload.records`, `CertificateNames::signing_san_strings`; `authority-model.md`, "Where it lives"); granting the bare
-      name to people is not; the author's records, under a CA
+      model's `Workload.records`, `CertificateNames::signing_san_strings`; `authority-model.md`, "Where it lives"); granting it to
+      people is built too (2026-11-10: policy first, `Action::"record-evidence"` on `Evidence::"<type>"`, the certificate's names where it
+      is silent, `polar_policy::evidence` and the builder's `admit_evidence`, `Capability::RecordEvidence` in `admin-provision`;
+      `credentials-policy.md`, "Who may sign evidence"; the branch's readers to switch to it, a record judged by the policy as of its commit); the author's records, under a CA
       the package brings, are shown beside the debt as claims and never meet a binding. Records name the rev and the source digest,
       not the image: `promote` rebuilds from the rev and checks the image's digest, only the cluster's under-test records name the
       image, a record made with changes beside its commit (`changed_beside_it`) is refused, and `promote` signs the debt's figures

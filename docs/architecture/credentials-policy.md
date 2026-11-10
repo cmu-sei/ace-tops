@@ -225,12 +225,33 @@ gets a step that **seeds `polar-schedules`** with the cluster defaults, signed:
   `credentials` sealed from the `jira_token` in the target's sops files, once: only when polar-schedules holds no such
   section, judged by what its documents say (`docs/architecture/jira.md`, "The credential").
 
+**Who may sign evidence (decided 2026-11-10, the maintainer: "update evidence signing permissions for users as policy
+updates from configuration").** A record's signer is asked as `Action::"record-evidence"` on `Evidence::"<its type>"`,
+policy first, both ways: a permit admits them whatever their certificate carries, a forbid refuses them whatever it
+carries, and where no rule applies (or no policy is loaded) the certificate's evidence names decide, the bare
+`c:record-evidence` (`Capability::RecordEvidence`) any type and a workload's scoped `c:record-evidence:<type>` that type. A
+rule that cannot be evaluated refuses. So an administrator grants a person the right to sign one type, or all, or
+withdraws it, by a signed `policy` update, with no new certificate:
+
+```
+permit(principal == Identity::"alice", action == Action::"record-evidence", resource == Evidence::"mutation");
+forbid(principal == Identity::"mallory", action == Action::"record-evidence", resource);
+```
+
+The rule is `polar_policy::evidence` (`may_sign` through an `Evaluator`, for a tool), and `admit_evidence` in the builder
+for an agent. Every reader of a record asks it: the git server's intake and `polar-evidence`'s `polar-eden records`
+(on the agentic-control-plane branch). A record is judged by the policy in force when the commit that added it was made
+(the maintainer, 2026-11-10), as its certificate is judged as of that commit: a later forbid stops a signer's next
+records counting and does not rewrite what was already promoted. Migration: a cluster's agents are rebuilt before a
+policy naming `record-evidence` is signed, since an agent built before refuses a policy outside its schema; and the
+records signed before by administrators without the capability count again once a policy permits them, or they hold it.
+
 The step needs a signer, and signing is the same as for any author: a user certificate holding the capability
 for the document type. Two consequences:
 
 - The first admin that `admin-provision` creates holds `c:provision-account`, `c:grant`,
-  `c:update-configuration`, `c:run-command`, `c:update-policy`, `c:update-runtime`, `c:update-groups` and, since
-  2026-10-27 (the maintainer), `c:revoke` (the recipe grants them now; an account provisioned before it did needs another provisioned, or a reissue). The
+  `c:update-configuration`, `c:run-command`, `c:update-policy`, `c:update-runtime`, `c:update-groups`, since
+  2026-10-27 (the maintainer) `c:revoke`, and since 2026-11-10 `c:record-evidence` (the recipe grants them now; an account provisioned before it did needs another provisioned, or a reissue; for evidence, a policy update does, below). The
   seeding signer is
   the operator account, made after the stack is up, so the step runs after the admin steps and the git server
   and before anything that needs a secret.

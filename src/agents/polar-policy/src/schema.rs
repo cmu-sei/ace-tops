@@ -45,6 +45,9 @@
 //! - A read of soft state is `Action::"read-state"` on `Label::"<a graph label>"`, asked by the state agent of every
 //!   request (docs/architecture/soft-state.md), and carries in its context whether the asker's floor declares the read
 //!   (`context.declared`; `context.implied` is always false, since no read is implied).
+//! - Signing an evidence record is `Action::"record-evidence"` on `Evidence::"<its type>"`, asked of each record's
+//!   signer by every reader of records, the certificate's evidence names deciding where policy is silent
+//!   ([`crate::evidence`]).
 
 use cedar_policy::{PolicySet, Schema, ValidationMode, Validator};
 use std::sync::OnceLock;
@@ -63,7 +66,7 @@ entity Secret = {
   "namespace"?: Identity,
   "frozen"?: Bool,
 } tags String;
-entity KubeSecret, Topic, Request, Label, Variable, Section, Agent, Command;
+entity KubeSecret, Topic, Request, Label, Variable, Section, Agent, Command, Evidence;
 
 action "retrieve", "store" appliesTo {
   principal: Identity,
@@ -108,6 +111,11 @@ action "update-runtime" appliesTo {
 action "run-command" appliesTo {
   principal: Identity,
   resource: Command,
+  context: { "now_secs": Long },
+};
+action "record-evidence" appliesTo {
+  principal: Identity,
+  resource: Evidence,
   context: { "now_secs": Long },
 };
 "#;

@@ -48,7 +48,7 @@ pub struct AuthorityRequest {
     pub principal: String,
     /// The signer's leaf certificate, from which the principal's permissions and capabilities are read.
     pub certificate_pem: String,
-    /// `update-configuration`, `update-runtime` or `run-command`.
+    /// `update-configuration`, `update-runtime`, `run-command` or `record-evidence`.
     pub action: &'static str,
     /// The things the change touches, as `(entity type, id)`: a variable, a runtime section, a command.
     pub resources: Vec<(&'static str, String)>,
@@ -100,6 +100,43 @@ pub async fn admit(
         }
     }
     Ok(())
+}
+
+/// Whether the signer `principal`, with the certificate `certificate_pem`, may sign an evidence record of `record_type`:
+/// `Action::"record-evidence"` on `Evidence::"<type>"`, policy first, and where it is silent the certificate's evidence
+/// names (`cert_issuer_common::evidence::may_record`). The rule is `polar_policy::evidence`'s; this is it for an agent,
+/// through its policy actor.
+pub async fn admit_evidence(
+    policy: Option<&ActorRef<PolicyMessage>>,
+    principal: &str,
+    certificate_pem: &str,
+    record_type: &str,
+) -> Result<(), AuthorityRefusal> {
+    use cert_issuer_common::evidence::{is_record_type, may_record};
+    if !is_record_type(record_type) {
+        return Err(AuthorityRefusal(format!(
+            "{principal} may not sign evidence of `{record_type}`: it is not a record type"
+        )));
+    }
+    let request = AuthorityRequest {
+        principal: principal.to_string(),
+        certificate_pem: certificate_pem.to_string(),
+        action: polar_policy::evidence::ACTION,
+        resources: vec![(
+            polar_policy::evidence::RESOURCE_TYPE,
+            record_type.to_string(),
+        )],
+    };
+    admit(policy, &request, || match may_record(certificate_pem) {
+        Ok(names) if names.allows(record_type) => Ok(()),
+        Ok(_) => Err(AuthorityRefusal(format!(
+            "{principal} may not sign evidence of `{record_type}`: policy says nothing of it, and the certificate carries no evidence name for it"
+        ))),
+        Err(e) => Err(AuthorityRefusal(format!(
+            "{principal} may not sign evidence of `{record_type}`: the certificate cannot be read ({e})"
+        ))),
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -337,5 +374,53 @@ mod tests {
             r#"Section::"q\"uote""#
         );
         assert!(entity("Section", "line\nbreak").is_none());
+    }
+
+    // The maintainer, 2026-11-10: evidence signing is granted and withdrawn by policy updates, the certificate deciding
+    // where policy is silent (polar_policy::evidence).
+    #[tokio::test]
+    async fn evidence_signing_is_policy_first_and_the_certificate_where_it_is_silent() {
+        let permit = policy(Some(
+            r#"permit(principal == Identity::"alice", action == Action::"record-evidence", resource == Evidence::"mutation");"#,
+        ))
+        .await;
+        let nothing = certificate(&[]);
+        assert_eq!(
+            admit_evidence(Some(&permit), "alice", &nothing, "mutation").await,
+            Ok(())
+        );
+        assert!(
+            admit_evidence(Some(&permit), "alice", &nothing, "attestation")
+                .await
+                .is_err()
+        );
+
+        let forbid = policy(Some(
+            r#"forbid(principal == Identity::"alice", action == Action::"record-evidence", resource);"#,
+        ))
+        .await;
+        let bare = certificate(&[Capability::RecordEvidence]);
+        let refusal = admit_evidence(Some(&forbid), "alice", &bare, "mutation")
+            .await
+            .unwrap_err();
+        assert!(refusal.0.contains("policy forbids it"), "{refusal}");
+
+        // Where policy is silent, or none is loaded, the certificate's bare name allows any type, and none allows none.
+        for actor in [None, Some(policy(None).await)] {
+            assert_eq!(
+                admit_evidence(actor.as_ref(), "alice", &bare, "kani").await,
+                Ok(())
+            );
+            assert!(
+                admit_evidence(actor.as_ref(), "alice", &nothing, "kani")
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            admit_evidence(None, "alice", &bare, "Not A Type")
+                .await
+                .is_err()
+        );
     }
 }

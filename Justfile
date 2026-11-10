@@ -469,8 +469,9 @@ admin-bootstrap:
         --key-out  {{_admin_dir}}/bootstrap-admin.key
 
 # Step 2: provision a normal admin account, signed with the bootstrap cert.
-# The account can provision accounts, grant permissions and revoke certificates (c:revoke), and sign the two kinds of
-# document the agents act on: a configuration (c:update-configuration) and a command (c:run-command). Capabilities
+# The account can provision accounts, grant permissions and revoke certificates (c:revoke), sign the two kinds of
+# document the agents act on: a configuration (c:update-configuration) and a command (c:run-command), and sign evidence
+# records of any type where policy says nothing of it (c:record-evidence; policy grants and withdraws it). Capabilities
 # are fixed when the certificate is issued, so an account provisioned before one was added to this
 # list does not have it; provision another, or reissue.
 # The bootstrap certificate is spent by the first provisioning, so a later account is provisioned
@@ -489,6 +490,7 @@ admin-provision username email signer="bootstrap-admin":
         --capability c:update-configuration --capability c:run-command \
         --capability c:update-policy --capability c:update-runtime \
         --capability c:update-groups --capability c:revoke \
+        --capability c:record-evidence \
         --reason user-onboarding
 
 # Step 3: claim the provisioned account. Generates the keypair locally (the
