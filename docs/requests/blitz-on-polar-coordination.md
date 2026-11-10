@@ -44,7 +44,9 @@ Each step is taken in small pieces, each tested and reported before the next. Th
 set, and none are given here.
 
 **Step A, now: small fixes from the review, and one from your plan.** None waits for anything.
-- kube-observer's ClusterRole derived from what it declares it watches (it reads every Secret today, `infra/config/capabilities.nuon:165`).
+- kube-observer's ClusterRole derived from what it declares it watches. **Done 2026-11-10** (`ca2e635c`): every Kubernetes role is now
+  computed by the builder from the agent's declared cluster operations and printed in its scaffold (`roles`), and none may read a
+  Secret. A Blitz agent on the Kubernetes API gets its role the same way, with nothing to write in the catalog.
 - `up.nu`: the cluster always named (never the kubeconfig's current context), a timed-out wait saying why, the plan naming every secret
   without its value, the graph password's two forms checked to agree before anything is applied.
 - The bootstrap CA constrained (path length, key usage) for new clusters.
