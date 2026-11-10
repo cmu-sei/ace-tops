@@ -22,8 +22,8 @@
 */
 
 //! The report reader as the agent's worker (docs/architecture/build-orchestrator.md, "How a report is read"): forked by the
-//! builder before the runtime, locked in seccomp's strict mode, with its tape and buffers made at the bounds signed at
-//! start. It runs the gate, the parser and the grammar's check over a line and answers with the tape
+//! builder before the runtime, locked as seccomp's strict mode locks a process, with its tape and buffers made at the
+//! bounds signed at start. It runs the gate, the parser and the grammar's check over a line and answers with the tape
 //! (`orchestrator_report::answer`); the agent reads the answer back with `Report::read_answer`, at the same bounds.
 //!
 //! A request carries the bounds the line is to be read at, ahead of the line ([`request`]): the bounds signed now, which

@@ -22,8 +22,8 @@
 */
 
 //! The agent's report reader in a real worker, forked as the builder forks it (`reader::DECL`, from the configuration) and
-//! locked in seccomp's strict mode: it reads each line as reading it directly does, at the bounds a request carries when
-//! they are narrower than its own, and never wider. A binary with its own main, since libtest's threads would stop the fork.
+//! locked as seccomp's strict mode locks a process: it reads each line as reading it directly does, at the bounds a
+//! request carries when they are narrower than its own, and never wider. A binary with its own main, since libtest's threads would stop the fork.
 
 use build_orchestrator::reader::{BOUNDS_LEN, DECL, request};
 use build_orchestrator::settings::{SECTION, narrowed};

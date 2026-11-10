@@ -284,8 +284,9 @@ reaches one, and what a bug in it could do. In layers, the riskiest input meetin
    what makes it small enough to verify.
 3. *The parse runs in a worker process, forked before anything else and locked down.* The orchestrator's builder forks it before it
    starts its runtime or any thread, since the builder's own lockdown forbids starting a program later (no `execve`, runtime
-   attestation). The worker then enters seccomp's strict mode: it may read its pipe, write its pipe and exit, and nothing else, not
-   even ask for memory; with memory and CPU limits, no file, no network and no credential. It hands back a fixed-layout encoding of
+   attestation). The worker then locks itself as seccomp's strict mode locks a process, by a filter allowing what strict mode allows
+   (strict mode itself is refused under a container's default seccomp profile, below): it may read its pipe, write its pipe and
+   exit, and nothing else, not even ask for memory; with memory and CPU limits, no file, no network and no credential. It hands back a fixed-layout encoding of
    what it parsed, which the orchestrator checks again as it reads it (rkyv's validation, made for bytes that are not trusted). A
    bug in the parser can at worst kill the worker; the build's reports are then refused, and the crash is evidence, reported as
    any crash by signal is.
@@ -625,7 +626,12 @@ I write Rust code"):
     all. The agent's own process shows `Seccomp: 0` and `NoNewPrivs: 0`, the Polar-wide gap recorded below ("Polar's
     identity containers and `restricted`"): its containers set neither `allowPrivilegeEscalation: false` nor a seccomp
     profile, so strict mode under `RuntimeDefault` is still to be seen, when the profiles of the runtime attestation work
-    come. O2e4 DONE; O2e DONE.
+    come. O2e4 DONE; O2e DONE. *Seen, 2026-11-10 (slice C's C1 live on u7c): it is refused.* Under `RuntimeDefault` the reader
+    died at its lockdown (`exited 12`): the kernel refuses strict mode to a process that has a seccomp filter already, and the
+    default profile is one, so the orchestrator restarted every five minutes with its custody daemon. The worker now installs a
+    filter allowing what strict mode allows (`read`, `write`, `exit`, `rt_sigreturn` of the agent's architecture; any other
+    call kills it, by `SIGSYS`), which stacks on the runtime's (`polar-agent-builder` `worker.rs`, `STRICT`; tested by a
+    worker forked under a filter already, which failed as on u7c before the change).
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it. Planned 2026-11-08, in four. Found first, on u7c's registry
   (`registry:2.8.3`): it does not take a blob in one POST (`?digest=` with the body answers 202 and opens an upload session), so a

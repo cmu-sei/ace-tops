@@ -21,9 +21,9 @@
    DM26-0670
 */
 
-//! The report reader's answer in a real worker (polar_agent_builder::worker): forked from a process of one thread, locked in
-//! seccomp's strict mode, asked line after line, its answers read back on the agent's side. A binary with its own main, since
-//! libtest's threads would stop the fork.
+//! The report reader's answer in a real worker (polar_agent_builder::worker): forked from a process of one thread, locked as
+//! seccomp's strict mode locks a process, asked line after line, its answers read back on the agent's side. A binary with
+//! its own main, since libtest's threads would stop the fork.
 
 use orchestrator_report::*;
 use polar_agent_builder::worker::{Work, fork};

@@ -156,7 +156,7 @@ pub struct AgentResources {
     /// The agent's way to its own soft state, for an agent with the `soft-state` capability (it declares a graph
     /// read): see [`state::StateClient`].
     pub state: Option<crate::state::StateHandle>,
-    /// The agent's workers, by name, each locked in seccomp's strict mode (`PolarAgent::WORKERS`; [`worker`]).
+    /// The agent's workers, by name, each locked as seccomp's strict mode locks a process (`PolarAgent::WORKERS`; [`worker`]).
     pub workers: crate::worker::Workers,
     /// The agent's way to its graph controller, for one that needs `graph-write` or `graph-read` ([`graph`]). The
     /// infrastructure starts it, reports its signals to the health actor and drains it at the end.

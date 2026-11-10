@@ -156,7 +156,7 @@ pub trait PolarAgent: Sized + 'static {
     /// schema export, so applying the catalog is the sign-off, and a request of a kind not declared here is denied.
     const OPERATIONS: &'static [OperationDecl] = &[];
     /// The workers the agent asks to do work on bytes it must not trust (`worker`): each forked at start, before the
-    /// runtime, and locked in seccomp's strict mode. One that dies ends the agent.
+    /// runtime, and locked as seccomp's strict mode locks a process. One that dies ends the agent.
     const WORKERS: &'static [crate::worker::WorkerDecl] = &[];
     /// The topics the agent uses itself, each with its access and its purpose (docs/architecture/topics.md).
     /// The topics every agent uses, and those a need brings, are implied and not listed here; the scaffold

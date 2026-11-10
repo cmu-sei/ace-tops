@@ -31,9 +31,14 @@
 //!
 //! In the child, before it reads anything: its two pipes become its standard input and output, and every other descriptor is
 //! closed (standard error too: it has nothing to say); no new privileges, not dumpable, and killed if its parent dies;
-//! everything its work needs is allocated; and then seccomp's strict mode, in which the process may `read`, `write`, `exit`
-//! and return from a signal, and any other system call kills it, asking for memory among them. So its work allocates nothing
-//! and calls nothing: it reads a request, answers it into a buffer it was given, and writes the answer.
+//! everything its work needs is allocated; and then a seccomp filter allowing what seccomp's strict mode allows: the process
+//! may `read`, `write`, `exit` and return from a signal, and any other system call kills it (by `SIGSYS`), asking for memory
+//! among them. So its work allocates nothing and calls nothing: it reads a request, answers it into a buffer it was given,
+//! and writes the answer.
+//!
+//! A filter, not strict mode itself: the kernel refuses strict mode to a process that has a filter already, as every
+//! container under the runtime's default seccomp profile has (`RuntimeDefault`, slice C's C1), and filters stack, each
+//! system call held to all of them. Found on u7c, 2026-11-10: the orchestrator's worker died at its lockdown.
 //!
 //! The parent holds a worker to its bounds: a request longer than the worker takes is not sent, and an answer longer than it
 //! may give, or none, is not believed. A worker that hangs up has died, and says how.
@@ -54,8 +59,9 @@ pub trait Work {
     fn max_request(&self) -> usize;
     /// The most an answer may hold, in bytes.
     fn max_answer(&self) -> usize;
-    /// Answers `request` into `answer`, returning how much of it the answer is. It runs in seccomp's strict mode: it may not
-    /// allocate, nor make any system call; whatever it needs it was given when it was made, before the lockdown.
+    /// Answers `request` into `answer`, returning how much of it the answer is. It runs locked as seccomp's strict mode
+    /// locks a process: it may not allocate, nor make any system call; whatever it needs it was given when it was made,
+    /// before the lockdown.
     fn answer(&mut self, request: &[u8], answer: &mut [u8]) -> usize;
 }
 
@@ -198,8 +204,23 @@ fn child<W: Work>(requests: RawFd, answers: RawFd, make: impl FnOnce() -> W) -> 
     let mut bounds = [0u8; 16];
     bounds[..8].copy_from_slice(&(request.len() as u64).to_le_bytes());
     bounds[8..].copy_from_slice(&(answer.len() as u64).to_le_bytes());
-    // SAFETY: strict mode takes no pointer; from here on only read, write, exit and sigreturn are allowed.
-    if unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_STRICT, 0, 0, 0) } != 0 {
+    let mut filter = STRICT;
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    // SAFETY: the program points at the filter, which outlives the call; the kernel copies it. From here on only read,
+    // write, exit and rt_sigreturn are allowed.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::SECCOMP_MODE_FILTER,
+            &program as *const libc::sock_fprog,
+            0,
+            0,
+        )
+    } != 0
+    {
         die(12);
     }
     if !write_all(1, &bounds) {
@@ -222,7 +243,47 @@ fn child<W: Work>(requests: RawFd, answers: RawFd, make: impl FnOnce() -> W) -> 
     }
 }
 
-/// Ends the process with `code`, by the `exit` system call strict mode allows (not `exit_group`, which it does not).
+/// The architecture a system call's number is of, as the kernel names it to a filter (`AUDIT_ARCH_*`): a call made under
+/// another (x86-64's 32-bit entry, which numbers calls differently) is refused, not read by the wrong table.
+#[cfg(target_arch = "x86_64")]
+const ARCH: u32 = 0xc000_003e;
+#[cfg(target_arch = "aarch64")]
+const ARCH: u32 = 0xc000_00b7;
+
+const fn statement(code: u32, k: u32) -> libc::sock_filter {
+    libc::sock_filter {
+        code: code as u16,
+        jt: 0,
+        jf: 0,
+        k,
+    }
+}
+
+const fn jump_if(k: u32, ahead: u8) -> libc::sock_filter {
+    libc::sock_filter {
+        code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+        jt: ahead,
+        jf: 0,
+        k,
+    }
+}
+
+/// What seccomp's strict mode allows, as a filter: `read`, `write`, `exit` and `rt_sigreturn` of this architecture, and
+/// every other call kills the process. The offsets are `struct seccomp_data`'s: the call's number at 0, its architecture at 4.
+const STRICT: [libc::sock_filter; 10] = [
+    statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 4),
+    jump_if(ARCH, 1),
+    statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_KILL_PROCESS),
+    statement(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0),
+    jump_if(libc::SYS_read as u32, 4),
+    jump_if(libc::SYS_write as u32, 3),
+    jump_if(libc::SYS_exit as u32, 2),
+    jump_if(libc::SYS_rt_sigreturn as u32, 1),
+    statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_KILL_PROCESS),
+    statement(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW),
+];
+
+/// Ends the process with `code`, by the `exit` system call the lock allows (not `exit_group`, which it does not).
 fn die(code: i32) -> ! {
     // SAFETY: exit takes a status and does not return.
     unsafe { libc::syscall(libc::SYS_exit, code) };

@@ -48,7 +48,7 @@ impl Work for Probe {
     }
     fn answer(&mut self, request: &[u8], answer: &mut [u8]) -> usize {
         match request {
-            // A system call strict mode does not allow.
+            // A system call the lock does not allow.
             b"getpid" => {
                 // SAFETY: getpid takes nothing.
                 let _ = unsafe { libc::getpid() };
@@ -104,6 +104,37 @@ fn died_by_signal(result: Result<Vec<u8>, WorkerError>, signal: i32, what: &str)
     }
 }
 
+/// Puts this process under a seccomp filter that allows every call, as a container's default profile allows most: what a
+/// worker is forked under in a pod. Seccomp's strict mode is refused to such a process; filters stack.
+fn under_a_filter_allowing_everything() {
+    let mut allow = [libc::sock_filter {
+        code: (libc::BPF_RET | libc::BPF_K) as u16,
+        jt: 0,
+        jf: 0,
+        k: libc::SECCOMP_RET_ALLOW,
+    }];
+    let program = libc::sock_fprog {
+        len: 1,
+        filter: allow.as_mut_ptr(),
+    };
+    // SAFETY: prctl on this process; the program points at a filter that outlives the call, and the kernel copies it.
+    unsafe {
+        assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+        assert_eq!(
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &program as *const libc::sock_fprog,
+                0,
+                0
+            ),
+            0,
+            "{}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 fn main() {
     // A descriptor the parent holds open across the fork, as an agent's would be: a file, without close-on-exec.
     let canary: OwnedFd = std::fs::OpenOptions::new()
@@ -139,16 +170,16 @@ fn main() {
     );
 
     case(
-        "a system call strict mode does not allow kills the worker",
+        "a system call the lock does not allow kills the worker",
         &|| {
             let mut w = worker(&canary);
-            died_by_signal(w.ask(b"getpid"), libc::SIGKILL, "getpid");
+            died_by_signal(w.ask(b"getpid"), libc::SIGSYS, "getpid");
         },
     );
 
     case("asking the kernel for memory kills the worker", &|| {
         let mut w = worker(&canary);
-        died_by_signal(w.ask(b"allocate"), libc::SIGKILL, "a 64 MiB allocation");
+        died_by_signal(w.ask(b"allocate"), libc::SIGSYS, "a 64 MiB allocation");
     });
 
     case(
@@ -164,6 +195,17 @@ fn main() {
         &|| {
             let mut w = worker(&canary);
             assert_eq!(w.ask(b"lie"), Err(WorkerError::Lied(u64::MAX as usize)));
+        },
+    );
+
+    case(
+        "a worker forked from a process under a seccomp filter already, as the runtime's default profile puts every \
+         container, is locked all the same",
+        &|| {
+            under_a_filter_allowing_everything();
+            let mut w = worker(&canary);
+            assert_eq!(w.ask(b"abc").unwrap(), b"ABC");
+            died_by_signal(w.ask(b"getpid"), libc::SIGSYS, "getpid, under two filters");
         },
     );
 
