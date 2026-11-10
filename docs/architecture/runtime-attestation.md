@@ -105,7 +105,7 @@ not control, or the process submits to restrictions that are verified from outsi
 |---|---|---|
 | An impostor pod with a stolen token | The instance check: owner, service account, `imageID` against the signed deployment | the API |
 | Copies the certificate key out, to use elsewhere | The private key is held by the pod's custody daemon, usable through its socket but not readable (`key-custody.md`). Not in the kernel keyring as first written here: no kernel holds or signs with a P-256 key (`key-custody.md`, "The process keyring, probed"), so it is in the daemon's locked memory, which root on the node could read. Cassini binds each session to the attested pod's address | the custody daemon, Cassini |
-| Replaces the binary, or drops a new one | `readOnlyRootFilesystem` and digest pinning, verified in the pod spec | the API |
+| Replaces the binary, or drops a new one | `readOnlyRootFilesystem` and digest pinning, verified in the pod spec (digests: yes; a read-only root: not yet, slice C's C1 below) | the API |
 | `kubectl debug` | An ephemeral container in the pod's status | the API |
 | `kubectl exec`, or a spawned shell | A process in the container's cgroup that is not the agent | the node sensor |
 | Code injected into the live process | The builder locks the process before it parses any untrusted input, irreversibly: seccomp (no `execve`, `ptrace`, `memfd_create`, no new executable memory) and Landlock (no file access beyond what it opened); `Seccomp: 2` and `NoNewPrivs: 1` verified in `/proc/<pid>/status` | the node sensor |
@@ -380,6 +380,42 @@ digest. And a container that dies by a signal ("What an attacker is assumed to w
 `attestation/sensor` (a DaemonSet, host PID visibility, no Kubernetes credential), the runtime challenges answered by a
 builder actor, the builder's seccomp and Landlock lock, and Cassini binding each session to the attested pod's address,
 as the sections above describe.
+
+**Found planning it (2026-11-10, on u7c).** The table above claimed more than there is. No Polar container sets
+`readOnlyRootFilesystem` or `allowPrivilegeEscalation: false`, none runs under a seccomp profile (an agent's `/proc/1/status`
+reads `Seccomp: 0`, `NoNewPrivs: 0`), and the attestation agent checks none of it. Two agents run a program: polar-git-server
+and polar-scheduler-observer run `git`.
+
+**Decided (the maintainer, 2026-11-10):**
+- *No code hash in slice C.* The sensor runs as uid 1000 with no capability and reads `/proc/<pid>/status` and `maps`: a
+  process in the container that is not the agent, the agent's `Seccomp` and `NoNewPrivs`, and an anonymous executable
+  mapping, which is what injected code looks like once the lock forbids new executable memory. It cannot read the custody
+  daemon (another uid, not dumpable). Reading code from `/proc/<pid>/mem` needs `CAP_SYS_PTRACE`, which reads any process on
+  the node: a decision of its own, later.
+- *No agent runs a program.* polar-git-server and polar-scheduler-observer move to git in process first, so every agent
+  gets the one lock with `execve` refused.
+- *No runtime challenges.* What a process says about itself is worthless against code inside it, and an answer shows only
+  that something holding the session is alive, which the health actor and the sensor show already. The verdict on a running
+  pod comes from the API and the sensor.
+- *A session is bound to its pod's address through the certificate.* At issuance, once the instance check has the pod, its
+  address is written into the certificate beside its name, and Cassini refuses a session from any other.
+- *Canal with the sensor.* Enforcing NetworkPolicy on u7c (`build-orchestrator.md`, the network step, N3: Flannel and Calico's
+  nftables dataplane, rootless, IPv4) is done beside the sensor, both being node work in `nix-usernetes`, and the builds'
+  policy and canary (N1, N2) follow it.
+
+**The bites, each seen on u7c before the next:**
+1. *C1, the pod hardened and checked.* Every Polar container gets a read-only root, `allowPrivilegeEscalation: false` and
+   the runtime's default seccomp profile, what an agent writes on volumes; the attestation agent holds a pod to them as it
+   holds it to its owner.
+2. *C2, git in process* for polar-git-server and polar-scheduler-observer.
+3. *C3, the builder's lock*, installed in `run` before the runtime starts: seccomp refusing `execve`, `ptrace`,
+   `memfd_create`, new executable memory, `bpf` and module loading, by killing (a `SIGSYS` slice B catches); Landlock
+   allowing only the paths the agent's build declares (its document, certificates, the custody socket, its volumes, what
+   name resolution reads), printed in its scaffold so applying the catalog signs them off.
+4. *C4, Canal and the node sensor*: a spike of Canal rootless, then enforcement on u7c, and the sensor (a DaemonSet, a kind
+   the catalog gains), its traffic limited by policy to Cassini.
+5. *N1 and N2*, the builds' policy and its canary.
+6. *C5, the session bound to the pod's address* through its certificate.
 
 ### For the maintainer
 
