@@ -860,7 +860,8 @@ only.
   operations, `protocol-handlers.md`, "A role is what the operations declare"; seen live on u7c: kube-observer refused Secrets, ConfigMaps
   and `get pods`, its watches feeding the graph, every running pod there; attestation watching; a build made, its pods listed and its log read), `up.nu` requiring the
   cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree, the
-  bootstrap CA constrained for new clusters, and tests that `polar-sign` and `polar-admin-grant` cannot print a secret); (6) `polar-sign next` read
+  bootstrap CA constrained for new clusters (DONE 2026-11-10: path length 0, key usage keyCertSign and cRLSign, both critical,
+  `cert-issuer-common` `ca_root`; a cluster's existing CA is kept as it is, and only a new cluster's gets them), and tests that `polar-sign` and `polar-admin-grant` cannot print a secret); (6) `polar-sign next` read
   against lifecycle's decisions first. (6) DONE 2026-11-09 (the maintainer, "Take it, with the push fix"): `polar-sign next` built, with a sealed secret
   never carried (bound to its version) and `push`'s stale clone fixed (`docs/architecture/polar-sign-next.md`). (1) DONE 2026-11-07: taken from `2cce4722`/`5189c650`, Docker's rule for the registry host (a tag's dots
   are not a host: `neo4j:5.26.2` had been sent to a registry named "neo4j:5.26.2") and a `localhost` registry as the node's own store, never fetched,

@@ -49,7 +49,8 @@ set, and none are given here.
   Secret. A Blitz agent on the Kubernetes API gets its role the same way, with nothing to write in the catalog.
 - `up.nu`: the cluster always named (never the kubeconfig's current context), a timed-out wait saying why, the plan naming every secret
   without its value, the graph password's two forms checked to agree before anything is applied.
-- The bootstrap CA constrained (path length, key usage) for new clusters.
+- The bootstrap CA constrained (path length, key usage) for new clusters. **Done 2026-11-10**: path length 0 and key usage
+  `keyCertSign`, `cRLSign`, both critical. Name constraints wait for your findings (phase 0, question 5).
 - Tests that `polar-sign` and `polar-admin-grant` cannot print a secret.
 - **New, from your phase 0:** the signed provenance record names every source tree a render was made from (below, "Provenance").
 

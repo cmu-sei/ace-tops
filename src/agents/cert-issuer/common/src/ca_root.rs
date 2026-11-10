@@ -41,12 +41,22 @@ use time::OffsetDateTime;
 /// Validity defaults to 10 years. CA roots are long-lived; rotation
 /// is a separate operational procedure (see module docs).
 ///
+/// It signs only end-entity certificates (path length 0), and its key
+/// signs certificates and revocations and nothing else; both extensions
+/// are critical. Nothing Polar issues is a CA, so a key the CA issued can
+/// never mint a chain of its own. A CA made before 2026-11-10 has
+/// neither constraint and keeps working as it is; a new cluster gets them.
+///
 /// This is intentionally exposed as a library function rather than
 /// a separate binary so it can be invoked from a small `cargo run
 /// --bin generate-ca` shim or from a test.
 pub fn bootstrap_ca(common_name: &str) -> Result<(String, String), String> {
     let mut params: rcgen::CertificateParams = Default::default();
-    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Constrained(0));
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::CrlSign,
+    ];
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, common_name);
@@ -59,4 +69,39 @@ pub fn bootstrap_ca(common_name: &str) -> Result<(String, String), String> {
         .map_err(|e| format!("ca self-sign: {e}"))?;
 
     Ok((cert.pem(), key_pair.serialize_pem()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x509_parser::prelude::*;
+
+    /// The root signs certificates and their revocations and nothing else, and only end-entity certificates: no
+    /// certificate it signs can be a CA in turn (path length 0), so a key it issued cannot mint a chain of its own. Both
+    /// extensions are critical, so a verifier that cannot read them refuses the chain.
+    #[test]
+    fn the_root_signs_only_end_entity_certificates_and_their_revocations() {
+        let (cert_pem, _key) = bootstrap_ca("Test CA").unwrap();
+        let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).unwrap();
+        let cert = pem.parse_x509().unwrap();
+
+        let constraints = cert
+            .basic_constraints()
+            .unwrap()
+            .expect("basic constraints");
+        assert!(constraints.critical);
+        assert!(constraints.value.ca);
+        assert_eq!(constraints.value.path_len_constraint, Some(0));
+
+        let usage = cert.key_usage().unwrap().expect("key usage");
+        assert!(usage.critical);
+        assert!(usage.value.key_cert_sign());
+        assert!(usage.value.crl_sign());
+        assert!(!usage.value.digital_signature());
+        assert!(!usage.value.key_encipherment());
+
+        let lifetime =
+            cert.validity().not_after.timestamp() - cert.validity().not_before.timestamp();
+        assert!(lifetime <= 365 * 10 * 24 * 3600, "{lifetime}");
+    }
 }
