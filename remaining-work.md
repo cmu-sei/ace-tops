@@ -1026,11 +1026,10 @@ only.
     client's `Registered`-while-registered arm), the dead dep-endpoint literals and `HealthCheckArgs` from the remaining agents,
     and the dead hard-coded endpoint fallbacks in the Rust agents once the env is always set (confirm `HealthCheckArgs` hard-coding
     was a convenience).
-  - **`--version`:** the binaries that do not answer it yet (2026-10-31; `infra/INFRA.md`, "The version a binary reports"):
-    `cert-issuer-setup` and `discover_repo` (developer tools), and the binaries that are not on the builder and parse no arguments,
-    which would start on `--version`: gitlab-observer, gitlab-consumer, build-processor, the
-    logger, polar-healthcheck and polar-custody's daemon. Each is one line, `polar_version::exit_if_asked("<name>")`, or nothing
-    once it moves onto the builder.
+  - ~~**`--version`:** the binaries that did not answer it~~ DONE 2026-11-10: the event logger, polar-healthcheck, polar-custody's
+    daemon, and the developer tools `cert-issuer-setup`, `git-discovery-harness` and `gitlab-seed` answer it before anything else, each
+    tested with an empty environment (`tests/version.rs` and its like); the GitLab pair and build-processor answer it on the builder.
+    Every binary in the workspace now does (`infra/INFRA.md`, "The version a binary reports").
   - polar-scheduler-observer and polar-scheduler-processor: Running on the cluster, 0 restarts (2026-10-14), and the checks of the
     list above (survives a broker restart, drains on SIGTERM) are not recorded for them.
 - [ ] **PROTOCOL HANDLERS: AGENTS' I/O IN INFRASTRUCTURE** (decided by the maintainer, 2026-11-02; `docs/architecture/protocol-handlers.md`).

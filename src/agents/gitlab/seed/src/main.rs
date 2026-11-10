@@ -159,6 +159,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    polar_version::exit_if_asked("gitlab-seed");
     match Cli::parse().command {
         Command::Make(args) => make(args).await,
         Command::Check(args) => check(args).await,

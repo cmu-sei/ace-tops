@@ -44,6 +44,7 @@ use polar_health::HealthState;
 use polar_health::probe::{self, ProbeConfig};
 
 fn main() {
+    polar_version::exit_if_asked("polar-healthcheck");
     let config = match ProbeConfig::from_env() {
         Ok(config) => config,
         Err(e) => {

@@ -158,6 +158,7 @@ impl Actor for Harness {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    polar_version::exit_if_asked("git-discovery-harness");
     polar::init_logging(SERVICE_NAME.to_string());
     let url = std::env::args()
         .nth(1)

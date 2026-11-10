@@ -36,6 +36,7 @@ name = "polar-custody"
 path = "src/main.rs"
 
 [dependencies]
+polar-version.workspace = true
 polar-scudo.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true

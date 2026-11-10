@@ -159,6 +159,7 @@ fn console_filter(rust_log: Option<String>) -> tracing_subscriber::EnvFilter {
 
 #[tokio::main]
 async fn main() {
+    polar_version::exit_if_asked("polar-custody");
     tracing_subscriber::fmt()
         .with_env_filter(console_filter(std::env::var("RUST_LOG").ok()))
         .init();

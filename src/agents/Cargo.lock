@@ -3221,6 +3221,7 @@ dependencies = [
  "polar-crypto",
  "polar-env",
  "polar-scudo",
+ "polar-version",
  "proptest",
  "ractor",
  "rkyv",
@@ -3305,6 +3306,7 @@ dependencies = [
  "cynic-introspection",
  "hex",
  "polar-scudo",
+ "polar-version",
  "proptest",
  "rcgen",
  "reqwest 0.12.28",
@@ -4813,6 +4815,7 @@ dependencies = [
  "cassini-types",
  "polar",
  "polar-scudo",
+ "polar-version",
  "ractor",
  "rkyv",
  "tokio",
@@ -6424,6 +6427,7 @@ dependencies = [
  "polar-escrow",
  "polar-scudo",
  "polar-signing",
+ "polar-version",
  "proptest",
  "ractor",
  "rand 0.10.3",
@@ -6540,6 +6544,7 @@ version = "1.0.0"
 dependencies = [
  "polar-health",
  "polar-scudo",
+ "polar-version",
 ]
 
 [[package]]

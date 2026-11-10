@@ -26,6 +26,7 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() {
+    polar_version::exit_if_asked("event-logger");
     polar::init_logging("events.logging.supervisor".to_string());
     let _db_path =
         PathBuf::from(std::env::var("LOG_DB_PATH").unwrap_or_else(|_| "./rocksdb".to_string()));

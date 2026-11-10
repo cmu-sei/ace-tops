@@ -91,6 +91,7 @@ const AGENT_DNS: &str = "polar-agent.polar.serviceaccount.cluster.local";
 const TOKEN_LIFETIME_SECS: u64 = 3600;
 
 fn main() {
+    polar_version::exit_if_asked("cert-issuer-setup");
     fs::create_dir_all("dev/tmp").expect("create dev/tmp");
     fs::create_dir_all("dev/certs/server").expect("create dev/certs/server");
     fs::create_dir_all("dev/certs/neo4j-server").expect("create dev/certs/neo4j-server");
