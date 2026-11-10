@@ -105,7 +105,7 @@ not control, or the process submits to restrictions that are verified from outsi
 |---|---|---|
 | An impostor pod with a stolen token | The instance check: owner, service account, `imageID` against the signed deployment | the API |
 | Copies the certificate key out, to use elsewhere | The private key is held by the pod's custody daemon, usable through its socket but not readable (`key-custody.md`). Not in the kernel keyring as first written here: no kernel holds or signs with a P-256 key (`key-custody.md`, "The process keyring, probed"), so it is in the daemon's locked memory, which root on the node could read. Cassini binds each session to the attested pod's address | the custody daemon, Cassini |
-| Replaces the binary, or drops a new one | `readOnlyRootFilesystem` and digest pinning, verified in the pod spec (digests: yes; a read-only root: not yet, slice C's C1 below) | the API |
+| Replaces the binary, or drops a new one | `readOnlyRootFilesystem` and digest pinning, verified in the pod spec (slice C's C1, below) | the API |
 | `kubectl debug` | An ephemeral container in the pod's status | the API |
 | `kubectl exec`, or a spawned shell | A process in the container's cgroup that is not the agent | the node sensor |
 | Code injected into the live process | The builder locks the process before it parses any untrusted input, irreversibly: seccomp (no `execve`, `ptrace`, `memfd_create`, no new executable memory) and Landlock (no file access beyond what it opened); `Seccomp: 2` and `NoNewPrivs: 1` verified in `/proc/<pid>/status` | the node sensor |
@@ -422,7 +422,15 @@ protection, and then a pod without it is refused its certificate. Probed on whit
 **The bites, each seen on u7c before the next:**
 1. *C1, the pod hardened and checked.* Every Polar container gets a read-only root, `allowPrivilegeEscalation: false` and
    the runtime's default seccomp profile, what an agent writes on volumes; the attestation agent holds a pod to them as it
-   holds it to its owner.
+   holds it to its owner. **Built 2026-11-10, not yet seen live.** The render (`7332f2b2`): `HardenedSecurityContext` on every
+   agent, polar-init, the custody daemon and cert-issuer; read on u7c first, none writes to its root but the `/etc` files the
+   runtime mounts, so none needed a volume (the third-party images do write, and come later). The check (decided while
+   building, for review): the signed deployment record, schema 3, says how each container was rendered to run
+   (`hardening`: `read_only_root`, `no_privilege_escalation`, `confined_seccomp`, from `deploy-objects.nu` `hardening_of`), and
+   the attestation agent holds both a pod (`NotGenuine::Weakened` at issuance) and a Deployment's or StatefulSet's template
+   (`Drift::Weakened` while watching) to it, reading them as Kubernetes does (`holdings.rs` `hardening_by_container`). So a node
+   that cannot give a setting is a target rendered without it, named in its signed record (the fallback above), and anything
+   less than what was signed is an alteration. A record before schema 3 says nothing, and holds nothing to it.
 2. *C2, git in process* for polar-git-server and polar-scheduler-observer.
 3. *C3, the builder's lock*, installed in `run` before the runtime starts: seccomp refusing `execve`, `ptrace`,
    `memfd_create`, new executable memory, `bpf` and module loading, by killing (a `SIGSYS` slice B catches); Landlock

@@ -252,10 +252,11 @@ spec: { template: { spec: { containers: [ { name: a-job, image: 'r/job@sha256:ee
                 assert equal $app.namespace "polar"
                 assert equal $app.owner_kind "Deployment"
                 assert equal $app.service_account "the-app"
+                let none = { read_only_root: false, no_privilege_escalation: false, confined_seccomp: false }
                 assert equal $app.containers [
-                    { name: "polar-init", image: "r/polar-init@sha256:aa" }
-                    { name: "the-app", image: "r/app@sha256:bb" }
-                    { name: "z-sidecar", image: "r/side@sha256:cc" }
+                    { name: "polar-init", image: "r/polar-init@sha256:aa", hardening: $none }
+                    { name: "the-app", image: "r/app@sha256:bb", hardening: $none }
+                    { name: "z-sidecar", image: "r/side@sha256:cc", hardening: $none }
                 ] "an init container is pinned too, and the order is the names'"
                 let store = ($facts | where owner_name == "a-store" | first)
                 assert equal $store.owner_kind "StatefulSet"
@@ -293,12 +294,39 @@ template:
                     namespace: "polar-builds"
                     service_account: "build-runner"
                     containers: [
-                        { name: "fetch", image: "r/build-fetch@sha256:ff" }
-                        { name: "pipeline", image: "r/build-fetch@sha256:ff" }
-                        { name: "polar-init", image: "r/polar-init@sha256:aa" }
+                        { name: "fetch", image: "r/build-fetch@sha256:ff", hardening: { read_only_root: false, no_privilege_escalation: false, confined_seccomp: false } }
+                        { name: "pipeline", image: "r/build-fetch@sha256:ff", hardening: { read_only_root: false, no_privilege_escalation: false, confined_seccomp: false } }
+                        { name: "polar-init", image: "r/polar-init@sha256:aa", hardening: { read_only_root: false, no_privilege_escalation: false, confined_seccomp: false } }
                     ]
                     under_test: false
                 }]
+            }
+        }
+        {
+            # docs/architecture/runtime-attestation.md, slice C, C1: the record says how each container was rendered to run, as
+            # Kubernetes reads it (the attestation agent's holdings.rs `hardening_by_container` reads a pod the same way), so a
+            # pod or a workload with less than that is not what the deployment made.
+            name: "the record says how each container runs, read from its own security context or else the pod's"
+            body: {
+                let hardened = "
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: hard, namespace: polar }
+spec:
+  template:
+    spec:
+      serviceAccountName: hard
+      securityContext: { seccompProfile: { type: RuntimeDefault } }
+      initContainers:
+        - { name: polar-init, image: 'r/i@sha256:aa', securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false } }
+      containers:
+        - { name: hard, image: 'r/h@sha256:bb', securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, seccompProfile: { type: Unconfined } } }
+        - { name: local, image: 'r/l@sha256:cc', securityContext: { seccompProfile: { type: Localhost, localhostProfile: p.json } } }
+"
+                let by_name = (deployment_facts [$hardened] | first | get containers | reduce --fold {} {|c, acc| $acc | insert $c.name $c.hardening })
+                assert equal $by_name.polar-init { read_only_root: true, no_privilege_escalation: true, confined_seccomp: true } "the pod's profile"
+                assert equal $by_name.hard { read_only_root: true, no_privilege_escalation: true, confined_seccomp: false } "its own Unconfined"
+                assert equal $by_name.local { read_only_root: false, no_privilege_escalation: false, confined_seccomp: true }
             }
         }
         {
@@ -306,7 +334,7 @@ template:
             body: {
                 let facts = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:1" }] }]
                 let first = (next_record null $facts "t")
-                assert equal $first { schema: 2, target: "t", version: 1, workloads: $facts }
+                assert equal $first { schema: 3, target: "t", version: 1, workloads: $facts }
                 assert equal (next_record $first $facts "t") null "nothing to sign"
                 let changed = [{ identity: "a", containers: [{ name: "a", image: "i@sha256:2" }] }]
                 assert equal (next_record $first $changed "t").version 2

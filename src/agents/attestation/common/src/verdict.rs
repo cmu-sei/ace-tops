@@ -52,6 +52,50 @@ pub struct ContainerFacts {
     pub image: String,
     /// The kubelet's `imageID`: what is really running. None until the container has started.
     pub image_id: Option<String>,
+    /// How its spec makes it run.
+    pub hardening: Hardening,
+}
+
+/// How a container is made to run (docs/architecture/runtime-attestation.md, slice C, C1): a read-only root
+/// (`readOnlyRootFilesystem`), no privilege escalation (`allowPrivilegeEscalation: false`, so `NoNewPrivs`), and a seccomp
+/// profile that confines it (`RuntimeDefault` or `Localhost`, on the container or else the pod). The signed record says
+/// what each container was rendered with, and a pod or a workload with less than that is not what the deployment made.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hardening {
+    pub read_only_root: bool,
+    pub no_privilege_escalation: bool,
+    pub confined_seccomp: bool,
+}
+
+impl Hardening {
+    /// Every setting on, as Polar renders its own containers.
+    pub const FULL: Hardening = Hardening {
+        read_only_root: true,
+        no_privilege_escalation: true,
+        confined_seccomp: true,
+    };
+
+    /// The settings `wanted` has and this has not, by name, in a fixed order; none when this is as strong.
+    pub fn lacks(&self, wanted: &Hardening) -> Vec<&'static str> {
+        [
+            (
+                wanted.read_only_root && !self.read_only_root,
+                "a read-only root",
+            ),
+            (
+                wanted.no_privilege_escalation && !self.no_privilege_escalation,
+                "no privilege escalation",
+            ),
+            (
+                wanted.confined_seccomp && !self.confined_seccomp,
+                "a seccomp profile",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(lacking, name)| lacking.then_some(name))
+        .collect()
+    }
 }
 
 /// What owns a pod, followed up to the workload: `kind` and `name` are the workload's, and `pins` is the image of each
@@ -79,6 +123,8 @@ pub struct WorkloadFacts {
     pub owner_kind: OwnerKind,
     pub owner_name: String,
     pub service_account: String,
+    /// How the record says each container runs, by its name; empty for a record that does not say (before schema 3).
+    pub hardening: std::collections::BTreeMap<String, Hardening>,
 }
 
 /// Why an instance is not what the deployment made.
@@ -106,6 +152,8 @@ pub enum NotGenuine {
     },
     /// An ephemeral container was added to it.
     EphemeralContainer { container: String },
+    /// A container runs with less than the signed record says it was rendered with: what it lacks, named (slice C, C1).
+    Weakened { container: String, lacks: String },
 }
 
 /// The answer about an instance.
@@ -207,6 +255,19 @@ fn against_record(
             expected: record.service_account.clone(),
             found: pod.service_account.clone(),
         });
+    }
+    let mut containers: Vec<&ContainerFacts> = pod.containers.iter().collect();
+    containers.sort_by(|a, b| a.name.cmp(&b.name));
+    for container in containers {
+        if let Some(wanted) = record.hardening.get(&container.name) {
+            let lacks = container.hardening.lacks(wanted);
+            if !lacks.is_empty() {
+                return Err(NotGenuine::Weakened {
+                    container: container.name.clone(),
+                    lacks: lacks.join(", "),
+                });
+            }
+        }
     }
     Ok(Verdict::Genuine)
 }

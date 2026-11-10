@@ -596,6 +596,7 @@ mod tests {
                 owner_kind: OwnerKind::Deployment,
                 owner_name: "the-app".into(),
                 service_account: "the-app".into(),
+                hardening: Default::default(),
             })
         };
         answer(&listed_holdings(), &PROVED, record, &question());

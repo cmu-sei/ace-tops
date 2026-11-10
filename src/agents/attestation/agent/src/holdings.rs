@@ -26,11 +26,12 @@
 //! the plan's terms: nothing Kubernetes-specific goes further than this file and the watches.
 
 use attestation_common::{
-    ContainerFacts, Deployed, HeldPodFacts, ObservedPod, Owner, OwnerKind, PodFacts, Termination,
+    ContainerFacts, Deployed, Hardening, HeldPodFacts, ObservedPod, Owner, OwnerKind, PodFacts,
+    Termination,
 };
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet, StatefulSet};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Pod, PodTemplateSpec};
+use k8s_openapi::api::core::v1::{Pod, PodSpec, PodTemplateSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -116,6 +117,8 @@ struct HeldOwner {
     /// A ReplicaSet's Deployment.
     parent: Option<OwnerReference>,
     pins: BTreeMap<String, String>,
+    /// How its template makes each container run.
+    hardening: BTreeMap<String, Hardening>,
 }
 
 impl Holdings {
@@ -209,6 +212,7 @@ impl Holdings {
                     namespace: namespace.clone(),
                     name: name.clone(),
                     pins: held.pins.clone(),
+                    hardening: held.hardening.clone(),
                 })
             })
             .collect()
@@ -294,6 +298,10 @@ impl Holdings {
                 uid: uid.clone(),
                 parent: controller_of(metadata),
                 pins: template.map(pins_of).unwrap_or_default(),
+                hardening: template
+                    .and_then(|t| t.spec.as_ref())
+                    .map(hardening_by_container)
+                    .unwrap_or_default(),
             },
         );
     }
@@ -348,6 +356,36 @@ fn pins_of(template: &PodTemplateSpec) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// How each container of `spec` is made to run (slice C, C1), as Kubernetes reads it: a read-only root and no privilege
+/// escalation only where they are said (their defaults are a writable root and escalation allowed), and a seccomp profile that
+/// confines it (`RuntimeDefault` or `Localhost`) from the container's own, or else the pod's.
+fn hardening_by_container(spec: &PodSpec) -> BTreeMap<String, Hardening> {
+    let pods_profile = spec
+        .security_context
+        .as_ref()
+        .and_then(|sc| sc.seccomp_profile.as_ref())
+        .map(|p| p.type_.as_str());
+    spec.init_containers
+        .iter()
+        .flatten()
+        .chain(&spec.containers)
+        .map(|c| {
+            let sc = c.security_context.as_ref();
+            let profile = sc
+                .and_then(|sc| sc.seccomp_profile.as_ref())
+                .map(|p| p.type_.as_str())
+                .or(pods_profile);
+            let hardening = Hardening {
+                read_only_root: sc.and_then(|sc| sc.read_only_root_filesystem) == Some(true),
+                no_privilege_escalation: sc.and_then(|sc| sc.allow_privilege_escalation)
+                    == Some(false),
+                confined_seccomp: matches!(profile, Some("RuntimeDefault" | "Localhost")),
+            };
+            (c.name.clone(), hardening)
+        })
+        .collect()
+}
+
 /// How each of a pod's containers ended, as far as Kubernetes still says: it keeps a container's last ending and no earlier one, which is why this is read
 /// on each change. An ending can be there as a container's state, until it restarts, and then as its last state.
 fn terminations_of(pod: &Pod) -> Vec<Termination> {
@@ -383,6 +421,7 @@ fn terminations_of(pod: &Pod) -> Vec<Termination> {
 fn held_pod(pod: &Pod) -> HeldPod {
     let empty = Default::default();
     let spec = pod.spec.as_ref().unwrap_or(&empty);
+    let hardening = hardening_by_container(spec);
     let statuses: HashMap<&str, &str> = pod
         .status
         .iter()
@@ -414,6 +453,7 @@ fn held_pod(pod: &Pod) -> HeldPod {
                     .get(c.name.as_str())
                     .filter(|id| !id.is_empty())
                     .map(|id| id.to_string()),
+                hardening: hardening.get(&c.name).copied().unwrap_or_default(),
             })
             .collect(),
         ephemeral: spec
@@ -442,6 +482,38 @@ mod tests {
 
     fn running(c: char) -> String {
         format!("registry:5000/image@{}", digest(c))
+    }
+
+    // Slice C, C1: how a container runs, read from its spec as Kubernetes reads it: a read-only root and no privilege escalation
+    // only when said, and a seccomp profile that confines it from the container's own or else the pod's.
+    #[test]
+    fn a_container_s_hardening_is_read_from_its_spec_and_its_pod_s() {
+        let spec: k8s_openapi::api::core::v1::PodSpec = serde_json::from_value(json!({
+            "securityContext": { "seccompProfile": { "type": "RuntimeDefault" } },
+            "containers": [
+                { "name": "full", "securityContext": { "readOnlyRootFilesystem": true, "allowPrivilegeEscalation": false } },
+                { "name": "bare" },
+                { "name": "unconfined", "securityContext": { "readOnlyRootFilesystem": true, "allowPrivilegeEscalation": false,
+                    "seccompProfile": { "type": "Unconfined" } } },
+                { "name": "local", "securityContext": { "seccompProfile": { "type": "Localhost", "localhostProfile": "p.json" } } }
+            ]
+        }))
+        .unwrap();
+        let read = hardening_by_container(&spec);
+        assert_eq!(read["full"], Hardening::FULL);
+        assert_eq!(
+            read["bare"],
+            Hardening {
+                read_only_root: false,
+                no_privilege_escalation: false,
+                confined_seccomp: true
+            }
+        );
+        assert!(!read["unconfined"].confined_seccomp);
+        assert!(read["local"].confined_seccomp);
+        let nothing: k8s_openapi::api::core::v1::PodSpec =
+            serde_json::from_value(json!({ "containers": [ { "name": "c" } ] })).unwrap();
+        assert_eq!(hardening_by_container(&nothing)["c"], Hardening::default());
     }
 
     /// A template with a sidecar, polar-init and the workload.

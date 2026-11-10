@@ -78,6 +78,7 @@ fn facts_of(workload: &RecordedWorkload) -> WorkloadFacts {
         owner_kind: workload.owner_kind,
         owner_name: workload.owner_name.clone(),
         service_account: workload.service_account.clone(),
+        hardening: crate::record::hardening_of(workload),
     }
 }
 

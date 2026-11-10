@@ -48,6 +48,6 @@ pub use report::{
     accepted_report, crash_signal, decode_report, encode_report, findings,
 };
 pub use verdict::{
-    ContainerFacts, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts, digest_of,
-    judge,
+    ContainerFacts, Hardening, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts,
+    digest_of, judge,
 };

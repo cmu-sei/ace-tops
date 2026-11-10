@@ -27,14 +27,14 @@
 //! The instance check holds a pod to its owner, which cannot deadlock a rollout. This is the other half: every owner held to the
 //! record, continually. A pin changed behind Flux gets a certificate first and is caught here.
 
-use crate::verdict::{OwnerKind, WorkloadFacts};
+use crate::verdict::{Hardening, OwnerKind, WorkloadFacts};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The shapes of record this reads: 1, and 2, which says of each workload whether a configuration under test made it
 /// (docs/architecture/configurations-under-test.md, CT2).
-const SCHEMAS: [u64; 2] = [1, 2];
+const SCHEMAS: [u64; 3] = [1, 2, 3];
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +65,9 @@ pub struct RecordedWorkload {
 pub struct RecordedContainer {
     pub name: String,
     pub image: String,
+    /// How it was rendered to run (slice C, C1). Schema 3's; an older schema says nothing of it.
+    #[serde(default)]
+    pub hardening: Option<Hardening>,
 }
 
 impl DeploymentRecord {
@@ -80,6 +83,17 @@ impl DeploymentRecord {
         }
         if record.schema == 1 && record.workloads.iter().any(|w| w.under_test) {
             return Err("a record of schema 1 marks nothing under test".to_string());
+        }
+        let says_hardening = record
+            .workloads
+            .iter()
+            .flat_map(|w| &w.containers)
+            .any(|c| c.hardening.is_some());
+        if record.schema < 3 && says_hardening {
+            return Err(format!(
+                "a record of schema {} says nothing of how a container runs",
+                record.schema
+            ));
         }
         Ok(record)
     }
@@ -115,8 +129,18 @@ impl DeploymentRecord {
             owner_kind: workload.owner_kind,
             owner_name: workload.owner_name.clone(),
             service_account: workload.service_account.clone(),
+            hardening: hardening_of(workload),
         })
     }
+}
+
+/// How the record says each of `workload`'s containers runs, by name: those it says it of.
+pub(crate) fn hardening_of(workload: &RecordedWorkload) -> BTreeMap<String, Hardening> {
+    workload
+        .containers
+        .iter()
+        .filter_map(|c| c.hardening.map(|h| (c.name.clone(), h)))
+        .collect()
 }
 
 /// What a Deployment or StatefulSet in the cluster pins, as the platform backend sees it.
@@ -126,6 +150,8 @@ pub struct Deployed {
     pub namespace: String,
     pub name: String,
     pub pins: BTreeMap<String, String>,
+    /// How its pod template makes each container run, by name.
+    pub hardening: BTreeMap<String, Hardening>,
 }
 
 /// A way what is deployed differs from the record.
@@ -146,6 +172,12 @@ pub enum Drift {
         recorded: String,
         found: String,
     },
+    /// A container that runs with less than the record says it was rendered with (slice C, C1).
+    Weakened {
+        workload: String,
+        container: String,
+        lacks: String,
+    },
 }
 
 impl Drift {
@@ -156,7 +188,8 @@ impl Drift {
             | Drift::NotDeployed { workload }
             | Drift::ContainerNotInRecord { workload, .. }
             | Drift::ContainerNotDeployed { workload, .. }
-            | Drift::AnotherImage { workload, .. } => workload,
+            | Drift::AnotherImage { workload, .. }
+            | Drift::Weakened { workload, .. } => workload,
         }
     }
 }
@@ -212,7 +245,23 @@ pub fn drift(
                         found: image.clone(),
                     });
                 }
-                Some(_) => {}
+                Some(_) => {
+                    if let Some(wanted) = &container.hardening {
+                        let held = actual
+                            .hardening
+                            .get(&container.name)
+                            .copied()
+                            .unwrap_or_default();
+                        let lacks = held.lacks(wanted);
+                        if !lacks.is_empty() {
+                            found.insert(Drift::Weakened {
+                                workload: workload.clone(),
+                                container: container.name.clone(),
+                                lacks: lacks.join(", "),
+                            });
+                        }
+                    }
+                }
             }
         }
         for container in actual.pins.keys() {
@@ -302,9 +351,45 @@ mod tests {
                 owner_kind: OwnerKind::Deployment,
                 owner_name: "the-app".into(),
                 service_account: "the-app".into(),
+                hardening: BTreeMap::new(),
             })
         );
         assert_eq!(record.facts_of("someone-else"), None);
+    }
+
+    // Slice C, C1: schema 3 says how each container is made to run, and what an identity runs as carries it; an older schema
+    // says nothing of it, and a record that does not say it in its schema is refused.
+    #[test]
+    fn a_record_of_schema_3_says_how_each_container_runs() {
+        let mut payload = payload();
+        payload["schema"] = json!(3);
+        payload["workloads"][0]["containers"][0]["hardening"] = json!({ "read_only_root": true, "no_privilege_escalation": true, "confined_seccomp": false });
+        let record = DeploymentRecord::from_payload(&payload).unwrap();
+        let facts = record
+            .facts_of("the-app.polar.serviceaccount.cluster.local")
+            .unwrap();
+        assert_eq!(
+            facts.hardening.get("the-app"),
+            Some(&Hardening {
+                read_only_root: true,
+                no_privilege_escalation: true,
+                confined_seccomp: false,
+            })
+        );
+        let mut older = payload.clone();
+        older["schema"] = json!(2);
+        assert!(DeploymentRecord::from_payload(&older).is_err());
+        let mut stranger = payload;
+        stranger["workloads"][0]["containers"][0]["hardening"]["privileged"] = json!(false);
+        assert!(DeploymentRecord::from_payload(&stranger).is_err());
+        let before = DeploymentRecord::from_payload(&super::tests::payload()).unwrap();
+        assert!(
+            before
+                .facts_of("the-app.polar.serviceaccount.cluster.local")
+                .unwrap()
+                .hardening
+                .is_empty()
+        );
     }
 
     #[test]
@@ -345,6 +430,7 @@ mod tests {
             pins: [("the-app".to_string(), "r/app@sha256:aa".to_string())]
                 .into_iter()
                 .collect(),
+            hardening: BTreeMap::new(),
         }];
         assert_eq!(
             drift(&record, &deployed, &["polar".to_string()]),
@@ -400,7 +486,7 @@ mod tests {
     #[test]
     fn a_record_of_another_shape_is_refused() {
         let mut other = payload();
-        other["schema"] = json!(3);
+        other["schema"] = json!(4);
         assert!(DeploymentRecord::from_payload(&other).is_err());
         let mut extra = payload();
         extra["surprise"] = json!(true);

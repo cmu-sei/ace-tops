@@ -26,7 +26,7 @@
 
 use attestation_common::{
     AGENT_NAME, ContainerFacts, Deployed, DeploymentRecord, Doubt, Drift, DriftWatch, Envelope,
-    HeldPodFacts, InstanceQuestion, NotGenuine, Owner, OwnerKind, PodFacts, Proved,
+    Hardening, HeldPodFacts, InstanceQuestion, NotGenuine, Owner, OwnerKind, PodFacts, Proved,
     RecordedContainer, RecordedWorkload, Verdict, WorkloadFacts, decode_question, decode_verdict,
     digest_of, drift, encode_question, encode_verdict, judge, prove, replies_topic,
 };
@@ -72,6 +72,7 @@ fn genuine() -> impl Strategy<Value = (WorkloadFacts, PodFacts)> {
                     name: format!("c{i}"),
                     image: image(d),
                     image_id: (i < started).then(|| format!("registry:5000/image@{d}")),
+                    hardening: Hardening::FULL,
                 })
                 .collect();
             (
@@ -79,6 +80,9 @@ fn genuine() -> impl Strategy<Value = (WorkloadFacts, PodFacts)> {
                     owner_kind: kind,
                     owner_name: name.clone(),
                     service_account: account.clone(),
+                    hardening: (0..digests.len())
+                        .map(|i| (format!("c{i}"), Hardening::FULL))
+                        .collect(),
                 },
                 PodFacts {
                     service_account: account,
@@ -111,10 +115,40 @@ fn another_image(verdict: &Verdict) -> bool {
     )
 }
 
+/// `hardening` with setting `which` (0, 1 or 2) turned off.
+fn weakened(hardening: Hardening, which: usize) -> Hardening {
+    let mut h = hardening;
+    match which % 3 {
+        0 => h.read_only_root = false,
+        1 => h.no_privilege_escalation = false,
+        _ => h.confined_seccomp = false,
+    }
+    h
+}
+
 proptest! {
     #[test]
     fn a_genuine_pod_is_genuine((record, pod) in genuine()) {
         prop_assert_eq!(judge(Some(&record), Some(&pod)), Verdict::Genuine);
+    }
+
+    /// Slice C, C1: a container that runs with less than the record says (a writable root, privilege escalation, no seccomp
+    /// profile) is not what the deployment made, and is named; a record that says nothing of hardening (before schema 3)
+    /// holds a pod to nothing there.
+    #[test]
+    fn a_pod_weaker_than_its_record_is_not_genuine(
+        (record, mut pod) in genuine(),
+        which in any::<prop::sample::Index>(),
+        setting in 0usize..3,
+    ) {
+        let at = which.index(pod.containers.len());
+        let name = pod.containers[at].name.clone();
+        pod.containers[at].hardening = weakened(Hardening::FULL, setting);
+        let verdict = judge(Some(&record), Some(&pod));
+        let is_weakened = matches!(&verdict, Verdict::NotGenuine(NotGenuine::Weakened { container, .. }) if *container == name);
+        prop_assert!(is_weakened, "{:?}", verdict);
+        let silent = WorkloadFacts { hardening: Default::default(), ..record };
+        prop_assert_eq!(judge(Some(&silent), Some(&pod)), Verdict::Genuine);
     }
 
     #[test]
@@ -177,6 +211,7 @@ proptest! {
             name: "extra".into(),
             image: format!("registry:5000/other@{d}"),
             image_id: None,
+            hardening: Hardening::FULL,
         });
         prop_assert_eq!(
             judge(Some(&record), Some(&pod)),
@@ -300,6 +335,7 @@ fn a_jobs_name_may_extend_its_workloads_and_a_deployments_may_not() {
             name: "c".into(),
             image: format!("r/i@sha256:{}", "a".repeat(64)),
             image_id: None,
+            hardening: Hardening::FULL,
         }],
         ephemeral: vec![],
     };
@@ -307,6 +343,7 @@ fn a_jobs_name_may_extend_its_workloads_and_a_deployments_may_not() {
         owner_kind: kind,
         owner_name: "harness-producer".into(),
         service_account: "sa".into(),
+        hardening: Default::default(),
     };
     let job = record(OwnerKind::Job);
     assert_eq!(
@@ -351,7 +388,11 @@ fn workload() -> impl Strategy<Value = RecordedWorkload> {
             service_account: name,
             containers: images
                 .into_iter()
-                .map(|(name, image)| RecordedContainer { name, image })
+                .map(|(name, image)| RecordedContainer {
+                    name,
+                    image,
+                    hardening: Some(Hardening::FULL),
+                })
                 .collect(),
             under_test,
         })
@@ -359,7 +400,7 @@ fn workload() -> impl Strategy<Value = RecordedWorkload> {
 
 fn record() -> impl Strategy<Value = DeploymentRecord> {
     prop::collection::btree_map("[a-c]{1,2}", workload(), 0..5).prop_map(|named| DeploymentRecord {
-        schema: 2,
+        schema: 3,
         target: "t".into(),
         version: 1,
         workloads: named.into_values().collect(),
@@ -379,6 +420,11 @@ fn as_recorded(record: &DeploymentRecord) -> Vec<Deployed> {
                 .containers
                 .iter()
                 .map(|c| (c.name.clone(), c.image.clone()))
+                .collect(),
+            hardening: w
+                .containers
+                .iter()
+                .filter_map(|c| c.hardening.map(|h| (c.name.clone(), h)))
                 .collect(),
         })
         .collect()
@@ -433,8 +479,14 @@ proptest! {
         sidecar[at].pins.insert("zz-added".into(), other.clone());
         prop_assert_eq!(drift(&record, &sidecar, &watched()), [Drift::ContainerNotInRecord { workload: workload.clone(), container: "zz-added".into() }].into_iter().collect());
 
+        let mut weaker = deployed.clone();
+        weaker[at].hardening.insert(container.clone(), weakened(Hardening::FULL, which.index(3)));
+        let found = drift(&record, &weaker, &watched());
+        let is_weakened = matches!(found.iter().next(), Some(Drift::Weakened { container: c, .. }) if *c == container);
+        prop_assert!(found.len() == 1 && is_weakened, "{:?}", found);
+
         let mut made = deployed;
-        made.push(Deployed { kind: OwnerKind::Deployment, namespace: "polar".into(), name: "zz-by-hand".into(), pins: Default::default() });
+        made.push(Deployed { kind: OwnerKind::Deployment, namespace: "polar".into(), name: "zz-by-hand".into(), pins: Default::default(), hardening: Default::default() });
         prop_assert_eq!(drift(&record, &made, &watched()), [Drift::NotInRecord { workload: "Deployment polar/zz-by-hand".into() }].into_iter().collect());
     }
 
@@ -490,6 +542,7 @@ fn deployment(others: usize) -> (DeploymentRecord, Vec<HeldPodFacts>) {
             containers: vec![RecordedContainer {
                 name: "main".to_string(),
                 image: image(n),
+                hardening: Some(Hardening::FULL),
             }],
             under_test: false,
         })
@@ -510,6 +563,7 @@ fn deployment(others: usize) -> (DeploymentRecord, Vec<HeldPodFacts>) {
                     name: "main".to_string(),
                     image: image(n),
                     image_id: Some(format!("registry:5000/image@sha256:{n:064x}")),
+                    hardening: Hardening::FULL,
                 }],
                 ephemeral: vec![],
             },

@@ -240,18 +240,32 @@ export def deployment_facts [texts: list<string>, under_test: list<string> = []]
             owner_name: $d.metadata.name
             namespace: $d.metadata.namespace
             service_account: $account
-            containers: (($pod.initContainers? | default []) ++ ($pod.containers? | default []) | each {|c| { name: $c.name, image: $c.image } } | sort-by name)
+            containers: (($pod.initContainers? | default []) ++ ($pod.containers? | default []) | each {|c| { name: $c.name, image: $c.image, hardening: (hardening_of $c $pod) } } | sort-by name)
             under_test: $it.under_test
         }
     }
     | sort-by identity owner_name
 }
 
+# How container `c` of `pod` is made to run (docs/architecture/runtime-attestation.md, slice C, C1), as Kubernetes reads it: a
+# read-only root and no privilege escalation only where they are said, and a seccomp profile that confines it (`RuntimeDefault` or
+# `Localhost`) from the container's own or else the pod's. The attestation agent reads a running pod the same way
+# (attestation/agent/src/holdings.rs, `hardening_by_container`) and holds it to this.
+export def hardening_of [c: record, pod: record] {
+    let sc = ($c.securityContext? | default {})
+    let profile = ($sc.seccompProfile?.type? | default ($pod.securityContext?.seccompProfile?.type? | default ""))
+    {
+        read_only_root: (($sc.readOnlyRootFilesystem? | default false) == true)
+        no_privilege_escalation: (($sc.allowPrivilegeEscalation? | default true) == false)
+        confined_seccomp: ($profile in ["RuntimeDefault" "Localhost"])
+    }
+}
+
 # The record to sign for `facts`, given the last one's payload, or null when that one still says it. The version moves only with the facts, so a publish of the same render changes nothing, and an agent can refuse an older record.
 export def next_record [previous: any, facts: list, target: string] {
     if $previous != null and ($previous.workloads? | default null) == $facts { return null }
-    # Schema 2: each workload says whether it is under test.
-    { schema: 2, target: $target, version: (($previous.version? | default 0) + 1), workloads: $facts }
+    # Schema 2: each workload says whether it is under test. Schema 3: each container says how it runs (slice C, C1).
+    { schema: 3, target: $target, version: (($previous.version? | default 0) + 1), workloads: $facts }
 }
 
 # What the published tree records about where it came from. Only facts that exist before the cluster does: nothing

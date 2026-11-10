@@ -260,6 +260,7 @@ mod tests {
                     name: "agent".into(),
                     image: image.clone(),
                     image_id: Some(image),
+                    hardening: Default::default(),
                 }],
                 ephemeral: vec![],
             },
