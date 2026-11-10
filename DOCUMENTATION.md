@@ -275,7 +275,7 @@ The agents are developed against a cluster (README, **Installation**). To try a 
 
 ```bash
 nu infra/images.nu sync <image> --target sandbox-local   # build it and push it to the cluster's registry
-nu infra/up.nu sandbox-local                             # restarts the Jobs whose image changed, and only those
+nu infra/up.nu sandbox-local --cluster <id>                             # restarts the Jobs whose image changed, and only those
 ```
 
 ### Development Container
@@ -319,7 +319,7 @@ In a cluster, the `TLS_*` variables point at files that `polar-init` writes from
 Layered Dhall charts rendered to Kubernetes manifests by `nu infra/render.nu <target>` and brought up, in dependency order and with the CA, secrets and admin flow, by `nu infra/up.nu <target>`.
 
 ```bash
-nu infra/up.nu sandbox-local --dev --user <name> --email <email>
+nu infra/up.nu sandbox-local --cluster <id> --dev --user <name> --email <email>
 ```
 
 `up.nu` renders the target and then does everything in order: the namespaces, the cluster CA (`polar-admin-grant bootstrap-ca`, once, which needs a Kubernetes admin credential), the secrets, the manifests, the wait for the core pods, the port-forwards and the admin flow. It is resumable: run the same command again after a failure. When the pods are running, `just port-forwards-up` exposes the services locally, and the admin flow (`just admin-bootstrap`, `admin-provision`, `admin-claim`, `user-cert-install`) issues a personal certificate for Neo4j Browser and the admin tools. `README.md` has the full walkthrough.

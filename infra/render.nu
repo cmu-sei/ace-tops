@@ -269,7 +269,7 @@ def main [
     # Rendering never touches the cluster. `infra/up.nu` applies the result and
     # walks the rest of the bring-up (CA, secrets, admin flow).
     print "To bring up a cluster from this render:"
-    print $"  nu infra/up.nu ($target)"
+    print $"  nu infra/up.nu ($target) --cluster <id>   \(the uid of its kube-system namespace; run without it to see the one KUBECONFIG reaches\)"
     print ""
 }
 

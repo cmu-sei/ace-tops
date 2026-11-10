@@ -37,6 +37,51 @@ export def deployed_charts [config: record] {
 # The plan: one record per step, with whether it runs and why not.
 # `options`: `in_cluster`, the target keeps its registry in its cluster (infra/cluster-registry.nu); `import_from`, where the
 # published images are copied from (`--import-from`), or "". A step's `runtime` says it starts a container on this machine.
+use deploy-objects.nu [AUTH_SECRET, FLUX_NS, POLAR_AUTH_SECRET]
+use deploy-repo.nu [NAMESPACE, SERVICE]
+
+# The Secrets the steps of `plan` that run make, each with where it comes from and never a value: the cluster's CA, the target's
+# own (`target`, what its secrets.nu declares), the deployment git server's and the configuration agent's certificates of the
+# deployment PKI, and Flux's. What a person reviews before a run (the port's review, "a plan's description names every secret").
+export def plan_secrets [plan: list, target: list] {
+    let on = ($plan | where on | get id)
+    let made = {|step, namespace, name, by| { step: $step, namespace: $namespace, name: $name, from: { made: $by } } }
+    mut secrets = []
+    if "ca" in $on {
+        $secrets = ($secrets | append (do $made "ca" "polar" "cert-issuer-ca" "the cluster's CA certificate and key, made once by polar-admin-grant bootstrap-ca and kept"))
+    }
+    if ("infra" in $on) or ("secrets" in $on) {
+        $secrets = ($secrets | append ($target | each {|t| $t | insert step "secrets" }))
+    }
+    if "deploy-host" in $on {
+        $secrets = ($secrets | append [
+            (do $made "deploy-host" $NAMESPACE $"($SERVICE)-tls" "the deployment git server's certificate and key, from the deployment PKI on this machine")
+            (do $made "deploy-host" "polar" "deployment-reader" "the configuration agent's certificate and key for copying the deployment, from the deployment PKI")
+        ])
+    }
+    if "flux" in $on {
+        let name = (if "deployment-forward" in $on { $POLAR_AUTH_SECRET } else { $AUTH_SECRET })
+        $secrets = ($secrets | append (do $made "flux" $FLUX_NS $name "Flux's certificate and key of the deployment PKI, and the CA of the server it reads"))
+    }
+    $secrets
+}
+
+# `secrets` as the plan prints them: each by namespace and name, with where it comes from.
+export def secret_lines [secrets: list] {
+    if ($secrets | is-empty) { return [] }
+    let source = {|from|
+        if ($from.sops? | default null) != null {
+            $"from SOPS: ($from.sops | str join ', ')"
+        } else if ($from.generated? | default null) != null {
+            $"generated once \(($from.generated)\) and kept"
+        } else {
+            $from.made
+        }
+    }
+    let header = ["  secrets   (each by name and where it comes from; no value is shown)"]
+    $header ++ ($secrets | each {|s| $"    ($s.namespace)/($s.name): (do $source $s.from)" })
+}
+
 export def build_plan [config: record, dev: bool, options: record = {}] {
     let in_cluster = ($options.in_cluster? | default false)
     let import_from = ($options.import_from? | default "")

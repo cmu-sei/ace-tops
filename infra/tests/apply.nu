@@ -214,6 +214,33 @@ def main [] {
             let p = { metadata: {}, status: { phase: "Running", containerStatuses: [{ ready: true } { ready: false }] } }
             assert (not (any_pod_ready [$p]))
         }
+        # The port's review, step A: a wait that times out says why, from what Kubernetes says of each pod.
+        "a wait that times out says why each pod is not ready": {
+            assert equal (why_not_ready []) ["no pod matches it yet: what should make one has not (kubectl describe its Deployment, StatefulSet or Job)"]
+            let unscheduled = { metadata: { name: "a" }, status: { phase: "Pending", conditions: [
+                { type: "PodScheduled", status: "False", reason: "Unschedulable", message: "0/2 nodes are available: 2 Insufficient memory." }
+            ] } }
+            let pulling = { metadata: { name: "b" }, status: { phase: "Pending",
+                initContainerStatuses: [{ name: "polar-init", ready: false, state: { waiting: { reason: "ImagePullBackOff", message: "Back-off pulling image \"x:1\"" } } }]
+            } }
+            let crashing = { metadata: { name: "c" }, status: { phase: "Running", containerStatuses: [{
+                name: "agent", ready: false, restartCount: 4,
+                state: { waiting: { reason: "CrashLoopBackOff", message: "back-off 40s restarting failed container" } }
+                lastState: { terminated: { exitCode: 1, reason: "Error", message: "the graph refused the certificate\nmore" } }
+            }] } }
+            let unready = { metadata: { name: "d" }, status: { phase: "Running", containerStatuses: [{ name: "agent", ready: false, state: { running: {} } }] } }
+            let leaving = { metadata: { name: "e", deletionTimestamp: "2026-11-10T00:00:00Z" }, status: { phase: "Running", containerStatuses: [{ name: "agent", ready: true, state: { running: {} } }] } }
+            let why = (why_not_ready [$unscheduled $pulling $crashing $unready $leaving])
+            assert equal ($why | length) 5
+            assert ($why.0 | str contains "a: not scheduled: Unschedulable: 0/2 nodes are available") $why.0
+            assert ($why.1 | str contains "b: polar-init is waiting: ImagePullBackOff") $why.1
+            assert ($why.2 | str contains "c: agent is waiting: CrashLoopBackOff") $why.2
+            assert ($why.2 | str contains "last exited 1 (Error): the graph refused the certificate") $why.2
+            assert (not ($why.2 | str contains "more")) "only the first line of a message"
+            assert ($why.2 | str contains "restarted 4 times") $why.2
+            assert ($why.3 | str contains "d: agent is running and not ready") $why.3
+            assert ($why.4 | str contains "e: being deleted") $why.4
+        }
         "a pod still initialising does not count": {
             let p = { metadata: {}, status: { phase: "Pending" } }
             assert (not (any_pod_ready [$p]))

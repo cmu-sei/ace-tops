@@ -307,6 +307,17 @@ export def base64_warnings [shared: record, user: record] {
 # `problems` is empty when the step can go on, and `warnings` names the values that look base64-encoded. `up.nu`
 # asks this first, so a shell without the SOPS variables is told so before the images are built and not after,
 # and each target's `secrets.nu` asks it again.
+# Neo4j's password (`neo4j_auth`, `neo4j/<password>`) and the agents' (`graph_password`) are two forms of one value. When both
+# are given they must agree, or the agents cannot log in to the graph, which up.nu used to find only after everything was
+# applied. Checked before anything is; a problem names the keys and never a value.
+export def graph_password_problems [secrets: record] {
+    let auth = ($secrets | get -o neo4j_auth | default "")
+    let password = ($secrets | get -o graph_password | default "")
+    if ($auth | is-empty) or ($password | is-empty) { return [] }
+    if $auth == $"neo4j/($password)" { return [] }
+    ["neo4j_auth and graph_password disagree: neo4j_auth must be neo4j/<graph_password>, or Neo4j and the agents hold different passwords and the agents cannot log in. Neither value is shown; fix them in the target's SOPS files"]
+}
+
 export def secrets_check [target_dir: string, existing: list] {
     let shared = (decrypt_sops $target_dir "secrets.sops.yaml")
     let user   = (decrypt_sops $target_dir "user.sops.yaml")
@@ -316,7 +327,7 @@ export def secrets_check [target_dir: string, existing: list] {
     {
         secrets: $secrets
         failures: $failures
-        problems: (required_secret_problems $REQUIRED_SECRETS $existing $secrets $failures)
+        problems: ((required_secret_problems $REQUIRED_SECRETS $existing $secrets $failures) ++ (graph_password_problems $secrets))
         warnings: (base64_warnings $shared.data $user.data)
     }
 }

@@ -859,7 +859,10 @@ only.
   kube-observer's role derived from what it declares (DONE 2026-11-10, `ca2e635c`: every Kubernetes role computed from the agent's declared
   operations, `protocol-handlers.md`, "A role is what the operations declare"; seen live on u7c: kube-observer refused Secrets, ConfigMaps
   and `get pods`, its watches feeding the graph, every running pod there; attestation watching; a build made, its pods listed and its log read), `up.nu` requiring the
-  cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree, the
+  cluster named, a timed-out wait saying why, the plan naming secrets without values, the graph password's two forms checked to agree (BUILT
+  2026-11-10, not yet seen live, u7c being in use: `--cluster <uid of kube-system>`, refused when KUBECONFIG reaches another, since every
+  kubeadm context is kubernetes-admin@kubernetes; apply.nu `why_not_ready` for each pod still pending; plan.nu `plan_secrets`, the target's
+  secrets.nu declaring its Secrets as data; secrets-lib.nu `graph_password_problems` before anything is applied), the
   bootstrap CA constrained for new clusters (DONE 2026-11-10: path length 0, key usage keyCertSign and cRLSign, both critical,
   `cert-issuer-common` `ca_root`; a cluster's existing CA is kept as it is, and only a new cluster's gets them), and tests that `polar-sign` and `polar-admin-grant` cannot print a secret (DONE 2026-11-10: `01baaa5d`, `runtime` and `configuration`
   judged by the scaffold and never signing a plaintext secret, found doing it; then the bootstrap claimant, the CSR's key and a refusal

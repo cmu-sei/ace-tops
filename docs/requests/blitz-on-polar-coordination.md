@@ -48,7 +48,10 @@ set, and none are given here.
   computed by the builder from the agent's declared cluster operations and printed in its scaffold (`roles`), and none may read a
   Secret. A Blitz agent on the Kubernetes API gets its role the same way, with nothing to write in the catalog.
 - `up.nu`: the cluster always named (never the kubeconfig's current context), a timed-out wait saying why, the plan naming every secret
-  without its value, the graph password's two forms checked to agree before anything is applied.
+  without its value, the graph password's two forms checked to agree before anything is applied. **Built 2026-11-10**: the cluster is
+  named by the uid of its `kube-system` namespace (`up.nu <target> --cluster <uid>`; run without it, and it prints the one KUBECONFIG
+  reaches), since every kubeadm cluster's context is `kubernetes-admin@kubernetes`. A target's `secrets.nu` now declares its Secrets as
+  data (`SECRETS`), which the plan prints; Blitz's overlay targets will want the same shape.
 - The bootstrap CA constrained (path length, key usage) for new clusters. **Done 2026-11-10**: path length 0 and key usage
   `keyCertSign`, `cRLSign`, both critical. Name constraints wait for your findings (phase 0, question 5).
 - Tests that `polar-sign` and `polar-admin-grant` cannot print a secret. **Done 2026-11-10.** Doing it found that `polar-sign

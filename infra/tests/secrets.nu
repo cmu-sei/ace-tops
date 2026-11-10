@@ -243,6 +243,30 @@ def main [] {
             }
         }
         {
+            # Neo4j's password (neo4j_auth, `neo4j/<password>`) and the agents' (graph_password) are two forms of one
+            # value: if they disagree, the agents cannot log in, which used to show only after everything was applied.
+            name: "the graph password's two forms must agree, and a disagreement names neither value"
+            body: {
+                assert equal (graph_password_problems { neo4j_auth: "neo4j/s3cret-a", graph_password: "s3cret-a" }) []
+                assert equal (graph_password_problems { neo4j_auth: "neo4j/a/b", graph_password: "a/b" }) []
+                # One alone is the other's business (required_secret_problems), and nothing to compare.
+                assert equal (graph_password_problems { graph_password: "s3cret-a" }) []
+                assert equal (graph_password_problems { neo4j_auth: "neo4j/s3cret-a" }) []
+                for wrong in [
+                    { neo4j_auth: "neo4j/s3cret-a", graph_password: "s3cret-b" }
+                    { neo4j_auth: "s3cret-a", graph_password: "s3cret-a" }
+                    { neo4j_auth: "admin/s3cret-a", graph_password: "s3cret-a" }
+                ] {
+                    let problems = (graph_password_problems $wrong)
+                    assert equal ($problems | length) 1 ($wrong | to nuon)
+                    let p = ($problems | first)
+                    assert ($p | str contains "neo4j_auth")
+                    assert ($p | str contains "graph_password")
+                    assert (not ($p | str contains "s3cret")) $p
+                }
+            }
+        }
+        {
             name: "every missing secret is reported, not only the first"
             body: {
                 let problems = (required_secret_problems $REQUIRED [] {} [(failure "user.sops.yaml" "boom")])

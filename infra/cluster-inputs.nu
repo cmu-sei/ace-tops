@@ -44,6 +44,20 @@ export def path_of [infra_root: string, target: string] {
 
 export def empty [] { { cluster: null, workloads: {} } }
 
+# Whether a run may go on against the cluster KUBECONFIG reaches (`reached`, the uid of its kube-system namespace), given the one it
+# was told it is for (`named`, `up.nu --cluster`): null when they are the one cluster, else why not. A run is never pointed at a
+# cluster by the kubeconfig's current context alone, and a context's name would not do: a kubeadm cluster's is always
+# kubernetes-admin@kubernetes (the port's review, step A).
+export def named_cluster_problem [named: string, reached: string] {
+    if ($named | is-empty) {
+        return $"name the cluster this run is for: --cluster ($reached) is the one KUBECONFIG reaches \(the uid of its kube-system namespace\). up.nu never takes the kubeconfig's current context on trust"
+    }
+    if $named != $reached {
+        return $"KUBECONFIG reaches the cluster ($reached), not ($named), the one named: point KUBECONFIG at that cluster, or name this one"
+    }
+    null
+}
+
 # The file's record, or an empty one when there is none.
 export def read_inputs [path: string] {
     if ($path | path exists) { open $path } else { empty }

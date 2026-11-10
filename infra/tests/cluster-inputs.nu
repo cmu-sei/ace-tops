@@ -24,10 +24,25 @@
 # The inputs that belong to one cluster: how they are added, when they are discarded, and how they meet the target's own env.
 
 use std/assert
-use ../cluster-inputs.nu [ADMINS_VAR, handed_off_of, inputs_from_record, with_handed_off, admins_of, another_clusters, empty, env_for, env_merged, path_of, reconcile, topology_of, with_admin, with_topology]
+use ../cluster-inputs.nu [ADMINS_VAR, named_cluster_problem, handed_off_of, inputs_from_record, with_handed_off, admins_of, another_clusters, empty, env_for, env_merged, path_of, reconcile, topology_of, with_admin, with_topology]
 
 def main [] {
     let tests = [
+        {
+            # The port's review, step A: up.nu is told which cluster a run is for, by the uid of its kube-system namespace,
+            # and refuses one KUBECONFIG reaches that is another. A kubeadm cluster's context is always
+            # kubernetes-admin@kubernetes, so a context's name would not tell two apart.
+            name: "a run names its cluster, and one that reaches another is refused"
+            body: {
+                assert equal (named_cluster_problem "uid-a" "uid-a") null
+                let unnamed = (named_cluster_problem "" "uid-a")
+                assert ($unnamed | str contains "--cluster uid-a") $unnamed
+                let other = (named_cluster_problem "uid-b" "uid-a")
+                assert ($other | str contains "uid-a") $other
+                assert ($other | str contains "uid-b") $other
+                assert ($other | str contains "KUBECONFIG") $other
+            }
+        }
         {
             name: "the file sits beside the target's config"
             body: { assert equal (path_of "/r/infra" "sandbox-local") "/r/infra/targets/sandbox-local/cluster-inputs.nuon" }

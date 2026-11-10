@@ -550,7 +550,7 @@ images-all:
 #
 #   2. Bring it up, from the Polar repo root with KUBECONFIG set. --dev builds and
 #      loads images into the local registry; only the steps the target needs run:
-#        nu infra/up.nu sandbox-local --dev --user <user> --email <email>
+#        nu infra/up.nu sandbox-local --cluster <id> --dev --user <user> --email <email>
 #      It renders, applies namespaces, bootstraps the CA, applies the manifests,
 #      waits for the core pods, starts the needed port-forwards and runs the admin
 #      flow. It pauses for the browser import and the Neo4j password, and is safe

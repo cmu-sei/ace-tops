@@ -28,7 +28,7 @@
 #   nu infra/tests/up.nu
 
 use std/assert
-use ../plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
+use ../plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime, plan_secrets, secret_lines]
 
 def config [charts: list, order: list] {
     { charts: ($charts | each {|c| $"/layers/x/($c)/main.nu" }), apply_order: $order, cert_issuer_ca_configmap: "polar-ca" }
@@ -40,6 +40,50 @@ def on [plan: list, id: string] {
 
 def main [] {
     let tests = [
+        {
+            # The plan names every Secret a run makes, where each comes from, and never a value (the port's review, step A).
+            name: "the plan names each Secret its steps make and where it comes from, and never a value"
+            body: {
+                let target = [
+                    { namespace: "polar", name: "polar-graph-pw", from: { sops: ["graph_password"] } }
+                    { namespace: "polar", name: "cassini-shutdown-token", from: { generated: "token" } }
+                ]
+                let c = (config ["cert-issuer" "neo4j"] ["namespaces.yaml" "credentials-agent.yaml" "polar-git-server.yaml" "polar-scheduler-observer.yaml"] | insert gitops true)
+                let secrets = (plan_secrets (build_plan $c false) $target)
+                let named = ($secrets | each {|s| $"($s.namespace)/($s.name)" })
+                for expected in ["polar/cert-issuer-ca" "polar/polar-graph-pw" "polar/cassini-shutdown-token" "polar-deploy/polar-deploy-git-tls" "polar/deployment-reader" "flux-system/deploy-repo-auth"] {
+                    assert ($expected in $named) $"($expected) in ($named)"
+                }
+                # Handed off, Flux reads Polar's git server with another Secret, and there is no deployment git server.
+                let handed = ($c | insert handed_off true)
+                let named_after = (plan_secrets (build_plan $c false { handed_off: true }) $target | each {|s| $"($s.namespace)/($s.name)" })
+                assert ("flux-system/deployment-auth" in $named_after) ($named_after | to nuon)
+                assert ("polar-deploy/polar-deploy-git-tls" not-in $named_after)
+                # A step that does not run makes none.
+                let direct = (config ["neo4j"] ["namespaces.yaml"])
+                let few = (plan_secrets (build_plan $direct false) $target | each {|s| $"($s.namespace)/($s.name)" })
+                assert ("polar/cert-issuer-ca" not-in $few)
+                assert ("flux-system/deploy-repo-auth" not-in $few)
+                assert ("polar/polar-graph-pw" in $few)
+                let lines = (secret_lines $secrets | str join "\n")
+                assert ($lines | str contains "polar/polar-graph-pw")
+                assert ($lines | str contains "graph_password")
+                assert ($lines | str contains "generated once")
+                assert ($lines | str contains "no value is shown")
+            }
+        }
+        {
+            name: "a target declares its Secrets as data, each with where it comes from and no value"
+            body: {
+                let declared = (^$nu.current-exe ($env.FILE_PWD | path join "../targets/sandbox-local/secrets.nu") declared | from json)
+                assert equal ($declared | each {|s| $"($s.namespace)/($s.name)" } | sort) [
+                    "polar-auth/keycloak-admin-secret" "polar-auth/keycloak-db-secret" "polar-graph/neo4j-secret" "polar/cassini-shutdown-token" "polar/polar-graph-pw"
+                ]
+                assert equal ($declared | where name == "neo4j-secret" | first | get from.sops) ["neo4j_auth"]
+                assert equal ($declared | where name == "cassini-shutdown-token" | first | get from.generated) "token"
+                for s in $declared { assert ("value" not-in ($s | columns)) }
+            }
+        }
         {
             name: "a workload that is in the apply order but not among the charts is deployed"
             body: {

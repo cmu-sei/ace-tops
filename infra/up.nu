@@ -78,13 +78,13 @@ use under-test.nu
 use flux.nu [cluster_handed_off]
 use tools.nu
 use runtime.nu [container_runtime]
-use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime]
+use plan.nu [build_forwards, build_plan, deployed_charts, needs_runtime, plan_secrets, secret_lines]
 use agent-pods.nu [delete_stale_namespaces]
 use preflight.nu [kubernetes_problem, openssl_problem, uncommitted_problem]
 use rules.nu [POOL_KEY, placement_in_force, pools_deployed, pools_without_nodes, topology_change_problem, topology_problem]
 use cluster-registry.nu
 use registry.nu [node_registry]
-use apply.nu [any_pod_ready, changed_configmaps, changed_lines, config_users, gate_after, job_verdict, jobs_in, stale_images, stale_pod_images, stale_pod_report, workload_needs_restart]
+use apply.nu [any_pod_ready, changed_configmaps, changed_lines, config_users, gate_after, job_verdict, jobs_in, stale_images, stale_pod_images, stale_pod_report, why_not_ready, workload_needs_restart]
 
 def note [msg: string] { print $"  -- ($msg)" }
 def ok [msg: string] { print $"  ok: ($msg)" }
@@ -247,6 +247,13 @@ def apply_file [output_dir: string, filename: string, changed: list<string> = []
 
 # True when at least one pod matching the selector is Running with every container ready, and
 # not on its way out.
+# Why the pods `selector` picks are not ready, one line each (apply.nu `why_not_ready`).
+def why_pods [ns: string, selector: string] {
+    let r = (do { ^kubectl -n $ns get pods -l $selector -o json } | complete)
+    if $r.exit_code != 0 { return [$"cannot list its pods: ($r.stderr | str trim | lines | last 1 | str join)"] }
+    why_not_ready ($r.stdout | from json | get items)
+}
+
 def pod_ready [ns: string, selector: string] {
     let r = (do { ^kubectl -n $ns get pods -l $selector -o json } | complete)
     if $r.exit_code != 0 { return false }
@@ -281,6 +288,9 @@ def wait_pods [waits: list, timeout: duration] {
         if ($pending | is-empty) { break }
         if (date now) > $deadline {
             report_stale_images
+            for w in $pending {
+                for line in (why_pods $w.ns $w.ref) { note $"($w.label): ($line)" }
+            }
             fail $"timed out waiting for pods: ($pending | get label | str join ', ')"
         }
         print $"  waiting for: ($pending | get label | str join ', ')"
@@ -291,6 +301,11 @@ def wait_pods [waits: list, timeout: duration] {
         ^kubectl -n $w.ns rollout status $w.ref --timeout=600s
         if $env.LAST_EXIT_CODE != 0 {
             report_stale_images
+            let selector = (do { ^kubectl -n $w.ns get $w.ref -o json } | complete)
+            if $selector.exit_code == 0 {
+                let labels = ($selector.stdout | from json | get spec.selector.matchLabels | items {|k, v| $"($k)=($v)" } | str join ",")
+                for line in (why_pods $w.ns $labels) { note $"($w.label): ($line)" }
+            }
             fail $"statefulset ($w.label) did not become ready"
         }
     }
@@ -313,6 +328,16 @@ def print_plan [target: string, plan: list, dev: bool] {
         print "        the others are restarted. Which, is decided and printed as each manifest is applied."
     }
     print "  note  cassini is applied first of the agents and waited on before anything after it"
+    for line in (secret_lines (plan_secrets $plan (target_secrets $target))) { print $line }
+}
+
+# The Secrets the target's secrets.nu declares, for the plan: none when it has no secrets.nu.
+def target_secrets [target: string] {
+    let script = ($"infra/targets/($target)/secrets.nu")
+    if not ($script | path exists) { return [] }
+    let r = (do { ^$nu.current-exe $script declared } | complete)
+    if $r.exit_code != 0 { fail $"($script) declared failed: ($r.stderr | str trim | lines | last 1 | str join)" }
+    $r.stdout | from json
 }
 
 # What each deployed service needs to be waited on.
@@ -1094,6 +1119,7 @@ def main [
     --bootstrap-again       # Polar's git server cannot be brought back: run the bootstrap repository from this machine's mirror and read from it; the next run hands off again
     --topology: string = ""     # Which of the target's layouts this cluster is deployed in, e.g. single or separated; kept for it until another is chosen
     --under-test: string = ""   # The configurations under test this cluster carries, comma-separated (infra/under-test/<name>); a run without them removes them
+    --cluster: string = ""      # The cluster this run is for, by the uid of its kube-system namespace; refused if KUBECONFIG reaches another (run without it to see the id)
 ] {
     if not ("infra/render.nu" | path exists) {
         fail "run this from the repo root (infra/render.nu not found)"
@@ -1103,6 +1129,17 @@ def main [
         fail $"unknown target ($target): no target.nu at ($target_file)"
     }
     mut config = (^$nu.current-exe $target_file | from nuon)
+    # Before anything else touches it: the cluster KUBECONFIG reaches is the one this run was told it is for.
+    if ($env.KUBECONFIG? | default "" | is-empty) {
+        fail "KUBECONFIG is not set (point it at your cluster's kubeconfig, e.g. export KUBECONFIG=<path to kubeconfig>)"
+    }
+    let reached = (do { ^kubectl get namespace kube-system -o 'jsonpath={.metadata.uid}' } | complete)
+    if $reached.exit_code != 0 or ($reached.stdout | str trim | is-empty) {
+        fail $"cluster not reachable: ($reached.stderr | str trim | lines | last 1 | str join)"
+    }
+    let refused = (cluster-inputs named_cluster_problem $cluster ($reached.stdout | str trim))
+    if $refused != null { fail $refused }
+    ok $"cluster ($cluster)"
     let carried = ($under_test | split row "," | each {|n| $n | str trim } | where {|n| $n != "" } | uniq)
     let unknown = ($carried | each {|n| under-test name_problems $n (under-test declared ($env.PWD | path join "infra")) } | flatten)
     if ($unknown | is-not-empty) { fail ($unknown | str join "; ") }

@@ -189,6 +189,49 @@ export def stale_images [running: list, served: list] {
 # Whether any pod in `items` (the `items` of `kubectl get pods -o json`) is Running with every
 # container ready. A pod that is being deleted does not count: it still reports ready until it
 # is gone, and a wait that counted the old broker would let the clients start before the new one.
+# Why none of `items` (a selector's pods, as `kubectl get pods -o json` lists them) is ready, a line for each, from what
+# Kubernetes says of it: not scheduled, a container waiting and why, how it last exited, or running and not ready yet, which
+# for a Polar agent means its health actor has not said it is healthy. What a wait that times out prints (the port's review).
+export def why_not_ready [items: list] {
+    if ($items | is-empty) {
+        return ["no pod matches it yet: what should make one has not (kubectl describe its Deployment, StatefulSet or Job)"]
+    }
+    let first_line = {|text| $text | default "" | lines | get -o 0 | default "" }
+    $items | each {|p|
+        let name = ($p.metadata?.name? | default "a pod")
+        if ($p.metadata?.deletionTimestamp? | default null) != null {
+            return $"($name): being deleted"
+        }
+        let unscheduled = ($p.status?.conditions? | default [] | where {|c| $c.type == "PodScheduled" and $c.status == "False" })
+        if ($unscheduled | is-not-empty) {
+            let c = ($unscheduled | first)
+            return $"($name): not scheduled: ($c.reason? | default 'unknown'): (do $first_line $c.message?)"
+        }
+        let containers = (($p.status?.initContainerStatuses? | default []) ++ ($p.status?.containerStatuses? | default []))
+        let said = ($containers | where {|c| not ($c.ready? | default false) } | each {|c|
+            let waiting = ($c.state?.waiting? | default null)
+            let now = if $waiting != null {
+                $"($c.name) is waiting: ($waiting.reason? | default 'unknown')" + (if ($waiting.message? | default "" | is-empty) { "" } else { $": (do $first_line $waiting.message)" })
+            } else if ($c.state?.running? | default null) != null {
+                $"($c.name) is running and not ready \(a Polar agent: its health actor has not said it is healthy\)"
+            } else {
+                $"($c.name) is not ready"
+            }
+            let last = ($c.lastState?.terminated? | default null)
+            let exited = if $last == null { "" } else {
+                $"; last exited ($last.exitCode? | default '?') \(($last.reason? | default 'unknown')\)" + (if ($last.message? | default "" | is-empty) { "" } else { $": (do $first_line $last.message)" })
+            }
+            let restarts = ($c.restartCount? | default 0)
+            $now + $exited + (if $restarts > 0 { $"; restarted ($restarts) times" } else { "" })
+        })
+        if ($said | is-empty) {
+            $"($name): ($p.status?.phase? | default 'no phase yet')"
+        } else {
+            $"($name): ($said | str join '; ')"
+        }
+    }
+}
+
 export def any_pod_ready [items: list] {
     $items | any {|p|
         let statuses = ($p.status?.containerStatuses? | default [])

@@ -129,7 +129,7 @@ Run everything from the repo root with `KUBECONFIG` pointing at the cluster.
 
 ```fish
 # Bring a cluster up from a target (resumable: re-run the same command after a failure or pause)
-nu infra/up.nu sandbox-local --dev          # --dev builds and pushes the images the target needs
+nu infra/up.nu sandbox-local --cluster <id> --dev          # --dev builds and pushes the images the target needs
 
 # Only render (nothing is applied); output goes to manifests/ (gitignored). An agent says what it takes in its own image, so the
 # render needs each agent's scaffold; up.nu collects them from the cluster (cached by the image's digest), and so can you:
@@ -137,7 +137,7 @@ nu infra/resolve.nu collect-scaffolds /tmp/scaffolds --target sandbox-local
 POLAR_SCAFFOLD_DIR=/tmp/scaffolds nu infra/render.nu sandbox-local
 
 # A cluster whose nodes name the registry differently (the default, 10.0.2.2:5000, is the host as a podman dev node sees it)
-POLAR_NODE_REGISTRY=polar-registry:5000 nu infra/up.nu sandbox-local --user U --email E
+POLAR_NODE_REGISTRY=polar-registry:5000 nu infra/up.nu sandbox-local --cluster <id> --user U --email E
 
 # Render without the cache, to see the true cost or to rule it out (see "The render cache")
 POLAR_CACHE=off nu infra/render.nu sandbox-local
@@ -161,7 +161,7 @@ nu infra/images.nu import --from docker.io/<account>    # copy published images 
 nu infra/images.nu publish --to docker.io/<account> --arch arm64    # publish them (a mirror only when named)
 nu infra/images.nu publish --to docker.io/<account> --also-tag 2.0.0     # a release: its version beside latest
 nu infra/images.nu import --from docker.io/<account> --tag 2.0.0         # stay on that release
-nu infra/up.nu <target> --import-from docker.io/<account> --import-tag 2.0.0   # bring a cluster up on that release
+nu infra/up.nu <target> --cluster <id> --import-from docker.io/<account> --import-tag 2.0.0   # bring a cluster up on that release
 
 # A Flux (gitops) target: up.nu runs these; each can be run alone
 nu infra/deploy-repo.nu ensure sandbox-local        # the deployment git server (in the cluster, namespace polar-deploy) and its PKI

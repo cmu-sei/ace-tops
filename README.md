@@ -77,7 +77,8 @@ kubectl get storageclass                          # step 1: a cluster with stora
 bin/polar-dev up                                  # step 3: your dev container, in the cluster; you land in it
 
 # In the dev container, from /workspace:
-nu infra/up.nu sandbox-local --dev --user <you> --email <your email>      # step 4: Polar
+nu infra/up.nu sandbox-local --cluster <id> --dev --user <you> --email <your email>      # step 4: Polar
+#   --cluster names the cluster (the uid of its kube-system namespace): run it without, and up.nu prints the id KUBECONFIG reaches
 # when it pauses at the browser step, on your machine:
 bin/polar-dev cert <you>                          # step 5: your certificate into the browser
 bin/polar-dev forward                             # step 6: then https://localhost:7473 and http://localhost:8050
@@ -213,7 +214,7 @@ machine happens by itself.
 In the dev container, from `/workspace`:
 
 ```bash
-nu infra/up.nu sandbox-local --dev --user <name> --email <email>
+nu infra/up.nu sandbox-local --cluster <id> --dev --user <name> --email <email>
 ```
 
 `up.nu` prints its plan first, every step with the reason any is skipped, and then runs it: the registry in the cluster
@@ -257,7 +258,7 @@ on a cluster hosts itself, and a run publishes there as an administrator. If a b
 *Topology, the choice:* the target deploys in `single` unless a cluster chooses another. On a cluster whose nodes carry the pools:
 
 ```bash
-nu infra/up.nu sandbox-local --topology separated --dev --user <name> --email <email>
+nu infra/up.nu sandbox-local --cluster <id> --topology separated --dev --user <name> --email <email>
 ```
 
 Choose it on a fresh cluster: a deployed one's volumes are bound to its nodes, so `up.nu` refuses a change. A cluster keeps its
@@ -464,7 +465,7 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    image from source, which takes hours on a Mac.
 
    ```bash
-   nu infra/up.nu sandbox-local --import-from docker.io/daveman1010220 --user <name> --email <email>
+   nu infra/up.nu sandbox-local --cluster <id> --import-from docker.io/daveman1010220 --user <name> --email <email>
    ```
 
    It copies the `arm64` images into the cluster, then deploys. Run the same command again after a failure or a pause.
@@ -715,7 +716,7 @@ For a target whose registry is in the cluster (the shipped ones), let `up.nu` do
 has made it:
 
 ```bash
-nu infra/up.nu sandbox-local --import-from docker.io/<account> --user <name> --email <email>
+nu infra/up.nu sandbox-local --cluster <id> --import-from docker.io/<account> --user <name> --email <email>
 ```
 
 For a registry of your own, or by hand (`nu infra/cluster-registry.nu up <target>` makes the one in the cluster and its forward
@@ -929,7 +930,7 @@ make a target for it:
    means, especially `identityStrategy`'s `clusterDomain` (only needed
    if your cluster's kubelet runs with a non-default
    `--cluster-domain`).
-3. Bring it up (step 4 of **Installation**): `nu infra/up.nu <your-target>`. It
+3. Bring it up (step 4 of **Installation**): `nu infra/up.nu <your-target> --cluster <id>`. It
    creates the namespaces and the CA, applies the target, and runs the admin
    flow, skipping whatever your target doesn't deploy.
 4. Reach your cluster's credentials-agent observer however suits your

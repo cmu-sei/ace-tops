@@ -27,7 +27,7 @@
 # Run from the repo root, with KUBECONFIG set if the up.nu cases are wanted:
 #
 #   nu infra/measure-render-cache.nu results.md                      # the render cases
-#   nu infra/measure-render-cache.nu results.md --user U --email E   # and a no-op up.nu resume (needs a cluster)
+#   nu infra/measure-render-cache.nu results.md --user U --email E --cluster <id>   # and a no-op up.nu resume (needs a cluster)
 #
 # "From a clean state" means a fresh, empty cache directory for each cold run, and POLAR_CACHE=off for the
 # uncached ones. Dhall's own import cache (~/.cache/dhall) is left as it is, and so are the page caches.
@@ -51,7 +51,7 @@ def row [label: string, times: list<float>] {
     }
 }
 
-def main [results: string, --user: string = "", --email: string = ""] {
+def main [results: string, --user: string = "", --email: string = "", --cluster: string = ""] {
     let root = $env.PWD
     let infra = ($root | path join "infra")
     # The agents' scaffolds, asked of their images on the cluster once, before anything is timed: every render below reads them.
@@ -103,9 +103,10 @@ def main [results: string, --user: string = "", --email: string = ""] {
         with-env ($scaffold_env | merge { POLAR_CACHE_DIR: $warm_dir }) { ^nu ($infra | path join "render.nu") sandbox-local } })))
 
     # ── C. a no-op resume of up.nu, end to end ─────────────────────────────
-    if ($user | is-not-empty) and ($email | is-not-empty) {
+    # Given --user, --email and --cluster (up.nu's: the cluster it is for, never the one KUBECONFIG happens to reach).
+    if ($user | is-not-empty) and ($email | is-not-empty) and ($cluster | is-not-empty) {
         let up = {|env_extra|
-            with-env $env_extra { ^nu ($infra | path join "up.nu") sandbox-local --user $user --email $email }
+            with-env $env_extra { ^nu ($infra | path join "up.nu") sandbox-local --cluster $cluster --user $user --email $email }
         }
         print "C1 up.nu resume, cache off"
         $rows = ($rows | append (row "up.nu resume that changes nothing, cache off" (runs 2 {|i| do $up { POLAR_CACHE: "off" } })))
