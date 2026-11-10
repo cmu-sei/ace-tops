@@ -1581,6 +1581,17 @@ above already plans to split it, for the same reason.
    (`polar_signing::signing_input_in`), refusing a domain its certificate does not allow. The TLS slots still sign
    handshakes alone, and `Signer` never signs one. *Decided (the maintainer, 2026-11-09): this relaxes "nothing in
    the agent's name" for an agent that declares `signing`, as planned.*
+   *Built 2026-11-10 (`polar-custody`):* `Slot::Signer` and `Request::SignRecord { record }`, the workload's: the
+   daemon reads the record (JSON, an object with a string `type`), signs it only if its certificate's
+   `c:record-evidence` allows that type (`cert_issuer_common::evidence::may_record`, built on main to the spec), and
+   signs `polar_signing::document::signing_input_in(EVIDENCE_RECORD, …)` itself; the signature is DER, as `Sign`'s, and
+   the caller takes its fixed form for the document. One domain, evidence, since the capability is evidence's alone: a
+   second would come with its own capability. `Sign` on the slot is refused, and polar-init may neither make a key
+   there nor install one (the custodian fills it, `workload_csr` and `install_workload`). Its certificate must be a
+   documentSigning one with no TLS purpose (`any`, client or server auth refused) that may record something.
+   Revocation of its serial destroys every key, as any slot's. Not yet: the custodian's plan asking for it (the
+   daemon's bootstrap maps every slot but `Server` to a client certificate, so `Signer` needs its own type there),
+   issuance, and the client's call for the infrastructure's signer.
 4. **A signer in the infrastructure, never the domain's own.** Since 1218efd6 the infrastructure is the builder's, not
    the domain supervisor's child, so it can end a domain and still sign a record saying it did. The signer is spawned
    unnamed (as the `CryptoActor` is, `infrastructure.rs`), so `registry::where_is` cannot find it; the builder hands the

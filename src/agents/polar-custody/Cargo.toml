@@ -33,6 +33,10 @@ cert-issuer-common = { version = "1.0.0", path = "../cert-issuer/common" }
 # The pod's escrow key (docs/architecture/key-custody.md, "Part A"): P-256, sealed and unwrapped through polar-escrow.
 p256 = { workspace = true, features = ["pem"] }
 polar-escrow.workspace = true
+# A record the signer slot signs is signed as polar-signing signs it: its domain and canonical encoding, never a copy
+# (docs/architecture/key-custody.md, "Workload signing keys", item 3).
+polar-signing.workspace = true
+serde_json.workspace = true
 rsa.workspace = true
 polar-env.workspace = true
 rcgen.workspace = true

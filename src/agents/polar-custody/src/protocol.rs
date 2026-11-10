@@ -32,12 +32,15 @@ use std::io::{Read, Write};
 pub const MAX_FRAME: usize = 64 * 1024;
 
 /// Which key: a pod may hold a client certificate and a server certificate, and the daemon holds its own, the
-/// custodian's (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian"), which no request signs with.
+/// custodian's (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian"), which no request signs with. A
+/// pod that signs records holds a signer key as well, which signs only those (`Request::SignRecord`;
+/// docs/architecture/key-custody.md, "Workload signing keys").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Archive, Serialize, Deserialize)]
 pub enum Slot {
     Client,
     Server,
     Custodian,
+    Signer,
 }
 
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
@@ -52,8 +55,13 @@ pub enum Request {
     Install { slot: Slot, chain_pem: Vec<String> },
     /// The certificate chain installed for `slot`.
     Certificate { slot: Slot },
-    /// A signature with `slot`'s key over `message`, a TLS 1.3 CertificateVerify input: the workload's.
+    /// A signature with `slot`'s key over `message`, a TLS 1.3 CertificateVerify input: the workload's. Never on the
+    /// signer slot.
     Sign { slot: Slot, message: Vec<u8> },
+    /// A signature with the signer key over `record`, an evidence record's payload (JSON): the daemon makes the signing
+    /// input itself, in the evidence domain (`polar_signing::signing_input_in`), and signs only a record of a type its
+    /// certificate names (`c:record-evidence`). The workload's.
+    SignRecord { record: String },
     /// What the custodian is to fetch for `identity`, the workload, once its own certificate is installed: its client
     /// certificate, its server certificate with these names, its escrow key. Only what the custodian's certificate
     /// names. `polar-init`'s, once (the same plan again, from its run again in the same pod, is taken and changes
@@ -75,7 +83,7 @@ pub enum Reply {
     Csr(String),
     Installed,
     Certificate(Vec<String>),
-    /// A DER-encoded ECDSA P-256 SHA-256 signature.
+    /// A DER-encoded ECDSA P-256 SHA-256 signature (a record's too: `polar-signing` takes its fixed form).
     Signature(Vec<u8>),
     /// The custodian has fetched everything it was asked to.
     Ready,
@@ -94,6 +102,9 @@ pub enum Refusal {
     NoCertificate,
     #[error("only a TLS 1.3 CertificateVerify input is signed")]
     NotTls13Handshake,
+    /// The signer's certificate does not name this record type.
+    #[error("the signer's certificate may not record `{0}`")]
+    NotItsRecordType(String),
     #[error("the certificate is refused: {0}")]
     BadCertificate(String),
     #[error("the request is refused: {0}")]
