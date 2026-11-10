@@ -182,6 +182,11 @@ pub trait PolarAgent: Sized + 'static {
     /// The repairs of what this writer wrote wrong before, which its graph controller runs at the first contact with
     /// the graph, after the constraints (`polar::graph::repair`).
     const GRAPH_REPAIRS: &'static [polar::graph::repair::Repair] = &[];
+    /// The evidence record types the agent writes, for a collector: each a record's `type` (`[a-z0-9-]+`). The scaffold
+    /// prints them under `records`, the render writes them into the authority model, and its pods' signing certificates
+    /// carry each as `c:record-evidence:<type>` (docs/architecture/key-custody.md, "Workload signing keys"), so what a
+    /// collector may sign is computed from how it is built. An agent that collects nothing declares none.
+    const RECORDS: &'static [&'static str] = &[];
 
     /// The agent proper. It is given the configuration the infrastructure judged, and builds
     /// its infrastructure from it (see `AgentBuilder::into_configured`). It returns when the
@@ -387,6 +392,10 @@ pub struct AgentDocument {
     /// when there is one, so every other agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub roles: std::collections::BTreeMap<String, Vec<crate::capability::RoleRule>>,
+    /// The evidence record types the agent writes ([`PolarAgent::RECORDS`]), sorted and each once. Written only when there
+    /// is one, so every other agent's scaffold is as it was.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<String>,
     #[serde(flatten)]
     pub document: Document,
     /// Every problem found, when the document was filled from a file.
@@ -719,6 +728,12 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
         graph_edges: crate::graph_schema::edge_set(A::GRAPH_EDGES),
         operations: A::OPERATIONS.iter().map(OperationEntry::from).collect(),
         roles: crate::capability::roles_of(&needs_of::<A>(), A::OPERATIONS),
+        records: A::RECORDS
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         document: Document::scaffold(&tagged),
         problems: Vec::new(),
     }
@@ -1093,6 +1108,20 @@ pub fn declaration_problems<A: PolarAgent>() -> Vec<String> {
             "job-run is listed by hand: the builder adds it for an agent whose cluster operations declare a write              (OPERATIONS), and only then"
                 .to_string(),
         );
+    }
+    let mut record_types: Vec<&str> = Vec::new();
+    for record_type in A::RECORDS {
+        if !cert_issuer_common::evidence::is_record_type(record_type) {
+            problems.push(format!(
+                "record type `{record_type}` is not one: a record's type is one or more of a-z, 0-9 and -"
+            ));
+        }
+        if record_types.contains(record_type) {
+            problems.push(format!(
+                "record type `{record_type}` is declared more than once in RECORDS"
+            ));
+        }
+        record_types.push(record_type);
     }
     let mut seen: Vec<Capability> = Vec::new();
     for capability in A::NEEDS {
@@ -2146,6 +2175,61 @@ mod tests {
         let json = serde_json::to_value(scaffold_document::<Reading>()).unwrap();
         assert!(json.get("operations").is_none(), "{json}");
         assert!(json.get("roles").is_none(), "{json}");
+        assert!(json.get("records").is_none(), "{json}");
+    }
+
+    /// A collector's evidence record types are in its scaffold, sorted and each once, for the render to give its pods'
+    /// signing certificates (docs/architecture/key-custody.md, "Workload signing keys"); a type a scoped name could not
+    /// carry, or one listed twice, is a declaration problem.
+    #[test]
+    fn a_collector_s_record_types_are_in_its_scaffold() {
+        struct Collecting;
+        impl PolarAgent for Collecting {
+            const NAME: &'static str = "collecting";
+            const ROLE: Role = Role::Observer;
+            const PURPOSE: &'static str = "collects evidence";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const RECORDS: &'static [&'static str] = &["mutation", "attestation"];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let doc = scaffold_document::<Collecting>();
+        assert_eq!(doc.records, ["attestation", "mutation"]);
+        let json = serde_json::to_value(&doc).unwrap();
+        assert_eq!(
+            json["records"],
+            serde_json::json!(["attestation", "mutation"])
+        );
+        let back: AgentDocument = serde_json::from_value(json).unwrap();
+        assert_eq!(back, doc);
+        assert!(
+            declaration_problems::<Collecting>().is_empty(),
+            "{:?}",
+            declaration_problems::<Collecting>()
+        );
+
+        struct Muddled;
+        impl PolarAgent for Muddled {
+            const NAME: &'static str = "muddled-records";
+            const ROLE: Role = Role::Observer;
+            const PURPOSE: &'static str = "collects evidence badly";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const RECORDS: &'static [&'static str] = &["Mutation", "", "twice", "twice"];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        let problems = declaration_problems::<Muddled>().join(" | ");
+        for expected in [
+            "record type `Mutation` is not one",
+            "record type `` is not one",
+            "record type `twice` is declared more than once",
+        ] {
+            assert!(problems.contains(expected), "{expected}: {problems}");
+        }
     }
 
     /// The role each Kubernetes capability gives an agent is in its scaffold, computed from what its cluster operations

@@ -68,6 +68,11 @@ pub struct Workload {
     pub groups: Vec<String>,
     #[serde(default)]
     pub topics: Vec<TopicEntry>,
+    /// The evidence record types its pods' signing certificates may sign, from a collector's scaffold
+    /// (docs/architecture/key-custody.md, "Workload signing keys"). Absent for a workload that collects nothing, and in
+    /// a model written before it existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub records: Vec<String>,
 }
 
 /// How many pods of a workload run at once: one, or many, each an instance of the one identity with its own certificate
@@ -150,6 +155,10 @@ pub struct CertificateNames {
     pub publish: Vec<String>,
     pub subscribe: Vec<String>,
     pub groups: Vec<String>,
+    /// The evidence record types its pods' signing certificates may sign, each once, sorted
+    /// (docs/architecture/key-custody.md, "Workload signing keys"). Empty until the render computes them from a
+    /// collector's scaffold.
+    pub records: Vec<String>,
 }
 
 impl CertificateNames {
@@ -175,6 +184,15 @@ impl CertificateNames {
             .chain(self.groups.iter().map(|g| Group(g.clone()).to_san_string()))
             .collect()
     }
+
+    /// The names a pod's signing certificate carries: each record type, as the evidence capability for that type.
+    pub fn signing_san_strings(&self) -> Vec<String> {
+        use cert_issuer_common::evidence::EvidenceCapability;
+        self.records
+            .iter()
+            .map(|t| EvidenceCapability::Type(t.clone()).to_san_string())
+            .collect()
+    }
 }
 
 impl Workload {
@@ -196,6 +214,13 @@ impl Workload {
             subscribe: own(polar_topics::Access::Subscribe),
             groups: self
                 .groups
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            records: self
+                .records
                 .iter()
                 .cloned()
                 .collect::<BTreeSet<_>>()
@@ -319,5 +344,68 @@ mod tests {
             (None, None)
         );
         assert!(!serde_json::to_string(&before).unwrap().contains("kind"));
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": a collector's record types come from the model the render
+    // writes, into the names its pods' signing certificates carry; a model written before them reads as none, and one
+    // without them is written as it was.
+    #[test]
+    fn a_workload_s_record_types_are_its_certificates_record_names() {
+        let entry = r#"{"workload":"collector","identity":"collector.polar.serviceaccount.cluster.local","issuer":"credentials-agent","bootstrap":false,"records":["mutation","attestation","mutation"]}"#;
+        let workload: Workload = serde_json::from_str(entry).unwrap();
+        assert_eq!(
+            workload.certificate_names().records,
+            ["attestation", "mutation"]
+        );
+        let before = r#"{"workload":"collector","identity":"collector.polar.serviceaccount.cluster.local","issuer":"credentials-agent","bootstrap":false}"#;
+        let workload: Workload = serde_json::from_str(before).unwrap();
+        assert!(workload.records.is_empty());
+        assert!(workload.certificate_names().records.is_empty());
+        assert!(
+            !serde_json::to_string(&workload)
+                .unwrap()
+                .contains("records")
+        );
+    }
+
+    // docs/architecture/key-custody.md, "Workload signing keys": the record types go on the pod's signing certificate,
+    // one scoped name a type, and never on its client certificate.
+    #[test]
+    fn record_types_are_a_signing_certificate_s_names_and_not_a_client_certificate_s() {
+        let names = CertificateNames {
+            publish: vec!["news".into()],
+            records: vec!["attestation".into(), "attestation-report".into()],
+            ..CertificateNames::default()
+        };
+        assert_eq!(names.san_strings(), ["p:pub:news"]);
+        assert_eq!(
+            names.signing_san_strings(),
+            [
+                "c:record-evidence:attestation",
+                "c:record-evidence:attestation-report"
+            ]
+        );
+        assert!(CertificateNames::default().signing_san_strings().is_empty());
+    }
+
+    proptest::proptest! {
+        // For every set of record types: the signing names allow exactly those types, and the client names none.
+        #[test]
+        fn the_signing_names_allow_exactly_the_record_types_and_the_client_names_none(
+            records in proptest::collection::btree_set("[a-z0-9-]{1,12}", 0..4),
+            groups in proptest::collection::vec("[a-z]{1,6}", 0..3),
+        ) {
+            use cert_issuer_common::evidence::MayRecord;
+            let names = CertificateNames {
+                groups,
+                records: records.iter().cloned().collect(),
+                ..CertificateNames::default()
+            };
+            let signing = names.signing_san_strings();
+            let expected = if records.is_empty() { MayRecord::Nothing } else { MayRecord::Only(records) };
+            proptest::prop_assert_eq!(MayRecord::of_names(signing.iter().map(String::as_str)), expected);
+            let client = names.san_strings();
+            proptest::prop_assert_eq!(MayRecord::of_names(client.iter().map(String::as_str)), MayRecord::Nothing);
+        }
     }
 }

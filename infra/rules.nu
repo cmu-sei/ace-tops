@@ -419,6 +419,9 @@ export def model_facts [records: list, domain: string]: nothing -> record {
             groups: ($r.groups? | default [] | uniq | sort)
             topics: ($r.topics? | default [] | sort-by name access)
         }
+        # The evidence record types a collector's scaffold declares, which its pods' signing certificates carry
+        # (docs/architecture/key-custody.md, "Workload signing keys"); written only for a workload that has some.
+        | if ($r.records? | default [] | is-empty) { $in } else { insert records ($r.records | uniq | sort) }
     } | sort-by workload)
     { format: 1, workloads: $workloads }
 }

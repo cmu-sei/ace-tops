@@ -576,6 +576,13 @@ Since 2026-11-06 the crate has no runtime of its own, so a tool can judge a depl
 from `polar-topics`, which the builder re-exports, and the credentials agent's common crate without its graph keys. The
 model's facts also say each workload's `kind` and `config`, as the catalog does.
 
+Since 2026-11-10 they also say a collector's evidence `records`: the record types its pods' signing certificates may sign,
+each as `c:record-evidence:<type>` (`CertificateNames::signing_san_strings`). An agent declares them in code
+(`PolarAgent::RECORDS`, each a record's `type`, `[a-z0-9-]+`, checked as it is built), its scaffold prints them, and the
+render writes them sorted and once (`resolve.nu` `issuance_record`, `rules.nu` `model_facts`), only for a workload that has
+some, so a model with no collector is as it was. Nothing on main declares any yet: the attestation agent's are the first,
+with the custodian's signing key on the agentic-control-plane branch (`key-custody.md` there, "Workload signing keys").
+
 ## What stays as it is
 
 - Decisions stay at the leaves and the broker, against whatever the authority accepted. Asking a central decider

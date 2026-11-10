@@ -521,6 +521,13 @@ def main [] {
             assert equal ($many.workloads | where workload == "kube-observer" | first | get instances) "many"
             # One identity per workload: the token's subject is nowhere in it (authority-model.md, "Decisions").
             assert (not ($m | to json | str contains "system:serviceaccount")) "a token subject in the model"
+            # The evidence record types a collector's scaffold declares, which its pods' signing certificates carry
+            # (key-custody.md, "Workload signing keys"): sorted and each once, and written only for a workload that has
+            # some, so a model with no collector is as it was.
+            assert ($m.workloads | all {|w| "records" not-in ($w | columns) }) "records written for a workload with none"
+            let collecting = (model_facts ($r | update 0 { merge { records: ["mutation" "attestation" "mutation"] } }) "cluster.local")
+            assert equal ($collecting.workloads | where workload == "kube-observer" | first | get records) ["attestation" "mutation"]
+            assert ("records" not-in ($collecting.workloads | where workload == "credentials-agent-observer" | first | columns))
         }
 
         "a workload whose identity is not its name has no place in the model": {

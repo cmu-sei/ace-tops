@@ -757,6 +757,21 @@ def main [] {
             }
         }
 
+        # docs/architecture/key-custody.md, "Workload signing keys": a collector's record types reach the authority model
+        # from its scaffold, and a model with no collector is as it was.
+        "a collector's record types reach the authority model from its scaffold, and nothing else's does": {
+            let model_of = {|r| env_value $r "CREDENTIALS_AGENT_AUTHORITY_MODEL" | from json | get workloads }
+            assert (do $model_of (resolve "credentials-agent") | all {|w| "records" not-in ($w | columns) })
+            let dir = (mktemp --directory)
+            cp ($env.POLAR_SCAFFOLD_DIR | path join "*.json" | into glob) $dir
+            let file = ($dir | path join "kube-observer.json")
+            open $file | upsert records ["attestation" "mutation"] | to json | save --force $file
+            let model = (with-env { POLAR_SCAFFOLD_DIR: $dir } { do $model_of (resolve "credentials-agent") })
+            rm -rf $dir
+            assert equal ($model | where workload == "kube-observer" | first | get records) ["attestation" "mutation"]
+            assert equal ($model | where {|w| "records" in ($w | columns) } | get workload) ["kube-observer"]
+        }
+
         "a role taken from a scaffold that has none is refused, never widened": {
             let dir = (mktemp --directory)
             cp ($env.POLAR_SCAFFOLD_DIR | path join "*.json" | into glob) $dir

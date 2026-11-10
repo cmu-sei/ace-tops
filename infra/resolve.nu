@@ -379,6 +379,7 @@ def issuance_record [w: record, target: string, kinds: record] {
         config: ($w.config? | default "env")
         topics: $scaffold.topics?
         groups: (($scaffold.groups? | default []) ++ (marks_of $w.name $target))
+        records: ($scaffold.records? | default [])
     }
 }
 
