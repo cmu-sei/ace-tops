@@ -59,7 +59,12 @@ fn segment() -> impl Strategy<Value = String> {
 fn site() -> impl Strategy<Value = String> {
     (
         prop_oneof![Just("http"), Just("https")],
-        "[a-zA-Z][a-zA-Z0-9-]{0,8}(\\.[a-zA-Z][a-zA-Z0-9]{0,6}){0,2}",
+        // A host the URL parser takes: a label with `--` in its third and fourth places is reserved for punycode (`xn--`),
+        // and one that does not decode is refused, so none is a site this means.
+        "[a-zA-Z][a-zA-Z0-9-]{0,8}(\\.[a-zA-Z][a-zA-Z0-9]{0,6}){0,2}"
+            .prop_filter("no label reserved for punycode", |h: &String| {
+                !h.split('.').any(|l| l.get(2..4) == Some("--"))
+            }),
         proptest::option::of(1u16..),
         proptest::collection::vec(segment(), 0..4),
         0usize..4,
