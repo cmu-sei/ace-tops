@@ -1079,7 +1079,11 @@ only.
     The notice that the agent is ending is the domain's own message, registered with the builder before `build()`: `with_drain` (told,
     and its proceed waited for), `on_shutdown` (told only), or neither (`a256de55`), replacing the infrastructure's event port and the
     `HAS_OWN_DRAIN` constant of the hour before. Found on the way: a finished harness Job would have exited 1 (`2f994184`), and a held
-    agent's work took its notice from the port (now `held::WorkStarted`). Not yet seen live.
+    agent's work took its notice from the port (now `held::WorkStarted`). Seen live on u7c the same day (`33cb12ca`): every agent of
+    the rollout came up with 0 restarts, the old pods ended through the new path; a pod of each kind deleted, each ending within about
+    a millisecond of its SIGTERM: git-processor (registers nothing) not told, the infrastructure proceeding, the graph drained, the
+    agent ended by the builder and `run` returning non-zero; soft-state-processor (told only) told while the infrastructure went on;
+    kube-observer (drains) told, its watches stopped, and only then the proceed. No watchdog, no "unexpected" line.
   Since 2026-10-12 the graph start, stop and drain are shared in polar-agent-builder (`graph.rs`).
 - [ ] **cert-issuer's `conf/` describes a file it no longer reads (found 2026-10-23).** `src/agents/cert-issuer/server/conf/dev.dhall` and `cert-issuer.dhall` render the JSON configuration file cert-issuer read before it moved onto the builder (and were already out of date: one `issuer`, where it reads a list). Its settings are declared variables now (`settings.rs`; `cert-issuer --help`). Remove them, or replace them with a development configuration document for `--config`, once the move onto the builder and into the catalog is complete and validated by testing (the maintainer, 2026-10-23).
 - [ ] **Scaffolding a new agent** (ideas of 2026-10-07 and 2026-10-09; the first is the catalog-entry half of the second and should
