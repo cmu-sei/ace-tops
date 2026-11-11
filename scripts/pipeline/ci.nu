@@ -57,8 +57,9 @@
 #     skopeo push of that archive, digests preserved → cosign sign by the
 #     digest, one pass per image in the manifest. The inspection checks each
 #     layer against its digest and diff_id and finds each Phase 2 binary in
-#     the image by its hash (polar.image/found-at, not-found, executables);
-#     the push is refused its signature if the registry serves another digest. Source-level SBOM hashes from Phase 1 are threaded into
+#     the image by its hash (polar.image/found-at, not-found, and
+#     executable-entries, every layer's); an image not inspected as what it
+#     names, or not served by the registry as inspected, fails the pipeline. Source-level SBOM hashes from Phase 1 are threaded into
 #     binary_linked events, closing the full provenance chain:
 #       (Binary)-[:BUILT_FROM]->(Package)<-[:DESCRIBES]-(SourceSbom)
 #
@@ -805,7 +806,8 @@ def process-image [
 
 # Where the binaries an image should hold lie in it, as facts: polar.image/found-at for each place (the binary, the
 # layer by its diff_id, the path), polar.image/not-found for one it holds nowhere (against the image, by its inspected
-# digest), and polar.image/executables, how many executables it holds.
+# digest), and polar.image/executable-entries, how many executable entries its layers hold (core/inspect.nu: a file
+# a later layer replaces or deletes is an entry still, so this is not how many executables the image's filesystem has).
 def report-placements [entry: record, image: record, binaries: list<record>] {
     let version = open --raw ((workspace-root) | path join ".." ".." "VERSION") | str trim
     let expected = $binaries
@@ -821,9 +823,9 @@ def report-placements [entry: record, image: record, binaries: list<record>] {
         (emit-fact {label: "Binary", key: $m.hash} "polar.image/not-found" $FACT_TOOL $version
             --object {label: "OCIArtifact", key: $image.digest})
     }
-    (emit-fact {label: "OCIArtifact", key: $image.digest} "polar.image/executables" $FACT_TOOL $version
+    (emit-fact {label: "OCIArtifact", key: $image.digest} "polar.image/executable-entries" $FACT_TOOL $version
         --value ($image.executables | length | into string))
-    log-info $"($entry.name): ($image.digest), ($image.executables | length) executables, ($placed.found | length) places for ($expected | length) binaries, ($placed.missing | length) missing" --component $COMPONENT
+    log-info $"($entry.name): ($image.digest), ($image.executables | length) executable entries in its layers, ($placed.found | length) places for ($expected | length) binaries, ($placed.missing | length) missing" --component $COMPONENT
 }
 
 

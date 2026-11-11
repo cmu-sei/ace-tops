@@ -22,7 +22,7 @@
 # scripts/pipeline/core/inspect.nu
 #
 # What an image holds, read from the OCI archive that is pushed (build-inspect-ship, S3): its manifest's digest, each
-# layer checked against its digest and its diff_id, and every executable in each layer, by content. Then where each
+# layer checked against its digest and its diff_id, and every executable entry in each layer, by content. Then where each
 # binary the build linked lies in it, by its hash. Observes: a binary found nowhere is said, never refused.
 
 # The sha256 of a file, as `sha256:` and hex, read by sha256sum as it streams: a layer may be larger than memory.
@@ -45,9 +45,12 @@ def content-digest [blob: path, media_type: string]: nothing -> string {
 
 # The image in an OCI archive (`skopeo copy … oci-archive:`), as `{digest, config_digest, layers, executables}`: its
 # manifest's digest, which a registry that is given the archive as it is gives it too; each layer, `{order, digest,
-# diff_id}`, its blob checked against its digest and its content against the config's diff_id; and every executable in
-# every layer, `{diff_id, path, hash}`, a regular file with an execute bit, by its path in the image. A symlink is not
-# one: its target is, where it lies. Unpacked into `scratch`, one layer at a time, and removed whatever happens. A layer
+# diff_id}`, its blob checked against its digest and its content against the config's diff_id; and every executable
+# entry in every layer, `{diff_id, path, hash}`, a regular file with an execute bit, by its path in the image. These are
+# the layers' entries, not the image's filesystem: no layer's files are replaced or deleted by those above, so a file a
+# later layer replaces, or deletes by its whiteout, is an entry still, and a whiteout marker (`.wh.<name>`) is none. A
+# symlink is not one: its target is, where it lies. Unpacked into `scratch`, one layer at a time, and removed whatever
+# happens. A layer
 # that is not what its digest or its diff_id says stops the inspection: the archive is not the image it names.
 export def inspect-archive [archive: path, scratch: path]: nothing -> record {
     mkdir $scratch
@@ -98,7 +101,7 @@ export def inspect-archive [archive: path, scratch: path]: nothing -> record {
             let dir = $scratch | path join $"layer-($l.order)"
             mkdir $dir
             ^tar -xf (do $blob $l.digest) -C $dir --no-same-owner --no-same-permissions
-            let found = ^find $dir -type f -perm /111 -exec sha256sum "{}" +
+            let found = ^find $dir -type f -perm /111 ! -name ".wh.*" -exec sha256sum "{}" +
                 | lines
                 | parse "{hash}  {path}"
                 | each {|e| {diff_id: $l.diff_id, path: ($e.path | str replace $dir ""), hash: $"sha256:($e.hash)"} }
