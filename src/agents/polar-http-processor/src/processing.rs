@@ -398,7 +398,10 @@ mod tests {
                 ),
                 ("polar_observed_at", Scalar::Integer(self.at)),
                 // The origin the observer read it from.
-                ("polar_origin", Scalar::Text("https://h.example".to_string())),
+                (
+                    "polar_origin",
+                    Scalar::Text("https://h.example".to_string()),
+                ),
             ]
             .into_iter()
             .map(|(n, v)| (n.to_string(), v))
