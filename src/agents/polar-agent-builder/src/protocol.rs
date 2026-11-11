@@ -2686,7 +2686,10 @@ pub(crate) mod tests {
         );
 
         let unmapped = cluster_namespaces(&none, &held).unwrap_err();
-        assert!(unmapped.contains("`builds` (operation `held`)"), "{unmapped}");
+        assert!(
+            unmapped.contains("`builds` (operation `held`)"),
+            "{unmapped}"
+        );
         assert!(cluster_namespaces(&env("core=polar"), &held).is_err());
         let refused = cluster_namespaces(&env("builds"), &held).unwrap_err();
         assert!(refused.contains(&variable), "{refused}");
