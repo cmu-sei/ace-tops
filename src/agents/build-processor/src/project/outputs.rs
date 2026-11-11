@@ -174,8 +174,123 @@ pub struct AssertedTree {
 /// The tree an SBOM asserts, or none when it names no root: trees are compared by their root, and a tree with none
 /// could not be. The SBOM's packages are written all the same.
 pub fn asserted_tree(fragment: &SbomGraphFragment) -> Option<AssertedTree> {
-    let _ = fragment;
-    unimplemented!("slice 2b: the tests come first")
+    let root = fragment
+        .root
+        .as_ref()
+        .map(|r| &r.purl)
+        .filter(|p| is_purl(p))?
+        .clone();
+
+    let mut gaps = BTreeSet::new();
+    if fragment.components.iter().any(|c| !is_purl(&c.purl)) {
+        gaps.insert(COMPONENTS_WITHOUT_PURL);
+    }
+    let mut pairs = BTreeSet::new();
+    for entry in &fragment.edges {
+        for to in &entry.to_refs {
+            if is_purl(&entry.from_ref) && is_purl(to) {
+                pairs.insert((entry.from_ref.clone(), to.clone()));
+            } else {
+                gaps.insert(REFS_NOT_PURLS);
+            }
+        }
+    }
+    // Pairs may name purls the components do not list; they are in the tree all the same.
+    let packages: BTreeSet<String> = fragment
+        .components
+        .iter()
+        .map(|c| &c.purl)
+        .filter(|p| is_purl(p))
+        .chain(pairs.iter().flat_map(|(from, to)| [from, to]))
+        .filter(|p| **p != root)
+        .cloned()
+        .collect();
+    // A root that depends on nothing has no entry: the tree is the root alone, and nothing is missing.
+    if !packages.is_empty() && !fragment.edges.iter().any(|e| e.from_ref == root) {
+        gaps.insert(NO_ROOT_ENTRY);
+    }
+
+    let complete = gaps.is_empty();
+    let direct = complete.then(|| {
+        pairs
+            .iter()
+            .filter(|(from, _)| *from == root)
+            .map(|(_, to)| to.clone())
+            .collect()
+    });
+    let form = (TREE_FORM, &root, complete, &gaps, &packages, &pairs);
+    let canonical =
+        serde_json::to_vec(&form).expect("strings, a bool and sets of strings serialize");
+    Some(AssertedTree {
+        digest: format!("sha256:{}", polar::artifact_uid_from_bytes(&canonical)),
+        root,
+        complete,
+        gaps,
+        packages,
+        pairs,
+        direct,
+    })
+}
+
+/// The writes for the tree an SBOM asserts: the tree, keyed by its digest, with its pairs as two aligned lists
+/// (`edges_from[i]` depends on `edges_to[i]`), the SBOM's ASSERTS edge to it, and its INCLUDES edge to each package,
+/// `direct` unset when that is not known.
+///
+/// The raw Cypher must agree with `ArtifactNodeKey::DependencyTree`'s label and key (`DependencyTree {digest}`) and
+/// with `ArtifactNodeKey::Package`'s (`Package {purl}`).
+fn tree_ops(sbom: ArtifactNodeKey, tree: AssertedTree) -> Vec<GraphOp> {
+    let key = ArtifactNodeKey::DependencyTree {
+        digest: tree.digest.clone(),
+    };
+    let strings =
+        |xs: Vec<String>| GraphValue::List(xs.into_iter().map(GraphValue::String).collect());
+    let (from, to): (Vec<String>, Vec<String>) = tree.pairs.into_iter().unzip();
+    let props = vec![
+        Property("root".into(), string(&tree.root)),
+        Property("complete".into(), GraphValue::Bool(tree.complete)),
+        Property(
+            "gaps".into(),
+            strings(tree.gaps.iter().map(|g| g.to_string()).collect()),
+        ),
+        Property("edges_from".into(), strings(from)),
+        Property("edges_to".into(), strings(to)),
+    ];
+    let rows: Vec<GraphValue> = tree
+        .packages
+        .iter()
+        .map(|purl| {
+            let direct = match &tree.direct {
+                Some(direct) => GraphValue::Bool(direct.contains(purl)),
+                None => GraphValue::Null,
+            };
+            GraphValue::Map(vec![
+                ("purl".into(), string(purl)),
+                ("direct".into(), direct),
+            ])
+        })
+        .collect();
+
+    let mut ops = vec![
+        upsert(key.clone(), props),
+        edge(sbom, rel::ASSERTS, key, vec![]),
+    ];
+    if !rows.is_empty() {
+        ops.push(GraphOp::RawMergeWrite {
+            cypher: format!(
+                "UNWIND $rows AS row \
+                 MERGE (t:DependencyTree {{ digest: $digest }}) \
+                 MERGE (p:Package {{ purl: row.purl }}) \
+                 MERGE (t)-[r:{rel}]->(p) \
+                 SET r.direct = row.direct",
+                rel = rel::INCLUDES,
+            ),
+            params: vec![
+                ("digest".to_string(), BoltType::from(tree.digest)),
+                ("rows".to_string(), BoltType::from(GraphValue::List(rows))),
+            ],
+        });
+    }
+    ops
 }
 
 /// An SBOM and the dependency graph it describes.
@@ -195,6 +310,8 @@ pub fn sbom_analyzed(mut fragment: SbomGraphFragment) -> Vec<GraphOp> {
         fragment.components.len(),
         fragment.edges.len()
     );
+    // Taken from the SBOM as it came, so the tree can name what the filtering below leaves out.
+    let tree = asserted_tree(&fragment);
 
     // A package is keyed by its purl: an entry the generator gave none is not written, rather than merged with every
     // other such entry into one `Package { purl: "" }`.
@@ -225,7 +342,7 @@ pub fn sbom_analyzed(mut fragment: SbomGraphFragment) -> Vec<GraphOp> {
     // purl); only the DESCRIBES edge is written here.
     if let Some(ref root) = fragment.root {
         ops.push(edge(
-            sbom,
+            sbom.clone(),
             rel::DESCRIBES,
             ArtifactNodeKey::Package {
                 purl: root.purl.clone(),
@@ -272,81 +389,34 @@ pub fn sbom_analyzed(mut fragment: SbomGraphFragment) -> Vec<GraphOp> {
         });
     }
 
-    // ── Root → direct dependencies ───────────────────────────────────────────
-    // Prefer the root's own entry in `edges`; if the generator omitted it,
-    // treat every component as a direct dependency.
-    if let Some(ref root) = fragment.root {
-        let deps: Vec<String> = match fragment.edges.iter().find(|e| e.from_ref == root.purl) {
-            Some(e) => e.to_refs.iter().filter(|r| is_purl(r)).cloned().collect(),
-            None => {
+    // ── The tree this SBOM asserts ───────────────────────────────────────────
+    // Its own word, apart from every other SBOM's: no global DEPENDS_ON web, in which two builds' trees run
+    // together and cannot be diffed.
+    let edge_count = match tree {
+        Some(tree) => {
+            if !tree.complete {
                 warn!(
-                    "SBOM {} has no dependency entry for root purl {}, falling back to flat linkage",
-                    fragment.filename, root.purl
+                    "SBOM {}: its dependency tree is incomplete ({}), so what {} depends on directly is not known",
+                    fragment.filename,
+                    tree.gaps.iter().copied().collect::<Vec<_>>().join(", "),
+                    tree.root,
                 );
-                fragment.components.iter().map(|c| c.purl.clone()).collect()
             }
-        };
-        if !deps.is_empty() {
-            ops.push(GraphOp::RawMergeWrite {
-                cypher: format!(
-                    "UNWIND $deps AS dep \
-                     MERGE (r:Package {{ purl: $root }}) \
-                     MERGE (d:Package {{ purl: dep }}) \
-                     MERGE (r)-[:{rel}]->(d)",
-                    rel = rel::DEPENDS_ON,
-                ),
-                params: vec![
-                    ("root".to_string(), BoltType::from(root.purl.clone())),
-                    (
-                        "deps".to_string(),
-                        BoltType::from(deps.into_iter().map(BoltType::from).collect::<Vec<_>>()),
-                    ),
-                ],
-            });
+            let count = tree.pairs.len();
+            ops.extend(tree_ops(sbom, tree));
+            count
         }
-    }
-
-    // ── The full dependency tree ─────────────────────────────────────────────
-    // Every (from → to) pair. MERGE on both ends keeps it safe for purls that
-    // aren't in `components`.
-    let all_pairs = fragment
-        .edges
-        .iter()
-        .flat_map(|e| e.to_refs.iter().map(|to| (&e.from_ref, to)));
-    let (pairs, skipped): (Vec<_>, Vec<_>) =
-        all_pairs.partition(|(from, to)| is_purl(from) && is_purl(to));
-    if !skipped.is_empty() {
-        warn!(
-            "SBOM {}: {} dependency edges name something that is not a purl and are not written",
-            fragment.filename,
-            skipped.len()
-        );
-    }
-    let pairs: Vec<GraphValue> = pairs
-        .into_iter()
-        .map(|(from, to)| {
-            GraphValue::Map(vec![
-                ("from".into(), string(from)),
-                ("to".into(), string(to)),
-            ])
-        })
-        .collect();
-    let edge_count = pairs.len();
-    if !pairs.is_empty() {
-        ops.push(GraphOp::RawMergeWrite {
-            cypher: format!(
-                "UNWIND $pairs AS pair \
-                 MERGE (a:Package {{ purl: pair.from }}) \
-                 MERGE (b:Package {{ purl: pair.to }}) \
-                 MERGE (a)-[:{rel}]->(b)",
-                rel = rel::DEPENDS_ON,
-            ),
-            params: vec![("pairs".to_string(), BoltType::from(GraphValue::List(pairs)))],
-        });
-    }
+        None => {
+            warn!(
+                "SBOM {} names no root, so it asserts no dependency tree",
+                fragment.filename
+            );
+            0
+        }
+    };
 
     debug!(
-        "SbomAnalyzed: {} package nodes + {} dependency edges for {}",
+        "SbomAnalyzed: {} package nodes + a tree of {} dependency edges for {}",
         fragment.components.len() + fragment.root.iter().count(),
         edge_count,
         fragment.filename,
