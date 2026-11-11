@@ -70,3 +70,15 @@ export def linked-binaries [log: list<string>]: nothing -> list<record> {
         {name: ($m.executable | path basename), package: $package.name, version: $package.version}
     }
 }
+
+# The packages compiled for the target a binary runs on, from its build's cargo log: `{name, version}`, each once, in
+# order. Stub (S2, the SBOM's gap): nothing yet.
+export def compiled-for-target [log: list<string>, binary: string]: nothing -> list<record> {
+    []
+}
+
+# The packages an SBOM names that a build did not compile for its target: each of `components` (`{name, version,
+# purl}`) whose name and version are not among `compiled`. Stub (S2, the SBOM's gap): nothing yet.
+export def not-compiled [components: list<record>, compiled: list<record>]: nothing -> list<record> {
+    []
+}
