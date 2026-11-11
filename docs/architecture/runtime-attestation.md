@@ -422,7 +422,7 @@ protection, and then a pod without it is refused its certificate. Probed on whit
 **The bites, each seen on u7c before the next:**
 1. *C1, the pod hardened and checked.* Every Polar container gets a read-only root, `allowPrivilegeEscalation: false` and
    the runtime's default seccomp profile, what an agent writes on volumes; the attestation agent holds a pod to them as it
-   holds it to its owner. **Built 2026-11-10, not yet seen live.** The render (`7332f2b2`): `HardenedSecurityContext` on every
+   holds it to its owner. **Built 2026-11-10, and seen live on u7c the same day** (below). The render (`7332f2b2`): `HardenedSecurityContext` on every
    agent, polar-init, the custody daemon and cert-issuer; read on u7c first, none writes to its root but the `/etc` files the
    runtime mounts, so none needed a volume (the third-party images do write, and come later). The check (decided while
    building, for review): the signed deployment record, schema 3, says how each container was rendered to run
@@ -431,6 +431,14 @@ protection, and then a pod without it is refused its certificate. Probed on whit
    (`Drift::Weakened` while watching) to it, reading them as Kubernetes does (`holdings.rs` `hardening_by_container`). So a node
    that cannot give a setting is a target rendered without it, named in its signed record (the fallback above), and anything
    less than what was signed is an alteration. A record before schema 3 says nothing, and holds nothing to it.
+   *Seen live on u7c, 2026-11-10 (agentic-control-plane, by its session):* all 70 of Polar's own containers run with a
+   read-only root, `allowPrivilegeEscalation: false` and `RuntimeDefault`; every agent up; the deployment record is schema
+   3, with hardening for each container (72 fully hardened; the 14 not are third-party containers and polar-builds' `fetch`
+   and `pipeline`, whose roots are writable); the attestation agent holds the record, 32 pods judged, none condemned, no
+   `Weakened` drift. One agent failed at first: the build orchestrator's worker locked itself with seccomp's strict mode,
+   which the kernel refuses under a filter, and `RuntimeDefault` is one; its lock is now a filter allowing what strict mode
+   allows (`385c6f21`, `build-orchestrator.md`), seen with no restart past five minutes, the agent at `Seccomp: 2` with
+   one filter and its worker with two.
 2. *C2, git in process* for polar-git-server and polar-scheduler-observer.
 3. *C3, the builder's lock*, installed in `run` before the runtime starts: seccomp refusing `execve`, `ptrace`,
    `memfd_create`, new executable memory, `bpf` and module loading, by killing (a `SIGSYS` slice B catches); Landlock

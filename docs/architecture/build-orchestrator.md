@@ -631,7 +631,9 @@ I write Rust code"):
     default profile is one, so the orchestrator restarted every five minutes with its custody daemon. The worker now installs a
     filter allowing what strict mode allows (`read`, `write`, `exit`, `rt_sigreturn` of the agent's architecture; any other
     call kills it, by `SIGSYS`), which stacks on the runtime's (`polar-agent-builder` `worker.rs`, `STRICT`; tested by a
-    worker forked under a filter already, which failed as on u7c before the change).
+    worker forked under a filter already, which failed as on u7c before the change). Seen live on u7c the same day: the
+    orchestrator past five minutes with no restart, its process at `Seccomp: 2` with one filter (the runtime's), its worker
+    at `Seccomp: 2` with two; that the reader answers is still to be seen, when a build runs.
 - **O3** the source by digest: a fetch through the git handler, an archive pushed to the registry (a registry write the handler does not
   have yet); the fetch image (O2a3a) checks and unpacks it. Planned 2026-11-08, in four. Found first, on u7c's registry
   (`registry:2.8.3`): it does not take a blob in one POST (`?digest=` with the body answers 202 and opens an upload session), so a
