@@ -317,7 +317,7 @@ def main [] {
             }
         }
         {
-            name: "what the SBOM names that is not in the binary is split: never compiled, or compiled only for the build machine"
+            name: "the SBOM packages with no unit compiled for the target are split: never compiled, or for the build machine only"
             body: {
                 # syn is a library only the build machine's units need, serde_derive a proc-macro: compiled, but not for
                 # the target. ryu was compiled for no machine. itoa and memchr were compiled for the target.

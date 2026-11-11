@@ -124,10 +124,11 @@ export def not-compiled [components: list<record>, compiled: list<record>]: noth
     | uniq
 }
 
-# What an SBOM names that is not in a binary, split by what its build's cargo log says of each: `not_compiled`, no unit of
-# it compiled for any machine; `build_machine_only`, compiled, but only for the build machine: not among the binary's
-# target units (`compiled-for-target`, which says how they are told apart). Each of `components` (`{name, version,
-# purl}`) once, in the SBOM's order. A binary the log did not link is an error.
+# The packages an SBOM names with no unit compiled for a binary's target, split by what its build's cargo log says of
+# each: `not_compiled`, no unit of it compiled for any machine; `build_machine_only`, compiled, but only for the build
+# machine: none among the binary's target units (`compiled-for-target`, which says how they are told apart). Each of
+# `components` (`{name, version, purl}`) once, in the SBOM's order. A binary the log did not link is an error. The log
+# says which units were compiled for which machine, and no more: none of this says a package is not in the binary.
 export def sbom-gap [components: list<record>, log: list<string>, binary: string]: nothing -> record {
     let outside = not-compiled $components (compiled-for-target $log $binary)
     let anywhere = (

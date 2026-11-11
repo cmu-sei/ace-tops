@@ -539,7 +539,7 @@ const FACT_TOOL = "polar-pipeline/ci.nu"
 # here, fetched or unknown, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it
 # linked and the package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix
 # has stripped it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
-# what that SBOM names that is not in the binary (`report-sbom-gap`).
+# the SBOM packages with no unit compiled for the binary's target (`report-sbom-gap`).
 #
 # Run from the repository's root, as phase 3's `nix build` is.
 def build-and-link-binaries [
@@ -615,14 +615,17 @@ def build-and-link-binaries [
     } | flatten
 }
 
-# What the workspace SBOM of a binary's package names that is not in the binary, by what the binary's build compiled
-# (build-inspect-ship, S2): the SBOM is a claim about the source tree at a commit, the cargo log the record of this build.
+# The packages the workspace SBOM of a binary's package names with no unit compiled for the binary's target, by what its
+# build's cargo log says (build-inspect-ship, S2): the SBOM is a claim about the source tree at a commit, the cargo log
+# the record of this build. The log says which units were compiled for which machine, and no more: what a build script
+# or a code generator compiled for the build machine wrote may still reach the target, so none of this says a package
+# is not in the binary.
 # For each such package, by what the log says of it (core/binaries.nu, `sbom-gap`), the Binary naming the Package by the
 # purl the SBOM gives it, the value the SBOM's content hash:
 #
 # - `polar.cargo/not-compiled`: no unit of it was compiled, for any machine;
 # - `polar.cargo/build-machine-only`: compiled, but only for the build machine (a proc-macro, a build script, or what
-#   only they need), so not into the binary.
+#   only they need), none for the binary's target.
 #
 # Then `polar.cargo/sbom-compared` (the Binary, naming the Sbom), its value the total of the two, "0" for none, which a
 # binary never compared has not. Observation only: what cannot be read or compared is logged, and the build goes on.
@@ -666,7 +669,7 @@ def report-sbom-gap [
     let host = $gap.build_machine_only | length
     (emit-fact $subject "polar.cargo/sbom-compared" $FACT_TOOL $version
         --object {label: "Sbom", key: $sbom.content_hash} --value ($never + $host | into string))
-    log-info $"($binary): its package's SBOM names ($never + $host) packages not in it: ($never) never compiled, ($host) compiled only for the build machine" --component $COMPONENT
+    log-info $"($binary): ($never + $host) SBOM packages with no unit compiled for its target \(($never) never compiled, ($host) for the build machine only\)" --component $COMPONENT
 }
 
 # One derivation, realised: how its outputs came to be in the store (`realised`, core/nix.nu, `observed-realisation`),
