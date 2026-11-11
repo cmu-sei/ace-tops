@@ -80,8 +80,9 @@ the data, applies layering and capabilities, and produces one fully resolved
 record per workload. It is a pure function: no cluster, no network, no files
 written. That is what makes it testable and what makes `explain` possible.
 
-**Variation between agents is data.** An agent that writes to the graph says
-`needs: ["graph-write"]`. It does not get a `hasGraph` flag in a template. If you want a
+**Variation between agents is data.** An agent that writes to the graph says so in its
+code (`.with_graph_write()`), its scaffold carries it, and its workload needs `graph-write`.
+It does not get a `hasGraph` flag in a template. If you want a
 boolean in a template to make one workload fit, stop: either the variation belongs
 in a capability (data), or the workload is a custom chart (see
 [the escape hatch](#add-a-custom-chart-the-escape-hatch)).
@@ -319,7 +320,8 @@ target.nu  ->  render.nu  ->  chart main.nu (one per chart)  ->  manifests/*.yam
 
 ### The vocabulary
 
-A workload declares `needs`, a list of **capabilities**. Each capability answers
+A workload needs a list of **capabilities**: its kind's `needs`, what its code requires
+(its scaffold says), and what its entry `provides`. Each capability answers
 every **facet**:
 
 | Facet | What it answers |
@@ -372,8 +374,9 @@ derives the rest of the health and shutdown configuration:
 
 For scalar and record fields, later wins: **kind defaults** (`kinds.nuon`) <
 **workload entry** (`workloads/*.nuon`) < **target override**
-(`targets/<t>/config.nuon`, under `workloads.<name>`). Lists (`needs`, `env`) are
-unioned in declared order instead of replaced. `explain` prints each value with
+(`targets/<t>/config.nuon`, under `workloads.<name>`). Lists are not replaced: a
+workload's needs are the union of its kind's `needs`, its scaffold's requirements and the
+entry's and target's `provides`, and the target's `env` entries follow the entry's. `explain` prints each value with
 its origin: `[kind]`, `[entry]`, `[target]`, `[<capability>]` or `[derived]`.
 
 
@@ -393,8 +396,8 @@ Read while planning cert-issuer's move into the catalog (`docs/architecture/cert
   (`agent.dhall:173-194`, `functions.dhall:223-259`); capabilities' `init` parts only add env and mounts to it. Its
   header: "If a workload does not fit this shape, it stays a custom chart (the escape hatch). Do not add a Bool to the
   Spec to make it fit" (`agent.dhall:30-31`).
-- **Only document agents.** `resolve.nu:297` refuses an entry without `config: "document"`, and `:301` one that lists
-  `needs`: the scaffold says what the code requires, and `provides` adds what the deployment gives (`:307-308`).
+- **Only document agents.** `resolve.nu:440` refuses an entry without `config: "document"`, and `:444` one that lists
+  `needs`: the scaffold says what the code requires, and `provides` adds what the deployment gives (`:450`).
 - **The scaffolds need the registry, and usually the cluster.** `scaffold_of` (`resolve.nu:172-182`) reads
   `$POLAR_SCAFFOLD_DIR/<workload>.json` only. `collect-scaffolds` (`agent-pods.nu:302-327`) asks the registry for each
   image's digest, and on a cache miss runs `<image> --scaffold` in a pod on the cluster. `resolve.nu check` also runs
@@ -842,8 +845,10 @@ described is empty and unused; secrets are per target now.)
 
 Prerequisite: the agent's image builds from the flake. If it is not on
 `polar-agent-builder` yet, migrate it first. The builder declares what the code
-needs (`.with_graph_write()`, `.requires(...)`), and your `needs` must provide
-at least that or the agent refuses to start (see
+needs (`.with_graph_write()`, `.requires(...)`), the scaffold the binary prints
+carries it, and the resolver derives the workload's needs from it. The entry lists
+no `needs` (`resolve.nu` refuses one); it says only what the deployment gives beyond
+that, in `provides` (see
 [Capabilities and the Rust agent builder](#capabilities-and-the-rust-agent-builder)).
 
 1. **Add the image row** to `infra/images.nuon` (one row; nothing else needs to know):
@@ -856,7 +861,8 @@ at least that or the agent refuses to start (see
      name: "foo-observer"
      kind: "agent"
      image: "foo-observer"          # a row of images.nuon; its tag is used
-     needs: ["graph-write"]         # on top of what the kind gives: cassini
+     # no `needs`: the scaffold says what the code requires (here, graph-write);
+     # `provides: [...]` would add what the deployment gives beyond it
      env: [
        { name: "FOO_URL",   value: "https://foo.example.com" }
        { name: "FOO_TOKEN", secret: "foo-secret", key: "token" }
@@ -894,7 +900,8 @@ permission, a credential.
 2. Text values can use `{<service>.dns}`, `{<service>.port}`, `{<service>.addr}`
    and `{workload}`.
 3. If it connects to a service that is not in `services.nuon`, add the service first.
-4. Use it: `needs: ["your-capability"]`.
+4. Use it: an agent's code requires it, or a workload entry gives it with
+   `provides: ["your-capability"]`. A catalog entry never lists `needs`.
 5. `nu infra/resolve.nu check` fails if a facet is unanswered, an unknown facet is
    answered, a dependency names a service that does not exist, or a placeholder
    cannot be resolved. You cannot forget a case.
@@ -1003,7 +1010,7 @@ disagrees with the row, fails before anything is built.
 ### Change a value for one target
 
 Use `targets/<t>/config.nuon` (see [How a target works](#how-a-target-works)).
-Scalars override; `needs` and `env` entries are appended.
+Scalars override; `provides` and `env` entries are appended.
 
 ### Add a custom chart (the escape hatch)
 
