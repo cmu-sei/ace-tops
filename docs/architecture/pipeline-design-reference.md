@@ -60,7 +60,7 @@ Phase 1.5 cargo-audit scan          │           ▼
            reconstructs a purl)    │           │
          → events.nu emits         │           ▼
            typed JSON/rkyv events  │      dispatch → routes by variant
-Phase 2  cargo build + link        │      ┌──────────────┬─────────────┐
+Phase 2  nix build + link          │      ┌──────────────┬─────────────┐
          → BinaryLinked events ────┤      lifecycle        artifact domain
 Phase 3  container image build     │      (BuildActor /   (ProvenanceLinker)
          → purl cross-check        │       project_event)  SBOM, Binary,
@@ -324,14 +324,18 @@ binary's own SBOM, beside the workspace member's (build-inspect-ship, S2):
 the dependency record `cargo auditable` embeds in a binary as it is built,
 written out as CycloneDX by `auditable2cdx` 0.1.0 (packaged in
 `src/flake/auditable2cdx.nix`, `polarPkgs.auditable2cdx`, in the CI image)
-and put through `SbomAnalyzed` like any SBOM — packaged, not yet used. Open
-until the host's test: whether that record overstates the binary as the
-workspace SBOM overstates a member (cargo-cyclonedx reads `cargo metadata`
-over the whole workspace, so features unify across members). This
-nixpkgs' `cargo-auditable` 0.6.2 writes format 0, which its own crate
-documents as taken from `cargo metadata` too, with proc-macros recorded as
-runtime dependencies; the test compares it with the crates the build's
-cargo log says it compiled.
+and put through `SbomAnalyzed` like any SBOM, linked to the binary by a
+second `BinaryLinked`. Built in S2 for `cassini-server` alone, the first
+built with `cargo-auditable` (nixpkgs' wrapper around crane's toolchain);
+the other agents follow once the host's test shows what the record holds:
+whether it overstates the binary as the workspace SBOM overstates a member
+(cargo-cyclonedx reads `cargo metadata` over the whole workspace, so
+features unify across members). This nixpkgs' `cargo-auditable` 0.6.2
+writes format 0, which its own crate documents as taken from `cargo
+metadata` too, with proc-macros recorded as runtime dependencies;
+`build-processor/tests/binary_trees.rs` compares it, and the workspace
+SBOM, with the crates the build's cargo log says it compiled, the ground
+truth.
 
 **Deliberately deferred, by design, not oversight:** cross-scanner
 vulnerability identity reconciliation (RUSTSEC/CVE/GHSA convergence) —
