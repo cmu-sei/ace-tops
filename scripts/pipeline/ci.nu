@@ -868,6 +868,8 @@ def build-and-push-image [
         }
     })
 
+    # With a key, an image cosign did not sign fails (sign-image; with none, signing is skipped, and that is no failure).
+    mut unsigned = []
     for upload in $uploads {
         if ($upload.digest | is-empty) {
             log-warn $"no digest for ($upload.remote_ref) — skipping sign" --component $COMPONENT
@@ -907,7 +909,11 @@ def build-and-push-image [
             | get repo
         )
         let digest_ref = $"($base_ref)@($upload.digest)"
-        sign-image $digest_ref --name $upload.name
+        let signed = sign-image $digest_ref --name $upload.name
+        if not $signed.success {
+            log-error $"($digest_ref): not signed, with a key configured: ($signed.reason? | default "")" --component $COMPONENT
+            $unsigned = ($unsigned | append $digest_ref)
+        }
     }
 
     # Delivered only where the registry serves the inspected digest: one that serves another, or gives none, fails the
@@ -918,7 +924,7 @@ def build-and-push-image [
     }
 
     {
-        success: ($undelivered | is-empty)
+        success: (($undelivered | is-empty) and ($unsigned | is-empty))
         image_name: $link_name
         tarball: $build.tarball
         oci_metadata: $oci_metadata

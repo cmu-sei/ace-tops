@@ -243,7 +243,8 @@ export def push-archive [
 # not from a local tarball. The signature is stored as a tag in the same
 # registry (cosign's default behavior).
 #
-# Returns a record with the signature status.
+# Returns a record with the signature status: with no key, signing is skipped, which is not a failure (`success`, and
+# `skipped`); with a key, `success` only when cosign signed.
 export def sign-image [
     remote_ref: string
     --key: string = ""
@@ -254,7 +255,7 @@ export def sign-image [
 
     if ($signing_key | is-empty) {
         log-warn $"No signing key available, skipping signature for ($label)" --component oci
-        return {success: false, reason: "no signing key configured"}
+        return {success: true, skipped: true, reason: "no signing key configured"}
     }
 
     log-info $"Signing ($label)" --component oci
