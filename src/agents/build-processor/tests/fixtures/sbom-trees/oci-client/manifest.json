@@ -1,0 +1,54 @@
+{
+  "base": "a5ae691f81be19c59d76b89d70d4468de77a6425",
+  "head": "ce6154f61d52f147cf0a614f89ce44b4d86b0230",
+  "says": "oci-client 0.15 to 0.18, under build-processor's and the resolver's [dependencies]: packages added, removed (jwt) and changed in version",
+  "target": "",
+  "cargo": "cargo 1.101.0-nightly (f3865b2a4 2026-09-29)",
+  "cyclonedx": "cargo-cyclonedx-cyclonedx 0.5.9",
+  "lock": {
+    "added": [
+      "oci-client@0.18.0",
+      "oci-spec@0.10.0",
+      "reqwest@0.13.3",
+      "wasm-streams@0.5.0"
+    ],
+    "removed": [
+      "base64@0.13.1",
+      "jwt@0.16.0",
+      "oci-client@0.15.0",
+      "oci-spec@0.8.4",
+      "reqwest@0.13.5",
+      "wasm-streams@0.4.2"
+    ]
+  },
+  "roots": [
+    {
+      "name": "build-processor",
+      "touched": true
+    },
+    {
+      "name": "cassini-broker",
+      "touched": true
+    },
+    {
+      "name": "cassini-c2",
+      "touched": true
+    },
+    {
+      "name": "cassini-client",
+      "touched": true
+    },
+    {
+      "name": "cassini-tracing",
+      "touched": true
+    },
+    {
+      "name": "cert-issuer",
+      "touched": true
+    },
+    {
+      "name": "cassini-types",
+      "touched": false
+    }
+  ]
+}

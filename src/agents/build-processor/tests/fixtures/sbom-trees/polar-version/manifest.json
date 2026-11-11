@@ -1,0 +1,38 @@
+{
+  "base": "8d00417429194919ab8622c5435e6b134ff18266",
+  "head": "409a7a49be460f12873c4e2ca7cbdb25fda56ea6",
+  "says": "polar-version added under five crates' [dependencies]: new to their trees, no package new to the lock",
+  "target": "",
+  "cargo": "cargo 1.101.0-nightly (f3865b2a4 2026-09-29)",
+  "cyclonedx": "cargo-cyclonedx-cyclonedx 0.5.9",
+  "lock": {
+    "added": [],
+    "removed": []
+  },
+  "roots": [
+    {
+      "name": "git-repo-observer",
+      "touched": true
+    },
+    {
+      "name": "gitlab-seed",
+      "touched": true
+    },
+    {
+      "name": "logger",
+      "touched": true
+    },
+    {
+      "name": "polar-custody-daemon",
+      "touched": true
+    },
+    {
+      "name": "polar-healthcheck",
+      "touched": true
+    },
+    {
+      "name": "attestation-agent",
+      "touched": false
+    }
+  ]
+}

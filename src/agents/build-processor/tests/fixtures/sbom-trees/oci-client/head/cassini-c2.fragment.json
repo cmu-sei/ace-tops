@@ -1,0 +1,4689 @@
+{
+  "artifact_content_hash": "sha256:9c927f8ee6853fee2b85ab7c0bc3fc313477db672212286d1ba0b841ee473e3a",
+  "root": {
+    "purl": "pkg:cargo/cassini-c2@1.0.0?download_url=file://.",
+    "name": "cassini-c2",
+    "version": "1.0.0",
+    "component_type": "application",
+    "license": "MIT",
+    "source": "registry"
+  },
+  "components": [
+    {
+      "purl": "pkg:cargo/rsa@0.10.0-rc.18?vcs_url=git%2Bhttps://github.com/daveman1010221/RSA.git%40aa4bc50c0e212987610c7c7afc390942ff57820a",
+      "name": "rsa",
+      "version": "0.10.0-rc.18",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "git"
+    },
+    {
+      "purl": "pkg:cargo/getrandom@0.3.3?vcs_url=git%2Bhttps://github.com/rust-random/getrandom%4082396406b28f23ba86e3e511d34a4f5dab0fda08",
+      "name": "getrandom",
+      "version": "0.3.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "git"
+    },
+    {
+      "purl": "pkg:cargo/cassini-tracing@1.0.0?download_url=file://../cassini-tracing",
+      "name": "cassini-tracing",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cassini-client@1.0.0?download_url=file://../client",
+      "name": "cassini-client",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+      "name": "cassini-types",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cert-issuer-common@1.0.0?download_url=file://../../cert-issuer/common",
+      "name": "cert-issuer-common",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polar-custody@1.0.0?download_url=file://../../polar-custody",
+      "name": "polar-custody",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polar-env@1.0.0?download_url=file://../../polar-env",
+      "name": "polar-env",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polar-escrow@1.0.0?download_url=file://../../polar-escrow",
+      "name": "polar-escrow",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polar-router@1.0.0?download_url=file://../../polar-router",
+      "name": "polar-router",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polar-scudo@1.0.0?download_url=file://../../polar-scudo",
+      "name": "polar-scudo",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polar-version@1.0.0?download_url=file://../../polar-version",
+      "name": "polar-version",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/aead@0.6.1",
+      "name": "aead",
+      "version": "0.6.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/aes-gcm@0.11.1",
+      "name": "aes-gcm",
+      "version": "0.11.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/aes@0.9.3",
+      "name": "aes",
+      "version": "0.9.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ahash@0.8.12",
+      "name": "ahash",
+      "version": "0.8.12",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/aho-corasick@1.1.5",
+      "name": "aho-corasick",
+      "version": "1.1.5",
+      "component_type": "library",
+      "license": "Unlicense OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/allocator-api2@0.2.21",
+      "name": "allocator-api2",
+      "version": "0.2.21",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/anstream@1.0.0",
+      "name": "anstream",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/anstyle-parse@1.0.0",
+      "name": "anstyle-parse",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/anstyle-query@1.1.5",
+      "name": "anstyle-query",
+      "version": "1.1.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/anstyle@1.0.14",
+      "name": "anstyle",
+      "version": "1.0.14",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/anyhow@1.0.104",
+      "name": "anyhow",
+      "version": "1.0.104",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/asn1-rs-derive@0.6.0",
+      "name": "asn1-rs-derive",
+      "version": "0.6.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/asn1-rs-impl@0.2.0",
+      "name": "asn1-rs-impl",
+      "version": "0.2.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/asn1-rs@0.7.2",
+      "name": "asn1-rs",
+      "version": "0.7.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/async-trait@0.1.92",
+      "name": "async-trait",
+      "version": "0.1.92",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/atomic-waker@1.1.2",
+      "name": "atomic-waker",
+      "version": "1.1.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/autocfg@1.5.1",
+      "name": "autocfg",
+      "version": "1.5.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/base16ct@0.2.0",
+      "name": "base16ct",
+      "version": "0.2.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/base16ct@1.0.0",
+      "name": "base16ct",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/base64@0.22.1",
+      "name": "base64",
+      "version": "0.22.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/base64@0.23.1",
+      "name": "base64",
+      "version": "0.23.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/base64ct@1.8.3",
+      "name": "base64ct",
+      "version": "1.8.3",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bit-vec@0.9.1",
+      "name": "bit-vec",
+      "version": "0.9.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bitflags@2.13.2",
+      "name": "bitflags",
+      "version": "2.13.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/block-buffer@0.10.4",
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/block-buffer@0.12.1",
+      "name": "block-buffer",
+      "version": "0.12.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bon-macros@2.3.0",
+      "name": "bon-macros",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bon@2.3.0",
+      "name": "bon",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bytecheck@0.8.3",
+      "name": "bytecheck",
+      "version": "0.8.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bytecheck_derive@0.8.3",
+      "name": "bytecheck_derive",
+      "version": "0.8.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/bytes@1.12.1",
+      "name": "bytes",
+      "version": "1.12.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cc@1.5.1",
+      "name": "cc",
+      "version": "1.5.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cfg-if@1.0.5",
+      "name": "cfg-if",
+      "version": "1.0.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/chacha20@0.10.2",
+      "name": "chacha20",
+      "version": "0.10.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/chrono@0.4.45",
+      "name": "chrono",
+      "version": "0.4.45",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cipher@0.5.2",
+      "name": "cipher",
+      "version": "0.5.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/clap@4.6.7",
+      "name": "clap",
+      "version": "4.6.7",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/clap_builder@4.6.7",
+      "name": "clap_builder",
+      "version": "4.6.7",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/clap_derive@4.6.7",
+      "name": "clap_derive",
+      "version": "4.6.7",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/clap_lex@1.1.1",
+      "name": "clap_lex",
+      "version": "1.1.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cmov@0.5.4",
+      "name": "cmov",
+      "version": "0.5.4",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/colorchoice@1.0.5",
+      "name": "colorchoice",
+      "version": "1.0.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/const-oid@0.10.2",
+      "name": "const-oid",
+      "version": "0.10.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/const-oid@0.9.6",
+      "name": "const-oid",
+      "version": "0.9.6",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cpubits@0.1.1",
+      "name": "cpubits",
+      "version": "0.1.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cpufeatures@0.2.17",
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/cpufeatures@0.3.1",
+      "name": "cpufeatures",
+      "version": "0.3.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/critical-section@1.2.0",
+      "name": "critical-section",
+      "version": "1.2.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crossbeam-deque@0.8.8",
+      "name": "crossbeam-deque",
+      "version": "0.8.8",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crossbeam-epoch@0.9.21",
+      "name": "crossbeam-epoch",
+      "version": "0.9.21",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crossbeam-utils@0.8.23",
+      "name": "crossbeam-utils",
+      "version": "0.8.23",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crypto-bigint@0.5.5",
+      "name": "crypto-bigint",
+      "version": "0.5.5",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crypto-bigint@0.7.10",
+      "name": "crypto-bigint",
+      "version": "0.7.10",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crypto-common@0.1.6",
+      "name": "crypto-common",
+      "version": "0.1.6",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crypto-common@0.2.2",
+      "name": "crypto-common",
+      "version": "0.2.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/crypto-primes@0.7.2",
+      "name": "crypto-primes",
+      "version": "0.7.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ctr@0.10.1",
+      "name": "ctr",
+      "version": "0.10.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ctutils@0.4.7",
+      "name": "ctutils",
+      "version": "0.4.7",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/darling@0.20.11",
+      "name": "darling",
+      "version": "0.20.11",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/darling_core@0.20.11",
+      "name": "darling_core",
+      "version": "0.20.11",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/darling_macro@0.20.11",
+      "name": "darling_macro",
+      "version": "0.20.11",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/dashmap@6.2.1",
+      "name": "dashmap",
+      "version": "6.2.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/data-encoding@2.11.1",
+      "name": "data-encoding",
+      "version": "2.11.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/der-parser@10.0.0",
+      "name": "der-parser",
+      "version": "10.0.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/der@0.7.10",
+      "name": "der",
+      "version": "0.7.10",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/der@0.8.2",
+      "name": "der",
+      "version": "0.8.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/der_derive@0.7.3",
+      "name": "der_derive",
+      "version": "0.7.3",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/deranged@0.5.8",
+      "name": "deranged",
+      "version": "0.5.8",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/digest@0.10.7",
+      "name": "digest",
+      "version": "0.10.7",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/digest@0.11.3",
+      "name": "digest",
+      "version": "0.11.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/displaydoc@0.2.7",
+      "name": "displaydoc",
+      "version": "0.2.7",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ecdsa@0.16.9",
+      "name": "ecdsa",
+      "version": "0.16.9",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/either@1.18.0",
+      "name": "either",
+      "version": "1.18.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/elliptic-curve@0.13.8",
+      "name": "elliptic-curve",
+      "version": "0.13.8",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/elliptic-curve@0.14.1",
+      "name": "elliptic-curve",
+      "version": "0.14.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/equivalent@1.0.2",
+      "name": "equivalent",
+      "version": "1.0.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/errno@0.3.14",
+      "name": "errno",
+      "version": "0.3.14",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ff@0.13.1",
+      "name": "ff",
+      "version": "0.13.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ff@0.14.0",
+      "name": "ff",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/find-msvc-tools@0.1.14",
+      "name": "find-msvc-tools",
+      "version": "0.1.14",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/flagset@0.4.7",
+      "name": "flagset",
+      "version": "0.4.7",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/fnv@1.0.7",
+      "name": "fnv",
+      "version": "1.0.7",
+      "component_type": "library",
+      "license": "Apache-2.0  OR  MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/foreign-types-shared@0.1.1",
+      "name": "foreign-types-shared",
+      "version": "0.1.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/foreign-types@0.3.2",
+      "name": "foreign-types",
+      "version": "0.3.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/form_urlencoded@1.2.2",
+      "name": "form_urlencoded",
+      "version": "1.2.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/fqdn@0.5.2",
+      "name": "fqdn",
+      "version": "0.5.2",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-channel@0.3.34",
+      "name": "futures-channel",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-core@0.3.34",
+      "name": "futures-core",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-executor@0.3.34",
+      "name": "futures-executor",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-io@0.3.34",
+      "name": "futures-io",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-macro@0.3.34",
+      "name": "futures-macro",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-sink@0.3.34",
+      "name": "futures-sink",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-task@0.3.34",
+      "name": "futures-task",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures-util@0.3.34",
+      "name": "futures-util",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/futures@0.3.34",
+      "name": "futures",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/generic-array@0.14.9",
+      "name": "generic-array",
+      "version": "0.14.9",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/getrandom@0.2.17",
+      "name": "getrandom",
+      "version": "0.2.17",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/getrandom@0.4.3",
+      "name": "getrandom",
+      "version": "0.4.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ghash@0.6.0",
+      "name": "ghash",
+      "version": "0.6.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/group@0.13.0",
+      "name": "group",
+      "version": "0.13.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/group@0.14.0",
+      "name": "group",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/h2@0.4.19",
+      "name": "h2",
+      "version": "0.4.19",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hashbrown@0.14.5",
+      "name": "hashbrown",
+      "version": "0.14.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hashbrown@0.17.1",
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/heck@0.5.0",
+      "name": "heck",
+      "version": "0.5.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hkdf@0.12.4",
+      "name": "hkdf",
+      "version": "0.12.4",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hkdf@0.13.0",
+      "name": "hkdf",
+      "version": "0.13.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hmac@0.12.1",
+      "name": "hmac",
+      "version": "0.12.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hmac@0.13.0",
+      "name": "hmac",
+      "version": "0.13.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hpke@0.15.1",
+      "name": "hpke",
+      "version": "0.15.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/http-body-util@0.1.5",
+      "name": "http-body-util",
+      "version": "0.1.5",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/http-body@1.1.0",
+      "name": "http-body",
+      "version": "1.1.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/http@1.5.0",
+      "name": "http",
+      "version": "1.5.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/httparse@1.10.1",
+      "name": "httparse",
+      "version": "1.10.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/httpdate@1.0.3",
+      "name": "httpdate",
+      "version": "1.0.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hybrid-array@0.4.15",
+      "name": "hybrid-array",
+      "version": "0.4.15",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hyper-tls@0.6.0",
+      "name": "hyper-tls",
+      "version": "0.6.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hyper-util@0.1.21",
+      "name": "hyper-util",
+      "version": "0.1.21",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/hyper@1.11.1",
+      "name": "hyper",
+      "version": "1.11.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/iana-time-zone@0.1.65",
+      "name": "iana-time-zone",
+      "version": "0.1.65",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_collections@2.3.0",
+      "name": "icu_collections",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_locale_core@2.3.0",
+      "name": "icu_locale_core",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_normalizer@2.3.0",
+      "name": "icu_normalizer",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_normalizer_data@2.3.0",
+      "name": "icu_normalizer_data",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_properties@2.3.0",
+      "name": "icu_properties",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_properties_data@2.3.0",
+      "name": "icu_properties_data",
+      "version": "2.3.0",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/icu_provider@2.3.1",
+      "name": "icu_provider",
+      "version": "2.3.1",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ident_case@1.0.1",
+      "name": "ident_case",
+      "version": "1.0.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/idna@1.1.0",
+      "name": "idna",
+      "version": "1.1.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/idna_adapter@1.2.2",
+      "name": "idna_adapter",
+      "version": "1.2.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/indexmap@2.14.2",
+      "name": "indexmap",
+      "version": "2.14.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/inout@0.2.2",
+      "name": "inout",
+      "version": "0.2.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ipnet@2.12.2",
+      "name": "ipnet",
+      "version": "2.12.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/is_terminal_polyfill@1.70.2",
+      "name": "is_terminal_polyfill",
+      "version": "1.70.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/itertools@0.14.0",
+      "name": "itertools",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/itoa@1.0.18",
+      "name": "itoa",
+      "version": "1.0.18",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/jobserver@0.1.35",
+      "name": "jobserver",
+      "version": "0.1.35",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/lazy_static@1.5.0",
+      "name": "lazy_static",
+      "version": "1.5.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/libc@0.2.189",
+      "name": "libc",
+      "version": "0.2.189",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/libm@0.2.16",
+      "name": "libm",
+      "version": "0.2.16",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/litemap@0.8.3",
+      "name": "litemap",
+      "version": "0.8.3",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/lock_api@0.4.14",
+      "name": "lock_api",
+      "version": "0.4.14",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/log@0.4.34",
+      "name": "log",
+      "version": "0.4.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/matchers@0.2.0",
+      "name": "matchers",
+      "version": "0.2.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/memchr@2.8.3",
+      "name": "memchr",
+      "version": "2.8.3",
+      "component_type": "library",
+      "license": "Unlicense OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/mime@0.3.17",
+      "name": "mime",
+      "version": "0.3.17",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/minimal-lexical@0.2.1",
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/mio@1.2.3",
+      "name": "mio",
+      "version": "1.2.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/munge@0.4.7",
+      "name": "munge",
+      "version": "0.4.7",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/munge_macro@0.4.7",
+      "name": "munge_macro",
+      "version": "0.4.7",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/native-tls@0.2.14",
+      "name": "native-tls",
+      "version": "0.2.14",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/nom@7.1.3",
+      "name": "nom",
+      "version": "7.1.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/nu-ansi-term@0.46.0",
+      "name": "nu-ansi-term",
+      "version": "0.46.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/nu-ansi-term@0.50.3",
+      "name": "nu-ansi-term",
+      "version": "0.50.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/num-bigint@0.4.8",
+      "name": "num-bigint",
+      "version": "0.4.8",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/num-conv@0.2.2",
+      "name": "num-conv",
+      "version": "0.2.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/num-integer@0.1.47",
+      "name": "num-integer",
+      "version": "0.1.47",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/num-traits@0.2.19",
+      "name": "num-traits",
+      "version": "0.2.19",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/oid-registry@0.8.1",
+      "name": "oid-registry",
+      "version": "0.8.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/once_cell@1.21.4",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/openssl-macros@0.1.1",
+      "name": "openssl-macros",
+      "version": "0.1.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/openssl-probe@0.1.6",
+      "name": "openssl-probe",
+      "version": "0.1.6",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/openssl-sys@0.9.117",
+      "name": "openssl-sys",
+      "version": "0.9.117",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/openssl@0.10.81",
+      "name": "openssl",
+      "version": "0.10.81",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/opentelemetry-http@0.32.0",
+      "name": "opentelemetry-http",
+      "version": "0.32.0",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/opentelemetry-otlp@0.32.0",
+      "name": "opentelemetry-otlp",
+      "version": "0.32.0",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/opentelemetry-proto@0.32.0",
+      "name": "opentelemetry-proto",
+      "version": "0.32.0",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/opentelemetry@0.32.0",
+      "name": "opentelemetry",
+      "version": "0.32.0",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/opentelemetry_sdk@0.32.1",
+      "name": "opentelemetry_sdk",
+      "version": "0.32.1",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/overload@0.1.1",
+      "name": "overload",
+      "version": "0.1.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/p256@0.13.2",
+      "name": "p256",
+      "version": "0.13.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/p256@0.14.0",
+      "name": "p256",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/p384@0.14.0",
+      "name": "p384",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/p521@0.14.0",
+      "name": "p521",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/parking_lot@0.12.5",
+      "name": "parking_lot",
+      "version": "0.12.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/parking_lot_core@0.9.12",
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pem-rfc7468@0.7.0",
+      "name": "pem-rfc7468",
+      "version": "0.7.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pem-rfc7468@1.0.0",
+      "name": "pem-rfc7468",
+      "version": "1.0.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pem@4.0.0",
+      "name": "pem",
+      "version": "4.0.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/percent-encoding@2.3.2",
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pin-project-lite@0.2.17",
+      "name": "pin-project-lite",
+      "version": "0.2.17",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pkcs1@0.8.0-rc.4",
+      "name": "pkcs1",
+      "version": "0.8.0-rc.4",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pkcs8@0.10.2",
+      "name": "pkcs8",
+      "version": "0.10.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pkcs8@0.11.0",
+      "name": "pkcs8",
+      "version": "0.11.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/pkg-config@0.3.34",
+      "name": "pkg-config",
+      "version": "0.3.34",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/polyval@0.7.3",
+      "name": "polyval",
+      "version": "0.7.3",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/portable-atomic@1.15.0",
+      "name": "portable-atomic",
+      "version": "1.15.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/potential_utf@0.1.6",
+      "name": "potential_utf",
+      "version": "0.1.6",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/powerfmt@0.2.0",
+      "name": "powerfmt",
+      "version": "0.2.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ppv-lite86@0.2.21",
+      "name": "ppv-lite86",
+      "version": "0.2.21",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/primefield@0.14.0",
+      "name": "primefield",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/primeorder@0.13.6",
+      "name": "primeorder",
+      "version": "0.13.6",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/primeorder@0.14.0",
+      "name": "primeorder",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/proc-macro2@1.0.107",
+      "name": "proc-macro2",
+      "version": "1.0.107",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/prost-derive@0.14.4",
+      "name": "prost-derive",
+      "version": "0.14.4",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/prost@0.14.4",
+      "name": "prost",
+      "version": "0.14.4",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ptr_meta@0.3.2",
+      "name": "ptr_meta",
+      "version": "0.3.2",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ptr_meta_derive@0.3.2",
+      "name": "ptr_meta_derive",
+      "version": "0.3.2",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/quote@1.0.47",
+      "name": "quote",
+      "version": "1.0.47",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ractor@0.15.13",
+      "name": "ractor",
+      "version": "0.15.13",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rancor@0.1.3",
+      "name": "rancor",
+      "version": "0.1.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rand@0.10.3",
+      "name": "rand",
+      "version": "0.10.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rand@0.9.5",
+      "name": "rand",
+      "version": "0.9.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rand_chacha@0.9.0",
+      "name": "rand_chacha",
+      "version": "0.9.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rand_core@0.10.1",
+      "name": "rand_core",
+      "version": "0.10.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rand_core@0.6.4",
+      "name": "rand_core",
+      "version": "0.6.4",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rand_core@0.9.5",
+      "name": "rand_core",
+      "version": "0.9.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rayon-core@1.13.0",
+      "name": "rayon-core",
+      "version": "1.13.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rayon@1.12.0",
+      "name": "rayon",
+      "version": "1.12.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rcgen@0.14.10",
+      "name": "rcgen",
+      "version": "0.14.10",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/regex-automata@0.4.18",
+      "name": "regex-automata",
+      "version": "0.4.18",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/regex-syntax@0.8.11",
+      "name": "regex-syntax",
+      "version": "0.8.11",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rend@0.5.4",
+      "name": "rend",
+      "version": "0.5.4",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/reqwest@0.13.3",
+      "name": "reqwest",
+      "version": "0.13.3",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rfc6979@0.4.0",
+      "name": "rfc6979",
+      "version": "0.4.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ring@0.17.14",
+      "name": "ring",
+      "version": "0.17.14",
+      "component_type": "library",
+      "license": "Apache-2.0 AND ISC",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rkyv@0.8.18",
+      "name": "rkyv",
+      "version": "0.8.18",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rkyv_derive@0.8.18",
+      "name": "rkyv_derive",
+      "version": "0.8.18",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rusticata-macros@4.1.0",
+      "name": "rusticata-macros",
+      "version": "4.1.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rustls-pki-types@1.15.1",
+      "name": "rustls-pki-types",
+      "version": "1.15.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rustls-webpki@0.103.16",
+      "name": "rustls-webpki",
+      "version": "0.103.16",
+      "component_type": "library",
+      "license": "ISC",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rustls@0.23.46",
+      "name": "rustls",
+      "version": "0.23.46",
+      "component_type": "library",
+      "license": "Apache-2.0 OR ISC OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/rustversion@1.0.23",
+      "name": "rustversion",
+      "version": "1.0.23",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/ryu@1.0.23",
+      "name": "ryu",
+      "version": "1.0.23",
+      "component_type": "library",
+      "license": "Apache-2.0 OR BSL-1.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/scopeguard@1.2.0",
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sec1@0.7.3",
+      "name": "sec1",
+      "version": "0.7.3",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sec1@0.8.1",
+      "name": "sec1",
+      "version": "0.8.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/serde@1.0.229",
+      "name": "serde",
+      "version": "1.0.229",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/serde_core@1.0.229",
+      "name": "serde_core",
+      "version": "1.0.229",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/serde_derive@1.0.229",
+      "name": "serde_derive",
+      "version": "1.0.229",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/serde_json@1.0.151",
+      "name": "serde_json",
+      "version": "1.0.151",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/serde_urlencoded@0.7.1",
+      "name": "serde_urlencoded",
+      "version": "0.7.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/serdect@0.4.3",
+      "name": "serdect",
+      "version": "0.4.3",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sha1_smol@1.0.1",
+      "name": "sha1_smol",
+      "version": "1.0.1",
+      "component_type": "library",
+      "license": "BSD-3-Clause",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sha2@0.10.9",
+      "name": "sha2",
+      "version": "0.10.9",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sha2@0.11.0",
+      "name": "sha2",
+      "version": "0.11.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sharded-slab@0.1.7",
+      "name": "sharded-slab",
+      "version": "0.1.7",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/shlex@2.0.1",
+      "name": "shlex",
+      "version": "2.0.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/signal-hook-registry@1.4.8",
+      "name": "signal-hook-registry",
+      "version": "1.4.8",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/signature@2.2.0",
+      "name": "signature",
+      "version": "2.2.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/signature@3.0.0",
+      "name": "signature",
+      "version": "3.0.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/simdutf8@0.1.5",
+      "name": "simdutf8",
+      "version": "0.1.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/slab@0.4.12",
+      "name": "slab",
+      "version": "0.4.12",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/smallvec@1.16.2",
+      "name": "smallvec",
+      "version": "1.16.2",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/socket2@0.5.10",
+      "name": "socket2",
+      "version": "0.5.10",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/socket2@0.6.5",
+      "name": "socket2",
+      "version": "0.6.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/spin@0.9.9",
+      "name": "spin",
+      "version": "0.9.9",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/spki@0.7.3",
+      "name": "spki",
+      "version": "0.7.3",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/spki@0.8.0",
+      "name": "spki",
+      "version": "0.8.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/stable_deref_trait@1.2.1",
+      "name": "stable_deref_trait",
+      "version": "1.2.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/strsim@0.11.1",
+      "name": "strsim",
+      "version": "0.11.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/strum@0.28.0",
+      "name": "strum",
+      "version": "0.28.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/strum_macros@0.28.0",
+      "name": "strum_macros",
+      "version": "0.28.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/subtle@2.6.1",
+      "name": "subtle",
+      "version": "2.6.1",
+      "component_type": "library",
+      "license": "BSD-3-Clause",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/syn@2.0.119",
+      "name": "syn",
+      "version": "2.0.119",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/syn@3.0.6",
+      "name": "syn",
+      "version": "3.0.6",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/sync_wrapper@1.0.2",
+      "name": "sync_wrapper",
+      "version": "1.0.2",
+      "component_type": "library",
+      "license": "Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/synstructure@0.13.2",
+      "name": "synstructure",
+      "version": "0.13.2",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/synstructure@0.14.0",
+      "name": "synstructure",
+      "version": "0.14.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/thiserror-impl@1.0.69",
+      "name": "thiserror-impl",
+      "version": "1.0.69",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/thiserror-impl@2.0.21",
+      "name": "thiserror-impl",
+      "version": "2.0.21",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/thiserror@1.0.69",
+      "name": "thiserror",
+      "version": "1.0.69",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/thiserror@2.0.21",
+      "name": "thiserror",
+      "version": "2.0.21",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/thread_local@1.1.10",
+      "name": "thread_local",
+      "version": "1.1.10",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/time-core@0.1.9",
+      "name": "time-core",
+      "version": "0.1.9",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/time-macros@0.2.32",
+      "name": "time-macros",
+      "version": "0.2.32",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/time@0.3.55",
+      "name": "time",
+      "version": "0.3.55",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tinystr@0.8.4",
+      "name": "tinystr",
+      "version": "0.8.4",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tinyvec@1.13.3",
+      "name": "tinyvec",
+      "version": "1.13.3",
+      "component_type": "library",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tokio-macros@2.7.2",
+      "name": "tokio-macros",
+      "version": "2.7.2",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tokio-native-tls@0.3.1",
+      "name": "tokio-native-tls",
+      "version": "0.3.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tokio-rustls@0.26.5",
+      "name": "tokio-rustls",
+      "version": "0.26.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tokio-util@0.7.19",
+      "name": "tokio-util",
+      "version": "0.7.19",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tokio@1.53.1",
+      "name": "tokio",
+      "version": "1.53.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tower-http@0.6.11",
+      "name": "tower-http",
+      "version": "0.6.11",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tower-layer@0.3.3",
+      "name": "tower-layer",
+      "version": "0.3.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tower-service@0.3.3",
+      "name": "tower-service",
+      "version": "0.3.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tower@0.5.3",
+      "name": "tower",
+      "version": "0.5.3",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing-attributes@0.1.31",
+      "name": "tracing-attributes",
+      "version": "0.1.31",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing-core@0.1.36",
+      "name": "tracing-core",
+      "version": "0.1.36",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing-glog@0.4.1",
+      "name": "tracing-glog",
+      "version": "0.4.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing-log@0.2.0",
+      "name": "tracing-log",
+      "version": "0.2.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing-opentelemetry@0.33.0",
+      "name": "tracing-opentelemetry",
+      "version": "0.33.0",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing-subscriber@0.3.23",
+      "name": "tracing-subscriber",
+      "version": "0.3.23",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/tracing@0.1.44",
+      "name": "tracing",
+      "version": "0.1.44",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/try-lock@0.2.5",
+      "name": "try-lock",
+      "version": "0.2.5",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/typenum@1.20.1",
+      "name": "typenum",
+      "version": "1.20.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/unicode-ident@1.0.26",
+      "name": "unicode-ident",
+      "version": "1.0.26",
+      "component_type": "library",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/universal-hash@0.6.1",
+      "name": "universal-hash",
+      "version": "0.6.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/untrusted@0.9.0",
+      "name": "untrusted",
+      "version": "0.9.0",
+      "component_type": "library",
+      "license": "ISC",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/url@2.5.8",
+      "name": "url",
+      "version": "2.5.8",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/utf8_iter@1.0.4",
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/utf8parse@0.2.2",
+      "name": "utf8parse",
+      "version": "0.2.2",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/uuid@1.26.1",
+      "name": "uuid",
+      "version": "1.26.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/vcpkg@0.2.15",
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/version_check@0.9.5",
+      "name": "version_check",
+      "version": "0.9.5",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/want@0.3.1",
+      "name": "want",
+      "version": "0.3.1",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/wnaf@0.14.1",
+      "name": "wnaf",
+      "version": "0.14.1",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/writeable@0.6.4",
+      "name": "writeable",
+      "version": "0.6.4",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/x509-parser@0.18.1",
+      "name": "x509-parser",
+      "version": "0.18.1",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/yasna@0.6.0",
+      "name": "yasna",
+      "version": "0.6.0",
+      "component_type": "library",
+      "license": "MIT OR Apache-2.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/yoke-derive@0.8.4",
+      "name": "yoke-derive",
+      "version": "0.8.4",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/yoke@0.8.3",
+      "name": "yoke",
+      "version": "0.8.3",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerocopy-derive@0.8.58",
+      "name": "zerocopy-derive",
+      "version": "0.8.58",
+      "component_type": "library",
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerocopy@0.8.58",
+      "name": "zerocopy",
+      "version": "0.8.58",
+      "component_type": "library",
+      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerofrom-derive@0.1.8",
+      "name": "zerofrom-derive",
+      "version": "0.1.8",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerofrom@0.1.8",
+      "name": "zerofrom",
+      "version": "0.1.8",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zeroize@1.9.0",
+      "name": "zeroize",
+      "version": "1.9.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zeroize_derive@1.5.0",
+      "name": "zeroize_derive",
+      "version": "1.5.0",
+      "component_type": "library",
+      "license": "Apache-2.0 OR MIT",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerotrie@0.2.5",
+      "name": "zerotrie",
+      "version": "0.2.5",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerovec-derive@0.11.6",
+      "name": "zerovec-derive",
+      "version": "0.11.6",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zerovec@0.11.8",
+      "name": "zerovec",
+      "version": "0.11.8",
+      "component_type": "library",
+      "license": "Unicode-3.0",
+      "source": "registry"
+    },
+    {
+      "purl": "pkg:cargo/zmij@1.0.23",
+      "name": "zmij",
+      "version": "1.0.23",
+      "component_type": "library",
+      "license": "MIT",
+      "source": "registry"
+    }
+  ],
+  "edges": [
+    {
+      "from_ref": "pkg:cargo/rsa@0.10.0-rc.18?vcs_url=git%2Bhttps://github.com/daveman1010221/RSA.git%40aa4bc50c0e212987610c7c7afc390942ff57820a",
+      "to_refs": [
+        "pkg:cargo/const-oid@0.10.2",
+        "pkg:cargo/crypto-bigint@0.7.10",
+        "pkg:cargo/crypto-primes@0.7.2",
+        "pkg:cargo/digest@0.11.3",
+        "pkg:cargo/pkcs1@0.8.0-rc.4",
+        "pkg:cargo/pkcs8@0.11.0",
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/signature@3.0.0",
+        "pkg:cargo/spki@0.8.0",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/getrandom@0.3.3?vcs_url=git%2Bhttps://github.com/rust-random/getrandom%4082396406b28f23ba86e3e511d34a4f5dab0fda08",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cassini-c2@1.0.0?download_url=file://.",
+      "to_refs": [
+        "pkg:cargo/cassini-client@1.0.0?download_url=file://../client",
+        "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/opentelemetry-otlp@0.32.0",
+        "pkg:cargo/opentelemetry_sdk@0.32.1",
+        "pkg:cargo/polar-scudo@1.0.0?download_url=file://../../polar-scudo",
+        "pkg:cargo/ractor@0.15.13",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-glog@0.4.1",
+        "pkg:cargo/tracing-opentelemetry@0.33.0",
+        "pkg:cargo/tracing-subscriber@0.3.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cassini-tracing@1.0.0?download_url=file://../cassini-tracing",
+      "to_refs": [
+        "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/opentelemetry-otlp@0.32.0",
+        "pkg:cargo/opentelemetry_sdk@0.32.1",
+        "pkg:cargo/polar-version@1.0.0?download_url=file://../../polar-version",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-glog@0.4.1",
+        "pkg:cargo/tracing-opentelemetry@0.33.0",
+        "pkg:cargo/tracing-subscriber@0.3.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cassini-client@1.0.0?download_url=file://../client",
+      "to_refs": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/async-trait@0.1.92",
+        "pkg:cargo/base64@0.22.1",
+        "pkg:cargo/cassini-tracing@1.0.0?download_url=file://../cassini-tracing",
+        "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+        "pkg:cargo/chrono@0.4.45",
+        "pkg:cargo/clap@4.6.7",
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/polar-custody@1.0.0?download_url=file://../../polar-custody",
+        "pkg:cargo/polar-env@1.0.0?download_url=file://../../polar-env",
+        "pkg:cargo/polar-router@1.0.0?download_url=file://../../polar-router",
+        "pkg:cargo/polar-scudo@1.0.0?download_url=file://../../polar-scudo",
+        "pkg:cargo/ractor@0.15.13",
+        "pkg:cargo/rkyv@0.8.18",
+        "pkg:cargo/rustls@0.23.46",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/socket2@0.5.10",
+        "pkg:cargo/thiserror@1.0.69",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tokio-rustls@0.26.5",
+        "pkg:cargo/tokio-util@0.7.19",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-glog@0.4.1",
+        "pkg:cargo/tracing-opentelemetry@0.33.0",
+        "pkg:cargo/tracing-subscriber@0.3.23",
+        "pkg:cargo/url@2.5.8",
+        "pkg:cargo/uuid@1.26.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+      "to_refs": [
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/ractor@0.15.13",
+        "pkg:cargo/rand@0.10.3",
+        "pkg:cargo/rkyv@0.8.18",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/socket2@0.5.10",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-opentelemetry@0.33.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cert-issuer-common@1.0.0?download_url=file://../../cert-issuer/common",
+      "to_refs": [
+        "pkg:cargo/clap@4.6.7",
+        "pkg:cargo/fqdn@0.5.2",
+        "pkg:cargo/rand@0.10.3",
+        "pkg:cargo/rcgen@0.14.10",
+        "pkg:cargo/rkyv@0.8.18",
+        "pkg:cargo/rsa@0.10.0-rc.18?vcs_url=git%2Bhttps://github.com/daveman1010221/RSA.git%40aa4bc50c0e212987610c7c7afc390942ff57820a",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/thiserror@1.0.69",
+        "pkg:cargo/time@0.3.55",
+        "pkg:cargo/x509-parser@0.18.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/polar-custody@1.0.0?download_url=file://../../polar-custody",
+      "to_refs": [
+        "pkg:cargo/cert-issuer-common@1.0.0?download_url=file://../../cert-issuer/common",
+        "pkg:cargo/p256@0.13.2",
+        "pkg:cargo/polar-env@1.0.0?download_url=file://../../polar-env",
+        "pkg:cargo/polar-escrow@1.0.0?download_url=file://../../polar-escrow",
+        "pkg:cargo/rcgen@0.14.10",
+        "pkg:cargo/ring@0.17.14",
+        "pkg:cargo/rkyv@0.8.18",
+        "pkg:cargo/rsa@0.10.0-rc.18?vcs_url=git%2Bhttps://github.com/daveman1010221/RSA.git%40aa4bc50c0e212987610c7c7afc390942ff57820a",
+        "pkg:cargo/rustls@0.23.46",
+        "pkg:cargo/thiserror@1.0.69",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/x509-parser@0.18.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/polar-env@1.0.0?download_url=file://../../polar-env",
+      "to_refs": [
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_json@1.0.151"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/polar-escrow@1.0.0?download_url=file://../../polar-escrow",
+      "to_refs": [
+        "pkg:cargo/aes-gcm@0.11.1",
+        "pkg:cargo/base64@0.22.1",
+        "pkg:cargo/hpke@0.15.1",
+        "pkg:cargo/p256@0.13.2",
+        "pkg:cargo/rand@0.10.3",
+        "pkg:cargo/rkyv@0.8.18",
+        "pkg:cargo/rsa@0.10.0-rc.18?vcs_url=git%2Bhttps://github.com/daveman1010221/RSA.git%40aa4bc50c0e212987610c7c7afc390942ff57820a",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/sha2@0.11.0",
+        "pkg:cargo/thiserror@1.0.69",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/polar-router@1.0.0?download_url=file://../../polar-router",
+      "to_refs": [
+        "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+        "pkg:cargo/ractor@0.15.13",
+        "pkg:cargo/tracing@0.1.44"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/polar-version@1.0.0?download_url=file://../../polar-version",
+      "to_refs": [
+        "pkg:cargo/cassini-types@1.0.0?download_url=file://../types",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_json@1.0.151"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/aead@0.6.1",
+      "to_refs": [
+        "pkg:cargo/crypto-common@0.2.2",
+        "pkg:cargo/inout@0.2.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/aes-gcm@0.11.1",
+      "to_refs": [
+        "pkg:cargo/aead@0.6.1",
+        "pkg:cargo/aes@0.9.3",
+        "pkg:cargo/cipher@0.5.2",
+        "pkg:cargo/ctr@0.10.1",
+        "pkg:cargo/ctutils@0.4.7",
+        "pkg:cargo/ghash@0.6.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/aes@0.9.3",
+      "to_refs": [
+        "pkg:cargo/cipher@0.5.2",
+        "pkg:cargo/cpubits@0.1.1",
+        "pkg:cargo/cpufeatures@0.3.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ahash@0.8.12",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/getrandom@0.3.3?vcs_url=git%2Bhttps://github.com/rust-random/getrandom%4082396406b28f23ba86e3e511d34a4f5dab0fda08",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/version_check@0.9.5",
+        "pkg:cargo/zerocopy@0.8.58"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/aho-corasick@1.1.5",
+      "to_refs": [
+        "pkg:cargo/memchr@2.8.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/anstream@1.0.0",
+      "to_refs": [
+        "pkg:cargo/anstyle@1.0.14",
+        "pkg:cargo/anstyle-parse@1.0.0",
+        "pkg:cargo/anstyle-query@1.1.5",
+        "pkg:cargo/colorchoice@1.0.5",
+        "pkg:cargo/is_terminal_polyfill@1.70.2",
+        "pkg:cargo/utf8parse@0.2.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/anstyle-parse@1.0.0",
+      "to_refs": [
+        "pkg:cargo/utf8parse@0.2.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/asn1-rs-derive@0.6.0",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119",
+        "pkg:cargo/synstructure@0.13.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/asn1-rs-impl@0.2.0",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/asn1-rs@0.7.2",
+      "to_refs": [
+        "pkg:cargo/asn1-rs-derive@0.6.0",
+        "pkg:cargo/asn1-rs-impl@0.2.0",
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/nom@7.1.3",
+        "pkg:cargo/num-traits@0.2.19",
+        "pkg:cargo/rusticata-macros@4.1.0",
+        "pkg:cargo/thiserror@2.0.21",
+        "pkg:cargo/time@0.3.55"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/async-trait@0.1.92",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/bit-vec@0.9.1",
+      "to_refs": [
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/block-buffer@0.10.4",
+      "to_refs": [
+        "pkg:cargo/generic-array@0.14.9"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/block-buffer@0.12.1",
+      "to_refs": [
+        "pkg:cargo/hybrid-array@0.4.15"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/bon-macros@2.3.0",
+      "to_refs": [
+        "pkg:cargo/darling@0.20.11",
+        "pkg:cargo/ident_case@1.0.1",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/bon@2.3.0",
+      "to_refs": [
+        "pkg:cargo/bon-macros@2.3.0",
+        "pkg:cargo/rustversion@1.0.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/bytecheck@0.8.3",
+      "to_refs": [
+        "pkg:cargo/bytecheck_derive@0.8.3",
+        "pkg:cargo/ptr_meta@0.3.2",
+        "pkg:cargo/rancor@0.1.3",
+        "pkg:cargo/simdutf8@0.1.5"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/bytecheck_derive@0.8.3",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/bytes@1.12.1",
+      "to_refs": [
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cc@1.5.1",
+      "to_refs": [
+        "pkg:cargo/find-msvc-tools@0.1.14",
+        "pkg:cargo/jobserver@0.1.35",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/shlex@2.0.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/chacha20@0.10.2",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/cpufeatures@0.3.1",
+        "pkg:cargo/rand_core@0.10.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/chrono@0.4.45",
+      "to_refs": [
+        "pkg:cargo/iana-time-zone@0.1.65",
+        "pkg:cargo/num-traits@0.2.19",
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/cipher@0.5.2",
+      "to_refs": [
+        "pkg:cargo/block-buffer@0.12.1",
+        "pkg:cargo/crypto-common@0.2.2",
+        "pkg:cargo/inout@0.2.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/clap@4.6.7",
+      "to_refs": [
+        "pkg:cargo/clap_builder@4.6.7",
+        "pkg:cargo/clap_derive@4.6.7"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/clap_builder@4.6.7",
+      "to_refs": [
+        "pkg:cargo/anstream@1.0.0",
+        "pkg:cargo/anstyle@1.0.14",
+        "pkg:cargo/clap_lex@1.1.1",
+        "pkg:cargo/strsim@0.11.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/clap_derive@4.6.7",
+      "to_refs": [
+        "pkg:cargo/heck@0.5.0",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crossbeam-deque@0.8.8",
+      "to_refs": [
+        "pkg:cargo/crossbeam-epoch@0.9.21",
+        "pkg:cargo/crossbeam-utils@0.8.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crossbeam-epoch@0.9.21",
+      "to_refs": [
+        "pkg:cargo/crossbeam-utils@0.8.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crypto-bigint@0.5.5",
+      "to_refs": [
+        "pkg:cargo/generic-array@0.14.9",
+        "pkg:cargo/rand_core@0.6.4",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crypto-bigint@0.7.10",
+      "to_refs": [
+        "pkg:cargo/cpubits@0.1.1",
+        "pkg:cargo/ctutils@0.4.7",
+        "pkg:cargo/hybrid-array@0.4.15",
+        "pkg:cargo/num-traits@0.2.19",
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/serdect@0.4.3",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crypto-common@0.1.6",
+      "to_refs": [
+        "pkg:cargo/generic-array@0.14.9",
+        "pkg:cargo/typenum@1.20.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crypto-common@0.2.2",
+      "to_refs": [
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/hybrid-array@0.4.15",
+        "pkg:cargo/rand_core@0.10.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/crypto-primes@0.7.2",
+      "to_refs": [
+        "pkg:cargo/crypto-bigint@0.7.10",
+        "pkg:cargo/rand_core@0.10.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ctr@0.10.1",
+      "to_refs": [
+        "pkg:cargo/cipher@0.5.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ctutils@0.4.7",
+      "to_refs": [
+        "pkg:cargo/cmov@0.5.4",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/darling@0.20.11",
+      "to_refs": [
+        "pkg:cargo/darling_core@0.20.11",
+        "pkg:cargo/darling_macro@0.20.11"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/darling_core@0.20.11",
+      "to_refs": [
+        "pkg:cargo/fnv@1.0.7",
+        "pkg:cargo/ident_case@1.0.1",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/strsim@0.11.1",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/darling_macro@0.20.11",
+      "to_refs": [
+        "pkg:cargo/darling_core@0.20.11",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/dashmap@6.2.1",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/crossbeam-utils@0.8.23",
+        "pkg:cargo/hashbrown@0.14.5",
+        "pkg:cargo/lock_api@0.4.14",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/parking_lot_core@0.9.12"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/der-parser@10.0.0",
+      "to_refs": [
+        "pkg:cargo/asn1-rs@0.7.2",
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/nom@7.1.3",
+        "pkg:cargo/num-bigint@0.4.8",
+        "pkg:cargo/num-traits@0.2.19",
+        "pkg:cargo/rusticata-macros@4.1.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/der@0.7.10",
+      "to_refs": [
+        "pkg:cargo/const-oid@0.9.6",
+        "pkg:cargo/der_derive@0.7.3",
+        "pkg:cargo/flagset@0.4.7",
+        "pkg:cargo/pem-rfc7468@0.7.0",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/der@0.8.2",
+      "to_refs": [
+        "pkg:cargo/const-oid@0.10.2",
+        "pkg:cargo/pem-rfc7468@1.0.0",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/der_derive@0.7.3",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/deranged@0.5.8",
+      "to_refs": [
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/digest@0.10.7",
+      "to_refs": [
+        "pkg:cargo/block-buffer@0.10.4",
+        "pkg:cargo/const-oid@0.9.6",
+        "pkg:cargo/crypto-common@0.1.6",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/digest@0.11.3",
+      "to_refs": [
+        "pkg:cargo/block-buffer@0.12.1",
+        "pkg:cargo/const-oid@0.10.2",
+        "pkg:cargo/crypto-common@0.2.2",
+        "pkg:cargo/ctutils@0.4.7"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/displaydoc@0.2.7",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ecdsa@0.16.9",
+      "to_refs": [
+        "pkg:cargo/der@0.7.10",
+        "pkg:cargo/digest@0.10.7",
+        "pkg:cargo/elliptic-curve@0.13.8",
+        "pkg:cargo/rfc6979@0.4.0",
+        "pkg:cargo/signature@2.2.0",
+        "pkg:cargo/spki@0.7.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/elliptic-curve@0.13.8",
+      "to_refs": [
+        "pkg:cargo/base16ct@0.2.0",
+        "pkg:cargo/crypto-bigint@0.5.5",
+        "pkg:cargo/digest@0.10.7",
+        "pkg:cargo/ff@0.13.1",
+        "pkg:cargo/generic-array@0.14.9",
+        "pkg:cargo/group@0.13.0",
+        "pkg:cargo/hkdf@0.12.4",
+        "pkg:cargo/pem-rfc7468@0.7.0",
+        "pkg:cargo/pkcs8@0.10.2",
+        "pkg:cargo/rand_core@0.6.4",
+        "pkg:cargo/sec1@0.7.3",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/elliptic-curve@0.14.1",
+      "to_refs": [
+        "pkg:cargo/base16ct@1.0.0",
+        "pkg:cargo/crypto-bigint@0.7.10",
+        "pkg:cargo/crypto-common@0.2.2",
+        "pkg:cargo/digest@0.11.3",
+        "pkg:cargo/ff@0.14.0",
+        "pkg:cargo/group@0.14.0",
+        "pkg:cargo/hkdf@0.13.0",
+        "pkg:cargo/hybrid-array@0.4.15",
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/sec1@0.8.1",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/errno@0.3.14",
+      "to_refs": [
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ff@0.13.1",
+      "to_refs": [
+        "pkg:cargo/rand_core@0.6.4",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ff@0.14.0",
+      "to_refs": [
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/foreign-types@0.3.2",
+      "to_refs": [
+        "pkg:cargo/foreign-types-shared@0.1.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/form_urlencoded@1.2.2",
+      "to_refs": [
+        "pkg:cargo/percent-encoding@2.3.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/futures-channel@0.3.34",
+      "to_refs": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/futures-executor@0.3.34",
+      "to_refs": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-task@0.3.34",
+        "pkg:cargo/futures-util@0.3.34"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/futures-macro@0.3.34",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/futures-util@0.3.34",
+      "to_refs": [
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-io@0.3.34",
+        "pkg:cargo/futures-macro@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/futures-task@0.3.34",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/slab@0.4.12"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/futures@0.3.34",
+      "to_refs": [
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-executor@0.3.34",
+        "pkg:cargo/futures-io@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/futures-task@0.3.34",
+        "pkg:cargo/futures-util@0.3.34"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/generic-array@0.14.9",
+      "to_refs": [
+        "pkg:cargo/typenum@1.20.1",
+        "pkg:cargo/version_check@0.9.5",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/getrandom@0.2.17",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/getrandom@0.4.3",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/rand_core@0.10.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ghash@0.6.0",
+      "to_refs": [
+        "pkg:cargo/polyval@0.7.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/group@0.13.0",
+      "to_refs": [
+        "pkg:cargo/ff@0.13.1",
+        "pkg:cargo/rand_core@0.6.4",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/group@0.14.0",
+      "to_refs": [
+        "pkg:cargo/ff@0.14.0",
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/h2@0.4.19",
+      "to_refs": [
+        "pkg:cargo/atomic-waker@1.1.2",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/fnv@1.0.7",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/slab@0.4.12",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tokio-util@0.7.19",
+        "pkg:cargo/tracing@0.1.44"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hashbrown@0.14.5",
+      "to_refs": [
+        "pkg:cargo/ahash@0.8.12",
+        "pkg:cargo/allocator-api2@0.2.21",
+        "pkg:cargo/rayon@1.12.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hkdf@0.12.4",
+      "to_refs": [
+        "pkg:cargo/hmac@0.12.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hkdf@0.13.0",
+      "to_refs": [
+        "pkg:cargo/hmac@0.13.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hmac@0.12.1",
+      "to_refs": [
+        "pkg:cargo/digest@0.10.7"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hmac@0.13.0",
+      "to_refs": [
+        "pkg:cargo/digest@0.11.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hpke@0.15.1",
+      "to_refs": [
+        "pkg:cargo/aead@0.6.1",
+        "pkg:cargo/aes-gcm@0.11.1",
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/hkdf@0.13.0",
+        "pkg:cargo/hybrid-array@0.4.15",
+        "pkg:cargo/p256@0.14.0",
+        "pkg:cargo/p384@0.14.0",
+        "pkg:cargo/p521@0.14.0",
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/sha2@0.11.0",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/http-body-util@0.1.5",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/http-body@1.1.0",
+        "pkg:cargo/pin-project-lite@0.2.17"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/http-body@1.1.0",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/http@1.5.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/http@1.5.0",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/itoa@1.0.18"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hybrid-array@0.4.15",
+      "to_refs": [
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/typenum@1.20.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hyper-tls@0.6.0",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/http-body-util@0.1.5",
+        "pkg:cargo/hyper@1.11.1",
+        "pkg:cargo/hyper-util@0.1.21",
+        "pkg:cargo/native-tls@0.2.14",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tokio-native-tls@0.3.1",
+        "pkg:cargo/tower-service@0.3.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hyper-util@0.1.21",
+      "to_refs": [
+        "pkg:cargo/base64@0.23.1",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/http-body@1.1.0",
+        "pkg:cargo/httparse@1.10.1",
+        "pkg:cargo/hyper@1.11.1",
+        "pkg:cargo/ipnet@2.12.2",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/percent-encoding@2.3.2",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/socket2@0.6.5",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tower-service@0.3.3",
+        "pkg:cargo/tracing@0.1.44"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/hyper@1.11.1",
+      "to_refs": [
+        "pkg:cargo/atomic-waker@1.1.2",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/h2@0.4.19",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/http-body@1.1.0",
+        "pkg:cargo/httparse@1.10.1",
+        "pkg:cargo/httpdate@1.0.3",
+        "pkg:cargo/itoa@1.0.18",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/smallvec@1.16.2",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/want@0.3.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/icu_collections@2.3.0",
+      "to_refs": [
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/potential_utf@0.1.6",
+        "pkg:cargo/utf8_iter@1.0.4",
+        "pkg:cargo/yoke@0.8.3",
+        "pkg:cargo/zerofrom@0.1.8",
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/icu_locale_core@2.3.0",
+      "to_refs": [
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/litemap@0.8.3",
+        "pkg:cargo/tinystr@0.8.4",
+        "pkg:cargo/writeable@0.6.4",
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/icu_normalizer@2.3.0",
+      "to_refs": [
+        "pkg:cargo/icu_collections@2.3.0",
+        "pkg:cargo/icu_normalizer_data@2.3.0",
+        "pkg:cargo/icu_properties@2.3.0",
+        "pkg:cargo/icu_provider@2.3.1",
+        "pkg:cargo/smallvec@1.16.2",
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/icu_properties@2.3.0",
+      "to_refs": [
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/icu_collections@2.3.0",
+        "pkg:cargo/icu_locale_core@2.3.0",
+        "pkg:cargo/icu_properties_data@2.3.0",
+        "pkg:cargo/icu_provider@2.3.1",
+        "pkg:cargo/zerotrie@0.2.5",
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/icu_provider@2.3.1",
+      "to_refs": [
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/icu_locale_core@2.3.0",
+        "pkg:cargo/writeable@0.6.4",
+        "pkg:cargo/yoke@0.8.3",
+        "pkg:cargo/zerofrom@0.1.8",
+        "pkg:cargo/zerotrie@0.2.5",
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/idna@1.1.0",
+      "to_refs": [
+        "pkg:cargo/idna_adapter@1.2.2",
+        "pkg:cargo/smallvec@1.16.2",
+        "pkg:cargo/utf8_iter@1.0.4"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/idna_adapter@1.2.2",
+      "to_refs": [
+        "pkg:cargo/icu_normalizer@2.3.0",
+        "pkg:cargo/icu_properties@2.3.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/indexmap@2.14.2",
+      "to_refs": [
+        "pkg:cargo/equivalent@1.0.2",
+        "pkg:cargo/hashbrown@0.17.1",
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/inout@0.2.2",
+      "to_refs": [
+        "pkg:cargo/hybrid-array@0.4.15"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ipnet@2.12.2",
+      "to_refs": [
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/itertools@0.14.0",
+      "to_refs": [
+        "pkg:cargo/either@1.18.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/jobserver@0.1.35",
+      "to_refs": [
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/lazy_static@1.5.0",
+      "to_refs": [
+        "pkg:cargo/spin@0.9.9"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/lock_api@0.4.14",
+      "to_refs": [
+        "pkg:cargo/scopeguard@1.2.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/matchers@0.2.0",
+      "to_refs": [
+        "pkg:cargo/regex-automata@0.4.18"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/mio@1.2.3",
+      "to_refs": [
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/log@0.4.34"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/munge@0.4.7",
+      "to_refs": [
+        "pkg:cargo/munge_macro@0.4.7"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/munge_macro@0.4.7",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/native-tls@0.2.14",
+      "to_refs": [
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/openssl@0.10.81",
+        "pkg:cargo/openssl-probe@0.1.6",
+        "pkg:cargo/openssl-sys@0.9.117"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/nom@7.1.3",
+      "to_refs": [
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/minimal-lexical@0.2.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/nu-ansi-term@0.46.0",
+      "to_refs": [
+        "pkg:cargo/overload@0.1.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/num-bigint@0.4.8",
+      "to_refs": [
+        "pkg:cargo/num-integer@0.1.47",
+        "pkg:cargo/num-traits@0.2.19"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/num-integer@0.1.47",
+      "to_refs": [
+        "pkg:cargo/num-traits@0.2.19"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/num-traits@0.2.19",
+      "to_refs": [
+        "pkg:cargo/autocfg@1.5.1",
+        "pkg:cargo/libm@0.2.16"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/oid-registry@0.8.1",
+      "to_refs": [
+        "pkg:cargo/asn1-rs@0.7.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/once_cell@1.21.4",
+      "to_refs": [
+        "pkg:cargo/critical-section@1.2.0",
+        "pkg:cargo/portable-atomic@1.15.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/openssl-macros@0.1.1",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/openssl-sys@0.9.117",
+      "to_refs": [
+        "pkg:cargo/cc@1.5.1",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/pkg-config@0.3.34",
+        "pkg:cargo/vcpkg@0.2.15"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/openssl@0.10.81",
+      "to_refs": [
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/foreign-types@0.3.2",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/openssl-macros@0.1.1",
+        "pkg:cargo/openssl-sys@0.9.117"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/opentelemetry-http@0.32.0",
+      "to_refs": [
+        "pkg:cargo/async-trait@0.1.92",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/reqwest@0.13.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/opentelemetry-otlp@0.32.0",
+      "to_refs": [
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/opentelemetry-http@0.32.0",
+        "pkg:cargo/opentelemetry-proto@0.32.0",
+        "pkg:cargo/opentelemetry_sdk@0.32.1",
+        "pkg:cargo/prost@0.14.4",
+        "pkg:cargo/reqwest@0.13.3",
+        "pkg:cargo/thiserror@2.0.21"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/opentelemetry-proto@0.32.0",
+      "to_refs": [
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/opentelemetry_sdk@0.32.1",
+        "pkg:cargo/prost@0.14.4"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/opentelemetry@0.32.0",
+      "to_refs": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/thiserror@2.0.21",
+        "pkg:cargo/tracing@0.1.44"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/opentelemetry_sdk@0.32.1",
+      "to_refs": [
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-executor@0.3.34",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/percent-encoding@2.3.2",
+        "pkg:cargo/rand@0.9.5",
+        "pkg:cargo/thiserror@2.0.21"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/p256@0.13.2",
+      "to_refs": [
+        "pkg:cargo/ecdsa@0.16.9",
+        "pkg:cargo/elliptic-curve@0.13.8",
+        "pkg:cargo/primeorder@0.13.6",
+        "pkg:cargo/sha2@0.10.9"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/p256@0.14.0",
+      "to_refs": [
+        "pkg:cargo/elliptic-curve@0.14.1",
+        "pkg:cargo/primefield@0.14.0",
+        "pkg:cargo/primeorder@0.14.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/p384@0.14.0",
+      "to_refs": [
+        "pkg:cargo/elliptic-curve@0.14.1",
+        "pkg:cargo/primefield@0.14.0",
+        "pkg:cargo/primeorder@0.14.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/p521@0.14.0",
+      "to_refs": [
+        "pkg:cargo/base16ct@1.0.0",
+        "pkg:cargo/elliptic-curve@0.14.1",
+        "pkg:cargo/primefield@0.14.0",
+        "pkg:cargo/primeorder@0.14.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/parking_lot@0.12.5",
+      "to_refs": [
+        "pkg:cargo/lock_api@0.4.14",
+        "pkg:cargo/parking_lot_core@0.9.12"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/parking_lot_core@0.9.12",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/smallvec@1.16.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/pem-rfc7468@0.7.0",
+      "to_refs": [
+        "pkg:cargo/base64ct@1.8.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/pem-rfc7468@1.0.0",
+      "to_refs": [
+        "pkg:cargo/base64ct@1.8.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/pem@4.0.0",
+      "to_refs": [
+        "pkg:cargo/base64@0.23.1",
+        "pkg:cargo/serde_core@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/pkcs1@0.8.0-rc.4",
+      "to_refs": [
+        "pkg:cargo/der@0.8.2",
+        "pkg:cargo/spki@0.8.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/pkcs8@0.10.2",
+      "to_refs": [
+        "pkg:cargo/der@0.7.10",
+        "pkg:cargo/spki@0.7.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/pkcs8@0.11.0",
+      "to_refs": [
+        "pkg:cargo/der@0.8.2",
+        "pkg:cargo/spki@0.8.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/polyval@0.7.3",
+      "to_refs": [
+        "pkg:cargo/cpubits@0.1.1",
+        "pkg:cargo/cpufeatures@0.3.1",
+        "pkg:cargo/universal-hash@0.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/potential_utf@0.1.6",
+      "to_refs": [
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ppv-lite86@0.2.21",
+      "to_refs": [
+        "pkg:cargo/zerocopy@0.8.58"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/primefield@0.14.0",
+      "to_refs": [
+        "pkg:cargo/crypto-bigint@0.7.10",
+        "pkg:cargo/crypto-common@0.2.2",
+        "pkg:cargo/ff@0.14.0",
+        "pkg:cargo/rand_core@0.10.1",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/primeorder@0.13.6",
+      "to_refs": [
+        "pkg:cargo/elliptic-curve@0.13.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/primeorder@0.14.0",
+      "to_refs": [
+        "pkg:cargo/elliptic-curve@0.14.1",
+        "pkg:cargo/primefield@0.14.0",
+        "pkg:cargo/wnaf@0.14.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/proc-macro2@1.0.107",
+      "to_refs": [
+        "pkg:cargo/unicode-ident@1.0.26"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/prost-derive@0.14.4",
+      "to_refs": [
+        "pkg:cargo/anyhow@1.0.104",
+        "pkg:cargo/itertools@0.14.0",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/prost@0.14.4",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/prost-derive@0.14.4"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ptr_meta@0.3.2",
+      "to_refs": [
+        "pkg:cargo/ptr_meta_derive@0.3.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ptr_meta_derive@0.3.2",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/quote@1.0.47",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ractor@0.15.13",
+      "to_refs": [
+        "pkg:cargo/async-trait@0.1.92",
+        "pkg:cargo/bon@2.3.0",
+        "pkg:cargo/dashmap@6.2.1",
+        "pkg:cargo/futures@0.3.34",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/strum@0.28.0",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tracing@0.1.44"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rancor@0.1.3",
+      "to_refs": [
+        "pkg:cargo/ptr_meta@0.3.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rand@0.10.3",
+      "to_refs": [
+        "pkg:cargo/chacha20@0.10.2",
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/rand_core@0.10.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rand@0.9.5",
+      "to_refs": [
+        "pkg:cargo/rand_chacha@0.9.0",
+        "pkg:cargo/rand_core@0.9.5"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rand_chacha@0.9.0",
+      "to_refs": [
+        "pkg:cargo/ppv-lite86@0.2.21",
+        "pkg:cargo/rand_core@0.9.5"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rand_core@0.6.4",
+      "to_refs": [
+        "pkg:cargo/getrandom@0.2.17"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rand_core@0.9.5",
+      "to_refs": [
+        "pkg:cargo/getrandom@0.3.3?vcs_url=git%2Bhttps://github.com/rust-random/getrandom%4082396406b28f23ba86e3e511d34a4f5dab0fda08"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rayon-core@1.13.0",
+      "to_refs": [
+        "pkg:cargo/crossbeam-deque@0.8.8",
+        "pkg:cargo/crossbeam-utils@0.8.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rayon@1.12.0",
+      "to_refs": [
+        "pkg:cargo/either@1.18.0",
+        "pkg:cargo/rayon-core@1.13.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rcgen@0.14.10",
+      "to_refs": [
+        "pkg:cargo/pem@4.0.0",
+        "pkg:cargo/ring@0.17.14",
+        "pkg:cargo/rustls-pki-types@1.15.1",
+        "pkg:cargo/time@0.3.55",
+        "pkg:cargo/x509-parser@0.18.1",
+        "pkg:cargo/yasna@0.6.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/regex-automata@0.4.18",
+      "to_refs": [
+        "pkg:cargo/aho-corasick@1.1.5",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/regex-syntax@0.8.11"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rend@0.5.4",
+      "to_refs": [
+        "pkg:cargo/bytecheck@0.8.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/reqwest@0.13.3",
+      "to_refs": [
+        "pkg:cargo/base64@0.22.1",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-channel@0.3.34",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/http-body@1.1.0",
+        "pkg:cargo/http-body-util@0.1.5",
+        "pkg:cargo/hyper@1.11.1",
+        "pkg:cargo/hyper-tls@0.6.0",
+        "pkg:cargo/hyper-util@0.1.21",
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/native-tls@0.2.14",
+        "pkg:cargo/percent-encoding@2.3.2",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/rustls-pki-types@1.15.1",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_json@1.0.151",
+        "pkg:cargo/serde_urlencoded@0.7.1",
+        "pkg:cargo/sync_wrapper@1.0.2",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tokio-native-tls@0.3.1",
+        "pkg:cargo/tokio-util@0.7.19",
+        "pkg:cargo/tower@0.5.3",
+        "pkg:cargo/tower-http@0.6.11",
+        "pkg:cargo/tower-service@0.3.3",
+        "pkg:cargo/url@2.5.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rfc6979@0.4.0",
+      "to_refs": [
+        "pkg:cargo/hmac@0.12.1",
+        "pkg:cargo/subtle@2.6.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/ring@0.17.14",
+      "to_refs": [
+        "pkg:cargo/cc@1.5.1",
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/getrandom@0.2.17",
+        "pkg:cargo/untrusted@0.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rkyv@0.8.18",
+      "to_refs": [
+        "pkg:cargo/bytecheck@0.8.3",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/hashbrown@0.17.1",
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/munge@0.4.7",
+        "pkg:cargo/ptr_meta@0.3.2",
+        "pkg:cargo/rancor@0.1.3",
+        "pkg:cargo/rend@0.5.4",
+        "pkg:cargo/rkyv_derive@0.8.18",
+        "pkg:cargo/tinyvec@1.13.3",
+        "pkg:cargo/uuid@1.26.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rkyv_derive@0.8.18",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rusticata-macros@4.1.0",
+      "to_refs": [
+        "pkg:cargo/nom@7.1.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rustls-pki-types@1.15.1",
+      "to_refs": [
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rustls-webpki@0.103.16",
+      "to_refs": [
+        "pkg:cargo/ring@0.17.14",
+        "pkg:cargo/rustls-pki-types@1.15.1",
+        "pkg:cargo/untrusted@0.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/rustls@0.23.46",
+      "to_refs": [
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/ring@0.17.14",
+        "pkg:cargo/rustls-pki-types@1.15.1",
+        "pkg:cargo/rustls-webpki@0.103.16",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/sec1@0.7.3",
+      "to_refs": [
+        "pkg:cargo/base16ct@0.2.0",
+        "pkg:cargo/der@0.7.10",
+        "pkg:cargo/generic-array@0.14.9",
+        "pkg:cargo/pkcs8@0.10.2",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/sec1@0.8.1",
+      "to_refs": [
+        "pkg:cargo/base16ct@1.0.0",
+        "pkg:cargo/ctutils@0.4.7",
+        "pkg:cargo/der@0.8.2",
+        "pkg:cargo/hybrid-array@0.4.15",
+        "pkg:cargo/subtle@2.6.1",
+        "pkg:cargo/zeroize@1.9.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/serde@1.0.229",
+      "to_refs": [
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/serde_derive@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/serde_derive@1.0.229",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/serde_json@1.0.151",
+      "to_refs": [
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/itoa@1.0.18",
+        "pkg:cargo/memchr@2.8.3",
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/zmij@1.0.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/serde_urlencoded@0.7.1",
+      "to_refs": [
+        "pkg:cargo/form_urlencoded@1.2.2",
+        "pkg:cargo/itoa@1.0.18",
+        "pkg:cargo/ryu@1.0.23",
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/serdect@0.4.3",
+      "to_refs": [
+        "pkg:cargo/base16ct@1.0.0",
+        "pkg:cargo/serde@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/sha2@0.10.9",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/cpufeatures@0.2.17",
+        "pkg:cargo/digest@0.10.7"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/sha2@0.11.0",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5",
+        "pkg:cargo/cpufeatures@0.3.1",
+        "pkg:cargo/digest@0.11.3"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/sharded-slab@0.1.7",
+      "to_refs": [
+        "pkg:cargo/lazy_static@1.5.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/signal-hook-registry@1.4.8",
+      "to_refs": [
+        "pkg:cargo/errno@0.3.14",
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/signature@2.2.0",
+      "to_refs": [
+        "pkg:cargo/digest@0.10.7",
+        "pkg:cargo/rand_core@0.6.4"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/signature@3.0.0",
+      "to_refs": [
+        "pkg:cargo/digest@0.11.3",
+        "pkg:cargo/rand_core@0.10.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/socket2@0.5.10",
+      "to_refs": [
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/socket2@0.6.5",
+      "to_refs": [
+        "pkg:cargo/libc@0.2.189"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/spki@0.7.3",
+      "to_refs": [
+        "pkg:cargo/base64ct@1.8.3",
+        "pkg:cargo/der@0.7.10"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/spki@0.8.0",
+      "to_refs": [
+        "pkg:cargo/base64ct@1.8.3",
+        "pkg:cargo/der@0.8.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/strum@0.28.0",
+      "to_refs": [
+        "pkg:cargo/strum_macros@0.28.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/strum_macros@0.28.0",
+      "to_refs": [
+        "pkg:cargo/heck@0.5.0",
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/syn@2.0.119",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/unicode-ident@1.0.26"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/syn@3.0.6",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/unicode-ident@1.0.26"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/sync_wrapper@1.0.2",
+      "to_refs": [
+        "pkg:cargo/futures-core@0.3.34"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/synstructure@0.13.2",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/synstructure@0.14.0",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/thiserror-impl@1.0.69",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/thiserror-impl@2.0.21",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/thiserror@1.0.69",
+      "to_refs": [
+        "pkg:cargo/thiserror-impl@1.0.69"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/thiserror@2.0.21",
+      "to_refs": [
+        "pkg:cargo/thiserror-impl@2.0.21"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/thread_local@1.1.10",
+      "to_refs": [
+        "pkg:cargo/cfg-if@1.0.5"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/time-macros@0.2.32",
+      "to_refs": [
+        "pkg:cargo/num-conv@0.2.2",
+        "pkg:cargo/time-core@0.1.9"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/time@0.3.55",
+      "to_refs": [
+        "pkg:cargo/deranged@0.5.8",
+        "pkg:cargo/num-conv@0.2.2",
+        "pkg:cargo/powerfmt@0.2.0",
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/time-core@0.1.9",
+        "pkg:cargo/time-macros@0.2.32"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tinystr@0.8.4",
+      "to_refs": [
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/zerovec@0.11.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tokio-macros@2.7.2",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tokio-native-tls@0.3.1",
+      "to_refs": [
+        "pkg:cargo/native-tls@0.2.14",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tokio-rustls@0.26.5",
+      "to_refs": [
+        "pkg:cargo/rustls@0.23.46",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tokio-util@0.7.19",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-io@0.3.34",
+        "pkg:cargo/futures-sink@0.3.34",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/slab@0.4.12",
+        "pkg:cargo/tokio@1.53.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tokio@1.53.1",
+      "to_refs": [
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/libc@0.2.189",
+        "pkg:cargo/mio@1.2.3",
+        "pkg:cargo/parking_lot@0.12.5",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/signal-hook-registry@1.4.8",
+        "pkg:cargo/socket2@0.6.5",
+        "pkg:cargo/tokio-macros@2.7.2"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tower-http@0.6.11",
+      "to_refs": [
+        "pkg:cargo/base64@0.22.1",
+        "pkg:cargo/bitflags@2.13.2",
+        "pkg:cargo/bytes@1.12.1",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/http@1.5.0",
+        "pkg:cargo/http-body@1.1.0",
+        "pkg:cargo/mime@0.3.17",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/tower@0.5.3",
+        "pkg:cargo/tower-layer@0.3.3",
+        "pkg:cargo/tower-service@0.3.3",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/url@2.5.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tower@0.5.3",
+      "to_refs": [
+        "pkg:cargo/futures-core@0.3.34",
+        "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/indexmap@2.14.2",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/slab@0.4.12",
+        "pkg:cargo/sync_wrapper@1.0.2",
+        "pkg:cargo/tokio@1.53.1",
+        "pkg:cargo/tokio-util@0.7.19",
+        "pkg:cargo/tower-layer@0.3.3",
+        "pkg:cargo/tower-service@0.3.3",
+        "pkg:cargo/tracing@0.1.44"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing-attributes@0.1.31",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing-core@0.1.36",
+      "to_refs": [
+        "pkg:cargo/once_cell@1.21.4"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing-glog@0.4.1",
+      "to_refs": [
+        "pkg:cargo/chrono@0.4.45",
+        "pkg:cargo/nu-ansi-term@0.46.0",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-subscriber@0.3.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing-log@0.2.0",
+      "to_refs": [
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/tracing-core@0.1.36"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing-opentelemetry@0.33.0",
+      "to_refs": [
+        "pkg:cargo/opentelemetry@0.32.0",
+        "pkg:cargo/smallvec@1.16.2",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-core@0.1.36",
+        "pkg:cargo/tracing-log@0.2.0",
+        "pkg:cargo/tracing-subscriber@0.3.23"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing-subscriber@0.3.23",
+      "to_refs": [
+        "pkg:cargo/chrono@0.4.45",
+        "pkg:cargo/matchers@0.2.0",
+        "pkg:cargo/nu-ansi-term@0.50.3",
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/regex-automata@0.4.18",
+        "pkg:cargo/sharded-slab@0.1.7",
+        "pkg:cargo/smallvec@1.16.2",
+        "pkg:cargo/thread_local@1.1.10",
+        "pkg:cargo/tracing@0.1.44",
+        "pkg:cargo/tracing-core@0.1.36",
+        "pkg:cargo/tracing-log@0.2.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/tracing@0.1.44",
+      "to_refs": [
+        "pkg:cargo/log@0.4.34",
+        "pkg:cargo/pin-project-lite@0.2.17",
+        "pkg:cargo/tracing-attributes@0.1.31",
+        "pkg:cargo/tracing-core@0.1.36"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/universal-hash@0.6.1",
+      "to_refs": [
+        "pkg:cargo/crypto-common@0.2.2",
+        "pkg:cargo/ctutils@0.4.7"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/url@2.5.8",
+      "to_refs": [
+        "pkg:cargo/form_urlencoded@1.2.2",
+        "pkg:cargo/idna@1.1.0",
+        "pkg:cargo/percent-encoding@2.3.2",
+        "pkg:cargo/serde@1.0.229",
+        "pkg:cargo/serde_derive@1.0.229"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/uuid@1.26.1",
+      "to_refs": [
+        "pkg:cargo/getrandom@0.4.3",
+        "pkg:cargo/serde_core@1.0.229",
+        "pkg:cargo/sha1_smol@1.0.1"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/want@0.3.1",
+      "to_refs": [
+        "pkg:cargo/try-lock@0.2.5"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/wnaf@0.14.1",
+      "to_refs": [
+        "pkg:cargo/ff@0.14.0",
+        "pkg:cargo/group@0.14.0",
+        "pkg:cargo/hybrid-array@0.4.15",
+        "pkg:cargo/primefield@0.14.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/x509-parser@0.18.1",
+      "to_refs": [
+        "pkg:cargo/asn1-rs@0.7.2",
+        "pkg:cargo/data-encoding@2.11.1",
+        "pkg:cargo/der-parser@10.0.0",
+        "pkg:cargo/lazy_static@1.5.0",
+        "pkg:cargo/nom@7.1.3",
+        "pkg:cargo/oid-registry@0.8.1",
+        "pkg:cargo/ring@0.17.14",
+        "pkg:cargo/rusticata-macros@4.1.0",
+        "pkg:cargo/thiserror@2.0.21",
+        "pkg:cargo/time@0.3.55"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/yasna@0.6.0",
+      "to_refs": [
+        "pkg:cargo/bit-vec@0.9.1",
+        "pkg:cargo/time@0.3.55"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/yoke-derive@0.8.4",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6",
+        "pkg:cargo/synstructure@0.14.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/yoke@0.8.3",
+      "to_refs": [
+        "pkg:cargo/stable_deref_trait@1.2.1",
+        "pkg:cargo/yoke-derive@0.8.4",
+        "pkg:cargo/zerofrom@0.1.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerocopy-derive@0.8.58",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerocopy@0.8.58",
+      "to_refs": [
+        "pkg:cargo/zerocopy-derive@0.8.58"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerofrom-derive@0.1.8",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6",
+        "pkg:cargo/synstructure@0.14.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerofrom@0.1.8",
+      "to_refs": [
+        "pkg:cargo/zerofrom-derive@0.1.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zeroize@1.9.0",
+      "to_refs": [
+        "pkg:cargo/zeroize_derive@1.5.0"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zeroize_derive@1.5.0",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@2.0.119"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerotrie@0.2.5",
+      "to_refs": [
+        "pkg:cargo/displaydoc@0.2.7",
+        "pkg:cargo/yoke@0.8.3",
+        "pkg:cargo/zerofrom@0.1.8"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerovec-derive@0.11.6",
+      "to_refs": [
+        "pkg:cargo/proc-macro2@1.0.107",
+        "pkg:cargo/quote@1.0.47",
+        "pkg:cargo/syn@3.0.6"
+      ]
+    },
+    {
+      "from_ref": "pkg:cargo/zerovec@0.11.8",
+      "to_refs": [
+        "pkg:cargo/yoke@0.8.3",
+        "pkg:cargo/zerofrom@0.1.8",
+        "pkg:cargo/zerovec-derive@0.11.6"
+      ]
+    }
+  ],
+  "filename": "cassini-c2.cdx.json"
+}
