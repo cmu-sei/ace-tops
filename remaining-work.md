@@ -984,12 +984,20 @@ only.
   Nix. **OPEN, signing waits on a key** (build-inspect-ship S3, 2026-11-11): the pipeline pushes the archive it inspected and signs it
   with cosign by its digest, through the existing path (`scripts/pipeline/core/oci.nu`, `sign-image`, `COSIGN_KEY` or `--key`). No key is
   provisioned on the host or in CI, and none is made by the pipeline, so every image is shipped unsigned with "No signing key available,
-  skipping signature". The key is the lead's to provide. **Decided, no SBOM of a binary** (build-inspect-ship S2, 2026-11-11,
+  skipping signature". The key is the lead's to provide. With a key, a signature cosign does not make fails the image, and so the
+  pipeline (Test's M3, 2026-11-11). **Done, Test's review of build-inspect-ship** (2026-11-11, on `blitz/integration`, each fix
+  test first): H1, an image not delivered as inspected (registry digest empty or another) fails, and any failed image fails the
+  pipeline with a non-zero exit (`scripts/pipeline/tests/ship.nu` runs `ci.nu` itself with stand-ins); H2, `polar.nix/realised`
+  and `built-at` are observed of the store before and after the build (`nix-store --check-validity`, `nix path-info --json`:
+  present, built, fetched or unknown, built-at the store's registration time), no longer a dry run's plan; M1,
+  `polar.image/executables` is renamed `polar.image/executable-entries`, the layers' entries, replaced and deleted files
+  included; M2, the gap is worded as SBOM packages with no unit compiled for the binary's target, never as not in the binary;
+  M3, above. **Decided, no SBOM of a binary** (build-inspect-ship S2, 2026-11-11,
   the lead): each claim is named by its subject. The workspace SBOM is about the source tree at a commit, the cargo log about one
   build, the image inspection (S3) about one image: which binary, by its hash, is in it. `cargo-auditable` was tested and dropped,
   with `auditable2cdx`: the record nixpkgs' 0.6.2 embedded in `cassini-server` equalled the workspace SBOM, 492 packages against the
-  466 its build compiled. In its place phase 2 reports, per binary, what the SBOM names that the build did not compile for the
-  binary's target, each package as never compiled or compiled only for the build machine (`polar.cargo/not-compiled`,
+  466 its build compiled. In its place phase 2 reports, per binary, the SBOM packages with no unit compiled for the binary's
+  target, each as never compiled or compiled for the build machine only (`polar.cargo/not-compiled`,
   `polar.cargo/build-machine-only`, `polar.cargo/sbom-compared`; `docs/architecture/pipeline-design-reference.md` §7). On the
   host, at `e68b294b`, a single `not-compiled` was untrue of 102 of cassini-server's 128 (compiled for the build machine): hence
   the split. Open, not this branch's: `image-manifest`'s purls predate it and are stale. The cassini row's

@@ -339,9 +339,18 @@ did not say. Neither it nor `auditable2cdx` is in the build or the CI image.
 
 **Built in build-inspect-ship S2, to be seen on the host:** Phase 2 builds
 each binary an image ships with Nix and links it to its package's SBOM
-(`BinaryLinked`). It then compares that SBOM with the binary's cargo log and
-reports the gap as facts (`fact_reported`): what the SBOM names that is not
-among the units cargo compiled for the binary's target, those whose files
+(`BinaryLinked`). How each derivation's outputs came to be in the store is
+observed of the store itself, never planned: `polar.nix/realised` is
+`present` when every output was valid before the build
+(`nix-store --check-validity --print-invalid`), and otherwise what
+`nix path-info --json` records after it of the outputs that were not:
+`built` when the store records them as built on this machine (`ultimate`),
+`fetched` when as not built here and signed, `unknown` when anything else.
+`polar.nix/built-at` is the latest time the store registered one of them,
+reported only when they were built and the store gives one; a dry run's
+plan is not read. Phase 2 then compares the SBOM with the binary's cargo
+log and reports, as facts (`fact_reported`), the SBOM packages with no unit
+compiled for the binary's target: the units cargo compiled whose files
 lie under the directory of its executable (`target/<triple>/release`, crane
 being given the musl target). A proc-macro or a build script (kinds
 `proc-macro` and `custom-build`) runs on the build machine, wherever it
@@ -355,9 +364,12 @@ Binary, the Package by the SBOM's purl, the value the SBOM's content hash):
 build machine (a proc-macro, a build script, or what only they need). Then
 `polar.cargo/sbom-compared` once (the Binary, the Sbom, the value the total
 of the two, "0" for none), so a binary compared and found whole reads apart
-from one never compared. On the host, cassini-server's gap was 128: 26 never
-compiled, 102 for the build machine only. Observation only: it fails
-nothing.
+from one never compared. On the host, cassini-server had 128 SBOM packages
+with no unit compiled for its target: 26 never compiled, 102 for the build
+machine only. The log says which units were compiled for which machine, and
+no more: what a build script or code generator compiled for the build
+machine wrote may still reach the target, so none of these facts says a
+package is not in the binary. Observation only: it fails nothing.
 `build-processor/tests/binary_trees.rs` (ignored; its fixtures are made on
 the host) compares the whole compiled set with the workspace SBOM, and
 reports every difference.
@@ -367,20 +379,30 @@ exactly what it inspected. The Nix image is made once into an OCI archive,
 its layers gzip-compressed, so its manifest digest is known before the push;
 the archive is inspected (`scripts/pipeline/core/inspect.nu`): each layer's
 blob against its digest and its content against its diff_id, a mismatch
-failing the image, and every executable hashed where it lies. Each binary
-Phase 2 linked for the image is found by its hash, and reported as facts
-(`fact_reported`): `polar.image/found-at` for each place (the Binary, the
-OCILayerDiffId, the path), `polar.image/not-found` for one the image holds
-nowhere, `polar.image/executables` with the count. A missing binary is
-reported and stops nothing. Then that archive is pushed as it is (`skopeo
-copy --preserve-digests`), and the registry's digest must be the inspected
-one, or the upload is not recorded and not signed. Phase 2 reports
-`polar.nix/realised`, `polar.nix/store-path` and `polar.nix/built-at`, and
-(S2, above) `polar.cargo/not-compiled`, `polar.cargo/build-machine-only`
-and `polar.cargo/sbom-compared`. A
-build relayed by the orchestrator has these nine names relayed only if its
-mapping lists them (`facts`). Signing is cosign by the digest with
-`COSIGN_KEY`; no key is provisioned, so it says it skipped (`remaining-work.md`).
+failing the image, and every executable entry hashed in the layer where it
+lies. Each binary Phase 2 linked for the image is found by its hash, and
+reported as facts (`fact_reported`): `polar.image/found-at` for each place
+(the Binary, the OCILayerDiffId, the path), true of that layer;
+`polar.image/not-found` for one no layer holds; and
+`polar.image/executable-entries` with the count of executable entries in
+all its layers. That count is of the layers' entries, not of the image's
+filesystem: no layer's files are replaced or deleted by those above, so a
+file a later layer replaces or deletes by its whiteout still counts (a
+whiteout marker never does). A missing binary is reported and stops
+nothing. Then that archive is pushed as it is (`skopeo copy
+--preserve-digests`). The image is delivered only if the registry's digest
+is non-empty and the inspected one; otherwise it is not recorded, not
+signed, and fails. Signing is cosign by the digest with `COSIGN_KEY`: with
+no key it is skipped, as now (no key is provisioned, `remaining-work.md`);
+with a key, a signature cosign does not make fails the image. Any image
+failed (not built, its archive not the image it names, not delivered as
+inspected, or not signed with a key) fails the pipeline, which exits
+non-zero (`scripts/pipeline/tests/ship.nu` runs `ci.nu` with stand-ins and
+asserts it). Phase 2 reports `polar.nix/realised`, `polar.nix/store-path`
+and `polar.nix/built-at`, and (S2, above) `polar.cargo/not-compiled`,
+`polar.cargo/build-machine-only` and `polar.cargo/sbom-compared`. A build
+relayed by the orchestrator has these nine names relayed only if its
+mapping lists them (`facts`).
 
 **Deliberately deferred, by design, not oversight:** cross-scanner
 vulnerability identity reconciliation (RUSTSEC/CVE/GHSA convergence) —
