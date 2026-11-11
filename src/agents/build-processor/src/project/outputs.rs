@@ -49,6 +49,7 @@ use polar::{
     ArtifactProducedPayload, BinaryLinkedPayload, ContainerImageCreatedPayload, PackageRef,
     SbomGraphFragment,
 };
+use std::collections::BTreeSet;
 use tracing::{debug, trace, warn};
 
 fn string(s: impl Into<String>) -> GraphValue {
@@ -132,6 +133,49 @@ pub fn artifact_produced(p: ArtifactProducedPayload) -> Vec<GraphOp> {
         ));
     }
     ops
+}
+
+/// What an SBOM's tree left out, each named in the tree's `gaps`: the root has no entry of its own in the tree, so
+/// what it depends on directly is not known.
+pub const NO_ROOT_ENTRY: &str = "no-root-entry";
+/// A component the SBOM lists has no purl: it is no package, and the extraction left out its edges.
+pub const COMPONENTS_WITHOUT_PURL: &str = "components-without-purl";
+/// A dependency edge names something that is not a purl, and is not in the tree.
+pub const REFS_NOT_PURLS: &str = "refs-not-purls";
+
+/// The version of the form a tree's digest is taken over. A change to the form is a new version, so that one digest
+/// never has two meanings.
+const TREE_FORM: &str = "polar.dependency-tree/1";
+
+/// The dependency tree one SBOM asserts: its own word on what its root depends on, apart from every other SBOM's, so
+/// two builds' trees can be diffed (Blitz's risk-gradients.md, slice 2).
+///
+/// It is content-addressed. The digest is a sha256 over the canonical form, the JSON of
+/// `[TREE_FORM, root, complete, gaps, packages, pairs]`, each set sorted and without repeats, so the same tree is
+/// one digest whatever order the SBOM gave it in, and an unchanged tree is one node whichever builds assert it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertedTree {
+    /// `sha256:` and the hex of the canonical form's sha256.
+    pub digest: String,
+    /// The purl of the package the SBOM describes.
+    pub root: String,
+    /// Nothing the SBOM said was left out: `gaps` is empty.
+    pub complete: bool,
+    /// What was left out ([`NO_ROOT_ENTRY`], [`COMPONENTS_WITHOUT_PURL`], [`REFS_NOT_PURLS`]).
+    pub gaps: BTreeSet<&'static str>,
+    /// Every package in the tree but its root: the components, and both ends of every pair.
+    pub packages: BTreeSet<String>,
+    /// Every (from, to) dependency, between purls.
+    pub pairs: BTreeSet<(String, String)>,
+    /// The packages the root depends on directly. `None` when the tree is incomplete: not known, rather than none.
+    pub direct: Option<BTreeSet<String>>,
+}
+
+/// The tree an SBOM asserts, or none when it names no root: trees are compared by their root, and a tree with none
+/// could not be. The SBOM's packages are written all the same.
+pub fn asserted_tree(fragment: &SbomGraphFragment) -> Option<AssertedTree> {
+    let _ = fragment;
+    unimplemented!("slice 2b: the tests come first")
 }
 
 /// An SBOM and the dependency graph it describes.
@@ -431,4 +475,410 @@ pub fn container_image_created(p: ContainerImageCreatedPayload) -> Vec<GraphOp> 
         p.config_digest,
     );
     ops
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polar::DependencyEdge;
+    use polar::graph::controller::compile_graph_op;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+
+    const ROOT: &str = "pkg:cargo/polar@1.0.0";
+    const ITOA: &str = "pkg:cargo/itoa@1.0.18";
+    const RYU: &str = "pkg:cargo/ryu@1.0.20";
+    const SERDE: &str = "pkg:cargo/serde@1.0.228";
+
+    fn package(purl: &str) -> PackageRef {
+        PackageRef {
+            purl: purl.into(),
+            name: String::new(),
+            version: String::new(),
+            component_type: "library".into(),
+            license: None,
+            source: None,
+        }
+    }
+
+    /// An SBOM's fragment: its root, its components, and its tree from (from, to) pairs, one entry per `from` in the
+    /// order first given, a pair given twice listed twice.
+    fn sbom(
+        hash: &str,
+        root: Option<&str>,
+        components: &[&str],
+        pairs: &[(&str, &str)],
+    ) -> SbomGraphFragment {
+        let mut edges: Vec<DependencyEdge> = vec![];
+        for &(from, to) in pairs {
+            match edges.iter_mut().find(|e| e.from_ref == from) {
+                Some(entry) => entry.to_refs.push(to.into()),
+                None => edges.push(DependencyEdge {
+                    from_ref: from.into(),
+                    to_refs: vec![to.into()],
+                }),
+            }
+        }
+        SbomGraphFragment {
+            artifact_content_hash: hash.into(),
+            filename: format!("{hash}.cdx.json"),
+            root: root.map(package),
+            components: components.iter().map(|c| package(c)).collect(),
+            edges,
+        }
+    }
+
+    fn digest(fragment: &SbomGraphFragment) -> String {
+        asserted_tree(fragment).expect("a tree").digest
+    }
+
+    /// The INCLUDES rows written: each package's purl and whether the root depends on it directly (`None`: not known).
+    fn includes(ops: &[GraphOp]) -> BTreeMap<String, Option<bool>> {
+        let mut rows = BTreeMap::new();
+        for op in ops {
+            let GraphOp::RawMergeWrite { cypher, params } = op else {
+                continue;
+            };
+            if !cypher.contains(rel::INCLUDES) {
+                continue;
+            }
+            let Some((_, BoltType::List(list))) = params.iter().find(|(k, _)| k == "rows") else {
+                panic!("INCLUDES without rows: {cypher}");
+            };
+            for row in &list.value {
+                let BoltType::Map(row) = row else {
+                    panic!("a row that is not a map: {row:?}");
+                };
+                let Some(BoltType::String(purl)) = row.value.get("purl") else {
+                    panic!("a row without a purl: {row:?}");
+                };
+                let direct = match row.value.get("direct") {
+                    Some(BoltType::Boolean(b)) => Some(b.value),
+                    Some(BoltType::Null(_)) | None => None,
+                    other => panic!("direct is {other:?}"),
+                };
+                assert!(
+                    rows.insert(purl.value.clone(), direct).is_none(),
+                    "{} included twice",
+                    purl.value
+                );
+            }
+        }
+        rows
+    }
+
+    /// The DependencyTree node written, by its props.
+    fn tree_node(ops: &[GraphOp]) -> Option<BTreeMap<String, GraphValue>> {
+        ops.iter().find_map(|op| match op {
+            GraphOp::UpsertNode { key, props } if key.identity().labels == ["DependencyTree"] => {
+                Some(
+                    props
+                        .iter()
+                        .map(|Property(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                )
+            }
+            _ => None,
+        })
+    }
+
+    fn strings(xs: &[&str]) -> GraphValue {
+        GraphValue::List(xs.iter().map(|x| string(*x)).collect())
+    }
+
+    #[test]
+    fn a_complete_tree_is_asserted_and_includes_each_package_once() {
+        let fragment = sbom(
+            "sha256:sbom",
+            Some(ROOT),
+            &[ITOA, RYU, SERDE, ITOA],
+            &[(ROOT, ITOA), (ROOT, RYU), (ITOA, SERDE), (ITOA, SERDE)],
+        );
+        let tree = asserted_tree(&fragment).unwrap();
+        assert!(tree.complete && tree.gaps.is_empty(), "{tree:?}");
+        assert_eq!(tree.root, ROOT);
+        assert_eq!(
+            tree.direct,
+            Some([ITOA, RYU].iter().map(|p| p.to_string()).collect())
+        );
+        assert!(tree.digest.starts_with("sha256:") && tree.digest.len() == 7 + 64);
+
+        let ops = sbom_analyzed(fragment);
+        let node = tree_node(&ops).expect("no DependencyTree written");
+        assert_eq!(node["root"], string(ROOT));
+        assert_eq!(node["complete"], GraphValue::Bool(true));
+        assert_eq!(node["gaps"], GraphValue::List(vec![]));
+        // Sorted by (from, to), the two lists aligned: (itoa, serde), (polar, itoa), (polar, ryu).
+        assert_eq!(node["edges_from"], strings(&[ITOA, ROOT, ROOT]));
+        assert_eq!(node["edges_to"], strings(&[SERDE, ITOA, RYU]));
+        assert_eq!(
+            includes(&ops),
+            BTreeMap::from([
+                (ITOA.to_string(), Some(true)),
+                (RYU.to_string(), Some(true)),
+                (SERDE.to_string(), Some(false)),
+            ])
+        );
+        let asserts = ops.iter().any(|op| {
+            matches!(op, GraphOp::EnsureEdge { from, rel_type, to, .. }
+                if from.identity().labels == ["Sbom"]
+                    && rel_type == rel::ASSERTS
+                    && to.identity().labels == ["DependencyTree"])
+        });
+        assert!(asserts, "no (Sbom)-[:ASSERTS]->(DependencyTree)");
+        for op in &ops {
+            compile_graph_op(op).unwrap_or_else(|e| panic!("the controller refuses {op:?}: {e}"));
+        }
+    }
+
+    /// The tree is each build's own word; the global `DEPENDS_ON` web, every SBOM's edges run together, is not written.
+    #[test]
+    fn a_projected_sbom_writes_no_depends_on() {
+        for fragment in [
+            sbom(
+                "sha256:a",
+                Some(ROOT),
+                &[ITOA, SERDE],
+                &[(ROOT, ITOA), (ITOA, SERDE)],
+            ),
+            sbom("sha256:b", Some(ROOT), &[ITOA, SERDE], &[(ITOA, SERDE)]),
+            sbom("sha256:c", None, &[ITOA, SERDE], &[(ITOA, SERDE)]),
+        ] {
+            let written = format!("{:?}", sbom_analyzed(fragment));
+            assert!(!written.contains("DEPENDS_ON"), "{written}");
+        }
+    }
+
+    #[test]
+    fn a_root_with_no_entry_asserts_an_incomplete_tree_and_no_flat_edges() {
+        let fragment = sbom("sha256:sbom", Some(ROOT), &[ITOA, RYU], &[(ITOA, RYU)]);
+        let tree = asserted_tree(&fragment).unwrap();
+        assert!(!tree.complete);
+        assert_eq!(tree.gaps, BTreeSet::from([NO_ROOT_ENTRY]));
+        assert_eq!(tree.direct, None, "direct is unknown, not none");
+
+        let ops = sbom_analyzed(fragment);
+        let node = tree_node(&ops).expect("no DependencyTree written");
+        assert_eq!(node["complete"], GraphValue::Bool(false));
+        assert_eq!(node["gaps"], strings(&[NO_ROOT_ENTRY]));
+        // The root is not linked to every component: it is linked to nothing, and the tree says why.
+        assert_eq!(node["edges_from"], strings(&[ITOA]));
+        assert_eq!(
+            includes(&ops),
+            BTreeMap::from([(ITOA.to_string(), None), (RYU.to_string(), None)])
+        );
+    }
+
+    #[test]
+    fn what_an_sbom_leaves_out_is_named_in_its_trees_gaps() {
+        let fragment = sbom(
+            "sha256:sbom",
+            Some(ROOT),
+            &[ITOA, ""],
+            &[(ROOT, ITOA), (ROOT, "path+file:///work/vendored#0.1.0")],
+        );
+        let tree = asserted_tree(&fragment).unwrap();
+        assert!(!tree.complete);
+        assert_eq!(
+            tree.gaps,
+            BTreeSet::from([COMPONENTS_WITHOUT_PURL, REFS_NOT_PURLS])
+        );
+        assert_eq!(tree.direct, None);
+        assert_eq!(tree.packages, BTreeSet::from([ITOA.to_string()]));
+    }
+
+    /// A root that depends on nothing has no entry (the extraction leaves out an entry with nothing in it), and the
+    /// tree is just the root: complete, not a gap.
+    #[test]
+    fn a_root_with_nothing_to_depend_on_is_a_complete_tree() {
+        let fragment = sbom("sha256:sbom", Some(ROOT), &[], &[]);
+        let tree = asserted_tree(&fragment).unwrap();
+        assert!(tree.complete && tree.packages.is_empty(), "{tree:?}");
+        assert_eq!(tree.direct, Some(BTreeSet::new()));
+        let ops = sbom_analyzed(fragment);
+        assert!(tree_node(&ops).is_some());
+        assert!(includes(&ops).is_empty());
+    }
+
+    #[test]
+    fn an_sbom_with_no_root_asserts_no_tree() {
+        for root in [None, Some(""), Some("path+file:///work/polar#0.1.0")] {
+            let fragment = sbom("sha256:sbom", root, &[ITOA], &[]);
+            assert_eq!(asserted_tree(&fragment), None, "root {root:?}");
+            let written = format!("{:?}", sbom_analyzed(fragment));
+            assert!(
+                !written.contains("DependencyTree"),
+                "root {root:?}: {written}"
+            );
+            assert!(
+                written.contains(ITOA),
+                "its packages are written all the same"
+            );
+        }
+    }
+
+    /// A redelivered event writes nothing new: the same tree, and every write a MERGE on identity.
+    #[test]
+    fn a_redelivered_sbom_asserts_the_same_tree_and_creates_nothing() {
+        let fragment = || {
+            sbom(
+                "sha256:sbom",
+                Some(ROOT),
+                &[ITOA, RYU],
+                &[(ROOT, ITOA), (ITOA, RYU)],
+            )
+        };
+        assert_eq!(asserted_tree(&fragment()), asserted_tree(&fragment()));
+        // Row maps are HashMaps, so a raw write is compared by its Cypher; the others by all they hold.
+        let shape = |ops: Vec<GraphOp>| -> Vec<String> {
+            ops.iter()
+                .map(|op| match op {
+                    GraphOp::RawMergeWrite { cypher, .. } => {
+                        assert!(!cypher.contains("CREATE"), "{cypher}");
+                        cypher.clone()
+                    }
+                    GraphOp::UpsertNode { .. } | GraphOp::EnsureEdge { .. } => format!("{op:?}"),
+                    other => panic!("not a MERGE on identity: {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            shape(sbom_analyzed(fragment())),
+            shape(sbom_analyzed(fragment()))
+        );
+    }
+
+    #[test]
+    fn each_change_to_a_tree_changes_its_digest() {
+        let base = sbom(
+            "sha256:sbom",
+            Some(ROOT),
+            &[ITOA, RYU],
+            &[(ROOT, ITOA), (ITOA, RYU)],
+        );
+        let bumped = "pkg:cargo/ryu@1.0.21";
+        let trees = [
+            base.clone(),
+            // A dependency moved: ryu is the root's now, not itoa's.
+            sbom(
+                "sha256:sbom",
+                Some(ROOT),
+                &[ITOA, RYU],
+                &[(ROOT, ITOA), (ROOT, RYU)],
+            ),
+            // A version bumped.
+            sbom(
+                "sha256:sbom",
+                Some(ROOT),
+                &[ITOA, bumped],
+                &[(ROOT, ITOA), (ITOA, bumped)],
+            ),
+            // The same pairs, another root.
+            sbom(
+                "sha256:sbom",
+                Some("pkg:cargo/other@1.0.0"),
+                &[ITOA, RYU],
+                &[(ROOT, ITOA), (ITOA, RYU)],
+            ),
+            // A component no edge names.
+            sbom(
+                "sha256:sbom",
+                Some(ROOT),
+                &[ITOA, RYU, SERDE],
+                &[(ROOT, ITOA), (ITOA, RYU)],
+            ),
+            // The root's entry gone: incomplete.
+            sbom("sha256:sbom", Some(ROOT), &[ITOA, RYU], &[(ITOA, RYU)]),
+        ];
+        let digests: BTreeSet<String> = trees.iter().map(digest).collect();
+        assert_eq!(digests.len(), trees.len(), "{digests:?}");
+        // What the SBOM file is (its hash, its name) is not the tree.
+        let mut renamed = base.clone();
+        renamed.artifact_content_hash = "sha256:other".into();
+        renamed.filename = "other.cdx.json".into();
+        assert_eq!(digest(&base), digest(&renamed));
+    }
+
+    /// Package `i` of a small alphabet; 0 is the root.
+    fn purl(i: usize) -> String {
+        format!("pkg:cargo/p{i}@1.0.0")
+    }
+
+    /// A fragment from indices, each pair its own entry, in the order given.
+    fn indexed(components: &[usize], pairs: &[(usize, usize)]) -> SbomGraphFragment {
+        SbomGraphFragment {
+            artifact_content_hash: "sha256:sbom".into(),
+            filename: "sbom.cdx.json".into(),
+            root: Some(package(&purl(0))),
+            components: components.iter().map(|&i| package(&purl(i))).collect(),
+            edges: pairs
+                .iter()
+                .map(|&(from, to)| DependencyEdge {
+                    from_ref: purl(from),
+                    to_refs: vec![purl(to)],
+                })
+                .collect(),
+        }
+    }
+
+    /// What a tree is, computed apart from `asserted_tree`: its pairs, its packages but the root, and whether the
+    /// root's direct dependencies are known.
+    fn model(
+        components: &[usize],
+        pairs: &[(usize, usize)],
+    ) -> (BTreeSet<(usize, usize)>, BTreeSet<usize>, bool) {
+        let pairs: BTreeSet<_> = pairs.iter().copied().collect();
+        let packages: BTreeSet<usize> = components
+            .iter()
+            .copied()
+            .chain(pairs.iter().flat_map(|&(a, b)| [a, b]))
+            .filter(|&p| p != 0)
+            .collect();
+        let known = packages.is_empty() || pairs.iter().any(|&(from, _)| from == 0);
+        (pairs, packages, known)
+    }
+
+    proptest! {
+        /// The same tree is one digest, whatever order its entries, their dependencies and its components come in,
+        /// however they are grouped into entries, and however often each is repeated.
+        #[test]
+        fn a_tree_has_one_digest_whatever_its_order(
+            (pairs, shuffled) in proptest::collection::vec((0usize..6, 1usize..6), 0..16)
+                .prop_flat_map(|p| (Just(p.clone()), Just(p).prop_shuffle())),
+            components in proptest::collection::vec(1usize..6, 0..6),
+        ) {
+            // One entry per `from`, as a generator writes it.
+            let mut grouped: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for &(from, to) in &pairs {
+                grouped.entry(from).or_default().push(to);
+            }
+            let mut once = indexed(&components, &[]);
+            once.edges = grouped
+                .into_iter()
+                .map(|(from, to)| DependencyEdge {
+                    from_ref: purl(from),
+                    to_refs: to.into_iter().map(purl).collect(),
+                })
+                .collect();
+            let twice: Vec<_> = shuffled.iter().chain(shuffled.iter().rev()).copied().collect();
+            let mut repeated: Vec<_> = components.iter().rev().copied().collect();
+            repeated.extend(&components);
+            prop_assert_eq!(digest(&once), digest(&indexed(&repeated, &twice)));
+        }
+
+        /// Two trees have one digest exactly when they are the same tree: the same pairs, packages and knowledge
+        /// of the root's direct dependencies.
+        #[test]
+        fn trees_that_differ_have_different_digests(
+            a_pairs in proptest::collection::vec((0usize..4, 1usize..4), 0..5),
+            a_components in proptest::collection::vec(1usize..4, 0..3),
+            b_pairs in proptest::collection::vec((0usize..4, 1usize..4), 0..5),
+            b_components in proptest::collection::vec(1usize..4, 0..3),
+        ) {
+            let same = model(&a_components, &a_pairs) == model(&b_components, &b_pairs);
+            let a = digest(&indexed(&a_components, &a_pairs));
+            let b = digest(&indexed(&b_components, &b_pairs));
+            prop_assert_eq!(a == b, same, "{} {}", a, b);
+        }
+    }
 }

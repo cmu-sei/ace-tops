@@ -31,8 +31,8 @@ use build_processor::project::transaction;
 use neo4rs::{Graph, Query};
 use polar::graph::controller::compile_graph_op;
 use polar::{
-    ContainerImageCreatedPayload, DiscoverySourceRef, OciLayerEntry, PackageRef, ProvenanceEvent,
-    SbomGraphFragment, SecurityAdvisoryFoundPayload,
+    ContainerImageCreatedPayload, DependencyEdge, DiscoverySourceRef, OciLayerEntry, PackageRef,
+    ProvenanceEvent, SbomGraphFragment, SecurityAdvisoryFoundPayload,
 };
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::neo4j::Neo4j;
@@ -412,5 +412,165 @@ async fn projections_are_idempotent_and_keep_layer_identities_apart() {
         count(&graph, "MATCH (j:BuildJob {build_id: 'quiet'}) WHERE j.lost_at IS NULL AND j.lost_by IS NULL AND j.lost_after_secs IS NULL RETURN count(j) AS n").await,
         1,
         "a build heard from is still judged lost"
+    );
+}
+
+/// Each SBOM asserts its own dependency tree (Blitz's risk-gradients.md, slice 2). An unchanged tree is one node,
+/// whichever SBOMs assert it and in whatever order they list it; a redelivered SBOM adds nothing; and nothing is
+/// written into a global `DEPENDS_ON` web, from the root or from the tree.
+#[tokio::test]
+async fn an_unchanged_tree_is_one_node_and_a_redelivery_adds_nothing() {
+    let container = Neo4j::default()
+        .with_version("5.26.2")
+        .start()
+        .await
+        .unwrap();
+    let config = neo4rs::ConfigBuilder::new()
+        .uri(format!(
+            "bolt://{}:{}",
+            container.get_host().await.unwrap(),
+            container.image().bolt_port_ipv4().unwrap()
+        ))
+        .user(container.image().user().unwrap())
+        .password(container.image().password().unwrap())
+        .build()
+        .unwrap();
+    let graph = Graph::connect(config).unwrap();
+
+    const ROOT: &str = "pkg:cargo/polar@1.0.0";
+    const ITOA: &str = "pkg:cargo/itoa@1.0.18";
+    const RYU: &str = "pkg:cargo/ryu@1.0.20";
+    const SERDE: &str = "pkg:cargo/serde@1.0.228";
+    let package = |purl: &str| PackageRef {
+        purl: purl.into(),
+        name: String::new(),
+        version: String::new(),
+        component_type: "library".into(),
+        license: None,
+        source: None,
+    };
+    let sbom = |hash: &str, root: &str, components: &[&str], edges: Vec<(&str, Vec<&str>)>| {
+        ProvenanceEvent::SbomAnalyzed(SbomGraphFragment {
+            artifact_content_hash: hash.into(),
+            filename: format!("{hash}.cdx.json"),
+            root: Some(package(root)),
+            components: components.iter().map(|c| package(*c)).collect(),
+            edges: edges
+                .into_iter()
+                .map(|(from, to)| DependencyEdge {
+                    from_ref: from.into(),
+                    to_refs: to.into_iter().map(Into::into).collect(),
+                })
+                .collect(),
+        })
+    };
+    let polar = |hash: &str, components: &[&str]| {
+        sbom(
+            hash,
+            ROOT,
+            components,
+            vec![(ROOT, vec![ITOA, RYU]), (ITOA, vec![SERDE])],
+        )
+    };
+
+    // One SBOM delivered twice, and another build's SBOM of the same tree, listed in another order.
+    apply(
+        &graph,
+        polar("sha256:one", &[ITOA, RYU, SERDE]),
+        "2026-11-11T00:00:00Z",
+    )
+    .await;
+    apply(
+        &graph,
+        polar("sha256:one", &[ITOA, RYU, SERDE]),
+        "2026-11-11T00:00:01Z",
+    )
+    .await;
+    apply(
+        &graph,
+        polar("sha256:two", &[SERDE, RYU, ITOA]),
+        "2026-11-11T01:00:00Z",
+    )
+    .await;
+
+    assert_eq!(
+        count(&graph, "MATCH (t:DependencyTree) RETURN count(t) AS n").await,
+        1
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:Sbom)-[r:ASSERTS]->(:DependencyTree) RETURN count(r) AS n"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:DependencyTree)-[r:INCLUDES]->(:Package) RETURN count(r) AS n"
+        )
+        .await,
+        3
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:DependencyTree)-[r:INCLUDES {direct: true}]->(:Package) RETURN count(r) AS n"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (t:DependencyTree {complete: true}) \
+             WHERE size(t.edges_from) = 3 AND size(t.edges_to) = 3 AND size(t.gaps) = 0 \
+             RETURN count(t) AS n"
+        )
+        .await,
+        1
+    );
+    // The pairs read back from the two aligned lists, as a reader takes them.
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (t:DependencyTree) UNWIND range(0, size(t.edges_from) - 1) AS i \
+             WITH t.edges_from[i] AS from, t.edges_to[i] AS to \
+             WHERE (from = 'pkg:cargo/polar@1.0.0' AND to IN ['pkg:cargo/itoa@1.0.18', 'pkg:cargo/ryu@1.0.20']) \
+                OR (from = 'pkg:cargo/itoa@1.0.18' AND to = 'pkg:cargo/serde@1.0.228') \
+             RETURN count(*) AS n"
+        )
+        .await,
+        3
+    );
+
+    // A root with no entry of its own: an incomplete tree, whose direct dependencies are unknown, and no flat edges.
+    let other = "pkg:cargo/other@1.0.0";
+    apply(
+        &graph,
+        sbom(
+            "sha256:three",
+            other,
+            &[ITOA, SERDE],
+            vec![(ITOA, vec![SERDE])],
+        ),
+        "2026-11-11T02:00:00Z",
+    )
+    .await;
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:Sbom {artifact_content_hash: 'sha256:three'})-[:ASSERTS]->(t:DependencyTree {complete: false}) \
+             WHERE t.gaps = ['no-root-entry'] \
+             MATCH (t)-[r:INCLUDES]->(:Package) WHERE r.direct IS NULL \
+             RETURN count(r) AS n"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(&graph, "MATCH ()-[r:DEPENDS_ON]->() RETURN count(r) AS n").await,
+        0
     );
 }
