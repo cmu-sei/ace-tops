@@ -635,6 +635,7 @@ mod tests {
             privileges: Privileges::default(),
             credential: None,
             locks: vec![],
+            facts: vec![],
         }]
     }
 

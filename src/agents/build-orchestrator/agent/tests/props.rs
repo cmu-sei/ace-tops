@@ -53,9 +53,13 @@ fn mapping() -> impl Strategy<Value = Mapping> {
         proptest::collection::vec("[A-Z][A-Z_]{0,10}", 0..4),
         proptest::option::of("[a-z0-9-]{1,12}"),
         proptest::collection::vec("([a-z0-9_-]{1,8}/){0,3}Cargo\\.lock", 0..3),
+        proptest::collection::btree_set(
+            "[a-z][a-z0-9-]{0,6}(\\.[a-z][a-z0-9-]{0,6}){0,2}/[a-z][a-z0-9-]{0,10}",
+            0..3,
+        ),
     )
         .prop_map(
-            |(host, path, digest, command, root, escalate, caps, credential, locks)| {
+            |(host, path, digest, command, root, escalate, caps, credential, locks, facts)| {
                 let url = format!("https://{host}.example/{}", path.join("/"));
                 Mapping {
                     repo: RepoId::from_url(&url),
@@ -69,6 +73,7 @@ fn mapping() -> impl Strategy<Value = Mapping> {
                     },
                     credential,
                     locks,
+                    facts: facts.into_iter().collect(),
                 }
             },
         )
@@ -105,6 +110,9 @@ fn written(m: &Mapping) -> Value {
     }
     if let Some(credential) = &m.credential {
         entry["credential"] = json!(credential);
+    }
+    if !m.facts.is_empty() {
+        entry["facts"] = json!(m.facts);
     }
     entry
 }
@@ -170,6 +178,10 @@ fn spoil(entry: &mut Value, how: usize) -> &'static str {
         11 => {
             object.insert("locks".into(), json!([format!("../{MARK}/Cargo.lock")]));
             "`locks`"
+        }
+        12 => {
+            object.insert("facts".into(), json!([format!("{MARK}/Upper")]));
+            "`facts`"
         }
         _ => {
             object.insert(format!("{MARK}-Key"), json!(1));
@@ -431,7 +443,7 @@ proptest! {
     /// problem echoes the value.
     #[test]
     fn a_spoiled_entry_is_named_and_never_echoed(all in mappings().prop_filter("one at least", |a| !a.is_empty()),
-                                                 which in any::<prop::sample::Index>(), how in 0usize..13) {
+                                                 which in any::<prop::sample::Index>(), how in 0usize..14) {
         let i = which.index(all.len());
         let mut written = body(&all);
         let field = spoil(&mut written["repositories"][i], how);

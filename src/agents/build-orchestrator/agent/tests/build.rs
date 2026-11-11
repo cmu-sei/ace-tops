@@ -226,6 +226,7 @@ fn mapping_with(command: Option<Vec<String>>, credential: Option<&str>) -> Mappi
         },
         credential: credential.map(str::to_string),
         locks: vec![],
+        facts: vec![],
     }
 }
 

@@ -64,6 +64,8 @@ pub enum NotRelayed {
     /// A fact whose name the build's mapping does not list, or one the orchestrator cannot tell the mapping of.
     #[error("the report is a fact its pipeline's mapping does not allow")]
     FactNotAllowed,
+    #[error("the report's {0} is not a purl (`pkg:` and what it names)")]
+    NotAPurl(&'static str),
 }
 
 /// What one build has reported so far, and what it may still.
@@ -74,6 +76,8 @@ pub struct Relay {
     reports: usize,
     bytes: u64,
     refused: usize,
+    /// The names of the facts the build's mapping allows it to report.
+    facts: Vec<String>,
 }
 
 impl Relay {
@@ -85,7 +89,14 @@ impl Relay {
             reports: 0,
             bytes: 0,
             refused: 0,
+            facts: Vec::new(),
         }
+    }
+
+    /// The relay allowing the facts the build's mapping names (its `facts`); with none, every fact is refused.
+    pub fn with_facts(mut self, facts: Vec<String>) -> Self {
+        self.facts = facts;
+        self
     }
 
     /// Counts one report line of `len` bytes against the build's bounds, before it is read: a build past them has every

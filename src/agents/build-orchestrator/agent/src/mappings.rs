@@ -49,6 +49,9 @@ pub const MAX_WORD: usize = 4096;
 pub const MAX_LOCKS: usize = 16;
 /// Most capabilities a mapping adds: more than Linux has.
 pub const MAX_CAPABILITIES: usize = 64;
+/// Most facts a mapping allows, and the longest name.
+pub const MAX_FACTS: usize = 64;
+pub const MAX_FACT: usize = 128;
 
 const FIELDS: [&str; 6] = [
     "url",
@@ -88,6 +91,8 @@ pub struct Mapping {
     pub credential: Option<String>,
     /// The Cargo locks in its tree whose dependencies its builds are given, by digest.
     pub locks: Vec<String>,
+    /// The names of the facts its builds may report (`polar.image/found-at`): a fact named otherwise is refused.
+    pub facts: Vec<String>,
 }
 
 fn validate(body: &Value) -> Result<(), Vec<String>> {
@@ -356,6 +361,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             privileges,
             credential,
             locks,
+            facts: Vec::new(),
         })
     } else {
         Err(problems)
@@ -490,6 +496,55 @@ mod tests {
             assert!(
                 problems.iter().any(|p| p.contains("entry 0: `locks`")),
                 "{bad}: {problems:?}"
+            );
+        }
+    }
+
+    /// A mapping names the facts its builds may report, each a namespace and a name; a name of another form, a repeat, or
+    /// a list too long is refused, naming the field and never the name.
+    #[test]
+    fn a_mapping_names_the_facts_its_builds_may_report() {
+        let parsed = parse(&json!({"repositories": [
+            {"url": "https://git.example.org/a/b.git", "pipeline_image": image(),
+             "facts": ["polar.image/found-at", "polar.nix/realised"]}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            parsed[0].facts,
+            ["polar.image/found-at", "polar.nix/realised"]
+        );
+        let none = parse(&json!({"repositories": [
+            {"url": "https://git.example.org/a/b.git", "pipeline_image": image()}
+        ]}))
+        .unwrap();
+        assert!(none[0].facts.is_empty(), "left out, no fact is allowed");
+        let too_long = format!("a/{}", "b".repeat(MAX_FACT));
+        let many: Vec<String> = (0..=MAX_FACTS)
+            .map(|i| format!("polar.test/f{i}"))
+            .collect();
+        for bad in [
+            json!(["Polar/Hidden"]),
+            json!(["noslash"]),
+            json!(["a/b/c"]),
+            json!(["/name"]),
+            json!(["space/a name"]),
+            json!([""]),
+            json!([too_long]),
+            json!(["polar.x/a", "polar.x/a"]),
+            json!(many),
+            json!("polar.x/a"),
+        ] {
+            let problems = parse(&json!({"repositories": [
+                {"url": "https://git.example.org/a/b.git", "pipeline_image": image(), "facts": bad}
+            ]}))
+            .unwrap_err();
+            assert!(
+                problems.iter().any(|p| p.contains("entry 0: `facts`")),
+                "{bad}: {problems:?}"
+            );
+            assert!(
+                !problems.iter().any(|p| p.contains("Hidden")),
+                "{problems:?}"
             );
         }
     }

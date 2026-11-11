@@ -176,6 +176,8 @@ pub fn project(
         ProvenanceEvent::SbomAnalyzed(fragment) => outputs::sbom_analyzed(fragment),
         ProvenanceEvent::BinaryLinked(p) => outputs::binary_linked(p, observed_at),
         ProvenanceEvent::ContainerImageCreated(p) => outputs::container_image_created(p),
+        // Written in S1c.
+        ProvenanceEvent::FactReported(_) => vec![],
 
         // ── Findings ──────────────────────────────────────────────────────────
         ProvenanceEvent::SecurityAdvisoryFound(p) => findings::security_advisory(p, observed_at),
@@ -252,6 +254,7 @@ pub fn whose_word(event: &ProvenanceEvent) -> Word {
         | ProvenanceEvent::SbomAnalyzed(_)
         | ProvenanceEvent::BinaryLinked(_)
         | ProvenanceEvent::ContainerImageCreated(_)
+        | ProvenanceEvent::FactReported(_)
         | ProvenanceEvent::OCIArtifactCreated { .. }
         | ProvenanceEvent::SecurityAdvisoryFound(_)
         | ProvenanceEvent::PackageStatusFound(_)
@@ -285,6 +288,7 @@ pub fn build_id_of(event: &ProvenanceEvent) -> Option<&str> {
         | ProvenanceEvent::ExecutionCancelled { build_id, .. } => Some(build_id),
         ProvenanceEvent::SecurityAdvisoryFound(p) => Some(&p.build_id),
         ProvenanceEvent::PackageStatusFound(p) => Some(&p.build_id),
+        ProvenanceEvent::FactReported(p) => Some(&p.build_id),
         ProvenanceEvent::ArtifactProduced(p) => p.build_id.as_deref(),
         ProvenanceEvent::OCIArtifactCreated { build_id, .. } => build_id.as_deref(),
         ProvenanceEvent::SbomAnalyzed(_)
