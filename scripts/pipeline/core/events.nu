@@ -263,3 +263,13 @@ export def emit-binary-linked [
         binding_digest: (if ($binding_digest | is-not-empty) { $binding_digest })
     }
 }
+
+# A fact a build's tool found, about a thing the graph knows by its key (`fact_reported`). Written in S2a.
+export def emit-fact [
+    subject: record
+    name: string
+    tool: string
+    tool_version: string
+    --object: record
+    --value: string
+]: nothing -> nothing { }

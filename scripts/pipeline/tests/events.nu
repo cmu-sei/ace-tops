@@ -70,6 +70,52 @@ def main [] {
                 assert equal ($without.stdout | str trim | str substring ($REPORT_PREFIX | str length).. | from json | get binding_digest) null
             }
         }
+        {
+            # The `fact_reported` kind (build-orchestrator.md): a subject, a namespaced name, maybe an object and a value, and
+            # the tool that found it. A ref is a label and a key; an object or a value left out is null, which the grammar takes.
+            name: "a fact is reported with its subject, name, tool and version, and its object and value when it has them"
+            body: {
+                let reported = {|args: string|
+                    ^$nu.current-exe --no-config-file --commands $"use '($EVENTS)' emit-fact; emit-fact ($args)"
+                    | complete
+                }
+                let bare = (
+                    do $reported "{label: Binary, key: \"sha256:b\"} polar.nix/realised polar-pipeline/ci.nu 3.0.0 --value built"
+                )
+                assert equal $bare.exit_code 0 $bare.stderr
+                assert equal (
+                    $bare.stdout
+                    | str trim
+                    | str substring ($REPORT_PREFIX | str length)..
+                    | from json
+                ) {
+                    type: "fact_reported", subject: { label: "Binary", key: "sha256:b" }, name: "polar.nix/realised",
+                    object: null, value: "built", tool: "polar-pipeline/ci.nu", tool_version: "3.0.0"
+                }
+                let found = (
+                    do $reported "{label: Binary, key: \"sha256:b\"} polar.image/found-at oci.nu 3.0.0 --object {label: OCILayerDiffId, key: \"sha256:l\"} --value /nix/store/x/bin/a"
+                )
+                assert equal $found.exit_code 0 $found.stderr
+                let event = (
+                    $found.stdout
+                    | str trim
+                    | str substring ($REPORT_PREFIX | str length)..
+                    | from json
+                )
+                assert equal $event.object { label: "OCILayerDiffId", key: "sha256:l" }
+                assert equal $event.value "/nix/store/x/bin/a"
+                let nothing = (
+                    do $reported "{label: Package, key: \"pkg:cargo/a@1\"} polar.x/y t 1"
+                )
+                assert equal (
+                    $nothing.stdout
+                    | str trim
+                    | str substring ($REPORT_PREFIX | str length)..
+                    | from json
+                    | select object value
+                ) { object: null, value: null }
+            }
+        }
     ]
 
     let results = ($tests | each {|t|
