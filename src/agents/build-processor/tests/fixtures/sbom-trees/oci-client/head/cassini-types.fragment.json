@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:3a0a0b6cafe05361860cb234d2b4e585c3bbf5c0e56fc46c023d21447084b2c6",
+  "artifact_content_hash": "sha256:85ce2b92a3c1ec915ceeb276475141df51a1cae19e66c2eaa9527d6b006a4c63",
   "root": {
     "purl": "pkg:cargo/cassini-types@1.0.0?download_url=file://.",
     "name": "cassini-types",

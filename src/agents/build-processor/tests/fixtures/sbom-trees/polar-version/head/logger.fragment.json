@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:0a559c06e35d5ee037f076645497246eb5176f821cb43da94c1bc6fd2f435a88",
+  "artifact_content_hash": "sha256:d39f1c5a1edb808bb7d37dd67769b15d845b497cb494a1f5c118e4b6501df428",
   "root": {
     "purl": "pkg:cargo/logger@1.0.0?download_url=file://.",
     "name": "logger",

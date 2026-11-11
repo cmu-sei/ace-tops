@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:e232a1804e4de4ec5b35f1cb23605d91ac787ddd05d60b7b6f848e52d18f5477",
+  "artifact_content_hash": "sha256:4142c3ef4dee9bfb5f4265a1baa41cf348921812cb176a271a03c487ad62782c",
   "root": {
     "purl": "pkg:cargo/build-processor@1.0.0?download_url=file://.",
     "name": "build-processor",

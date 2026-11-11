@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:03660b9a88ac06bf91cead690eede3c8df8716587fa084ab31ba5be801d6618a",
+  "artifact_content_hash": "sha256:af9dffa66325c498a4772628f5e8267988c93783b6518f3caa849bed28ca037a",
   "root": {
     "purl": "pkg:cargo/git-repo-observer@1.0.0?download_url=file://.",
     "name": "git-repo-observer",

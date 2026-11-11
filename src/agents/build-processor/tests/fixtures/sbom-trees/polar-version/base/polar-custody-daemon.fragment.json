@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:c49c715936d9b69140706965e53eb0a44ab79663bee945d19de76ff06d238289",
+  "artifact_content_hash": "sha256:42cbdc9b17499b30740f0b8572935bf1b78de29b4ca838297bacfd1a14471885",
   "root": {
     "purl": "pkg:cargo/polar-custody-daemon@1.0.0?download_url=file://.",
     "name": "polar-custody-daemon",

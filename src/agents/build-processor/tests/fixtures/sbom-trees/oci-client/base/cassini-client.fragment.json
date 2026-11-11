@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:5b32985cc12a9e2b308e88b35fed063deef803507a8705a53ed7731526e22431",
+  "artifact_content_hash": "sha256:ff12adad55604c95e7763517ec40bbd2799075a2d0766282e27ed7ac5a3beaa0",
   "root": {
     "purl": "pkg:cargo/cassini-client@1.0.0?download_url=file://.",
     "name": "cassini-client",

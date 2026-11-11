@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:5288198677b52b4f4216d58017fc7c92eb7b2f3e1a1ce9e427f8492bfa487c94",
+  "artifact_content_hash": "sha256:0efd5910cd971bf5d0c452ee33441ff58b30fb4aa558d98edec3030e4b3bd43b",
   "root": {
     "purl": "pkg:cargo/cassini-c2@1.0.0?download_url=file://.",
     "name": "cassini-c2",

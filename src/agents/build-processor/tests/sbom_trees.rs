@@ -33,8 +33,8 @@
 //!   (git-repo-observer's: wiremock, through `polar-agent-builder/testing`, which dev-dependencies ask for; quinn,
 //!   rayon, pkcs5 and others, through features of crates outside its own tree). (B) reports every root that differs.
 //!
-//! The fixtures are made on the host, in ACE's dev shell, by `tests/fixtures/sbom-trees/make.nu`:
-//! `cargo test -p build-processor --test sbom_trees -- --ignored`.
+//! The fixtures are made on the host, in ACE's dev shell, by `tests/fixtures/sbom-trees/make.nu`. (A) runs with the
+//! suite; (B) with `cargo test -p build-processor --test sbom_trees -- --ignored`.
 
 use build_processor::project::outputs::{AssertedTree, asserted_tree};
 use polar::SbomGraphFragment;
@@ -170,7 +170,6 @@ fn said(doc: &Value) -> Said {
 
 /// (A): what each kept root's SBOM asserts, at both commits, is what its raw SBOM says.
 #[test]
-#[ignore = "needs the raw SBOMs (<root>.cdx.json), which tests/fixtures/sbom-trees/make.nu keeps from 2026-11-11: rerun it on the host"]
 fn an_asserted_tree_is_what_its_sbom_says_and_its_change_is_the_lock_files() {
     for pair in pairs() {
         let lock_added = strings(&pair.manifest["lock"]["added"]);

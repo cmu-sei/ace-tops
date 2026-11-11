@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:50a10c23291acf02db33b9b981aacb2bac517c7b5e270e813f0325ff7243f3ca",
+  "artifact_content_hash": "sha256:a06e93d4a516c49b3cb0b8ea4126ece627ffb6b94c0bb24b954302f09c72e96e",
   "root": {
     "purl": "pkg:cargo/gitlab-seed@1.0.0?download_url=file://.",
     "name": "gitlab-seed",

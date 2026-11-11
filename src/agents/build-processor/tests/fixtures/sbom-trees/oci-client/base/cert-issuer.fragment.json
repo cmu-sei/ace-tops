@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:1f66eddca19e8ed8e7d2d3bd3b80c86d01e081651c464422293f0b0ab8344447",
+  "artifact_content_hash": "sha256:354130bd2cccb65edc4e959034c9dbcea03ec3dced87b145a40052f45acf328d",
   "root": {
     "purl": "pkg:cargo/cert-issuer@1.0.0?download_url=file://.",
     "name": "cert-issuer",

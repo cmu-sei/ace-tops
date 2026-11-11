@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:71270541bed31791ceb43352f787f99c0a1b33cad921afc0fc16a3d80e075ab7",
+  "artifact_content_hash": "sha256:140728d829c13cfab3e0c59ae6f3a72c129c92720a5b952780dd72d48a03c01e",
   "root": {
     "purl": "pkg:cargo/cassini-broker@1.0.0?download_url=file://.",
     "name": "cassini-broker",

@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:896d6ea98ef0911ee932666773a051ca64da7af3ed38c455c79dfdffdc6a4890",
+  "artifact_content_hash": "sha256:317e83647415fc17d82e81eea738c366e756b5fc872e207a5e53edcaca637964",
   "root": {
     "purl": "pkg:cargo/attestation-agent@1.0.0?download_url=file://.",
     "name": "attestation-agent",

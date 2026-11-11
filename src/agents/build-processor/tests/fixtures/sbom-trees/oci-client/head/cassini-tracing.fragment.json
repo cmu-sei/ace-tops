@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:02cb577a3636f9cd04a55e267d7c0ed7de9821b9e34edecd9bcb4d4174935d24",
+  "artifact_content_hash": "sha256:d38f067a626c39e26700d3c6d8d0131b25c3d5ec20b054a04c936c6ea6d6d540",
   "root": {
     "purl": "pkg:cargo/cassini-tracing@1.0.0?download_url=file://.",
     "name": "cassini-tracing",

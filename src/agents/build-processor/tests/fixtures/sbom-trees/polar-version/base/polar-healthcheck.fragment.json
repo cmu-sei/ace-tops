@@ -1,5 +1,5 @@
 {
-  "artifact_content_hash": "sha256:d6ece0b0d4438c841899e5f14add1dc300f07fb131f0f571df031c516ceb6963",
+  "artifact_content_hash": "sha256:f8062fc747eb82ed079b786d65afe1c613373985d22583ce5b6ec15b3c519586",
   "root": {
     "purl": "pkg:cargo/polar-healthcheck@1.0.0?download_url=file://.",
     "name": "polar-healthcheck",
