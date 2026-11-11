@@ -125,7 +125,14 @@ pub enum Location {
     /// declares it, and Kubernetes is the trust base. It may do what `access` says and nothing else (the maintainer,
     /// 2026-11-07: a cluster operation's declaration binds what it may do), so a watch cannot delete, and what it may do
     /// is what the capability is computed from.
-    Cluster { access: &'static [Access] },
+    ///
+    /// `namespace` says where: the key, in the cluster's namespaces (`cluster.namespaces`), of the one namespace it acts
+    /// in, such as `builds`, and a request in any other is refused; or `None` for an operation not held to one namespace
+    /// (an object across the cluster, a watch across it, or the namespaces its capability's Roles are placed in).
+    Cluster {
+        access: &'static [Access],
+        namespace: Option<&'static str>,
+    },
 }
 
 /// What a request does to the Kubernetes API, as RBAC names it: a verb on a group's resource (`""` for the core group;
@@ -221,6 +228,9 @@ pub struct Target {
     /// What an object the request would create gives a pod of its node, each way out of a container by its name
     /// (`privileged`, `hostNetwork`, `hostPath`...): empty for anything else (`kubernetes::reaches_node`).
     pub reaches_node: Vec<&'static str>,
+    /// The namespace a request to the Kubernetes API acts in, by the cluster's name for it: `None` for one that acts in
+    /// none (an object across the cluster, a watch across it), and for any other protocol.
+    pub namespace: Option<String>,
 }
 
 /// Why a request is not allowed.
@@ -243,6 +253,13 @@ pub enum Denial {
     /// No Polar agent makes a pod that reaches its node, whatever it declares (docs/architecture/build-orchestrator.md, 5d).
     #[error("the object would run a pod with access to its node")]
     ReachesTheNode,
+    /// The operation names a namespace by its key, and the deployment does not say the cluster's name for it
+    /// (`POLAR_CLUSTER_NAMESPACES`).
+    #[error("the operation names a namespace the deployment does not name")]
+    NamespaceUnknown,
+    /// The operation names one namespace, and the request acts in another, or in none.
+    #[error("it acts outside the namespace its operation names")]
+    OutsideTheNamespace,
 }
 
 /// What [`judge`] decides.
@@ -255,14 +272,15 @@ pub enum Verdict {
     Deny(Denial),
 }
 
-/// Whether `operation` may go to `target`. `declared` is what the agent declared; `configured_host` is the host of the
-/// operation's variable as it is in force, if it has one and it is set; `chosen` is the credential the request names, or
-/// for [`Credential::ForHost`] the one bound to the host it first goes to.
+/// Whether `operation` may go to `target`. `declared` is what the agent declared; `configured` is what the operation's
+/// location names, as it is in force: for a configured operation the host of its variable, if it is set, and for a cluster
+/// operation that names a namespace the cluster's name for it, if the deployment says it; `chosen` is the credential the
+/// request names, or for [`Credential::ForHost`] the one bound to the host it first goes to.
 pub fn judge(
     operation: &OperationDecl,
     declared: &[OperationDecl],
     target: &Target,
-    configured_host: Option<&str>,
+    configured: Option<&str>,
     chosen: Option<&str>,
 ) -> Verdict {
     if !declared.contains(operation) {
@@ -273,7 +291,7 @@ pub fn judge(
             credential,
             variable: _,
         } => {
-            let Some(configured) = configured_host else {
+            let Some(configured) = configured else {
                 return Verdict::Deny(Denial::NotConfigured);
             };
             if !target.host.eq_ignore_ascii_case(configured) {
@@ -284,12 +302,21 @@ pub fn judge(
         Location::Bound { credential } => Some(credential),
         Location::Arbitrary => None,
         // It names nothing for the CryptoActor to give, and the token goes with it all the same.
-        Location::Cluster { access } => {
+        Location::Cluster { access, namespace } => {
             if !target.encrypted {
                 return Verdict::Deny(Denial::NotEncrypted);
             }
             if !target.access.is_some_and(|wanted| access.contains(&wanted)) {
                 return Verdict::Deny(Denial::AccessUndeclared);
+            }
+            // An operation held to one namespace acts there and nowhere else: not in another, and not across the cluster.
+            if namespace.is_some() {
+                let Some(name) = configured else {
+                    return Verdict::Deny(Denial::NamespaceUnknown);
+                };
+                if target.namespace.as_deref() != Some(name) {
+                    return Verdict::Deny(Denial::OutsideTheNamespace);
+                }
             }
             if !target.reaches_node.is_empty() {
                 return Verdict::Deny(Denial::ReachesTheNode);
@@ -335,6 +362,7 @@ mod tests {
             encrypted,
             access: None,
             reaches_node: Vec::new(),
+            namespace: None,
         }
     }
 
@@ -501,6 +529,7 @@ mod tests {
     fn a_request_to_the_cluster_names_no_credential_and_goes_only_encrypted() {
         const CLUSTER: OperationDecl = declared(Location::Cluster {
             access: &[WATCH_PODS],
+            namespace: None,
         });
         assert_eq!(
             judge(
@@ -530,6 +559,7 @@ mod tests {
     fn a_cluster_request_may_do_only_what_its_operation_declares() {
         const WATCHING: OperationDecl = declared(Location::Cluster {
             access: &[WATCH_PODS],
+            namespace: None,
         });
         for wanted in [
             Some(Access::new(Verb::List, "", "pods")),
@@ -560,6 +590,7 @@ mod tests {
     fn a_create_that_would_reach_the_node_is_denied_whatever_is_declared() {
         const CREATING: OperationDecl = declared(Location::Cluster {
             access: &[CREATE_JOBS],
+            namespace: None,
         });
         let creating = |reaches_node: Vec<&'static str>| Target {
             reaches_node,
@@ -582,6 +613,79 @@ mod tests {
         }
     }
 
+    /// A cluster operation that names a namespace acts there and nowhere else: a request in another namespace, or across
+    /// the cluster, is refused, and so is any request of it while the deployment does not say the cluster's name for the
+    /// key. One that names none is judged as before, wherever its request acts.
+    #[test]
+    fn a_cluster_request_acts_only_in_the_namespace_its_operation_names() {
+        const IN_BUILDS: OperationDecl = declared(Location::Cluster {
+            access: &[CREATE_JOBS],
+            namespace: Some("builds"),
+        });
+        let in_namespace = |namespace: Option<&str>| Target {
+            namespace: namespace.map(str::to_string),
+            ..to_the_cluster(true, Some(CREATE_JOBS))
+        };
+        assert_eq!(
+            judge(
+                &IN_BUILDS,
+                &[IN_BUILDS],
+                &in_namespace(Some("polar-builds")),
+                Some("polar-builds"),
+                None
+            ),
+            allowed(None)
+        );
+        for elsewhere in [Some("kube-system"), Some("builds"), None] {
+            assert_eq!(
+                judge(
+                    &IN_BUILDS,
+                    &[IN_BUILDS],
+                    &in_namespace(elsewhere),
+                    Some("polar-builds"),
+                    None
+                ),
+                Verdict::Deny(Denial::OutsideTheNamespace),
+                "{elsewhere:?}"
+            );
+        }
+        assert_eq!(
+            judge(
+                &IN_BUILDS,
+                &[IN_BUILDS],
+                &in_namespace(Some("polar-builds")),
+                None,
+                None
+            ),
+            Verdict::Deny(Denial::NamespaceUnknown)
+        );
+        const ANYWHERE: OperationDecl = declared(Location::Cluster {
+            access: &[CREATE_JOBS],
+            namespace: None,
+        });
+        for anywhere in [Some("kube-system"), None] {
+            assert_eq!(
+                judge(&ANYWHERE, &[ANYWHERE], &in_namespace(anywhere), None, None),
+                allowed(None),
+                "{anywhere:?}"
+            );
+        }
+        // Held to its namespace is not a way round anything else: the node and what is declared are judged as before.
+        assert_eq!(
+            judge(
+                &IN_BUILDS,
+                &[IN_BUILDS],
+                &Target {
+                    reaches_node: vec!["privileged"],
+                    ..in_namespace(Some("polar-builds"))
+                },
+                Some("polar-builds"),
+                None
+            ),
+            Verdict::Deny(Denial::ReachesTheNode)
+        );
+    }
+
     fn credential() -> impl Strategy<Value = Credential> {
         prop_oneof![
             Just(Credential::Named("site")),
@@ -599,7 +703,8 @@ mod tests {
             credential().prop_map(|credential| Location::Bound { credential }),
             Just(Location::Arbitrary),
             Just(Location::Cluster {
-                access: &[WATCH_PODS]
+                access: &[WATCH_PODS],
+                namespace: None,
             }),
         ]
     }
@@ -724,7 +829,7 @@ mod tests {
             chosen in proptest::option::of("[a-z]{1,8}"),
         ) {
             let access: &'static [Access] = &declarations()[declaration];
-            let operation = declared(Location::Cluster { access });
+            let operation = declared(Location::Cluster { access, namespace: None });
             let verdict = judge(&operation, &[operation], &to_the_cluster(encrypted, wanted), None, chosen.as_deref());
             let expected = if !encrypted {
                 Verdict::Deny(Denial::NotEncrypted)
@@ -734,6 +839,39 @@ mod tests {
                 Verdict::Deny(Denial::AccessUndeclared)
             };
             prop_assert_eq!(verdict, expected);
+        }
+
+        /// A request of a cluster operation that names a namespace is allowed only in the namespace the deployment names
+        /// for its key: never in another, never across the cluster, and never while the deployment names none. One that
+        /// names no namespace is held to none.
+        #[test]
+        fn a_cluster_request_outside_its_operation_s_namespace_is_always_refused(
+            held in proptest::option::of(proptest::sample::select(vec!["builds", "core"])),
+            configured in proptest::option::of(proptest::sample::select(vec!["polar-builds", "polar", "kube-system"])),
+            acts_in in proptest::option::of(proptest::sample::select(vec!["polar-builds", "polar", "kube-system", "builds"])),
+            encrypted in any::<bool>(),
+        ) {
+            let operation = declared(Location::Cluster { access: &[CREATE_JOBS], namespace: held });
+            let target = Target {
+                namespace: acts_in.map(str::to_string),
+                ..to_the_cluster(encrypted, Some(CREATE_JOBS))
+            };
+            let verdict = judge(&operation, &[operation], &target, configured, None);
+            let expected = if !encrypted {
+                Verdict::Deny(Denial::NotEncrypted)
+            } else if held.is_none() {
+                allowed(None)
+            } else if configured.is_none() {
+                Verdict::Deny(Denial::NamespaceUnknown)
+            } else if acts_in != configured {
+                Verdict::Deny(Denial::OutsideTheNamespace)
+            } else {
+                allowed(None)
+            };
+            prop_assert_eq!(&verdict, &expected);
+            if held.is_some() && verdict == allowed(None) {
+                prop_assert_eq!(acts_in, configured);
+            }
         }
     }
 }

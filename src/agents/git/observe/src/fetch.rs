@@ -183,6 +183,7 @@ mod tests {
                         encrypted: true,
                         access: None,
                         reaches_node: Vec::new(),
+                        namespace: None,
                     })
                 );
             }
@@ -205,6 +206,7 @@ mod tests {
                         encrypted: true,
                         access: None,
                         reaches_node: Vec::new(),
+                        namespace: None,
                     })
                 );
             }

@@ -499,7 +499,7 @@ pub fn computed_needs(
         needs.push(Capability::SoftState);
     }
     let writes = operations.iter().any(|operation| match operation.location {
-        crate::protocol::Location::Cluster { access } => access.iter().any(|a| a.verb.writes()),
+        crate::protocol::Location::Cluster { access, .. } => access.iter().any(|a| a.verb.writes()),
         _ => false,
     });
     if writes && !needs.contains(&Capability::JobRun) {
@@ -2004,6 +2004,7 @@ mod tests {
                 protocol: ProtocolKind::KUBERNETES,
                 location: Location::Cluster {
                     access: &[Access::new(Verb::Watch, "", "pods")],
+                    namespace: None,
                 },
             },
             OperationDecl {
@@ -2015,6 +2016,7 @@ mod tests {
                         Access::new(Verb::Get, "batch", "jobs"),
                         Access::new(Verb::Create, "batch", "jobs"),
                     ],
+                    namespace: None,
                 },
             },
         ]
@@ -2044,7 +2046,7 @@ mod tests {
             let needs = computed_needs(cassini, &listed, &graph, &operations);
             let reads = graph.iter().any(|d| d.access == crate::graph_schema::GraphAccess::Reads);
             let writes = operations.iter().any(|o| matches!(o.location,
-                crate::protocol::Location::Cluster { access } if access.iter().any(|a| a.verb.writes())));
+                crate::protocol::Location::Cluster { access, .. } if access.iter().any(|a| a.verb.writes())));
             proptest::prop_assert_eq!(needs.contains(&Capability::JobRun), writes || listed.contains(&Capability::JobRun));
             proptest::prop_assert_eq!(needs.first() == Some(&Capability::Cassini), cassini || listed.first() == Some(&Capability::Cassini));
             proptest::prop_assert_eq!(needs.contains(&Capability::SoftState), reads || listed.contains(&Capability::SoftState));
@@ -2246,6 +2248,7 @@ mod tests {
                     Access::new(Verb::Watch, "", "pods"),
                     Access::new(Verb::Get, "", "namespaces"),
                 ],
+                namespace: None,
             },
         };
         struct Watching;

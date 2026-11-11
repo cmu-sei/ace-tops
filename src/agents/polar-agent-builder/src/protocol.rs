@@ -52,7 +52,7 @@ use polar_crypto::{CredentialPort, CryptoError};
 use polar_health::HoldReason;
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, OutputPort, async_trait};
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -370,6 +370,9 @@ pub(crate) struct Shared {
     configuration: Arc<dyn LiveConfiguration>,
     health: Arc<dyn Holds>,
     record: Recorder,
+    /// The cluster's name for each namespace key the deployment names (`POLAR_CLUSTER_NAMESPACES`): where a cluster
+    /// operation that names a namespace may act.
+    namespaces: BTreeMap<String, String>,
     /// The hosts that asked for time, and until when.
     not_before: Mutex<HashMap<String, Instant>>,
     /// The credentials refused by what they were presented to, until a new version of the section.
@@ -403,7 +406,8 @@ impl Shared {
 /// What a request is, as it is judged at each place it goes.
 struct Asked {
     decl: OperationDecl,
-    /// The host of the operation's variable, for a configured one.
+    /// What its location names, as it is in force: the host of the operation's variable, for a configured one; the
+    /// cluster's name for its namespace, for a cluster one that names one ([`judge`]'s `configured`).
     configured_host: Option<String>,
     /// The credential the request names.
     chosen: Option<String>,
@@ -518,6 +522,15 @@ async fn run<O: Operation>(shared: Arc<Shared>, operation: O, send: Deliver<O::O
         Some(Ok(host)) => Some(host),
         Some(Err(why)) => return refuse_early(Failure::Configuration(why)).await,
         None => None,
+    };
+    // A cluster operation that names a namespace is judged against the cluster's name for it, as the deployment says;
+    // `None` when it does not, which the judge refuses.
+    let configured_host = match decl.location {
+        Location::Cluster {
+            namespace: Some(key),
+            ..
+        } => shared.namespaces.get(key).cloned(),
+        _ => configured_host,
     };
     let target = match O::Protocol::target(&request, base.as_deref()) {
         Ok(target) => target,
@@ -796,6 +809,7 @@ pub(crate) struct ProtocolArgs {
     pub(crate) configuration: Arc<dyn LiveConfiguration>,
     pub(crate) health: Arc<dyn Holds>,
     pub(crate) record: Recorder,
+    pub(crate) namespaces: BTreeMap<String, String>,
     pub(crate) applied: Arc<OutputPort<CredentialsApplied>>,
     pub(crate) in_force: Arc<Mutex<Option<CredentialsApplied>>>,
 }
@@ -838,6 +852,7 @@ impl Actor for ProtocolActor {
                 configuration: args.configuration,
                 health: args.health,
                 record: args.record,
+                namespaces: args.namespaces,
                 not_before: Mutex::new(HashMap::new()),
                 refused: Mutex::new(HashSet::new()),
             }),
@@ -959,6 +974,20 @@ pub(crate) async fn start(
     if start.setup.operations.is_empty() && !start.setup.credentials {
         return Ok(None);
     }
+    // The cluster's name for each namespace its operations name by key, as the deployment says; read before the handler
+    // starts, as every variable the builder reads is.
+    let namespaces = match polar_env::Env::var(
+        start.config,
+        crate::environment::CLUSTER_NAMESPACES.name(),
+    ) {
+        Some(raw) => crate::environment::parse_cluster_namespaces(&raw).map_err(|why| {
+            ActorProcessingErr::from(format!(
+                "{}: {why}",
+                crate::environment::CLUSTER_NAMESPACES.name()
+            ))
+        })?,
+        None => BTreeMap::new(),
+    };
     let instances = Instances::start(start.setup.operations, start.config)
         .await
         .map_err(ActorProcessingErr::from)?;
@@ -978,6 +1007,7 @@ pub(crate) async fn start(
             configuration: Arc::new(start.configuration.clone()),
             health: Arc::new(start.health),
             record: Arc::new(log_request),
+            namespaces,
             applied: applied.clone(),
             in_force: in_force.clone(),
         },
@@ -1051,10 +1081,25 @@ pub(crate) fn problems(
             Location::Arbitrary | Location::Cluster { .. } => None,
         };
         let to_the_cluster = matches!(operation.location, Location::Cluster { .. });
-        if let Location::Cluster { access: &[] } = operation.location {
+        if let Location::Cluster { access: &[], .. } = operation.location {
             problems.push(format!(
                 "operation `{name}` goes to the cluster and declares nothing it may do there"
             ));
+        }
+        if let Location::Cluster {
+            namespace: Some(key),
+            ..
+        } = operation.location
+        {
+            let a_key = !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !a_key {
+                problems.push(format!(
+                    "operation `{name}` names the namespace `{key}`, which is not a key of the cluster's namespaces (lowercase letters, digits and hyphens)"
+                ));
+            }
         }
         if to_the_cluster != operation.protocol.to_the_cluster() {
             problems.push(format!(
@@ -1062,7 +1107,7 @@ pub(crate) fn problems(
             ));
         }
         // What it may do there is what one of its capabilities' RBAC grants it, and the token comes with that capability.
-        if let Location::Cluster { access } = operation.location {
+        if let Location::Cluster { access, .. } = operation.location {
             for wanted in access {
                 if !crate::capability::granted(needs, wanted) {
                     problems.push(format!(
@@ -1102,6 +1147,9 @@ pub struct OperationEntry {
     /// What a cluster operation may do there, as RBAC names it: `watch pods`, `create batch/jobs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub access: Vec<String>,
+    /// The namespace a cluster operation is held to, by its key in the cluster's namespaces: `builds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     /// The variable a configured operation goes to the host of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable: Option<String>,
@@ -1122,9 +1170,12 @@ impl From<&OperationDecl> for OperationEntry {
             Location::Arbitrary => ("arbitrary", None, None),
             Location::Cluster { .. } => ("cluster", None, None),
         };
-        let access = match operation.location {
-            Location::Cluster { access } => access.iter().map(ToString::to_string).collect(),
-            _ => Vec::new(),
+        let (access, namespace) = match operation.location {
+            Location::Cluster { access, namespace } => (
+                access.iter().map(ToString::to_string).collect(),
+                namespace.map(str::to_string),
+            ),
+            _ => (Vec::new(), None),
         };
         Self {
             name: operation.name.to_string(),
@@ -1132,6 +1183,7 @@ impl From<&OperationDecl> for OperationEntry {
             protocol: operation.protocol.as_str().to_string(),
             location: location.to_string(),
             access,
+            namespace,
             variable,
             credential: credential.map(|credential| match credential {
                 Credential::Named(name) => name.to_string(),
@@ -1223,6 +1275,7 @@ pub(crate) mod tests {
                 encrypted: request.encrypted,
                 access: None,
                 reaches_node: Vec::new(),
+                namespace: None,
             })
         }
         async fn credential(
@@ -1549,6 +1602,7 @@ pub(crate) mod tests {
                 configuration: configuration.clone(),
                 health: health.clone(),
                 record: Arc::new(move |record| recorded.lock().unwrap().push(record.clone())),
+                namespaces: BTreeMap::new(),
                 applied: applied.clone(),
                 in_force: in_force.clone(),
             },
@@ -2348,7 +2402,10 @@ pub(crate) mod tests {
             name: "watches",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
-            location: Location::Cluster { access: WATCH_PODS },
+            location: Location::Cluster {
+                access: WATCH_PODS,
+                namespace: None,
+            },
         }];
         for enough in [crate::Capability::KubeApiRead, crate::Capability::PodRead] {
             assert!(problems("a", &watches, None, &[], true, &[enough]).is_empty());
@@ -2366,6 +2423,7 @@ pub(crate) mod tests {
             protocol: ProtocolKind::KUBERNETES,
             location: Location::Cluster {
                 access: CREATE_JOBS,
+                namespace: None,
             },
         }];
         assert!(problems("a", &makes, None, &[], true, &[crate::Capability::JobRun]).is_empty());
@@ -2385,6 +2443,7 @@ pub(crate) mod tests {
             protocol: ProtocolKind::KUBERNETES,
             location: Location::Cluster {
                 access: CREATE_SECRETS,
+                namespace: None,
             },
         }];
         let all =
@@ -2395,7 +2454,10 @@ pub(crate) mod tests {
             name: "says-nothing",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
-            location: Location::Cluster { access: &[] },
+            location: Location::Cluster {
+                access: &[],
+                namespace: None,
+            },
         }];
         let all = problems(
             "a",
@@ -2408,7 +2470,13 @@ pub(crate) mod tests {
         .join(" | ");
         assert!(all.contains("declares nothing it may do"), "{all}");
 
-        let nowhere = [decl("elsewhere", Location::Cluster { access: WATCH_PODS })];
+        let nowhere = [decl(
+            "elsewhere",
+            Location::Cluster {
+                access: WATCH_PODS,
+                namespace: None,
+            },
+        )];
         let all = problems(
             "a",
             &nowhere,
@@ -2445,12 +2513,59 @@ pub(crate) mod tests {
             "watches",
             Location::Cluster {
                 access: WATCH_PODS_AND_CREATE_JOBS,
+                namespace: None,
             },
         ));
         assert_eq!(entry.location, "cluster");
         assert_eq!(entry.access, ["watch pods", "create batch/jobs"]);
         assert_eq!(entry.credential, None);
         assert_eq!(entry.variable, None);
+        assert_eq!(entry.namespace, None);
+        assert!(
+            serde_json::to_value(&entry)
+                .unwrap()
+                .get("namespace")
+                .is_none()
+        );
+        let entry = OperationEntry::from(&decl(
+            "makes",
+            Location::Cluster {
+                access: CREATE_JOBS,
+                namespace: Some("builds"),
+            },
+        ));
+        assert_eq!(entry.namespace.as_deref(), Some("builds"));
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["namespace"], "builds");
+        assert_eq!(serde_json::from_value::<OperationEntry>(json).unwrap(), entry);
+    }
+
+    /// A cluster operation names its namespace by a key of the cluster's namespaces, which the catalog maps to the
+    /// cluster's name for it; anything else is a declaration problem, named.
+    #[test]
+    fn an_operation_names_its_namespace_by_a_key() {
+        let held_in = |key: &'static str| {
+            [OperationDecl {
+                name: "held",
+                doc: "",
+                protocol: ProtocolKind::KUBERNETES,
+                location: Location::Cluster {
+                    access: WATCH_PODS,
+                    namespace: Some(key),
+                },
+            }]
+        };
+        for key in ["builds", "blitz-workspaces2"] {
+            let all = problems("a", &held_in(key), None, &[], true, &[]).join(" | ");
+            assert!(!all.contains("not a key"), "{key}: {all}");
+        }
+        for key in ["", "Builds", "polar_builds", "polar builds"] {
+            let all = problems("a", &held_in(key), None, &[], true, &[]).join(" | ");
+            assert!(
+                all.contains("is not a key of the cluster's namespaces"),
+                "{key:?}: {all}"
+            );
+        }
     }
 
     proptest! {
@@ -2546,7 +2661,10 @@ pub(crate) mod tests {
                         name: "cluster",
                         doc: "",
                         protocol: ProtocolKind::KUBERNETES,
-                        location: Location::Cluster { access },
+                        location: Location::Cluster {
+                            access,
+                            namespace: None,
+                        },
                     }]
                 })
                 .collect()

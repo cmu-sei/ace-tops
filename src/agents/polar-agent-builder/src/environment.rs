@@ -71,6 +71,39 @@ pub const START_MARKER: Optional<String> = Optional::text(
     "where polar-init leaves the marker this agent takes as it starts; with none there, its container was restarted without polar-init, and it exits so that the pod restarts whole (unset: nothing is checked)",
 );
 
+/// The cluster's name for each namespace the agent's cluster operations name by key (`Location::Cluster`'s `namespace`): the
+/// catalog writes it from the Roles its capabilities place in a named namespace (`infra/resolve.nu`). A request of an
+/// operation that names a key this does not map is refused (`Denial::NamespaceUnknown`).
+pub const CLUSTER_NAMESPACES: Optional<std::collections::BTreeMap<String, String>> = Optional::new(
+    "POLAR_CLUSTER_NAMESPACES",
+    "the cluster's name for each namespace this agent's cluster operations name by key, as key=name, comma-separated; a request in a namespace its operation names by a key not here is refused",
+    "key=name, comma-separated",
+    parse_cluster_namespaces,
+);
+
+/// `builds=polar-builds,core=polar`, each key once, neither side empty.
+pub(crate) fn parse_cluster_namespaces(
+    raw: &str,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut namespaces = std::collections::BTreeMap::new();
+    for pair in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let Some((key, name)) = pair.split_once('=') else {
+            return Err(format!("`{pair}` is not key=name"));
+        };
+        let (key, name) = (key.trim(), name.trim());
+        if key.is_empty() || name.is_empty() {
+            return Err(format!("`{pair}` is not key=name"));
+        }
+        if namespaces
+            .insert(key.to_string(), name.to_string())
+            .is_some()
+        {
+            return Err(format!("the key `{key}` is named more than once"));
+        }
+    }
+    Ok(namespaces)
+}
+
 fn parse_budget(raw: &str) -> Result<u64, String> {
     raw.trim()
         .parse::<u64>()
@@ -84,6 +117,7 @@ static VARIABLES: &[&dyn Described] = &[
     &SHUTDOWN_BUDGET_SECS,
     &AUTHORITY_PUBLISHER,
     &START_MARKER,
+    &CLUSTER_NAMESPACES,
 ];
 
 /// The variables the builder itself reads.
@@ -356,4 +390,27 @@ mod tests {
     // keeps the import honest
     #[allow(dead_code)]
     fn _env(_: &dyn Env) {}
+
+    /// The cluster's namespaces are read as key=name pairs, each key once; anything else is refused, naming it.
+    #[test]
+    fn the_cluster_s_namespaces_are_read_as_key_name_pairs() {
+        let read = parse_cluster_namespaces("builds=polar-builds, core = polar ,").unwrap();
+        assert_eq!(
+            read.into_iter().collect::<Vec<_>>(),
+            [
+                ("builds".to_string(), "polar-builds".to_string()),
+                ("core".to_string(), "polar".to_string()),
+            ]
+        );
+        assert!(parse_cluster_namespaces("").unwrap().is_empty());
+        for (raw, why) in [
+            ("builds", "is not key=name"),
+            ("builds=", "is not key=name"),
+            ("=polar-builds", "is not key=name"),
+            ("builds=a,builds=b", "more than once"),
+        ] {
+            let refused = parse_cluster_namespaces(raw).unwrap_err();
+            assert!(refused.contains(why), "{raw}: {refused}");
+        }
+    }
 }

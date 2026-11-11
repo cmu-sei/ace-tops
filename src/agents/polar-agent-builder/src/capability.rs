@@ -138,7 +138,7 @@ pub struct RoleRule {
 pub fn role_of(capability: Capability, operations: &[OperationDecl]) -> Vec<RoleRule> {
     let mut by_resource: BTreeMap<(&str, &str), std::collections::BTreeSet<&str>> = BTreeMap::new();
     for operation in operations {
-        let Location::Cluster { access } = operation.location else {
+        let Location::Cluster { access, .. } = operation.location else {
             continue;
         };
         for wanted in access.iter().filter(|a| granted(&[capability], a)) {
@@ -454,7 +454,10 @@ mod tests {
             name: "op",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
-            location: Location::Cluster { access },
+            location: Location::Cluster {
+                access,
+                namespace: None,
+            },
         }
     }
 

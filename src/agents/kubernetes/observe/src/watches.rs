@@ -54,7 +54,10 @@ pub const WATCH: OperationDecl = OperationDecl {
     name: "kube.watch",
     doc: "every change to the cluster's namespaces and nodes, the namespaces' workloads and pods, and Flux's sources and kustomizations",
     protocol: ProtocolKind::KUBERNETES,
-    location: Location::Cluster { access: &WATCHED },
+    location: Location::Cluster {
+        access: &WATCHED,
+        namespace: None,
+    },
 };
 
 /// What it may do: watch each kind it watches, and nothing else.
@@ -148,6 +151,7 @@ pub const IDENTIFY: OperationDecl = OperationDecl {
     protocol: ProtocolKind::KUBERNETES,
     location: Location::Cluster {
         access: &[Kind::Namespace.resource().access(Verb::Get)],
+        namespace: None,
     },
 };
 
@@ -586,10 +590,14 @@ mod tests {
             identifying.request().access(),
             Kind::Namespace.resource().access(Verb::Get)
         );
-        let polar_agent_builder::protocol::Location::Cluster { access } = IDENTIFY.location else {
+        let polar_agent_builder::protocol::Location::Cluster { access, namespace } =
+            IDENTIFY.location
+        else {
             panic!("in the cluster");
         };
         assert_eq!(access, [Kind::Namespace.resource().access(Verb::Get)]);
+        // A namespace is an object across the cluster: read there, held to none.
+        assert_eq!(namespace, None);
     }
 
     #[test]

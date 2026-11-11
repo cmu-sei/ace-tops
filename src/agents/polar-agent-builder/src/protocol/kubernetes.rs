@@ -228,6 +228,20 @@ impl Call {
             _ => Vec::new(),
         }
     }
+
+    /// The namespace it acts in, by the cluster's name for it: `None` for a watch across the cluster, and for a call on an
+    /// object across it (an empty namespace).
+    pub fn namespace(&self) -> Option<&str> {
+        let namespace = match self {
+            Call::Watch(watch) => return watch.namespace.as_deref(),
+            Call::Create { namespace, .. }
+            | Call::Get { namespace, .. }
+            | Call::Delete { namespace, .. }
+            | Call::List { namespace, .. }
+            | Call::Log { namespace, .. } => namespace,
+        };
+        (!namespace.is_empty()).then_some(namespace.as_str())
+    }
 }
 
 /// What `object`, which a call would create, gives a pod of its node: each way out of a container that no Polar agent's
@@ -460,6 +474,7 @@ impl Protocol for Kubernetes {
         Ok(Target {
             access: Some(request.access()),
             reaches_node: request.reaches_node(),
+            namespace: request.namespace().map(str::to_string),
             ..http::target_of(&url)?
         })
     }
@@ -713,6 +728,7 @@ mod tests {
                 NAMESPACE.access(Verb::Watch),
                 CUSTOM.access(Verb::Watch),
             ],
+            namespace: None,
         },
     };
     const DECLARED: [OperationDecl; 1] = [WATCHING];
@@ -957,6 +973,7 @@ mod tests {
             protocol: ProtocolKind::KUBERNETES,
             location: Location::Cluster {
                 access: &[NAMESPACE.access(Verb::Watch)],
+                namespace: None,
             },
         };
         static FUSSY_DECLARED: [OperationDecl; 1] = [FUSSY];
@@ -1071,6 +1088,7 @@ mod tests {
                 POD_LOG,
                 NAMESPACE.access(Verb::Get),
             ],
+            namespace: None,
         },
     };
     const CALLS: [OperationDecl; 1] = [CALLING];
@@ -1410,6 +1428,7 @@ mod tests {
             protocol: ProtocolKind::KUBERNETES,
             location: Location::Cluster {
                 access: &[JOB.access(Verb::List)],
+                namespace: None,
             },
         };
         static LISTS: [OperationDecl; 1] = [LISTING];
@@ -1438,6 +1457,89 @@ mod tests {
             .await;
         assert_eq!(refused, Err(Failure::Denied(Denial::AccessUndeclared)));
         assert!(api.received().await.is_empty());
+    }
+
+    /// A call of an operation that names a namespace acts there and nowhere else: one in another namespace, or across the
+    /// cluster, is refused before anything is sent, and one in its own goes as before. (The test's handler names each key
+    /// as the namespace of the same name.)
+    #[tokio::test]
+    async fn a_call_outside_the_namespace_its_operation_names_is_refused_and_nothing_is_sent() {
+        struct InBuilds(Call);
+        const IN_BUILDS: OperationDecl = OperationDecl {
+            name: "a.list.in-builds",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: &[EVENT.access(Verb::List)],
+                namespace: Some("builds"),
+            },
+        };
+        static HELD: [OperationDecl; 1] = [IN_BUILDS];
+        impl Operation for InBuilds {
+            type Protocol = Kubernetes;
+            type Output = Answer;
+            const DECL: OperationDecl = IN_BUILDS;
+            fn request(&self) -> Call {
+                self.0.clone()
+            }
+            fn read(&self, reply: &Answer) -> Result<Answer, ReadFailure> {
+                Ok(reply.clone())
+            }
+        }
+        let list_in = |namespace: &str| {
+            InBuilds(Call::List {
+                resource: EVENT,
+                namespace: namespace.into(),
+                labels: None,
+                fields: None,
+            })
+        };
+        let api = KubeApi::start().await;
+        let site = kubernetes_handle(&HELD, &api).await;
+        for elsewhere in ["kube-system", ""] {
+            let refused = site.handle.ask(list_in(elsewhere)).await;
+            assert_eq!(
+                refused,
+                Err(Failure::Denied(Denial::OutsideTheNamespace)),
+                "{elsewhere:?}"
+            );
+        }
+        assert!(api.received().await.is_empty());
+        api.answers(
+            "GET",
+            "/api/v1/namespaces/builds/events",
+            200,
+            json!({"apiVersion": "v1", "kind": "EventList", "metadata": {}, "items": []}),
+        );
+        assert_eq!(
+            site.handle.ask(list_in("builds")).await,
+            Ok(Answer::Objects(vec![]))
+        );
+    }
+
+    /// A call says the namespace it acts in, as the cluster names it; a watch across the cluster, and a call on an object
+    /// across it, say none.
+    #[test]
+    fn a_call_says_the_namespace_it_acts_in() {
+        assert_eq!(
+            Call::from(Watch::in_namespace(POD, "polar")).namespace(),
+            Some("polar")
+        );
+        assert_eq!(Call::from(Watch::cluster_wide(POD)).namespace(), None);
+        let get = |namespace: &str| Call::Get {
+            resource: NAMESPACE,
+            namespace: namespace.into(),
+            name: "kube-system".into(),
+        };
+        assert_eq!(get("").namespace(), None);
+        assert_eq!(get("polar-builds").namespace(), Some("polar-builds"));
+        let log = Call::Log {
+            namespace: "polar-builds".into(),
+            pod: "p".into(),
+            container: None,
+            follow: false,
+        };
+        assert_eq!(log.namespace(), Some("polar-builds"));
     }
 
     // -- what a create would give its pod of the node (docs/architecture/build-orchestrator.md, 5d and O2c) --------------

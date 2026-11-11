@@ -139,6 +139,7 @@ fn ssh_target(url: &Url) -> Result<Target, String> {
         encrypted: true,
         access: None,
         reaches_node: Vec::new(),
+        namespace: None,
     })
 }
 
@@ -599,6 +600,7 @@ mod tests {
                 encrypted: true,
                 access: None,
                 reaches_node: Vec::new(),
+                namespace: None,
             })
         );
         assert_eq!(
@@ -608,6 +610,7 @@ mod tests {
                 encrypted: false,
                 access: None,
                 reaches_node: Vec::new(),
+                namespace: None,
             })
         );
     }

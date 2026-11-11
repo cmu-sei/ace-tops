@@ -491,6 +491,8 @@ def main [] {
                     assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
                 }
                 assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-auth" "polar-builds" "polar-graph"]
+                # A Role in each attested namespace names none by its key: its operations are held to none, and it is told none.
+                assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_CLUSTER_NAMESPACES" $t) null
             }
         }
 
@@ -512,6 +514,9 @@ def main [] {
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_REGISTRY" $t) "http://registry.polar-registry.svc.cluster.local:5000"
                 # Its clones are on a volume of the pod's own (working-checkout), under where that volume is mounted (O3c).
                 assert equal (env_value $r "POLAR_ORCHESTRATOR_CLONES" $t) "/var/lib/build-orchestrator/clones"
+                # Its operations name the build namespace by its key, and its judge holds them there: the catalog says the
+                # cluster's name for the key, from the namespace job-run's Role names.
+                assert equal (env_value $r "POLAR_CLUSTER_NAMESPACES" $t) "builds=polar-builds"
                 let checkout = ($r.mounts | where name == "build-orchestrator-checkout")
                 assert equal ($checkout | get path) ["/var/lib/build-orchestrator"]
                 assert ($r.volumes | any {|v| $v.name == "build-orchestrator-checkout" })
@@ -756,6 +761,8 @@ def main [] {
             let resources = (^nu $RESOLVER resources kube-observer | from json)
             assert equal $resources.namespaced_roles []
             assert equal ($resources.cluster_roles | get name) ["kube-observer-read"]
+            # A ClusterRole names no namespace: its operations are held to none, and it is told none.
+            assert equal (env_value (resolve "kube-observer") "POLAR_CLUSTER_NAMESPACES") null
             let rules = ($resources.cluster_roles | first | get rules)
             let scaffold = (open ($env.POLAR_SCAFFOLD_DIR | path join "kube-observer.json"))
             assert equal $rules ($scaffold.roles | get "kube-api-read")

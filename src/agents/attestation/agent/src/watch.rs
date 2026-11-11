@@ -41,7 +41,10 @@ pub const WATCH: OperationDecl = OperationDecl {
     name: "attestation.watch",
     doc: "the pods of Polar's namespaces and what owns them",
     protocol: ProtocolKind::KUBERNETES,
-    location: Location::Cluster { access: &WATCHED },
+    location: Location::Cluster {
+        access: &WATCHED,
+        namespace: None,
+    },
 };
 
 /// What it may do: watch each kind it holds, and nothing else.
