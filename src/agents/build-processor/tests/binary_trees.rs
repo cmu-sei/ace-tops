@@ -21,19 +21,21 @@
    DM26-0670
 */
 
-//! What a binary's own dependency record says it holds, against what its build compiled (build-inspect-ship, S2). For a
-//! binary built with cargo-auditable, three package sets, each `name@version`, the binary's own package left out:
+//! What a binary's build compiled, against what the workspace SBOM of its package names (build-inspect-ship, S2). Two
+//! claims with different subjects: the cargo log is the record of one build, the binary's; the SBOM is a claim about
+//! the source tree at a commit, the package as the whole workspace resolves it. Two package sets, each `name@version`, the
+//! binary's own package left out:
 //!
 //! - **compiled:** every package the binary's Nix build compiled a unit of, from its cargo log (`compiler-artifact`
-//!   messages): the ground truth;
-//! - **auditable:** the record cargo-auditable embedded in the binary, written out by auditable2cdx;
+//!   messages), build-time units (proc-macros, build scripts and what they need) included, as the SBOM includes
+//!   build-dependencies: the ground truth of the build;
 //! - **SBOM:** the workspace SBOM of the binary's package, from cargo-cyclonedx.
 //!
-//! Every difference is reported, against the compiled set: a package a record names that was not compiled (it
-//! overstates), one compiled that it leaves out (it understates), and a proc-macro, which runs at build time, that the
-//! auditable record does not mark as a build dependency. The record this nixpkgs' cargo-auditable writes (0.6.2, format
-//! 0) is taken from `cargo metadata`, and its crate documents that it may name more than the build used and that it
-//! records proc-macros as runtime dependencies; this test says by how much, and which.
+//! Every difference is reported: a package the SBOM names that the build did not compile (it overstates the binary), and
+//! one compiled that it leaves out (it understates). cargo-cyclonedx reads `cargo metadata` over the whole workspace, where
+//! features are unified across members (`sbom_trees`, claim B), so it is expected to overstate; this says by how much, and
+//! which. (cargo-auditable was tried as a third source and dropped: 0.6.2's record of cassini-server was the SBOM's, 492
+//! packages against 466 compiled.)
 //!
 //! The fixtures are made on the host, in ACE's dev shell, by `tests/fixtures/binary-trees/make.nu`:
 //! `cargo test -p build-processor --test binary_trees -- --ignored --nocapture`.
@@ -75,63 +77,32 @@ fn package_of_id(id: &str) -> String {
     }
 }
 
-/// A package as a purl names it, `name@version`, whatever qualifiers follow: `?…` as a purl writes them, or `&…` as
-/// auditable2cdx 0.1.0 writes a local package's (`pkg:cargo/x@1.0.0&download_url=redacted`).
+/// A package as a purl names it, `name@version`, whatever qualifiers follow (`?…`).
 fn named(purl: &str) -> String {
     let bare = purl
         .strip_prefix("pkg:cargo/")
         .unwrap_or_else(|| panic!("not a cargo purl: {purl}"));
-    bare.split(['?', '&']).next().unwrap_or(bare).to_string()
+    bare.split('?').next().unwrap_or(bare).to_string()
 }
 
-/// The packages a CycloneDX document names, `name@version`, its root left out; and those of them it marks as build
-/// dependencies (auditable2cdx's `cdx:rustc:dependency_kind` property).
-fn components(doc: &Value) -> (BTreeSet<String>, BTreeSet<String>) {
-    let mut all = BTreeSet::new();
-    let mut build = BTreeSet::new();
-    for c in doc["components"].as_array().cloned().unwrap_or_default() {
-        let Some(purl) = c["purl"].as_str() else {
-            continue;
-        };
-        let package = named(purl);
-        let is_build = c["properties"].as_array().is_some_and(|ps| {
-            ps.iter()
-                .any(|p| p["name"] == "cdx:rustc:dependency_kind" && p["value"] == "build")
-        });
-        if is_build {
-            build.insert(package.clone());
-        }
-        all.insert(package);
-    }
-    (all, build)
+/// The packages a CycloneDX document names, `name@version`, its root left out.
+fn components(doc: &Value) -> BTreeSet<String> {
+    doc["components"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| c["purl"].as_str().map(named))
+        .collect()
 }
 
-/// What the build compiled, from its cargo log: every package it compiled a unit of, and those it compiled a
-/// proc-macro of.
-fn compiled(log: &str) -> (BTreeSet<String>, BTreeSet<String>) {
-    let mut all = BTreeSet::new();
-    let mut proc_macros = BTreeSet::new();
-    for line in log.lines() {
-        let Ok(message) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if message["reason"] != "compiler-artifact" {
-            continue;
-        }
-        let Some(id) = message["package_id"].as_str() else {
-            continue;
-        };
-        let package = package_of_id(id);
-        let kinds = message["target"]["kind"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        if kinds.iter().any(|k| k == "proc-macro") {
-            proc_macros.insert(package.clone());
-        }
-        all.insert(package);
-    }
-    (all, proc_macros)
+/// Every package the build compiled a unit of, from its cargo log.
+fn compiled(log: &str) -> BTreeSet<String> {
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|m| m["reason"] == "compiler-artifact")
+        .filter_map(|m| m["package_id"].as_str().map(package_of_id))
+        .collect()
 }
 
 #[test]
@@ -163,16 +134,15 @@ fn package_ids_and_purls_are_read_in_each_form() {
             "pkg:cargo/polar@1.0.0?download_url=file://../lib",
             "polar@1.0.0",
         ),
-        ("pkg:cargo/polar@1.0.0&download_url=redacted", "polar@1.0.0"),
     ] {
         assert_eq!(named(purl), name, "{purl}");
     }
 }
 
 #[test]
-#[ignore = "needs the fixtures tests/fixtures/binary-trees/make.nu makes on the host; the record may overstate the \
-            binary (cargo-auditable 0.6.2 writes format 0, from `cargo metadata`), which this reports"]
-fn a_binarys_own_record_is_what_its_build_compiled() {
+#[ignore = "needs the fixtures tests/fixtures/binary-trees/make.nu makes on the host; the workspace SBOM overstates a \
+            binary (cargo-cyclonedx resolves the whole workspace), which this reports"]
+fn the_workspace_sbom_is_what_the_binarys_build_compiled() {
     let mut differs: Vec<String> = vec![];
     let mut seen = 0;
     for entry in std::fs::read_dir(fixtures()).unwrap() {
@@ -185,8 +155,7 @@ fn a_binarys_own_record_is_what_its_build_compiled() {
         let binary = manifest["binary"].as_str().expect("binary");
         let package = manifest["package"].as_str().expect("package");
 
-        let (mut built, proc_macros) =
-            compiled(&read_text(&dir.join(format!("{binary}.cargo-build.json"))));
+        let mut built = compiled(&read_text(&dir.join(format!("{binary}.cargo-build.json"))));
         let own = built
             .iter()
             .find(|p| p.starts_with(&format!("{package}@")))
@@ -195,40 +164,25 @@ fn a_binarys_own_record_is_what_its_build_compiled() {
                 panic!("{binary}: its package {package} is not in its own build's log")
             });
         built.remove(&own);
-        let (recorded, recorded_build) =
-            components(&read(&dir.join(format!("{binary}.auditable.cdx.json"))));
-        let (sbom, _) = components(&read(&dir.join(format!("{package}.cdx.json"))));
+        let sbom = components(&read(&dir.join(format!("{package}.cdx.json"))));
 
         eprintln!(
-            "{binary} ({own}): compiled {}, auditable record {}, workspace SBOM {}",
+            "{binary} ({own}): compiled {}, workspace SBOM {}",
             built.len(),
-            recorded.len(),
             sbom.len()
         );
-        for (claim, said) in [("auditable record", &recorded), ("workspace SBOM", &sbom)] {
-            let over: Vec<&String> = said.difference(&built).collect();
-            let under: Vec<&String> = built.difference(said).collect();
-            if !over.is_empty() {
-                differs.push(format!(
-                    "{binary}: the {claim} names {} not compiled: {over:?}",
-                    over.len()
-                ));
-            }
-            if !under.is_empty() {
-                differs.push(format!(
-                    "{binary}: the {claim} leaves out {} compiled: {under:?}",
-                    under.len()
-                ));
-            }
-        }
-        let runtime_macros: Vec<&String> = proc_macros
-            .iter()
-            .filter(|p| recorded.contains(*p) && !recorded_build.contains(*p))
-            .collect();
-        if !runtime_macros.is_empty() {
+        let over: Vec<&String> = sbom.difference(&built).collect();
+        let under: Vec<&String> = built.difference(&sbom).collect();
+        if !over.is_empty() {
             differs.push(format!(
-                "{binary}: the auditable record has {} proc-macros as runtime dependencies: {runtime_macros:?}",
-                runtime_macros.len()
+                "{binary}: the workspace SBOM names {} not compiled: {over:?}",
+                over.len()
+            ));
+        }
+        if !under.is_empty() {
+            differs.push(format!(
+                "{binary}: the workspace SBOM leaves out {} compiled: {under:?}",
+                under.len()
             ));
         }
     }
