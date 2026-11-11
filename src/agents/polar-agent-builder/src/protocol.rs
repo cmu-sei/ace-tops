@@ -1107,12 +1107,24 @@ pub(crate) fn problems(
             ));
         }
         // What it may do there is what one of its capabilities' RBAC grants it, and the token comes with that capability.
-        if let Location::Cluster { access, .. } = operation.location {
+        // Exactly one: the role it is computed into and the token it goes with are that capability's, in its namespace.
+        if let Location::Cluster { access, namespace } = operation.location {
+            let held = namespace
+                .map(|key| format!(" in `{key}`"))
+                .unwrap_or_default();
             for wanted in access {
-                if !crate::capability::granted(needs, wanted) {
-                    problems.push(format!(
-                        "operation `{name}` may {wanted}, and none of {agent}'s capabilities grants it"
-                    ));
+                match crate::capability::holders(needs, wanted, namespace).as_slice() {
+                    [] => problems.push(format!(
+                        "operation `{name}` may {wanted}{held}, and none of {agent}'s capabilities grants it"
+                    )),
+                    [_] => {}
+                    many => problems.push(format!(
+                        "operation `{name}` may {wanted}{held}, and more than one of {agent}'s capabilities grants it ({}): one must hold it",
+                        many.iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
                 }
             }
         }
@@ -2415,18 +2427,53 @@ pub(crate) mod tests {
             all.contains("may watch pods, and none of a's capabilities grants it"),
             "{all}"
         );
+        // Two capabilities that would both grant it: which role holds it, and which token it goes with, must be one.
+        let both = [crate::Capability::KubeApiRead, crate::Capability::PodRead];
+        let all = problems("a", &watches, None, &[], true, &both).join(" | ");
+        assert!(
+            all.contains(
+                "may watch pods, and more than one of a's capabilities grants it (kube-api-read, pod-read)"
+            ),
+            "{all}"
+        );
 
-        // A write is granted by job-run alone, and kube-api-read, which reads anything but Secrets, grants none.
+        // A write is granted by job-run alone, in its namespace, and kube-api-read, which reads anything but Secrets,
+        // grants none.
         let makes = [OperationDecl {
             name: "makes",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
             location: Location::Cluster {
                 access: CREATE_JOBS,
-                namespace: None,
+                namespace: Some("builds"),
             },
         }];
         assert!(problems("a", &makes, None, &[], true, &[crate::Capability::JobRun]).is_empty());
+        // The same write held to no namespace, or to another, is not job-run's to grant.
+        for elsewhere in [None, Some("core")] {
+            let makes_elsewhere = [OperationDecl {
+                name: "makes",
+                doc: "",
+                protocol: ProtocolKind::KUBERNETES,
+                location: Location::Cluster {
+                    access: CREATE_JOBS,
+                    namespace: elsewhere,
+                },
+            }];
+            let all = problems(
+                "a",
+                &makes_elsewhere,
+                None,
+                &[],
+                true,
+                &[crate::Capability::JobRun],
+            )
+            .join(" | ");
+            assert!(
+                all.contains("may create batch/jobs") && all.contains("none of a's capabilities grants it"),
+                "{elsewhere:?}: {all}"
+            );
+        }
         let all = problems(
             "a",
             &makes,
@@ -2650,45 +2697,65 @@ pub(crate) mod tests {
         Access::new(Verb::Delete, "", "pods"),
     ];
 
-    fn declared_with(access: Access) -> &'static [OperationDecl] {
+    /// The namespaces a cluster declaration may name, for the property below: none, job-run's, and one no capability is
+    /// held to.
+    const NAMESPACES: [Option<&str>; 3] = [None, Some("builds"), Some("core")];
+
+    fn declared_with(access: Access, namespace: Option<&'static str>) -> &'static [OperationDecl] {
         static ALL: std::sync::OnceLock<Vec<[OperationDecl; 1]>> = std::sync::OnceLock::new();
         let all = ALL.get_or_init(|| {
-            ACCESSES
+            NAMESPACES
                 .iter()
-                .map(|a| {
-                    let access: &'static [Access] = Box::leak(Box::new([*a]));
-                    [OperationDecl {
-                        name: "cluster",
-                        doc: "",
-                        protocol: ProtocolKind::KUBERNETES,
-                        location: Location::Cluster {
-                            access,
-                            namespace: None,
-                        },
-                    }]
+                .flat_map(|namespace| {
+                    ACCESSES.iter().map(move |a| {
+                        let access: &'static [Access] = Box::leak(Box::new([*a]));
+                        [OperationDecl {
+                            name: "cluster",
+                            doc: "",
+                            protocol: ProtocolKind::KUBERNETES,
+                            location: Location::Cluster {
+                                access,
+                                namespace: *namespace,
+                            },
+                        }]
+                    })
                 })
                 .collect()
         });
-        &all[ACCESSES.iter().position(|a| *a == access).unwrap()]
+        let n = NAMESPACES.iter().position(|ns| *ns == namespace).unwrap();
+        let a = ACCESSES.iter().position(|a| *a == access).unwrap();
+        &all[n * ACCESSES.len() + a]
     }
 
     proptest! {
-        /// A cluster operation's access is a problem exactly when none of the capabilities the agent needs grants it:
-        /// kube-api-read any read but of Secrets, pod-read and job-run their Roles' rules, and nothing else anything.
+        /// A cluster operation's access is a problem exactly when not one of the capabilities the agent needs grants it
+        /// where the operation is held: none, or more than one. kube-api-read grants any read but of Secrets and pod-read
+        /// its Role's rules, both to an operation held to no namespace; job-run its Role's rules, to one held to the
+        /// build namespace; nothing else grants anything.
         #[test]
         fn what_a_cluster_operation_may_do_is_what_its_capabilities_grant(
             access in proptest::sample::select(ACCESSES.to_vec()),
+            namespace in proptest::sample::select(NAMESPACES.to_vec()),
             needs in proptest::sample::subsequence(crate::Capability::ALL.to_vec(), 0..=crate::Capability::ALL.len()),
         ) {
-            let found = problems("a", declared_with(access), None, &[], true, &needs);
-            let refused = found.iter().any(|p| p.contains("grants it"));
-            let grants = needs.iter().any(|c| match c {
-                crate::Capability::KubeApiRead => !access.verb.writes() && access.resource != "secrets",
-                crate::Capability::PodRead => crate::capability::POD_READ_GRANTS.contains(&access),
-                crate::Capability::JobRun => crate::capability::JOB_RUN_GRANTS.contains(&access),
+            let found = problems("a", declared_with(access, namespace), None, &[], true, &needs);
+            let none = found.iter().any(|p| p.contains("none of a's capabilities grants it"));
+            let many = found.iter().any(|p| p.contains("more than one of a's capabilities grants it"));
+            // Said apart from the code: what each grants, and where.
+            let holders = needs.iter().filter(|c| match c {
+                crate::Capability::KubeApiRead => {
+                    namespace.is_none() && !access.verb.writes() && access.resource != "secrets"
+                }
+                crate::Capability::PodRead => {
+                    namespace.is_none() && crate::capability::POD_READ_GRANTS.contains(&access)
+                }
+                crate::Capability::JobRun => {
+                    namespace == Some("builds") && crate::capability::JOB_RUN_GRANTS.contains(&access)
+                }
                 _ => false,
-            });
-            prop_assert_eq!(refused, !grants, "{:?} {:?}", needs, found);
+            }).count();
+            prop_assert_eq!(none, holders == 0, "{:?} {:?} {:?}", needs, namespace, found);
+            prop_assert_eq!(many, holders > 1, "{:?} {:?} {:?}", needs, namespace, found);
         }
     }
 }

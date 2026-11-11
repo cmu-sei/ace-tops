@@ -110,13 +110,32 @@ pub const JOB_RUN_GRANTS: &[Access] = &[
     Access::new(Verb::Get, "", "podtemplates"),
 ];
 
-/// Whether one of `needs` lets an agent do `access` to the Kubernetes API.
-pub fn granted(needs: &[Capability], access: &Access) -> bool {
-    needs.iter().any(|capability| match capability.grants() {
-        Grants::Nothing => false,
-        Grants::ReadAnythingButSecrets => !access.verb.writes() && !is_secret(access),
-        Grants::These(granted) => granted.contains(access),
-    })
+/// The key, in the cluster's namespaces, of the namespace `job-run`'s Role is in: the build namespace. The same key
+/// `infra/config/capabilities.nuon` places that Role by, and `resolve.nu` refuses a catalog whose Role names another
+/// (the scaffold's `role_namespaces`).
+pub const JOB_RUN_NAMESPACE: &str = "builds";
+
+/// Whether one of `needs` lets an agent do `access` to the Kubernetes API, for an operation held to `namespace` (by its
+/// key; `None` for one held to none): one whose grants hold the access, and whose own namespace is the operation's.
+pub fn granted(needs: &[Capability], access: &Access, namespace: Option<&str>) -> bool {
+    !holders(needs, access, namespace).is_empty()
+}
+
+/// Which of `needs` grant `access` to an operation held to `namespace` ([`granted`]), each once, in `needs`' order.
+pub fn holders(needs: &[Capability], access: &Access, namespace: Option<&str>) -> Vec<Capability> {
+    let mut holders = Vec::new();
+    for capability in needs {
+        let holds = capability.namespace() == namespace
+            && match capability.grants() {
+                Grants::Nothing => false,
+                Grants::ReadAnythingButSecrets => !access.verb.writes() && !is_secret(access),
+                Grants::These(granted) => granted.contains(access),
+            };
+        if holds && !holders.contains(capability) {
+            holders.push(*capability);
+        }
+    }
+    holders
 }
 
 fn is_secret(access: &Access) -> bool {
@@ -132,16 +151,19 @@ pub struct RoleRule {
 }
 
 /// The role `capability` gives an agent whose operations are `operations`: what its cluster operations declare that the
-/// capability grants, as the verbs RBAC checks for it ([`Verb::uses`]), one rule per resource, the verbs sorted and each
-/// once, the rules sorted. What the catalog writes as the RBAC rules, so a role holds what the code declares and no more;
-/// empty for a capability that grants nothing.
+/// capability grants, in its namespace ([`granted`]), as the verbs RBAC checks for it ([`Verb::uses`]), one rule per
+/// resource, the verbs sorted and each once, the rules sorted. What the catalog writes as the RBAC rules, so a role holds
+/// what the code declares and no more; empty for a capability that grants nothing.
 pub fn role_of(capability: Capability, operations: &[OperationDecl]) -> Vec<RoleRule> {
     let mut by_resource: BTreeMap<(&str, &str), std::collections::BTreeSet<&str>> = BTreeMap::new();
     for operation in operations {
-        let Location::Cluster { access, .. } = operation.location else {
+        let Location::Cluster { access, namespace } = operation.location else {
             continue;
         };
-        for wanted in access.iter().filter(|a| granted(&[capability], a)) {
+        for wanted in access
+            .iter()
+            .filter(|a| granted(&[capability], a, namespace))
+        {
             by_resource
                 .entry((wanted.group, wanted.resource))
                 .or_default()
@@ -171,6 +193,19 @@ pub fn roles_of(
         .collect()
 }
 
+/// The namespace each role [`roles_of`] gives is in, by the capability's name, for those held to one
+/// ([`Capability::namespace`]): what the catalog's Role for it must name, by its key in the cluster's namespaces.
+pub fn role_namespaces_of(
+    needs: &[Capability],
+    operations: &[OperationDecl],
+) -> BTreeMap<String, String> {
+    needs
+        .iter()
+        .filter(|c| !role_of(**c, operations).is_empty())
+        .filter_map(|c| Some((c.as_str().to_string(), c.namespace()?.to_string())))
+        .collect()
+}
+
 impl Capability {
     /// Every capability, in the order the catalog lists them.
     pub const ALL: [Capability; 8] = [
@@ -183,6 +218,16 @@ impl Capability {
         Capability::SoftState,
         Capability::JobRun,
     ];
+
+    /// The one namespace its Kubernetes role is in, by its key in the cluster's namespaces, for a capability held to one;
+    /// `None` for one that is not (a ClusterRole, or a Role in each namespace the catalog places it in). It grants only
+    /// what an operation held to the same declares ([`granted`]).
+    pub const fn namespace(self) -> Option<&'static str> {
+        match self {
+            Capability::JobRun => Some(JOB_RUN_NAMESPACE),
+            _ => None,
+        }
+    }
 
     /// What it lets an agent do to the Kubernetes API.
     pub const fn grants(self) -> Grants {
@@ -450,14 +495,15 @@ mod tests {
     use proptest::prelude::*;
 
     fn cluster(access: &'static [Access]) -> OperationDecl {
+        held_in(None, access)
+    }
+
+    fn held_in(namespace: Option<&'static str>, access: &'static [Access]) -> OperationDecl {
         OperationDecl {
             name: "op",
             doc: "",
             protocol: ProtocolKind::KUBERNETES,
-            location: Location::Cluster {
-                access,
-                namespace: None,
-            },
+            location: Location::Cluster { access, namespace },
         }
     }
 
@@ -473,18 +519,79 @@ mod tests {
     fn kube_api_read_reads_anything_but_secrets() {
         assert!(granted(
             &[Capability::KubeApiRead],
-            &Access::new(Verb::Watch, "apps", "deployments")
+            &Access::new(Verb::Watch, "apps", "deployments"),
+            None
         ));
         for verb in [Verb::Get, Verb::List, Verb::Watch] {
             assert!(!granted(
                 &[Capability::KubeApiRead],
-                &Access::new(verb, "", "secrets")
+                &Access::new(verb, "", "secrets"),
+                None
             ));
         }
         assert!(!granted(
             &[Capability::KubeApiRead],
-            &Access::new(Verb::Create, "batch", "jobs")
+            &Access::new(Verb::Create, "batch", "jobs"),
+            None
         ));
+    }
+
+    /// A capability grants only to an operation held where its role is: job-run's writes in its namespace and nowhere
+    /// else, and the capabilities held to none (a ClusterRole, a Role in each attested namespace) never to an operation
+    /// held to one.
+    #[test]
+    fn a_capability_grants_only_in_its_own_namespace() {
+        let create_jobs = Access::new(Verb::Create, "batch", "jobs");
+        assert_eq!(Capability::JobRun.namespace(), Some(JOB_RUN_NAMESPACE));
+        assert!(granted(&[Capability::JobRun], &create_jobs, Some("builds")));
+        for elsewhere in [None, Some("core")] {
+            assert!(
+                !granted(&[Capability::JobRun], &create_jobs, elsewhere),
+                "{elsewhere:?}"
+            );
+        }
+        let watch_pods = Access::new(Verb::Watch, "", "pods");
+        for capability in [Capability::KubeApiRead, Capability::PodRead] {
+            assert_eq!(capability.namespace(), None);
+            assert!(granted(&[capability], &watch_pods, None), "{capability}");
+            assert!(
+                !granted(&[capability], &watch_pods, Some("builds")),
+                "{capability}"
+            );
+        }
+        // Who holds an access is each capability that grants it there, once, in the order they are listed.
+        assert_eq!(
+            holders(
+                &[Capability::PodRead, Capability::KubeApiRead, Capability::PodRead],
+                &watch_pods,
+                None
+            ),
+            [Capability::PodRead, Capability::KubeApiRead]
+        );
+        assert!(holders(&Capability::ALL, &create_jobs, None).is_empty());
+        assert_eq!(
+            holders(&Capability::ALL, &create_jobs, Some("builds")),
+            [Capability::JobRun]
+        );
+    }
+
+    /// The namespace of each role is in the scaffold beside it, for the capabilities held to one: job-run's in `builds`,
+    /// and none for a role held to none, or for a capability that gives no role.
+    #[test]
+    fn each_role_held_to_a_namespace_says_which() {
+        const BOTH: &[Access] = &[
+            Access::new(Verb::Create, "batch", "jobs"),
+            Access::new(Verb::Watch, "", "pods"),
+        ];
+        let operations = [held_in(Some("builds"), BOTH), cluster(BOTH)];
+        let needs = [Capability::KubeApiRead, Capability::JobRun];
+        assert_eq!(
+            role_namespaces_of(&needs, &operations)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [("job-run".to_string(), "builds".to_string())]
+        );
+        assert!(role_namespaces_of(&needs, &[cluster(BOTH)]).is_empty());
     }
 
     #[test]
@@ -517,11 +624,14 @@ mod tests {
             Access::new(Verb::Create, "batch", "jobs"),
             Access::new(Verb::Watch, "", "pods"),
         ];
-        let operations = [cluster(BOTH)];
+        // The same accesses held to job-run's namespace, and to none: job-run's role holds the write from the first alone
+        // (and not the watch, which it does not grant), kube-api-read's the watch from the second alone.
+        let operations = [held_in(Some(JOB_RUN_NAMESPACE), BOTH), cluster(BOTH)];
         assert_eq!(
             role_of(Capability::JobRun, &operations),
             [rule("batch", "jobs", &["create"])]
         );
+        assert!(role_of(Capability::JobRun, &[cluster(BOTH)]).is_empty());
         assert_eq!(
             role_of(Capability::KubeApiRead, &operations),
             [rule("", "pods", &["list", "watch"])]
@@ -544,10 +654,13 @@ mod tests {
         Access::new(Verb::Get, "", "pods/log"),
     ];
 
-    fn declared(accesses: &[Vec<Access>]) -> Vec<OperationDecl> {
+    /// The namespaces a declaration may name: none, job-run's, and one no capability is held to.
+    const NAMESPACES: [Option<&str>; 3] = [None, Some(JOB_RUN_NAMESPACE), Some("core")];
+
+    fn declared(accesses: &[(Option<&'static str>, Vec<Access>)]) -> Vec<OperationDecl> {
         accesses
             .iter()
-            .map(|a| cluster(Box::leak(a.clone().into_boxed_slice())))
+            .map(|(namespace, a)| held_in(*namespace, Box::leak(a.clone().into_boxed_slice())))
             .collect()
     }
 
@@ -563,23 +676,38 @@ mod tests {
     }
 
     proptest! {
-        /// A role allows exactly the RBAC verbs of what the operations declare and the capability grants, nothing
-        /// else: one rule per resource, its verbs sorted and each once, the rules sorted, whatever order the operations
-        /// come in. So no role holds a Secret, none holds a write its capability does not grant, and none misses the
-        /// list a declared watch makes.
+        /// A role allows exactly the RBAC verbs of what the operations declare and the capability grants, in the
+        /// capability's own namespace, nothing else: one rule per resource, its verbs sorted and each once, the rules
+        /// sorted, whatever order the operations come in. So no role holds a Secret, none holds a write its capability
+        /// does not grant, none holds what an operation declares in another namespace, and none misses the list a
+        /// declared watch makes.
         #[test]
         fn a_role_allows_exactly_what_is_declared_and_granted(
             capability in proptest::sample::select(Capability::ALL.to_vec()),
             accesses in proptest::collection::vec(
-                proptest::collection::vec(proptest::sample::select(ACCESSES.to_vec()), 1..4),
+                (
+                    proptest::sample::select(NAMESPACES.to_vec()),
+                    proptest::collection::vec(proptest::sample::select(ACCESSES.to_vec()), 1..4),
+                ),
                 0..4,
             ),
         ) {
             let role = role_of(capability, &declared(&accesses));
+            // Where the capability's role is, said apart from the code: job-run's in the build namespace, the others in
+            // none.
+            let its_own = |namespace: Option<&str>| match capability {
+                Capability::JobRun => namespace == Some("builds"),
+                _ => namespace.is_none(),
+            };
             let mut expected = std::collections::BTreeSet::new();
-            for access in accesses.iter().flatten().filter(|a| granted(&[capability], a)) {
-                for verb in access.verb.uses() {
-                    expected.insert((access.group.to_string(), access.resource.to_string(), verb.as_str().to_string()));
+            for (namespace, listed) in &accesses {
+                if !its_own(*namespace) {
+                    continue;
+                }
+                for access in listed.iter().filter(|a| granted(&[capability], a, *namespace)) {
+                    for verb in access.verb.uses() {
+                        expected.insert((access.group.to_string(), access.resource.to_string(), verb.as_str().to_string()));
+                    }
                 }
             }
             prop_assert_eq!(allows(&role), expected);
@@ -600,7 +728,7 @@ mod tests {
             let mut reversed = accesses.clone();
             reversed.reverse();
             for each in &mut reversed {
-                each.reverse();
+                each.1.reverse();
             }
             prop_assert_eq!(role_of(capability, &declared(&reversed)), role);
         }
