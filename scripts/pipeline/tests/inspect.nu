@@ -90,6 +90,41 @@ def main [] {
             }
         }
         {
+            name: "executable entries are counted in every layer, a file replaced or deleted above included; a whiteout is none"
+            body: {
+                # Layer 1 replaces /bin/a and deletes /bin/b (its whiteout, given an execute bit here to show a marker is
+                # never an entry). The image's filesystem holds one executable; its layers hold three entries.
+                let root = mktemp --directory --tmpdir inspect-test.XXXXXX
+                let made = archive $root [
+                    {
+                        files: [
+                            {path: "/bin/a", text: "a, first", executable: true}
+                            {path: "/bin/b", text: "b", executable: true}
+                        ]
+                        links: []
+                    }
+                    {
+                        files: [
+                            {
+                                path: "/bin/a"
+                                text: "a, replaced"
+                                executable: true
+                            }
+                            {path: "/bin/.wh.b", text: "", executable: true}
+                        ]
+                        links: []
+                    }
+                ]
+                let image = inspect-archive $made.archive ($root | path join "scratch")
+                assert equal ($image.executables | sort-by diff_id path) ([
+                    {diff_id: $made.diff_ids.0, path: "/bin/a", hash: (text-digest "a, first")}
+                    {diff_id: $made.diff_ids.0, path: "/bin/b", hash: (text-digest "b")}
+                    {diff_id: $made.diff_ids.1, path: "/bin/a", hash: (text-digest "a, replaced")}
+                ] | sort-by diff_id path)
+                rm --recursive --force $root
+            }
+        }
+        {
             name: "a binary is found by its hash at each place it lies; one the image does not hold is missing, not refused"
             body: {
                 let executables = [

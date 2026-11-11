@@ -203,6 +203,14 @@ def main [] {
                 }
                 assert equal $r.exit_code 0 (brief $r)
                 assert (created $r) "the image is said to be created"
+                # The count is of entries in its layers, not of the image's executables (Test's M1), and is named so.
+                assert (
+                    $r.stdout
+                    | str contains '"name":"polar.image/executable-entries"'
+                ) "the count is not named entries"
+                assert (
+                    not ($r.stdout | str contains '"name":"polar.image/executables"')
+                ) "the count is named executables"
                 assert ((said $r) | str contains "skipping signature") "signing is said to be skipped"
             }
         }
