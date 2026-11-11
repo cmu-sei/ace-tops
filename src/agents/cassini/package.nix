@@ -31,11 +31,19 @@
 , ...
 }:
 let
+  # cargo-auditable, through nixpkgs' wrapper around the toolchain crane builds with (`craneLib.cargo`): the wrapper is
+  # cargo, with `auditable` added to each command, so `cargo build` is `cargo auditable build` and cassini-server carries
+  # the record of the crates it was built from, which auditable2cdx reads back as CycloneDX (build-inspect-ship, S2).
+  # Listed before crane's own cargo in nativeBuildInputs, so it is the cargo on PATH. On for cassini-server first: the
+  # other agents follow once the host's test shows what the record holds.
+  auditableCargo = pkgs.cargo-auditable-cargo-wrapper.override { cargo = craneLib.cargo; };
+
   cassini = craneLib.buildPackage (crateArgs // {
     pname = "cassini-server";
     cargoExtraArgs = "--bin cassini-server --locked";
     src = workspaceFileset ./broker;
     doCheck = false;
+    nativeBuildInputs = (crateArgs.nativeBuildInputs or [ ]) ++ [ auditableCargo ];
   });
 
   client = craneLib.buildPackage (crateArgs // {

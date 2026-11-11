@@ -121,6 +121,19 @@ let
         POLAR_VERSION = polarVersion;
         # NB: we disable tests since we'll run them all via cargo-nextest
         doCheck = false;
+        # The build's cargo log, kept as a second output (build-inspect-ship, S2). crane writes it (`$cargoBuildLog`, cargo's
+        # `--message-format json-render-diagnostics`) and would drop it; the pipeline reads from it which binaries the build
+        # linked, and which crates it compiled. Not in `out`, so in no image: an image takes a derivation's `out` alone. A
+        # derivation whose build writes no log gets an empty one, which the pipeline reports as no binaries.
+        outputs = [ "out" "cargolog" ];
+        postInstall = ''
+          mkdir -p "$cargolog"
+          if [ -n "''${cargoBuildLog:-}" ] && [ -f "$cargoBuildLog" ]; then
+            cp "$cargoBuildLog" "$cargolog/cargo-build.json"
+          else
+            : > "$cargolog/cargo-build.json"
+          fi
+        '';
     };
 
     # Path to your workspace root
