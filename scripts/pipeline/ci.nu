@@ -82,7 +82,7 @@ use ./core/hashing.nu *
 use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
 use ./core/binaries.nu [linked-binaries sbom-gap]
-use ./core/nix.nu [observed-realisation]
+use ./core/nix.nu [observed-realisation store-records]
 use ./core/inspect.nu [inspect-archive placements]
 use ../../infra/check-sources.nu [summary_lines]
 const COMPONENT = "ci"
@@ -697,7 +697,7 @@ def realise-derivation [ref: string]: nothing -> record {
         }
     }
     # What the store records of them after: built here (`ultimate`), signed from elsewhere, and when registered.
-    let after = (^nix path-info --json ...$outputs | complete)
+    let after = store-records $outputs
     let realisation = observed-realisation $outputs $before $after
     log-info $"($ref): ($realisation.realised)" --component $COMPONENT
     {

@@ -989,7 +989,12 @@ only.
   test first): H1, an image not delivered as inspected (registry digest empty or another) fails, and any failed image fails the
   pipeline with a non-zero exit (`scripts/pipeline/tests/ship.nu` runs `ci.nu` itself with stand-ins); H2, `polar.nix/realised`
   and `built-at` are observed of the store before and after the build (`nix-store --check-validity`, `nix path-info --json`:
-  present, built, fetched or unknown, built-at the store's registration time), no longer a dry run's plan; M1,
+  present, built, fetched or unknown, built-at the store's registration time), no longer a dry run's plan. Seen on the host at
+  `62eaab46`: `built` (the healthcheck, `ultimate`, built-at its `registrationTime`) and `present`; `fetched`'s store record seen
+  on a cache path, not yet as a fact. `path-info` is asked for `--json-format 1`, and with bare `--json` only when Nix refuses
+  the flag (2.34 warns that bare `--json` is deprecated and will become an error; the CI image's 2.18.2 has no
+  `--json-format`). OPEN: whether format 1 itself is to go is not known here (nothing found published); `nix path-info
+  --help` on the host's 2.34 may say. M1,
   `polar.image/executables` is renamed `polar.image/executable-entries`, the layers' entries, replaced and deleted files
   included; M2, the gap is worded as SBOM packages with no unit compiled for the binary's target, never as not in the binary;
   M3, above. **Decided, no SBOM of a binary** (build-inspect-ship S2, 2026-11-11,

@@ -343,7 +343,9 @@ each binary an image ships with Nix and links it to its package's SBOM
 observed of the store itself, never planned: `polar.nix/realised` is
 `present` when every output was valid before the build
 (`nix-store --check-validity --print-invalid`), and otherwise what
-`nix path-info --json` records after it of the outputs that were not:
+`nix path-info --json --json-format 1` records after it of the outputs
+that were not (bare `--json`, deprecated from Nix 2.34, only for a Nix
+that has no `--json-format`, as the CI image's 2.18.2 has not):
 `built` when the store records them as built on this machine (`ultimate`),
 `fetched` when as not built here and signed, `unknown` when anything else.
 `polar.nix/built-at` is the latest time the store registered one of them,
