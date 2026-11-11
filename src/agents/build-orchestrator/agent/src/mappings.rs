@@ -49,14 +49,18 @@ pub const MAX_WORD: usize = 4096;
 pub const MAX_LOCKS: usize = 16;
 /// Most capabilities a mapping adds: more than Linux has.
 pub const MAX_CAPABILITIES: usize = 64;
+/// Most facts a mapping allows, and the longest name.
+pub const MAX_FACTS: usize = 64;
+pub const MAX_FACT: usize = 128;
 
-const FIELDS: [&str; 6] = [
+const FIELDS: [&str; 7] = [
     "url",
     "pipeline_image",
     "command",
     "privileges",
     "credential",
     "locks",
+    "facts",
 ];
 const PRIVILEGES: [&str; 3] = [
     "run_as_root",
@@ -68,7 +72,7 @@ pub static MAPPINGS: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: "The repositories build-orchestrator builds, and with what. Replaced whole by each version.",
-    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name, or an ssh URL of a host name or an address with a credential", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it; over ssh only with a credential, an ssh key that pins the server's host key"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}}}}"#,
+    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name, or an ssh URL of a host name or an address with a credential", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it; over ssh only with a credential, an ssh key that pins the server's host key"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}, "facts": {"type": "list of fact names, each a namespace and a name in lower case, such as polar.image/found-at", "required": false, "doc": "the facts its builds may report, by name: a fact named otherwise is refused; left out, none"}}}}"#,
     validate,
 };
 
@@ -88,6 +92,8 @@ pub struct Mapping {
     pub credential: Option<String>,
     /// The Cargo locks in its tree whose dependencies its builds are given, by digest.
     pub locks: Vec<String>,
+    /// The names of the facts its builds may report (`polar.image/found-at`): a fact named otherwise is refused.
+    pub facts: Vec<String>,
 }
 
 fn validate(body: &Value) -> Result<(), Vec<String>> {
@@ -181,6 +187,27 @@ fn is_lock_path(path: &str) -> bool {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
         })
+}
+
+const FACTS: List = List {
+    shown: "facts",
+    most: MAX_FACTS,
+    longest: MAX_FACT,
+    may_be_empty: true,
+};
+
+/// Whether `name` is a fact's name: a namespace of dot-separated words, a slash, and a word, each word a lower-case letter
+/// and then lower-case letters, digits and `-` (`polar.image/found-at`).
+pub fn is_fact_name(name: &str) -> bool {
+    let word = |w: &str| {
+        w.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+            && w.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    match name.split_once('/') {
+        Some((namespace, rest)) => namespace.split('.').all(word) && word(rest),
+        None => false,
+    }
 }
 
 const CAPABILITIES: List = List {
@@ -347,6 +374,19 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             "{label}: `locks` names a path that is not a Cargo.lock within the repository"
         ));
     }
+    let facts = text_list(object, &label, "facts", &FACTS, &mut problems).unwrap_or_default();
+    if facts.iter().any(|name| !is_fact_name(name)) {
+        problems.push(format!(
+            "{label}: `facts` names one that is not a namespace and a name in lower case, such as polar.image/found-at"
+        ));
+    }
+    if facts
+        .iter()
+        .enumerate()
+        .any(|(i, name)| facts[..i].contains(name))
+    {
+        problems.push(format!("{label}: `facts` names one more than once"));
+    }
     if problems.is_empty() {
         Ok(Mapping {
             repo: repo_id_of(&url),
@@ -356,6 +396,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             privileges,
             credential,
             locks,
+            facts,
         })
     } else {
         Err(problems)
@@ -490,6 +531,55 @@ mod tests {
             assert!(
                 problems.iter().any(|p| p.contains("entry 0: `locks`")),
                 "{bad}: {problems:?}"
+            );
+        }
+    }
+
+    /// A mapping names the facts its builds may report, each a namespace and a name; a name of another form, a repeat, or
+    /// a list too long is refused, naming the field and never the name.
+    #[test]
+    fn a_mapping_names_the_facts_its_builds_may_report() {
+        let parsed = parse(&json!({"repositories": [
+            {"url": "https://git.example.org/a/b.git", "pipeline_image": image(),
+             "facts": ["polar.image/found-at", "polar.nix/realised"]}
+        ]}))
+        .unwrap();
+        assert_eq!(
+            parsed[0].facts,
+            ["polar.image/found-at", "polar.nix/realised"]
+        );
+        let none = parse(&json!({"repositories": [
+            {"url": "https://git.example.org/a/b.git", "pipeline_image": image()}
+        ]}))
+        .unwrap();
+        assert!(none[0].facts.is_empty(), "left out, no fact is allowed");
+        let too_long = format!("a/{}", "b".repeat(MAX_FACT));
+        let many: Vec<String> = (0..=MAX_FACTS)
+            .map(|i| format!("polar.test/f{i}"))
+            .collect();
+        for bad in [
+            json!(["Polar/Hidden"]),
+            json!(["noslash"]),
+            json!(["a/b/c"]),
+            json!(["/name"]),
+            json!(["space/a name"]),
+            json!([""]),
+            json!([too_long]),
+            json!(["polar.x/a", "polar.x/a"]),
+            json!(many),
+            json!("polar.x/a"),
+        ] {
+            let problems = parse(&json!({"repositories": [
+                {"url": "https://git.example.org/a/b.git", "pipeline_image": image(), "facts": bad}
+            ]}))
+            .unwrap_err();
+            assert!(
+                problems.iter().any(|p| p.contains("entry 0: `facts`")),
+                "{bad}: {problems:?}"
+            );
+            assert!(
+                !problems.iter().any(|p| p.contains("Hidden")),
+                "{problems:?}"
             );
         }
     }

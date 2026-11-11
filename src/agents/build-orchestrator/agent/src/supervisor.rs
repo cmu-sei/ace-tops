@@ -235,7 +235,7 @@ impl OrchestratorSupervisor {
         state.starts.insert(
             build_id,
             Start::New {
-                mapping,
+                mapping: Box::new(mapping),
                 ref_name,
                 triggered_by: published_by,
                 default_command: state.tuning.default_command.clone(),
@@ -635,6 +635,7 @@ mod tests {
             privileges: Privileges::default(),
             credential: None,
             locks: vec![],
+            facts: vec![],
         }]
     }
 

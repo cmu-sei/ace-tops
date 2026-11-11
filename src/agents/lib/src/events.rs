@@ -289,6 +289,60 @@ pub struct PackageStatusFoundPayload {
     pub advisory_url: Option<String>,
     pub scanner: Option<String>,
 }
+
+/// A fact a build's tool found, about a thing the graph knows by its key (build-orchestrator.md, the `fact_reported`
+/// kind): a subject, a namespaced name (`polar.image/found-at`), maybe an object and a value, and the tool and its version.
+/// The orchestrator relays one only when the build's mapping names it, and stamps `build_id`.
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+pub struct FactReportedPayload {
+    pub build_id: String,
+    pub subject: FactRef,
+    pub name: String,
+    pub object: Option<FactRef>,
+    pub value: Option<String>,
+    pub tool: String,
+    pub tool_version: String,
+}
+
+/// A thing a fact names: a node, by its label and the key it is merged on.
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
+pub struct FactRef {
+    pub label: FactLabel,
+    pub key: String,
+}
+
+/// The labels a fact may name, each keyed by what a build holds: a digest, or a package's purl.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
+pub enum FactLabel {
+    /// By `content_hash`.
+    Binary,
+    /// By manifest `digest`.
+    OCIArtifact,
+    /// By uncompressed `diff_id`.
+    OCILayerDiffId,
+    /// By `purl`.
+    Package,
+    /// By `content_hash`.
+    BuildArtifact,
+    /// By `artifact_content_hash`.
+    Sbom,
+}
+
 /// Payload for a compiled binary that has been linked to its source package and SBOM.
 ///
 /// The `binding_digest` is a cryptographic attestation:
@@ -508,6 +562,10 @@ pub enum ProvenanceEvent {
     /// An OCI container image was built and is available as a local tarball.
     /// See [`ContainerImageCreatedPayload`] for field semantics.
     ContainerImageCreated(ContainerImageCreatedPayload),
+
+    /// A fact a build's tool found, its name one the build's mapping allows.
+    /// See [`FactReportedPayload`] for field semantics.
+    FactReported(FactReportedPayload),
 
     // ── Discovery events ───────────────────────────────────────────────────────
     // Emitted by observer agents (GitLab, k8s, registry scanners).

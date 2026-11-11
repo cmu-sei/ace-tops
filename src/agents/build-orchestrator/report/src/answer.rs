@@ -73,6 +73,7 @@ pub fn kind_code(kind: Kind) -> u32 {
         Kind::SbomAnalyzed => 6,
         Kind::BinaryLinked => 7,
         Kind::ContainerImageCreated => 8,
+        Kind::FactReported => 9,
     }
 }
 

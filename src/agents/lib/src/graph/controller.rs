@@ -78,6 +78,10 @@ pub mod rel {
     pub const ASSERTS: &str = "ASSERTS";
     /// A dependency tree includes a package, with whether its root depends on the package directly.
     pub const INCLUDES: &str = "INCLUDES";
+    /// A fact is about its subject.
+    pub const ABOUT: &str = "ABOUT";
+    /// A fact names its object.
+    pub const NAMES: &str = "NAMES";
     /// An OCIArtifact (registry manifest) refers to a ContainerImage
     /// (content identity). Multiple OCIArtifacts can refer to the same
     /// ContainerImage when pushed to different registries.

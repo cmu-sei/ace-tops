@@ -41,12 +41,14 @@
 //! | [`execution`] | `BuildJob`: what ran, where, and how it ended   | orchestrator, CI     |
 //! | [`outputs`]   | what a build produced: artifacts, SBOMs, images | the producing build  |
 //! | [`findings`]  | facts about packages: advisories, analyses      | scanners, analyzers  |
+//! | [`facts`]     | what a build's tools found, as named facts     | the build's tools     |
 //! | [`registry`]  | what a registry actually serves                 | the resolver         |
 //!
 //! [`project`] is the only dispatch, and it has no wildcard arm: adding a
 //! [`ProvenanceEvent`] variant fails to compile until it is routed here.
 
 pub mod execution;
+pub mod facts;
 pub mod findings;
 pub mod outputs;
 pub mod registry;
@@ -176,6 +178,7 @@ pub fn project(
         ProvenanceEvent::SbomAnalyzed(fragment) => outputs::sbom_analyzed(fragment),
         ProvenanceEvent::BinaryLinked(p) => outputs::binary_linked(p, observed_at),
         ProvenanceEvent::ContainerImageCreated(p) => outputs::container_image_created(p),
+        ProvenanceEvent::FactReported(p) => facts::fact_reported(p, observed_at),
 
         // ── Findings ──────────────────────────────────────────────────────────
         ProvenanceEvent::SecurityAdvisoryFound(p) => findings::security_advisory(p, observed_at),
@@ -252,6 +255,7 @@ pub fn whose_word(event: &ProvenanceEvent) -> Word {
         | ProvenanceEvent::SbomAnalyzed(_)
         | ProvenanceEvent::BinaryLinked(_)
         | ProvenanceEvent::ContainerImageCreated(_)
+        | ProvenanceEvent::FactReported(_)
         | ProvenanceEvent::OCIArtifactCreated { .. }
         | ProvenanceEvent::SecurityAdvisoryFound(_)
         | ProvenanceEvent::PackageStatusFound(_)
@@ -285,6 +289,7 @@ pub fn build_id_of(event: &ProvenanceEvent) -> Option<&str> {
         | ProvenanceEvent::ExecutionCancelled { build_id, .. } => Some(build_id),
         ProvenanceEvent::SecurityAdvisoryFound(p) => Some(&p.build_id),
         ProvenanceEvent::PackageStatusFound(p) => Some(&p.build_id),
+        ProvenanceEvent::FactReported(p) => Some(&p.build_id),
         ProvenanceEvent::ArtifactProduced(p) => p.build_id.as_deref(),
         ProvenanceEvent::OCIArtifactCreated { build_id, .. } => build_id.as_deref(),
         ProvenanceEvent::SbomAnalyzed(_)
@@ -647,6 +652,21 @@ mod tests {
             ProvenanceEvent::OCIRegistryDiscovered {
                 hostname: "reg.example".into(),
             },
+            ProvenanceEvent::FactReported(polar::FactReportedPayload {
+                build_id: "b1".into(),
+                subject: polar::FactRef {
+                    label: polar::FactLabel::Binary,
+                    key: "sha256:bin".into(),
+                },
+                name: "polar.image/found-at".into(),
+                object: Some(polar::FactRef {
+                    label: polar::FactLabel::OCILayerDiffId,
+                    key: "sha256:d0".into(),
+                }),
+                value: Some("/nix/store/x/bin/polar".into()),
+                tool: "polar-pipeline/oci.nu".into(),
+                tool_version: "3.0.0".into(),
+            }),
         ]
     }
 

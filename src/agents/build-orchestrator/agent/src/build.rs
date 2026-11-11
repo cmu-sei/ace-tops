@@ -68,9 +68,10 @@ pub const AT_REPORTS: &str = "reports";
 
 /// How a build begins.
 pub enum Start {
-    /// Admitted: its source to prepare and its Job to make, as its mapping says.
+    /// Admitted: its source to prepare and its Job to make, as its mapping says. The mapping is boxed: it is far larger
+    /// than an adopted build's handle, and a `Start` waits in the supervisor's map until its build is admitted.
     New {
-        mapping: Mapping,
+        mapping: Box<Mapping>,
         ref_name: String,
         /// Who reported the ref moved, as the broker stamped it.
         triggered_by: Option<String>,
@@ -144,6 +145,9 @@ pub struct BuildActorState {
     /// What its end says of its log and its refused reports: none and none until its pod's log is read.
     kept: Option<BuildLog>,
     refused: u64,
+    /// The facts its mapping lets it report. An adopted build's mapping is not known to it, so it has none, and its facts
+    /// are refused.
+    facts: Vec<String>,
 }
 
 pub struct BuildActor;
@@ -211,7 +215,8 @@ impl BuildActor {
             }
         };
         let mut lines = Lines::new(state.bounds.line);
-        let mut relay = Relay::new(build_id.to_string(), state.relay);
+        let mut relay =
+            Relay::new(build_id.to_string(), state.relay).with_facts(state.facts.clone());
         let mut relayed = 0;
         let mut kept = Vec::new();
         let mut truncated = false;
@@ -415,6 +420,7 @@ impl BuildActor {
                 default_command,
             }) => {
                 Self::transition(state, BuildState::PreparingSource, None, None, None);
+                state.facts = mapping.facts.clone();
                 let how = How {
                     credential: mapping.credential.clone(),
                     locks: mapping.locks.clone(),
@@ -551,6 +557,7 @@ impl Actor for BuildActor {
             running: false,
             kept: None,
             refused: 0,
+            facts: Vec::new(),
         })
     }
 

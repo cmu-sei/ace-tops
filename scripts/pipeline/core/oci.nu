@@ -180,6 +180,63 @@ export def upload-image [
     {remote_ref: $remote_ref, digest: $digest, name: $label}
 }
 
+# The image Nix built (a docker-archive tarball) as the OCI archive that is inspected and shipped (build-inspect-ship,
+# S3): `<dir>/<name>.oci.tar`, its layers gzip-compressed once, here, so that its manifest, and so the digest a registry
+# will serve, exist before anything is pushed. Returns `{path, hash}`, the hash the archive file's, or null when skopeo
+# cannot make it.
+export def to-oci-archive [tarball: path, name: string, dir: path]: nothing -> any {
+    let file = $dir | path join $"($name).oci.tar"
+    rm --force $file
+    let real = readlink -f $tarball | str trim
+    let made = (
+        ^skopeo copy --quiet --dest-compress-format gzip $"docker-archive:($real)" $"oci-archive:($file):($name)"
+        | complete
+    )
+    if $made.exit_code != 0 {
+        log-error $"($name): the OCI archive could not be made: ($made.stderr | str trim)" --component oci
+        return null
+    }
+    {
+        path: $file
+        hash: (content-hash-file $file)
+    }
+}
+
+# Push an OCI archive as it is (`--preserve-digests`: skopeo refuses rather than change a digest), then ask the registry
+# what it serves there. Returns `{remote_ref, digest, name}`, the digest the registry's, for the caller to hold to the
+# one it inspected. Logs skopeo's output before any error, as upload-image does.
+export def push-archive [
+    archive: path
+    remote_ref: string
+    --name: string = ""
+    --insecure
+]: nothing -> record {
+    let label = if ($name | is-not-empty) { $name } else { $remote_ref }
+    log-info $"Pushing ($label) -> ($remote_ref), digests preserved" --component oci
+    mut copy_args = [copy --preserve-digests $"oci-archive:($archive)" $remote_ref]
+    if $insecure {
+        log-warn "Uploading images to insecure registry!" --component oci
+        $copy_args = ($copy_args | append "--dest-tls-verify=false")
+    }
+    let pushed = (^skopeo ...$copy_args | complete)
+    if $pushed.exit_code != 0 {
+        let msg = $pushed.stderr? | default $pushed.stdout | str trim
+        log-error $"skopeo copy failed for ($label): ($msg)" --component oci
+        error make {msg: $"Upload failed for ($label): ($msg)"}
+    }
+    mut inspect_args = [inspect $remote_ref]
+    if $insecure { $inspect_args = ($inspect_args | append "--tls-verify=false") }
+    let inspected = (^skopeo ...$inspect_args | complete)
+    let digest = if $inspected.exit_code == 0 {
+        $inspected.stdout | from json | get -o Digest | default ""
+    } else {
+        log-warn $"skopeo inspect failed for ($label): ($inspected.stderr? | default $inspected.stdout | str trim)" --component oci
+        ""
+    }
+    log-info $"Pushed ($label): ($digest)" --component oci
+    {remote_ref: $remote_ref, digest: $digest, name: $label}
+}
+
 # Sign a container image in a registry using cosign.
 #
 # The image must already be pushed — cosign signs by digest in the registry,

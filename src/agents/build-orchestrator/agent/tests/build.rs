@@ -226,6 +226,7 @@ fn mapping_with(command: Option<Vec<String>>, credential: Option<&str>) -> Mappi
         },
         credential: credential.map(str::to_string),
         locks: vec![],
+        facts: vec![],
     }
 }
 
@@ -245,7 +246,7 @@ fn request() -> BuildRequest {
 
 fn new_build(command: Option<Vec<String>>) -> Start {
     Start::New {
-        mapping: mapping(command),
+        mapping: Box::new(mapping(command)),
         ref_name: "refs/heads/main".into(),
         triggered_by: Some("git-repo-observer".into()),
         default_command: vec!["/bin/default".into()],
@@ -830,7 +831,7 @@ async fn a_build_is_read_to_its_bounds_and_no_further() {
 async fn the_source_is_fetched_with_the_mappings_credential_and_held_to_the_builds_bound() {
     for credential in [None, Some("git-a")] {
         let start = Start::New {
-            mapping: mapping_with(None, credential),
+            mapping: Box::new(mapping_with(None, credential)),
             ref_name: "refs/heads/main".into(),
             triggered_by: None,
             default_command: vec![],

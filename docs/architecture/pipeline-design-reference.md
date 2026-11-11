@@ -60,7 +60,7 @@ Phase 1.5 cargo-audit scan          │           ▼
            reconstructs a purl)    │           │
          → events.nu emits         │           ▼
            typed JSON/rkyv events  │      dispatch → routes by variant
-Phase 2  cargo build + link        │      ┌──────────────┬─────────────┐
+Phase 2  nix build + link          │      ┌──────────────┬─────────────┐
          → BinaryLinked events ────┤      lifecycle        artifact domain
 Phase 3  container image build     │      (BuildActor /   (ProvenanceLinker)
          → purl cross-check        │       project_event)  SBOM, Binary,
@@ -321,6 +321,67 @@ excluded with no confirmed override flag; build-dependencies included by
 default but tagged non-runtime; platform-conditional dependencies
 structurally unclosable by a single invocation) — not implemented.
 
+**Three claims, each about its own subject (build-inspect-ship).** The
+**SBOM** is a claim about the *source tree*: the workspace at a commit, each
+member as `cargo metadata` resolves the whole workspace, features unified
+across members. It is not a claim about any binary, and is not reported as
+one: `BinaryLinked` says which SBOM describes the binary's package, nothing
+more. The **cargo log** (each crane derivation's `cargolog` output,
+`cargo-build.json`) is the record of *one build*: which crates were compiled,
+and for which machine. The **image inspection** of S3 is the one observation
+of the *artifact itself*: which binary, by its hash, lies in which image.
+There is no SBOM of a binary. `cargo-auditable` was tried for one and
+dropped: the record that nixpkgs' `cargo-auditable` 0.6.2 embedded in
+`cassini-server` (format 0, taken from `cargo metadata` too, proc-macros
+recorded as runtime dependencies) equalled the workspace SBOM, 492 packages
+against the 466 its build compiled, so it added nothing the workspace SBOM
+did not say. Neither it nor `auditable2cdx` is in the build or the CI image.
+
+**Built in build-inspect-ship S2, to be seen on the host:** Phase 2 builds
+each binary an image ships with Nix and links it to its package's SBOM
+(`BinaryLinked`). It then compares that SBOM with the binary's cargo log and
+reports the gap as facts (`fact_reported`): what the SBOM names that is not
+among the units cargo compiled for the binary's target, those whose files
+lie under the directory of its executable (`target/<triple>/release`, crane
+being given the musl target). A proc-macro or a build script (kinds
+`proc-macro` and `custom-build`) runs on the build machine, wherever it
+lies, and is never the target's. With no target set, the build machine's
+libraries would share the directory and read as the target's, so the gap
+would be understated, never overstated. Each package in the gap is reported
+by what the cargo log says of it, so each fact is true of what it names (the
+Binary, the Package by the SBOM's purl, the value the SBOM's content hash):
+`polar.cargo/not-compiled` when no unit of it was compiled for any machine;
+`polar.cargo/build-machine-only` when it was compiled, but only for the
+build machine (a proc-macro, a build script, or what only they need). Then
+`polar.cargo/sbom-compared` once (the Binary, the Sbom, the value the total
+of the two, "0" for none), so a binary compared and found whole reads apart
+from one never compared. On the host, cassini-server's gap was 128: 26 never
+compiled, 102 for the build machine only. Observation only: it fails
+nothing.
+`build-processor/tests/binary_trees.rs` (ignored; its fixtures are made on
+the host) compares the whole compiled set with the workspace SBOM, and
+reports every difference.
+
+**Built in build-inspect-ship S3, to be seen on the host:** Phase 3 ships
+exactly what it inspected. The Nix image is made once into an OCI archive,
+its layers gzip-compressed, so its manifest digest is known before the push;
+the archive is inspected (`scripts/pipeline/core/inspect.nu`): each layer's
+blob against its digest and its content against its diff_id, a mismatch
+failing the image, and every executable hashed where it lies. Each binary
+Phase 2 linked for the image is found by its hash, and reported as facts
+(`fact_reported`): `polar.image/found-at` for each place (the Binary, the
+OCILayerDiffId, the path), `polar.image/not-found` for one the image holds
+nowhere, `polar.image/executables` with the count. A missing binary is
+reported and stops nothing. Then that archive is pushed as it is (`skopeo
+copy --preserve-digests`), and the registry's digest must be the inspected
+one, or the upload is not recorded and not signed. Phase 2 reports
+`polar.nix/realised`, `polar.nix/store-path` and `polar.nix/built-at`, and
+(S2, above) `polar.cargo/not-compiled`, `polar.cargo/build-machine-only`
+and `polar.cargo/sbom-compared`. A
+build relayed by the orchestrator has these nine names relayed only if its
+mapping lists them (`facts`). Signing is cosign by the digest with
+`COSIGN_KEY`; no key is provisioned, so it says it skipped (`remaining-work.md`).
+
 **Deliberately deferred, by design, not oversight:** cross-scanner
 vulnerability identity reconciliation (RUSTSEC/CVE/GHSA convergence) —
 reserved a schema landing spot, no reconciliation logic; `yanked` crate
@@ -349,7 +410,8 @@ footnote.
 (`pkg:type/name@version`). Reliability varies by ecosystem; verified for
 `pkg:cargo` here, not assumed elsewhere. **SBOM** — Software Bill of
 Materials; here, CycloneDX JSON produced by `cargo-cyclonedx` per workspace
-member. **RUSTSEC** — the Rust ecosystem's own advisory database
+member: a claim about the source tree at a commit, not about a binary (§7).
+**RUSTSEC** — the Rust ecosystem's own advisory database
 (volunteer-maintained, not centrally scored). **GHSA** — GitHub Security
 Advisory, the de facto advisory-of-record for much of the open-source
 ecosystem, often present where a CVE never was requested. **CVE** — the

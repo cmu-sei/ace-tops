@@ -263,3 +263,26 @@ export def emit-binary-linked [
         binding_digest: (if ($binding_digest | is-not-empty) { $binding_digest })
     }
 }
+
+# A fact a build's tool found, about a thing the graph knows by its key (`fact_reported`, build-orchestrator.md): a
+# subject and an object are `{label, key}` (a label of the graph's that a build can key, Binary, OCIArtifact,
+# OCILayerDiffId, Package, BuildArtifact or Sbom). The orchestrator relays it only when the build's mapping names `name`.
+# Built whole, as a binary's link is: a field declared null keeps that type.
+export def emit-fact [
+    subject: record
+    name: string
+    tool: string
+    tool_version: string
+    --object: record
+    --value: string
+]: nothing -> nothing {
+    emit {
+        type: "fact_reported"
+        subject: $subject
+        name: $name
+        object: $object
+        value: (if ($value | is-not-empty) { $value })
+        tool: $tool
+        tool_version: $tool_version
+    }
+}

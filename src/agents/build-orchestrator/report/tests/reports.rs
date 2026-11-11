@@ -58,6 +58,40 @@ fn each_kind_a_build_may_report_is_read_and_its_build_id_never_believed() {
         }),
         "a field with a default may be left out"
     );
+    let fact = r#"{"type": "fact_reported", "build_id": "not-this-one", "subject": {"label": "Binary", "key": "sha256:01"}, "name": "polar.image/found-at", "object": {"label": "OCILayerDiffId", "key": "sha256:02"}, "value": "/nix/store/x-a/bin/a", "tool": "polar-pipeline/oci.nu", "tool_version": "3.0.0"}"#;
+    assert_eq!(
+        read(fact),
+        Ok(Report::FactReported(FactReported {
+            subject: FactRef {
+                label: FactLabel::Binary,
+                key: "sha256:01".into()
+            },
+            name: "polar.image/found-at".into(),
+            object: Some(FactRef {
+                label: FactLabel::OCILayerDiffId,
+                key: "sha256:02".into()
+            }),
+            value: Some("/nix/store/x-a/bin/a".into()),
+            tool: "polar-pipeline/oci.nu".into(),
+            tool_version: "3.0.0".into(),
+        }))
+    );
+    let bare = r#"{"type": "fact_reported", "subject": {"label": "Package", "key": "pkg:cargo/a@1"}, "name": "polar.nix/realised", "object": null, "tool": "t", "tool_version": "1"}"#;
+    assert_eq!(
+        read(bare),
+        Ok(Report::FactReported(FactReported {
+            subject: FactRef {
+                label: FactLabel::Package,
+                key: "pkg:cargo/a@1".into()
+            },
+            name: "polar.nix/realised".into(),
+            object: None,
+            value: None,
+            tool: "t".into(),
+            tool_version: "1".into(),
+        })),
+        "a fact's object may be null and its value left out"
+    );
 }
 
 #[test]
@@ -102,6 +136,30 @@ fn what_a_report_may_not_hold_is_refused() {
             r#"{"type": "container_image_created", "image_name": "i", "tarball_hash": "t", "config_digest": "c", "layers": [{"order": 4294967296, "diff_id": "d"}]}"#,
             Refusal::NumberTooLarge,
         ),
+        (
+            r#"{"type": "fact_reported", "subject": {"label": "Pod", "key": "k"}, "name": "n/x", "tool": "t", "tool_version": "1"}"#,
+            Refusal::UnknownWord,
+        ),
+        (
+            r#"{"type": "fact_reported", "subject": {"label": "Binary"}, "name": "n/x", "tool": "t", "tool_version": "1"}"#,
+            Refusal::MissingKey,
+        ),
+        (
+            r#"{"type": "fact_reported", "subject": {"label": "Binary", "key": "k", "path": "p"}, "name": "n/x", "tool": "t", "tool_version": "1"}"#,
+            Refusal::UnknownKey,
+        ),
+        (
+            r#"{"type": "fact_reported", "subject": "sha256:01", "name": "n/x", "tool": "t", "tool_version": "1"}"#,
+            Refusal::WrongType,
+        ),
+        (
+            r#"{"type": "fact_reported", "subject": {"label": "Binary", "key": "k"}, "name": "n/x", "value": 1, "tool": "t", "tool_version": "1"}"#,
+            Refusal::WrongType,
+        ),
+        (
+            r#"{"type": "fact_reported", "subject": {"label": "Binary", "key": "k"}, "name": "n/x", "tool": "t"}"#,
+            Refusal::MissingKey,
+        ),
     ] {
         assert_eq!(read(line), Err(why), "{line}");
     }
@@ -121,7 +179,7 @@ fn every_fuzz_seed_is_a_report_and_together_they_are_every_kind() {
     }
     kinds.sort_by_key(|k| format!("{k:?}"));
     kinds.dedup();
-    assert_eq!(kinds.len(), 8, "a seed of each kind");
+    assert_eq!(kinds.len(), 9, "a seed of each kind");
 }
 
 #[test]
@@ -287,7 +345,28 @@ fn report() -> impl Strategy<Value = Report> {
                     uri: t[9].clone(),
                 })
             }),
+        (
+            fact_ref(),
+            proptest::collection::vec(text(), 3),
+            proptest::option::of(fact_ref()),
+            maybe(),
+        )
+            .prop_map(|(subject, t, object, value)| {
+                Report::FactReported(FactReported {
+                    subject,
+                    name: t[0].clone(),
+                    object,
+                    value,
+                    tool: t[1].clone(),
+                    tool_version: t[2].clone(),
+                })
+            }),
     ]
+}
+
+fn fact_ref() -> impl Strategy<Value = FactRef> {
+    (proptest::sample::select(FactLabel::ALL.to_vec()), text())
+        .prop_map(|(label, key)| FactRef { label, key })
 }
 
 /// The written report with one field its kind must have renamed to one it does not have (`zz_` before its name). The first
@@ -302,6 +381,7 @@ fn without_first_required(line: &str, report: &Report) -> Option<String> {
         Report::SbomAnalyzed(_) => "\"components\"",
         Report::BinaryLinked { .. } => "\"root_purl\"",
         Report::ContainerImageCreated(_) => "\"layers\"",
+        Report::FactReported(_) => "\"subject\"",
     };
     line.find(required)
         .map(|at| format!("{}\"zz_{}", &line[..at], &line[at + 1..]))

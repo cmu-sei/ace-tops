@@ -42,19 +42,27 @@
 #     reconstructed by hand — and emit as SecurityAdvisory or PackageStatus
 #     events depending on kind (see scanning.nu).
 #
-#   Phase 2 — Cargo binaries
-#     cargo build --message-format=json produces ELF artifacts; each binary
-#     is linked back to its Phase 1 SBOM via a cryptographic binding digest.
-#     sbom_lookup flows in-process from Phase 1 — no file-based IPC needed.
+#   Phase 2 — Binaries, built by Nix
+#     Each binary an image in scope ships is built by Nix from its crane
+#     derivation (image-manifest, `binaries`), the store path its image is made
+#     from: there is no cargo build here, and a pipeline without Nix reports no
+#     binary. Its cargo log (the derivation's `cargolog` output) says what it
+#     linked; it is hashed as installed, reported with how Nix realised it
+#     (built, fetched or present), and linked to its Phase 1 SBOM via a
+#     cryptographic binding digest.
 #
 #   Phase 3 — OCI images
-#     nix build → skopeo upload → cosign sign, one pass per image in the
-#     manifest. Source-level SBOM hashes from Phase 1 are threaded into
+#     nix build → OCI archive (layers gzip-compressed once) → inspect →
+#     skopeo push of that archive, digests preserved → cosign sign by the
+#     digest, one pass per image in the manifest. The inspection checks each
+#     layer against its digest and diff_id and finds each Phase 2 binary in
+#     the image by its hash (polar.image/found-at, not-found, executables);
+#     the push is refused its signature if the registry serves another digest. Source-level SBOM hashes from Phase 1 are threaded into
 #     binary_linked events, closing the full provenance chain:
 #       (Binary)-[:BUILT_FROM]->(Package)<-[:DESCRIBES]-(SourceSbom)
 #
 # All phases share one artifact directory. Phases 1-3 share one Cassini daemon.
-# Adding a new image = one row in image-manifest. Nothing else changes.
+# Adding a new image = one row in image-manifest, naming its binaries' derivations. Nothing else changes.
 
 use ./core/state.nu [
     init-pipeline-state get-build-id
@@ -71,6 +79,9 @@ use ./core/cargo.nu [workspace-root source-commit]
 use ./core/hashing.nu *
 use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
+use ./core/binaries.nu [linked-binaries sbom-gap]
+use ./core/nix.nu [realisation]
+use ./core/inspect.nu [inspect-archive placements]
 use ../../infra/check-sources.nu [summary_lines]
 const COMPONENT = "ci"
 const CHECK_SOURCES = (path self | path dirname | path join ../../infra/check-sources.nu | path expand)
@@ -321,54 +332,63 @@ def image-manifest []: nothing -> list<record> {
     [
         {
             name: "polar-nu-init"
+            binaries: [".#polarPkgs.certIssuer.client"]
             flake: ".#nuInitImage"
             image: "polar-nu-init"
             root_purl: ""
         }
         {
             name: "cert-issuer"
+            binaries: [".#polarPkgs.certIssuer.server" ".#polarPkgs.healthcheck"]
             flake: ".#certIssuerImage"
             image: "cert-issuer"
             root_purl: "pkg:cargo/cert-issuer@0.1.0"
         }
         {
             name: "cassini"
+            binaries: [".#polarPkgs.cassini.cassini" ".#polarPkgs.healthcheck"]
             flake: ".#cassiniImage"
             image: "cassini"
             root_purl: "pkg:cargo/cassini@0.1.0"
         }
         {
             name: "kube-observer"
+            binaries: [".#polarPkgs.kubeAgent.observer" ".#polarPkgs.healthcheck"]
             flake: ".#kubeObserverImage"
             image: "kube-observer"
             root_purl: "pkg:cargo/kube-observer@0.1.0"
         }
         {
             name: "kube-consumer"
+            binaries: [".#polarPkgs.kubeAgent.consumer" ".#polarPkgs.healthcheck"]
             flake: ".#kubeConsumerImage"
             image: "kube-consumer"
             root_purl: "pkg:cargo/kube-consumer@0.1.0"
         }
         {
             name: "git-observer"
+            binaries: [".#polarPkgs.gitAgent.observer" ".#polarPkgs.healthcheck"]
             flake: ".#gitObserverImage"
             image: "git-observer"
             root_purl: "pkg:cargo/git-repo-observer@0.1.0"
         }
         {
             name: "git-processor"
+            binaries: [".#polarPkgs.gitAgent.consumer" ".#polarPkgs.healthcheck"]
             flake: ".#gitProcessorImage"
             image: "git-processor"
             root_purl: ""
         }
         {
             name: "build-processor"
+            binaries: [".#polarPkgs.buildProcessor.buildProcessor" ".#polarPkgs.healthcheck"]
             flake: ".#buildProcessorImage"
             image: "build-processor"
             root_purl: "pkg:cargo/build-processor@0.1.0"
         }
         {
             name: "oci-resolver"
+            binaries: [".#polarPkgs.ociResolver.resolverBin" ".#polarPkgs.healthcheck"]
             flake: ".#ociResolverImage"
             image: "oci-resolver"
             root_purl: "pkg:cargo/oci-resolver@0.1.0"
@@ -506,125 +526,190 @@ def process-cargo-sboms [sbom_files: list<record>, packages: list<record>]: noth
 # Phase 2: Binary build and provenance linking
 # ===========================================================================
 
+# What the pipeline reports its own facts as (`fact_reported`): the tool, and its version, the repository's.
+const FACT_TOOL = "polar-pipeline/ci.nu"
+
+# The binaries the images in scope ship, each built by Nix from its crane derivation (`refs`, flake references to the
+# derivations, as image-manifest names them; build-inspect-ship, S2). Nothing is built with cargo here: the binary
+# reported is the one the image is made from, out of the same store path.
+#
+# For each derivation: how it came to be in the store this run (`nix build --dry-run`: built, fetched or present before
+# the run, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it linked and the
+# package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix has stripped
+# it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
+# what that SBOM names that is not in the binary (`report-sbom-gap`).
+#
+# Run from the repository's root, as phase 3's `nix build` is.
 def build-and-link-binaries [
+    refs: list<string>
     packages: list<record>
     ws_manifest: path
     artifact_dir: path
-    --release
-    --target: string = ""
     --filter_package: string = ""
 ]: nothing -> list<record> {
     let ws_root = $ws_manifest | path dirname
-
-    # --manifest-path makes this independent of cwd. The cargo workspace
-    # lives at src/agents while flake.nix sits at the repo root — Phase 3's
-    # nix build needs to run from the repo root, so this script can't keep
-    # assuming "wherever we were invoked from" is also the cargo workspace
-    # root. Every other cargo invocation in this file already passes
-    # --manifest-path explicitly; this was the one holdout, working only by
-    # coincidence of cwd matching src/agents on every run so far.
-    mut cargo_args = ["build" "--manifest-path" $ws_manifest "--message-format=json" "--locked" "--quiet"]
-    if ($filter_package | is-not-empty) { $cargo_args = ($cargo_args | append ["--package" $filter_package]) }
-    if $release { $cargo_args = ($cargo_args | append "--release") }
-    if ($target | is-not-empty) { $cargo_args = ($cargo_args | append ["--target" $target]) }
-
-    log-info $"running: cargo ($cargo_args | str join ' ')" --component $COMPONENT
-
+    let version = open --raw ($ws_root | path join ".." ".." "VERSION") | str trim
     let cargo_lock_hash = (content-hash-file $"($ws_root)/Cargo.lock")
     let source_tree_hash = (tree-hash $ws_root)
 
-    let binaries = (
-        cargo ...$cargo_args
-        | lines
-        | where { ($in | str trim) != "" }
-        | each {|line| try { $line | from json } catch { null } }
-        | where { $in != null }
-        | where { ($in.reason? | default "") == "compiler-artifact" }
-        | where { ($in.target?.kind? | default []) | any {|k| $k == "bin"} }
-        | where { ($in.executable? | default null) != null }
-        | each {|artifact|
-            try {
-                let exe         = $artifact.executable
-                let name = $exe | path basename
-                let dest = $artifact_dir | path join $name
-                let binary_hash = (content-hash-file $exe)
+    $refs | uniq | each {|ref|
+        let derivation = (realise-derivation $ref)
+        let log = open --raw ($derivation.outputs.cargolog | path join "cargo-build.json") | lines
+        let linked = linked-binaries $log
+        if ($linked | is-empty) {
+            log-warn $"($ref): its cargo log names no binary it linked" --component $COMPONENT
+        }
+        $linked
+        | where {|b| ($filter_package | is-empty) or $b.package == $filter_package }
+        | each {|bin|
+            let exe = $derivation.outputs.out | path join "bin" $bin.name
+            if not ($exe | path exists) {
+                log-warn $"($bin.name): linked by ($ref) but not in its out/bin" --component $COMPONENT
+                return null
+            }
+            let pkg = $packages | where name == $bin.package | first | default null
+            if $pkg == null {
+                log-warn $"($bin.name): its package ($bin.package) is not among this run's packages" --component $COMPONENT
+                return null
+            }
+            let binary_hash = (content-hash-file $exe)
+            emit-artifact-produced $binary_hash $ELF_BINARY_ARTIFACT --name $bin.name
 
-                # Cargo "uplifts" unchanged binaries into target/<profile>/<name>
-                # via a hardlink to its internal deps-cache artifact, rather than
-                # a copy, whenever it doesn't need to recompile. If a previous
-                # run already moved this binary into $artifact_dir, the next
-                # `cargo build` recreates target/<profile>/<name> the same cheap
-                # way — leaving $exe and a leftover $dest as two directory
-                # entries for the identical inode. `mv` correctly refuses to
-                # "move" a file onto itself in that case (mv-error-same-file).
-                # Clearing the destination first makes this idempotent: it
-                # only removes one of the two links, the data survives via the
-                # other (the one we're about to rename), and the result is the
-                # same either way — exactly one copy, living at $dest.
-                if ($dest | path exists) {
-                    rm --force $dest
-                }
-                mv $exe $dest
+            let subject = {label: "Binary", key: $binary_hash}
+            emit-fact $subject "polar.nix/realised" $FACT_TOOL $version --value $derivation.realised
+            emit-fact $subject "polar.nix/store-path" $FACT_TOOL $version --value $derivation.outputs.out
+            if $derivation.realised == "built" {
+                emit-fact $subject "polar.nix/built-at" $FACT_TOOL $version --value $derivation.at
+            }
 
-                let pkg_manifest = $artifact.manifest_path? | default ""
-                let pkg = $packages | where manifest_path == $pkg_manifest | first | default null
+            let cargo_toml_hash = (content-hash-file $pkg.manifest_path)
+            let binding = (
+                [$binary_hash $cargo_toml_hash $cargo_lock_hash $source_tree_hash]
+                | str join ":"
+                | hash sha256
+                | $"sha256:($in)"
+            )
+            let sbom_info = (get-sbom-info $pkg.name)
+            if $sbom_info != null {
+                emit-binary-linked $binary_hash $bin.name $sbom_info.root_purl $sbom_info.content_hash --binding_digest $binding
+                log-info $"($bin.name) -> ($sbom_info.root_purl)" --component $COMPONENT
+                report-sbom-gap $subject $log $bin.name $sbom_info $artifact_dir $version
+            } else {
+                log-warn $"($bin.name): no SBOM for package ($pkg.name) — binary_linked not emitted" --component $COMPONENT
+            }
 
-                if $pkg == null {
-                    log-warn $"($name): no matching package for manifest ($pkg_manifest)" --component $COMPONENT
-                    return null
-                }
-
-                # TODO: similarly to how we're moving toward emitting build data as part of ContainerImageCreated events, we should do something similar here,
-                # The semantic meaning of what artifact was produced from a particular build can simply be inferred by the event carrying that artifact's metadata
-                #
-                emit-artifact-produced $binary_hash $ELF_BINARY_ARTIFACT --name $name
-
-                let sbom_info = (get-sbom-info $pkg.name)
-
-                if $sbom_info != null {
-                    let cargo_toml_hash = (content-hash-file $pkg.manifest_path)
-                    let binding = (
-                        [$binary_hash $cargo_toml_hash $cargo_lock_hash $source_tree_hash]
-                        | str join ":"
-                        | hash sha256
-                        | $"sha256:($in)"
-                    )
-                    # Emit BinaryLinked — ties this binary to its source package and SBOM.
-                    # binding_digest = sha256(binary:cargo_toml:cargo_lock:source_tree)
-                    # is a cryptographic attestation of the build inputs.
-                    emit-binary-linked $binary_hash $name $sbom_info.root_purl $sbom_info.content_hash --binding_digest $binding
-                    log-info $"($name) -> ($sbom_info.root_purl)" --component $COMPONENT
-                } else {
-                    log-warn $"($name): no SBOM for package ($pkg.name) — binary_linked not emitted" --component $COMPONENT
-                }
-
-                {
-                    name:              $name
-                    path:              $dest
-                    binary_hash:       $binary_hash
-                    package_name:      $pkg.name
-                    root_purl:         ($sbom_info.root_purl?    | default "")
-                    sbom_content_hash: ($sbom_info.content_hash? | default "")
-                }
-            } catch {|e|
-                # Without this, a single failing artifact aborts the whole
-                # `cargo ... | lines | each ...` pipe — Nushell closes its
-                # read end of cargo's stdout mid-stream, cargo (still writing
-                # JSON for the rest of the workspace) hits EPIPE, and all you
-                # see is cargo's own generic "Broken pipe (os error 32)" on
-                # stderr — which is what's been burying the real cause.
-                log-error $"failed processing artifact ($artifact.executable? | default '<unknown>'): ($e.msg)" --component $COMPONENT
-                null
+            {
+                name: $bin.name
+                path: $exe
+                binary_hash: $binary_hash
+                package_name: $pkg.name
+                realised: $derivation.realised
+                root_purl: ($sbom_info.root_purl? | default "")
+                sbom_content_hash: ($sbom_info.content_hash? | default "")
+                derivation: $ref
             }
         }
-        | where { $in != null }
-    )
+        | compact
+    } | flatten
+}
 
-    if ($env.LAST_EXIT_CODE? | default 0) != 0 {
-        error make {msg: "cargo build failed"}
+# What the workspace SBOM of a binary's package names that is not in the binary, by what the binary's build compiled
+# (build-inspect-ship, S2): the SBOM is a claim about the source tree at a commit, the cargo log the record of this build.
+# For each such package, by what the log says of it (core/binaries.nu, `sbom-gap`), the Binary naming the Package by the
+# purl the SBOM gives it, the value the SBOM's content hash:
+#
+# - `polar.cargo/not-compiled`: no unit of it was compiled, for any machine;
+# - `polar.cargo/build-machine-only`: compiled, but only for the build machine (a proc-macro, a build script, or what
+#   only they need), so not into the binary.
+#
+# Then `polar.cargo/sbom-compared` (the Binary, naming the Sbom), its value the total of the two, "0" for none, which a
+# binary never compared has not. Observation only: what cannot be read or compared is logged, and the build goes on.
+def report-sbom-gap [
+    subject: record
+    log: list<string>
+    binary: string
+    sbom: record
+    artifact_dir: path
+    version: string
+]: nothing -> nothing {
+    let gap = try {
+        let doc = open ($artifact_dir | path join $"($sbom.name).cdx.json")
+        let components = $doc.components? | default [] | each {|c|
+            {name: ($c.name? | default ""), version: ($c.version? | default ""), purl: ($c.purl? | default "")}
+        }
+        sbom-gap $components $log $binary
+    } catch {|e|
+        log-warn $"($binary): not compared with its package's SBOM: ($e.msg)" --component $COMPONENT
+        null
     }
+    if $gap == null { return }
+    let kinds = [
+        {fact: "polar.cargo/not-compiled", packages: $gap.not_compiled}
+        {
+            fact: "polar.cargo/build-machine-only"
+            packages: $gap.build_machine_only
+        }
+    ]
+    for kind in $kinds {
+        for p in $kind.packages {
+            if ($p.purl | str starts-with "pkg:") {
+                (emit-fact $subject $kind.fact $FACT_TOOL $version
+                    --object {label: "Package", key: $p.purl} --value $sbom.content_hash)
+            } else {
+                log-warn $"($binary): ($p.name)@($p.version) \(($kind.fact)\) has no purl to name it by" --component $COMPONENT
+            }
+        }
+    }
+    let never = $gap.not_compiled | length
+    let host = $gap.build_machine_only | length
+    (emit-fact $subject "polar.cargo/sbom-compared" $FACT_TOOL $version
+        --object {label: "Sbom", key: $sbom.content_hash} --value ($never + $host | into string))
+    log-info $"($binary): its package's SBOM names ($never + $host) packages not in it: ($never) never compiled, ($host) compiled only for the build machine" --component $COMPONENT
+}
 
-    $binaries
+# One derivation, realised: how its outputs came to be in the store (`realised`, from the dry run), when it was built
+# if it was built here (`at`), and its outputs' paths. A derivation Nix cannot plan or build stops the pipeline, as a
+# failed cargo build did.
+def realise-derivation [ref: string]: nothing -> record {
+    let installable = $"($ref)^*"
+    let drv = (^nix eval --raw $"($ref).drvPath" | complete)
+    let outs = (
+        ^nix eval --json $"($ref)" --apply "d: map (o: d.${o}.outPath) d.outputs"
+        | complete
+    )
+    if $drv.exit_code != 0 or $outs.exit_code != 0 {
+        error make {
+            msg: $"nix could not evaluate ($ref): ($drv.stderr)($outs.stderr | str trim | lines | last 3 | str join ' ')"
+        }
+    }
+    let dry = (^nix build --dry-run --no-link $installable | complete)
+    if $dry.exit_code != 0 {
+        error make {
+            msg: $"nix could not plan ($ref): ($dry.stderr | str trim | lines | last 3 | str join ' ')"
+        }
+    }
+    let realised = ((realisation
+        $dry.stderr
+        ($drv.stdout | str trim)
+        ($outs.stdout | from json)
+    ))
+    log-info $"($ref): ($realised)" --component $COMPONENT
+    let built = (^nix build --json --no-link $installable | complete)
+    if $built.exit_code != 0 {
+        error make {
+            msg: $"nix build failed for ($ref): ($built.stderr | str trim | lines | last 5 | str join ' ')"
+        }
+    }
+    {
+        realised: $realised
+        at: (reported-now)
+        outputs: (
+            $built.stdout
+            | from json
+            | first
+            | get outputs
+        )
+    }
 }
 
 # ===========================================================================
@@ -655,7 +740,18 @@ def login-to-registries []: nothing -> nothing {
     registry-login $creds
 }
 
-def process-image [entry: record, image_tag: string, --skip-upload]: nothing -> record {
+# One image (build-inspect-ship, S3): built by Nix; made once into the OCI archive that is shipped, its layers
+# gzip-compressed; that archive inspected (core/inspect.nu), each layer checked against its digest and diff_id and
+# each binary Phase 2 linked for it (`binaries`, by derivation) found by its hash; then that same archive pushed
+# (build-and-push-image). A binary the image does not hold is reported, and stops nothing; an archive whose layers are
+# not what they say stops the image.
+def process-image [
+    entry: record
+    image_tag: string
+    binaries: list<record>
+    artifact_dir: path
+    --skip-upload
+]: nothing -> record {
     # Cross-validate the manifest's hardcoded root_purl against what Phase 1
     # actually analyzed. Static image-manifest purls drift silently on the
     # first crate version bump; this makes that loud.
@@ -675,11 +771,30 @@ def process-image [entry: record, image_tag: string, --skip-upload]: nothing -> 
         }
     }
 
-    # Decouple the tarball hash from the return-record contract. Ideally this
-    # write lives inside nix-build-image next to content-hash-file; recorded
-    # here it still trusts $build once, but the guard in build-and-push-image
-    # turns any miss into a loud failure instead of a silent null.
-    record-tarball-hash $entry.name $build.tarball_hash
+    let archive = (to-oci-archive $build.tarball $entry.name $artifact_dir)
+    if $archive == null {
+        return {
+            success: false
+            image_name: $entry.name
+            uploads: []
+        }
+    }
+    let scratch = $artifact_dir | path join $"($entry.name).inspect"
+    let image = try {
+        inspect-archive $archive.path $scratch
+    } catch {|e|
+        log-error $"($entry.name): its archive is not the image it names: ($e.msg)" --component $COMPONENT
+        return {
+            success: false
+            image_name: $entry.name
+            uploads: []
+        }
+    }
+    report-placements $entry $image $binaries
+
+    # The tarball hash is the shipped archive's: the file inspected and pushed. Recorded here, not in the
+    # return record; the guard in build-and-push-image turns any miss into a loud failure instead of a silent null.
+    record-tarball-hash $entry.name $archive.hash
 
     if $skip_upload {
         return {
@@ -688,7 +803,30 @@ def process-image [entry: record, image_tag: string, --skip-upload]: nothing -> 
             uploads: []
         }
     }
-    build-and-push-image $entry.name $image_tag (registry-refs $entry.image) $build --root_purl $entry.root_purl
+    build-and-push-image $entry.name $image_tag (registry-refs $entry.image) ($build | merge {archive: $archive.path, inspected: $image.digest}) --root_purl $entry.root_purl
+}
+
+# Where the binaries an image should hold lie in it, as facts: polar.image/found-at for each place (the binary, the
+# layer by its diff_id, the path), polar.image/not-found for one it holds nowhere (against the image, by its inspected
+# digest), and polar.image/executables, how many executables it holds.
+def report-placements [entry: record, image: record, binaries: list<record>] {
+    let version = open --raw ((workspace-root) | path join ".." ".." "VERSION") | str trim
+    let expected = $binaries
+    | where {|b| ($b.derivation? | default "") in $entry.binaries }
+    | each {|b| {name: $b.name, hash: $b.binary_hash} }
+    let placed = placements $expected $image.executables
+    for f in $placed.found {
+        (emit-fact {label: "Binary", key: $f.hash} "polar.image/found-at" $FACT_TOOL $version
+            --object {label: "OCILayerDiffId", key: $f.diff_id} --value $f.path)
+    }
+    for m in $placed.missing {
+        log-warn $"($entry.name): ($m.name) is not in the image" --component $COMPONENT
+        (emit-fact {label: "Binary", key: $m.hash} "polar.image/not-found" $FACT_TOOL $version
+            --object {label: "OCIArtifact", key: $image.digest})
+    }
+    (emit-fact {label: "OCIArtifact", key: $image.digest} "polar.image/executables" $FACT_TOOL $version
+        --value ($image.executables | length | into string))
+    log-info $"($entry.name): ($image.digest), ($image.executables | length) executables, ($placed.found | length) places for ($expected | length) binaries, ($placed.missing | length) missing" --component $COMPONENT
 }
 
 
@@ -715,10 +853,17 @@ def build-and-push-image [
     let insecure = ($env.POLAR_REGISTRY_INSECURE? | default "" | is-not-empty)
     let uploads = ($registries | each {|template|
         let remote_ref = ($template | str replace "{tag}" $tag)
-        if $insecure {
-            upload-image $build.tarball $remote_ref --name $link_name --insecure
+        # The inspected archive itself, its digests kept: what the registry serves is what was inspected.
+        let upload = if $insecure {
+            push-archive $build.archive $remote_ref --name $link_name --insecure
         } else {
-            upload-image $build.tarball $remote_ref --name $link_name
+            push-archive $build.archive $remote_ref --name $link_name
+        }
+        if ($upload.digest | is-not-empty) and $upload.digest != $build.inspected {
+            log-error $"($remote_ref): the registry serves ($upload.digest), not the inspected ($build.inspected); not signed" --component $COMPONENT
+            $upload | update digest ""
+        } else {
+            $upload
         }
     })
 
@@ -831,7 +976,7 @@ def main [
         let image_tag = if ($tag | is-not-empty) {
             $tag
         } else {
-            $env.CI_COMMIT_SHORT_SHA? | default ($commit_sha | str substring 0..8) | default "latest"
+            $env.CI_COMMIT_SHORT_SHA? | default ($commit_sha | str substring 0..<8) | default "latest"
         }
 
         let packages = (resolve-packages --package $package)
@@ -856,15 +1001,23 @@ def main [
             log-info $"($findings | length) finding\(s\) from vulnerability scan \(($unresolved) unresolved against SBOM\)" --component $COMPONENT
         }
 
-        # Phase 2 — Cargo binaries
-        if not $skip_build {
-            let binaries = (
-                build-and-link-binaries $packages $ws_manifest $artifact_dir
-                    --release
-                    --target $target
+        # Phase 2 — the binaries the images in scope ship, built by Nix from their crane derivations
+        # Kept for Phase 3, which finds each in the images that ship it.
+        let binaries = if not $skip_build {
+            let rows = if ($filter | is-not-empty) {
+                image-manifest | where { $in.name | str contains $filter }
+            } else {
+                image-manifest
+            }
+            let refs = $rows | get binaries | flatten | uniq
+            let built = (
+                build-and-link-binaries $refs $packages $ws_manifest $artifact_dir
                     --filter_package $package
             )
-            log-info $"($binaries | length) binary\(ies\) built and linked" --component $COMPONENT
+            log-info $"($built | length) binary\(ies\) built and linked" --component $COMPONENT
+            $built
+        } else {
+            []
         }
 
         # Phase 3 — OCI images
@@ -887,7 +1040,7 @@ def main [
 
                 let results = ($manifest | each {|entry|
                     log-info $"--- ($entry.name) ---" --component $COMPONENT
-                    process-image $entry $image_tag --skip-upload=$skip_upload
+                    process-image $entry $image_tag $binaries $artifact_dir --skip-upload=$skip_upload
                 })
 
                 let succeeded = $results | where success == true | length

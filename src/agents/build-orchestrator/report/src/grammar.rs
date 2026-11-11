@@ -40,6 +40,9 @@ pub enum Kind {
     SbomAnalyzed,
     BinaryLinked,
     ContainerImageCreated,
+    /// A fact about a thing the graph knows by its key: a subject, a namespaced name, maybe an object and a value, and the
+    /// tool that found it. Which names a pipeline may report is its signed mapping's to say, not the grammar's.
+    FactReported,
 }
 
 /// The objects of the grammar: a report of each kind, and what one holds.
@@ -49,6 +52,8 @@ pub enum Schema {
     Package,
     Edge,
     Layer,
+    /// What a fact names: a label and a key.
+    Ref,
 }
 
 /// What a field holds.
@@ -72,6 +77,12 @@ pub enum Shape {
     Edges,
     /// A list of image layers.
     Layers,
+    /// A thing a fact names, by label and key.
+    Ref,
+    /// A thing a fact names, or `null`.
+    MaybeRef,
+    /// A label a fact may name: one of its words.
+    Label,
     /// The report's `build_id`, a string or `null`: read and never believed, since the orchestrator stamps its own.
     Ignored,
 }
@@ -85,7 +96,7 @@ pub open spec fn rank(schema: Schema) -> nat {
 
 pub open spec fn shape_rank(shape: Shape) -> nat {
     match shape {
-        Shape::MaybePackage | Shape::Packages | Shape::Edges | Shape::Layers => 1,
+        Shape::MaybePackage | Shape::Packages | Shape::Edges | Shape::Layers | Shape::Ref | Shape::MaybeRef => 1,
         _ => 0,
     }
 }
@@ -132,6 +143,8 @@ fn kind_named(name: &[u8]) -> Option<Kind> {
         Some(Kind::BinaryLinked)
     } else if eq_bytes(name, b"container_image_created") {
         Some(Kind::ContainerImageCreated)
+    } else if eq_bytes(name, b"fact_reported") {
+        Some(Kind::FactReported)
     } else {
         None
     }
@@ -230,6 +243,15 @@ fn field(schema: Schema, key: &[u8]) -> (r: Option<(usize, Shape)>)
                     else if eq_bytes(key, b"uri") { Some((13, Shape::Text)) }
                     else { None }
                 },
+                Kind::FactReported => {
+                    if eq_bytes(key, b"subject") { Some((2, Shape::Ref)) }
+                    else if eq_bytes(key, b"name") { Some((3, Shape::Text)) }
+                    else if eq_bytes(key, b"object") { Some((4, Shape::MaybeRef)) }
+                    else if eq_bytes(key, b"value") { Some((5, Shape::MaybeText)) }
+                    else if eq_bytes(key, b"tool") { Some((6, Shape::Text)) }
+                    else if eq_bytes(key, b"tool_version") { Some((7, Shape::Text)) }
+                    else { None }
+                },
             }
         },
         Schema::Package => {
@@ -250,6 +272,11 @@ fn field(schema: Schema, key: &[u8]) -> (r: Option<(usize, Shape)>)
             if eq_bytes(key, b"order") { Some((0, Shape::Int(u32::MAX as u64))) }
             else if eq_bytes(key, b"diff_id") { Some((1, Shape::Text)) }
             else if eq_bytes(key, b"tar_path") { Some((2, Shape::Text)) }
+            else { None }
+        },
+        Schema::Ref => {
+            if eq_bytes(key, b"label") { Some((0, Shape::Label)) }
+            else if eq_bytes(key, b"key") { Some((1, Shape::Text)) }
             else { None }
         },
     }
@@ -284,11 +311,13 @@ fn required(schema: Schema, place: usize) -> bool {
                 Kind::SbomAnalyzed => place == 2 || place == 3 || place == 5 || place == 6,
                 Kind::BinaryLinked => 2 <= place && place <= 5,
                 Kind::ContainerImageCreated => 2 <= place && place <= 5,
+                Kind::FactReported => place == 2 || place == 3 || place == 6 || place == 7,
             }
         },
         Schema::Package => place <= 3,
         Schema::Edge => place <= 1,
         Schema::Layer => place <= 1,
+        Schema::Ref => place <= 1,
     }
 }
 
@@ -375,6 +404,23 @@ fn check_value(text: &[u8], tape: &Tape, at: usize, shape: Shape) -> (r: Result<
         Shape::Packages => check_objects(text, tape, at, Schema::Package),
         Shape::Edges => check_objects(text, tape, at, Schema::Edge),
         Shape::Layers => check_objects(text, tape, at, Schema::Layer),
+        Shape::Ref => check_object(text, tape, at, Schema::Ref),
+        Shape::MaybeRef => match t {
+            Token::Null => Ok(at + 1),
+            _ => check_object(text, tape, at, Schema::Ref),
+        },
+        Shape::Label => match t {
+            Token::Text { start, end } => {
+                let word = span(text, start, end)?;
+                if eq_bytes(word, b"Binary") || eq_bytes(word, b"OCIArtifact") || eq_bytes(word, b"OCILayerDiffId")
+                    || eq_bytes(word, b"Package") || eq_bytes(word, b"BuildArtifact") || eq_bytes(word, b"Sbom") {
+                    Ok(at + 1)
+                } else {
+                    Err(Refusal::UnknownWord)
+                }
+            },
+            _ => Err(Refusal::WrongType),
+        },
     }
 }
 

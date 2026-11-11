@@ -60,6 +60,71 @@ pub enum Report {
         binding_digest: String,
     },
     ContainerImageCreated(ContainerImageCreated),
+    FactReported(FactReported),
+}
+
+/// A fact a build's tool found, about a thing the graph knows by its key. The grammar holds its shape; which names a
+/// pipeline may report, and what a key must look like, the orchestrator judges before relaying it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactReported {
+    /// What the fact is about.
+    pub subject: FactRef,
+    /// What it says, namespaced: `polar.image/found-at`.
+    pub name: String,
+    /// What else it names, if anything.
+    pub object: Option<FactRef>,
+    /// Its value, as text, if it has one.
+    pub value: Option<String>,
+    /// The tool that found it, and its version.
+    pub tool: String,
+    pub tool_version: String,
+}
+
+/// A thing the graph knows, by its label and the key it is merged on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactRef {
+    pub label: FactLabel,
+    pub key: String,
+}
+
+/// The labels a fact may name: each a node a build can name by a key it holds (a digest or a purl).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactLabel {
+    Binary,
+    OCIArtifact,
+    OCILayerDiffId,
+    Package,
+    BuildArtifact,
+    Sbom,
+}
+
+impl FactLabel {
+    /// Every label, in the order the grammar lists their words.
+    pub const ALL: [FactLabel; 6] = [
+        FactLabel::Binary,
+        FactLabel::OCIArtifact,
+        FactLabel::OCILayerDiffId,
+        FactLabel::Package,
+        FactLabel::BuildArtifact,
+        FactLabel::Sbom,
+    ];
+
+    /// The label's word in a report, which is its name in the graph.
+    pub fn word(self) -> &'static str {
+        match self {
+            FactLabel::Binary => "Binary",
+            FactLabel::OCIArtifact => "OCIArtifact",
+            FactLabel::OCILayerDiffId => "OCILayerDiffId",
+            FactLabel::Package => "Package",
+            FactLabel::BuildArtifact => "BuildArtifact",
+            FactLabel::Sbom => "Sbom",
+        }
+    }
+
+    /// The label a word names, if it names one.
+    pub fn of_word(word: &str) -> Option<FactLabel> {
+        FactLabel::ALL.into_iter().find(|l| l.word() == word)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +324,23 @@ impl Report {
                 digest: o.text_or_empty("digest")?,
                 uri: o.text_or_empty("uri")?,
             }),
+            Kind::FactReported => Report::FactReported(FactReported {
+                subject: fact_ref(&Object::at(
+                    text,
+                    tape,
+                    o.value("subject").ok_or(Refusal::MissingKey)?,
+                )?)?,
+                name: o.text("name")?,
+                object: match o.value("object") {
+                    Some(at) if tape.tokens.get(at) != Some(&Token::Null) => {
+                        Some(fact_ref(&Object::at(text, tape, at)?)?)
+                    }
+                    _ => None,
+                },
+                value: o.maybe_text("value")?,
+                tool: o.text("tool")?,
+                tool_version: o.text("tool_version")?,
+            }),
         })
     }
 
@@ -273,6 +355,7 @@ impl Report {
             Report::SbomAnalyzed(_) => Kind::SbomAnalyzed,
             Report::BinaryLinked { .. } => Kind::BinaryLinked,
             Report::ContainerImageCreated(_) => Kind::ContainerImageCreated,
+            Report::FactReported(_) => Kind::FactReported,
         }
     }
 
@@ -467,9 +550,35 @@ impl Report {
                 w.text("digest", &c.digest);
                 w.text("uri", &c.uri);
             }
+            Report::FactReported(f) => {
+                w.kind("fact_reported");
+                w.raw("subject", &fact_ref_line(&f.subject));
+                w.text("name", &f.name);
+                w.raw(
+                    "object",
+                    &f.object.as_ref().map_or("null".into(), fact_ref_line),
+                );
+                w.maybe("value", &f.value);
+                w.text("tool", &f.tool);
+                w.text("tool_version", &f.tool_version);
+            }
         }
         w.done()
     }
+}
+
+fn fact_ref(o: &Object<'_>) -> Result<FactRef, Refusal> {
+    Ok(FactRef {
+        label: FactLabel::of_word(&o.text("label")?).ok_or(Refusal::UnknownWord)?,
+        key: o.text("key")?,
+    })
+}
+
+fn fact_ref_line(r: &FactRef) -> String {
+    let mut w = Writer::default();
+    w.text("label", r.label.word());
+    w.text("key", &r.key);
+    w.done()
 }
 
 fn package(o: &Object<'_>) -> Result<PackageRef, Refusal> {

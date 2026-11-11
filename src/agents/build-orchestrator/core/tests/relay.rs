@@ -25,7 +25,7 @@
 
 use orchestrator_core::relay::{NotRelayed, Relay, RelayBounds, is_digest};
 use orchestrator_report::{Bounds, Report, Tape, gate, parse};
-use polar::events::{BuildReport, ProvenanceEvent};
+use polar::events::{BuildReport, FactLabel, FactRef, ProvenanceEvent};
 use proptest::prelude::*;
 
 const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -39,8 +39,106 @@ fn read(line: &str) -> Report {
     Report::read(line.as_bytes(), &tape).unwrap()
 }
 
+/// The fact name the relay of these tests allows, as a mapping would.
+const FACT: &str = "polar.test/fact";
+
 fn relay() -> Relay {
-    Relay::new("ours", RelayBounds::default())
+    Relay::new("ours", RelayBounds::default()).with_facts(vec![FACT.to_string()])
+}
+
+/// A fact report: `subject` and `object` as `(label, key)`.
+fn fact(name: &str, subject: (&str, &str), object: Option<(&str, &str)>) -> String {
+    let r = |(label, key): (&str, &str)| format!(r#"{{"label": "{label}", "key": "{key}"}}"#);
+    format!(
+        r#"{{"type": "fact_reported", "build_id": "theirs", "subject": {}, "name": "{name}", "object": {}, "value": "v", "tool": "t", "tool_version": "1"}}"#,
+        r(subject),
+        object.map_or("null".to_string(), r),
+    )
+}
+
+/// A fact its build's mapping names is relayed, stamped with the orchestrator's build, its refs and value as they were.
+#[test]
+fn a_fact_its_mapping_names_is_relayed_as_the_orchestrators_build() {
+    let line = fact(FACT, ("Binary", DIGEST), Some(("OCILayerDiffId", DIGEST)));
+    let relayed = relay().relay(read(&line)).unwrap();
+    assert_eq!(relayed.build_id, "ours");
+    match relayed.report {
+        ProvenanceEvent::FactReported(p) => {
+            assert_eq!(p.build_id, "ours");
+            assert_eq!(p.name, FACT);
+            assert_eq!(
+                p.subject,
+                FactRef {
+                    label: FactLabel::Binary,
+                    key: DIGEST.into()
+                }
+            );
+            assert_eq!(
+                p.object,
+                Some(FactRef {
+                    label: FactLabel::OCILayerDiffId,
+                    key: DIGEST.into()
+                })
+            );
+            assert_eq!(
+                (p.value.as_deref(), p.tool.as_str(), p.tool_version.as_str()),
+                (Some("v"), "t", "1")
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let package = fact(FACT, ("Package", "pkg:cargo/a@1"), None);
+    assert!(
+        relay().relay(read(&package)).is_ok(),
+        "a package is named by its purl"
+    );
+}
+
+/// A fact its mapping does not name is refused, and counted; with no names, every fact is.
+#[test]
+fn a_fact_its_mapping_does_not_name_is_refused() {
+    let mut r = relay();
+    let other = fact("polar.test/other", ("Binary", DIGEST), None);
+    assert_eq!(
+        r.relay(read(&other)).map(|_| ()),
+        Err(NotRelayed::FactNotAllowed)
+    );
+    assert_eq!(r.refused(), 1);
+    let named = fact(FACT, ("Binary", DIGEST), None);
+    let mut none = Relay::new("ours", RelayBounds::default());
+    assert_eq!(
+        none.relay(read(&named)).map(|_| ()),
+        Err(NotRelayed::FactNotAllowed)
+    );
+}
+
+/// A fact's key must be what its label is keyed by: a digest, or for a package a purl.
+#[test]
+fn a_fact_whose_key_is_not_its_labels_is_refused_naming_where() {
+    for (line, why) in [
+        (
+            fact(FACT, ("Binary", "abc"), None),
+            NotRelayed::NotADigest("subject.key"),
+        ),
+        (
+            fact(FACT, ("Sbom", "pkg:cargo/a@1"), None),
+            NotRelayed::NotADigest("subject.key"),
+        ),
+        (
+            fact(FACT, ("Binary", DIGEST), Some(("OCIArtifact", "latest"))),
+            NotRelayed::NotADigest("object.key"),
+        ),
+        (
+            fact(FACT, ("Package", DIGEST), None),
+            NotRelayed::NotAPurl("subject.key"),
+        ),
+        (
+            fact(FACT, ("Binary", DIGEST), Some(("Package", "itoa"))),
+            NotRelayed::NotAPurl("object.key"),
+        ),
+    ] {
+        assert_eq!(relay().relay(read(&line)).map(|_| ()), Err(why), "{line}");
+    }
 }
 
 #[test]
@@ -159,6 +257,27 @@ fn hashed() -> impl Strategy<Value = Report> {
                     ..Default::default()
                 })
             }),
+        (
+            digest(),
+            proptest::option::of(digest()),
+            proptest::option::of("\\PC{0,8}")
+        )
+            .prop_map(|(subject, object, value)| {
+                Report::FactReported(orchestrator_report::FactReported {
+                    subject: orchestrator_report::FactRef {
+                        label: orchestrator_report::FactLabel::Binary,
+                        key: subject,
+                    },
+                    name: FACT.into(),
+                    object: object.map(|key| orchestrator_report::FactRef {
+                        label: orchestrator_report::FactLabel::OCILayerDiffId,
+                        key,
+                    }),
+                    value,
+                    tool: "t".into(),
+                    tool_version: "1".into(),
+                })
+            }),
     ]
 }
 
@@ -186,6 +305,7 @@ proptest! {
             Report::ArtifactProduced { artifact_content_hash, .. } => spoil(artifact_content_hash),
             Report::BinaryLinked { sbom_content_hash, .. } => spoil(sbom_content_hash),
             Report::ContainerImageCreated(c) => spoil(&mut c.config_digest),
+            Report::FactReported(f) => spoil(&mut f.subject.key),
             _ => unreachable!(),
         }
         prop_assert!(matches!(relay().relay(report), Err(NotRelayed::NotADigest(_))));

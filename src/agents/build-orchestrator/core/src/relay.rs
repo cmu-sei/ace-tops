@@ -30,8 +30,9 @@
 use orchestrator_report::Report;
 use polar::events::{
     ArtifactProducedPayload, BinaryLinkedPayload, BuildReport, ContainerImageCreatedPayload,
-    DependencyEdge, OciLayerEntry, PackageRef, PackageStatusFoundPayload, ProvenanceEvent,
-    SbomGraphFragment, SecurityAdvisoryFoundPayload, StageOutcome,
+    DependencyEdge, FactLabel, FactRef, FactReportedPayload, OciLayerEntry, PackageRef,
+    PackageStatusFoundPayload, ProvenanceEvent, SbomGraphFragment, SecurityAdvisoryFoundPayload,
+    StageOutcome,
 };
 
 /// How much one build may report: Dynamic signed settings, with these defaults (build-orchestrator.md, "Settled with it").
@@ -61,6 +62,11 @@ pub enum NotRelayed {
     TooMuch(u64),
     #[error("the report's {0} is not a sha256 digest (`sha256:` and 64 lower-case hex digits)")]
     NotADigest(&'static str),
+    /// A fact whose name the build's mapping does not list, or one the orchestrator cannot tell the mapping of.
+    #[error("the report is a fact its pipeline's mapping does not allow")]
+    FactNotAllowed,
+    #[error("the report's {0} is not a purl (`pkg:` and what it names)")]
+    NotAPurl(&'static str),
 }
 
 /// What one build has reported so far, and what it may still.
@@ -71,6 +77,8 @@ pub struct Relay {
     reports: usize,
     bytes: u64,
     refused: usize,
+    /// The names of the facts the build's mapping allows it to report.
+    facts: Vec<String>,
 }
 
 impl Relay {
@@ -82,7 +90,14 @@ impl Relay {
             reports: 0,
             bytes: 0,
             refused: 0,
+            facts: Vec::new(),
         }
+    }
+
+    /// The relay allowing the facts the build's mapping names (its `facts`); with none, every fact is refused.
+    pub fn with_facts(mut self, facts: Vec<String>) -> Self {
+        self.facts = facts;
+        self
     }
 
     /// Counts one report line of `len` bytes against the build's bounds, before it is read: a build past them has every
@@ -114,7 +129,7 @@ impl Relay {
 
     /// A report the reader read, judged for what its values mean and re-encoded for relaying, stamped with this build.
     pub fn relay(&mut self, report: Report) -> Result<BuildReport, NotRelayed> {
-        if let Err(why) = judge(&report) {
+        if let Err(why) = judge(&report, &self.facts) {
             self.refused += 1;
             return Err(why);
         }
@@ -137,8 +152,9 @@ pub fn is_digest(value: &str) -> bool {
 
 /// What a report's values must mean before it is relayed: every hash a graph key is made from a sha256 digest (an optional
 /// one, when given). A purl is not judged here: an SBOM may name a component by none, and build-processor writes only those
-/// that have one.
-fn judge(report: &Report) -> Result<(), NotRelayed> {
+/// that have one. A fact is relayed only when its name is one of `facts` (its build's mapping's), and each ref's key is
+/// what its label is merged on: a digest, or a package's purl.
+fn judge(report: &Report, facts: &[String]) -> Result<(), NotRelayed> {
     let digest = |field: &'static str, value: &str| {
         if is_digest(value) {
             Ok(())
@@ -181,6 +197,47 @@ fn judge(report: &Report) -> Result<(), NotRelayed> {
         | Report::StageCompleted { .. }
         | Report::SecurityAdvisoryFound(_)
         | Report::PackageStatusFound(_) => Ok(()),
+        Report::FactReported(f) => {
+            if !facts.contains(&f.name) {
+                return Err(NotRelayed::FactNotAllowed);
+            }
+            let key = |field: &'static str, r: &orchestrator_report::FactRef| match r.label {
+                orchestrator_report::FactLabel::Package => {
+                    if is_purl(&r.key) {
+                        Ok(())
+                    } else {
+                        Err(NotRelayed::NotAPurl(field))
+                    }
+                }
+                _ => digest(field, r.key.as_str()),
+            };
+            key("subject.key", &f.subject)?;
+            match &f.object {
+                Some(object) => key("object.key", object),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+/// Whether `value` names a package as the graph keys one: `pkg:` and something after it.
+fn is_purl(value: &str) -> bool {
+    value
+        .strip_prefix("pkg:")
+        .is_some_and(|rest| !rest.is_empty())
+}
+
+fn fact_ref(r: orchestrator_report::FactRef) -> FactRef {
+    FactRef {
+        label: match r.label {
+            orchestrator_report::FactLabel::Binary => FactLabel::Binary,
+            orchestrator_report::FactLabel::OCIArtifact => FactLabel::OCIArtifact,
+            orchestrator_report::FactLabel::OCILayerDiffId => FactLabel::OCILayerDiffId,
+            orchestrator_report::FactLabel::Package => FactLabel::Package,
+            orchestrator_report::FactLabel::BuildArtifact => FactLabel::BuildArtifact,
+            orchestrator_report::FactLabel::Sbom => FactLabel::Sbom,
+        },
+        key: r.key,
     }
 }
 
@@ -320,5 +377,14 @@ fn event(report: Report, build_id: &str) -> ProvenanceEvent {
                 uri: c.uri,
             })
         }
+        Report::FactReported(f) => ProvenanceEvent::FactReported(FactReportedPayload {
+            build_id,
+            subject: fact_ref(f.subject),
+            name: f.name,
+            object: f.object.map(fact_ref),
+            value: f.value,
+            tool: f.tool,
+            tool_version: f.tool_version,
+        }),
     }
 }
