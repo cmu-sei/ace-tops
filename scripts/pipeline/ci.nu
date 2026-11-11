@@ -53,8 +53,12 @@
 #     cargo-auditable (auditable2cdx).
 #
 #   Phase 3 — OCI images
-#     nix build → skopeo upload → cosign sign, one pass per image in the
-#     manifest. Source-level SBOM hashes from Phase 1 are threaded into
+#     nix build → OCI archive (layers gzip-compressed once) → inspect →
+#     skopeo push of that archive, digests preserved → cosign sign by the
+#     digest, one pass per image in the manifest. The inspection checks each
+#     layer against its digest and diff_id and finds each Phase 2 binary in
+#     the image by its hash (polar.image/found-at, not-found, executables);
+#     the push is refused its signature if the registry serves another digest. Source-level SBOM hashes from Phase 1 are threaded into
 #     binary_linked events, closing the full provenance chain:
 #       (Binary)-[:BUILT_FROM]->(Package)<-[:DESCRIBES]-(SourceSbom)
 #

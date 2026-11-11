@@ -981,7 +981,10 @@ only.
   binaries an image ships with Nix, from their crane derivations, and no longer runs its own `cargo build` (the lead: "We build with nix
   primarily ... Whoever comes along and wishes to use docker will just be SOL"). So a build pod without Nix, as today's are (`polar-ci`,
   D4b's watched build with `--skip-images`), reports no binary and no BinaryLinked. Not worked around: a pod gets them back when it can run
-  Nix. The history that
+  Nix. **OPEN, signing waits on a key** (build-inspect-ship S3, 2026-11-11): the pipeline pushes the archive it inspected and signs it
+  with cosign by its digest, through the existing path (`scripts/pipeline/core/oci.nu`, `sign-image`, `COSIGN_KEY` or `--key`). No key is
+  provisioned on the host or in CI, and none is made by the pipeline, so every image is shipped unsigned with "No signing key available,
+  skipping signature". The key is the lead's to provide. The history that
   follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's

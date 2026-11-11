@@ -337,6 +337,24 @@ metadata` too, with proc-macros recorded as runtime dependencies;
 SBOM, with the crates the build's cargo log says it compiled, the ground
 truth.
 
+**Built in build-inspect-ship S3, to be seen on the host:** Phase 3 ships
+exactly what it inspected. The Nix image is made once into an OCI archive,
+its layers gzip-compressed, so its manifest digest is known before the push;
+the archive is inspected (`scripts/pipeline/core/inspect.nu`): each layer's
+blob against its digest and its content against its diff_id, a mismatch
+failing the image, and every executable hashed where it lies. Each binary
+Phase 2 linked for the image is found by its hash, and reported as facts
+(`fact_reported`): `polar.image/found-at` for each place (the Binary, the
+OCILayerDiffId, the path), `polar.image/not-found` for one the image holds
+nowhere, `polar.image/executables` with the count. A missing binary is
+reported and stops nothing. Then that archive is pushed as it is (`skopeo
+copy --preserve-digests`), and the registry's digest must be the inspected
+one, or the upload is not recorded and not signed. Phase 2 reports
+`polar.nix/realised`, `polar.nix/store-path` and `polar.nix/built-at`. A
+build relayed by the orchestrator has these six names relayed only if its
+mapping lists them (`facts`). Signing is cosign by the digest with
+`COSIGN_KEY`; no key is provisioned, so it says it skipped (`remaining-work.md`).
+
 **Deliberately deferred, by design, not oversight:** cross-scanner
 vulnerability identity reconciliation (RUSTSEC/CVE/GHSA convergence) —
 reserved a schema landing spot, no reconciliation logic; `yanked` crate
