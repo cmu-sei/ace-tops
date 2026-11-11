@@ -53,13 +53,14 @@ pub const MAX_CAPABILITIES: usize = 64;
 pub const MAX_FACTS: usize = 64;
 pub const MAX_FACT: usize = 128;
 
-const FIELDS: [&str; 6] = [
+const FIELDS: [&str; 7] = [
     "url",
     "pipeline_image",
     "command",
     "privileges",
     "credential",
     "locks",
+    "facts",
 ];
 const PRIVILEGES: [&str; 3] = [
     "run_as_root",
@@ -71,7 +72,7 @@ pub static MAPPINGS: RuntimeSection = RuntimeSection {
     authority: SectionAuthority::Runtime,
     name: SECTION_NAME,
     doc: "The repositories build-orchestrator builds, and with what. Replaced whole by each version.",
-    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name, or an ssh URL of a host name or an address with a credential", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it; over ssh only with a credential, an ssh key that pins the server's host key"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}}}}"#,
+    body: r#"{"repositories": {"list_of": {"url": {"type": "https URL of a host name, or an ssh URL of a host name or an address with a credential", "required": true, "doc": "the key of the entry: the URL the git controller observes it at, with no login in it; over ssh only with a credential, an ssh key that pins the server's host key"}, "pipeline_image": {"type": "image reference pinned by digest", "required": true, "doc": "what the build's pipeline runs in"}, "command": {"type": "list of text", "required": false, "doc": "the pipeline's command; left out, the orchestrator's default command"}, "privileges": {"type": "object", "required": false, "doc": "what the pipeline may do beyond running hardened; left out, nothing", "fields": {"run_as_root": {"type": "true or false", "default": false}, "allow_privilege_escalation": {"type": "true or false", "default": false}, "add_capabilities": {"type": "list of Kubernetes capability names, such as SETUID", "default": []}}}, "credential": {"type": "name of a credential", "required": false, "doc": "what its source is fetched with, by name: one the credentials section binds to its host; left out, it is fetched with none"}, "locks": {"type": "list of paths in the repository, each ending in Cargo.lock", "required": false, "doc": "the Cargo locks whose dependencies the build is given by digest, fetched by the orchestrator; left out, none, and the build has nothing but its source"}, "facts": {"type": "list of fact names, each a namespace and a name in lower case, such as polar.image/found-at", "required": false, "doc": "the facts its builds may report, by name: a fact named otherwise is refused; left out, none"}}}}"#,
     validate,
 };
 
@@ -186,6 +187,27 @@ fn is_lock_path(path: &str) -> bool {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
         })
+}
+
+const FACTS: List = List {
+    shown: "facts",
+    most: MAX_FACTS,
+    longest: MAX_FACT,
+    may_be_empty: true,
+};
+
+/// Whether `name` is a fact's name: a namespace of dot-separated words, a slash, and a word, each word a lower-case letter
+/// and then lower-case letters, digits and `-` (`polar.image/found-at`).
+pub fn is_fact_name(name: &str) -> bool {
+    let word = |w: &str| {
+        w.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+            && w.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    match name.split_once('/') {
+        Some((namespace, rest)) => namespace.split('.').all(word) && word(rest),
+        None => false,
+    }
 }
 
 const CAPABILITIES: List = List {
@@ -352,6 +374,19 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             "{label}: `locks` names a path that is not a Cargo.lock within the repository"
         ));
     }
+    let facts = text_list(object, &label, "facts", &FACTS, &mut problems).unwrap_or_default();
+    if facts.iter().any(|name| !is_fact_name(name)) {
+        problems.push(format!(
+            "{label}: `facts` names one that is not a namespace and a name in lower case, such as polar.image/found-at"
+        ));
+    }
+    if facts
+        .iter()
+        .enumerate()
+        .any(|(i, name)| facts[..i].contains(name))
+    {
+        problems.push(format!("{label}: `facts` names one more than once"));
+    }
     if problems.is_empty() {
         Ok(Mapping {
             repo: repo_id_of(&url),
@@ -361,7 +396,7 @@ fn entry(i: usize, item: &Value) -> Result<Mapping, Vec<String>> {
             privileges,
             credential,
             locks,
-            facts: Vec::new(),
+            facts,
         })
     } else {
         Err(problems)
