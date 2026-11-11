@@ -125,11 +125,22 @@ export def not-compiled [components: list<record>, compiled: list<record>]: noth
 }
 
 # What an SBOM names that is not in a binary, split by what its build's cargo log says of each: `not_compiled`, no unit of
-# it compiled for any machine; `build_machine_only`, compiled, but only for the build machine (`compiled-for-target`).
-# Stub (S2, the gap split): nothing yet.
+# it compiled for any machine; `build_machine_only`, compiled, but only for the build machine: not among the binary's
+# target units (`compiled-for-target`, which says how they are told apart). Each of `components` (`{name, version,
+# purl}`) once, in the SBOM's order. A binary the log did not link is an error.
 export def sbom-gap [components: list<record>, log: list<string>, binary: string]: nothing -> record {
+    let outside = not-compiled $components (compiled-for-target $log $binary)
+    let anywhere = (
+        $log
+        | each {|line| try { $line | from json } catch { null } }
+        | where {|m| ($m | describe | str starts-with "record") }
+        | where {|m| ($m.reason? | default "") == "compiler-artifact" }
+        | each {|m| package-of-id $m.package_id }
+        | uniq
+    )
+    let never = not-compiled $outside $anywhere
     {
-        not_compiled: []
-        build_machine_only: []
+        not_compiled: $never
+        build_machine_only: ($outside | where {|c| $c not-in $never })
     }
 }

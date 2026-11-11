@@ -79,7 +79,7 @@ use ./core/cargo.nu [workspace-root source-commit]
 use ./core/hashing.nu *
 use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
-use ./core/binaries.nu [linked-binaries compiled-for-target not-compiled]
+use ./core/binaries.nu [linked-binaries sbom-gap]
 use ./core/nix.nu [realisation]
 use ./core/inspect.nu [inspect-archive placements]
 use ../../infra/check-sources.nu [summary_lines]
@@ -537,7 +537,7 @@ const FACT_TOOL = "polar-pipeline/ci.nu"
 # the run, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it linked and the
 # package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix has stripped
 # it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
-# what that SBOM names that the build did not compile for it (`report-sbom-gap`).
+# what that SBOM names that is not in the binary (`report-sbom-gap`).
 #
 # Run from the repository's root, as phase 3's `nix build` is.
 def build-and-link-binaries [
@@ -613,13 +613,17 @@ def build-and-link-binaries [
     } | flatten
 }
 
-# What the workspace SBOM of a binary's package names that the binary's build did not compile for its target
+# What the workspace SBOM of a binary's package names that is not in the binary, by what the binary's build compiled
 # (build-inspect-ship, S2): the SBOM is a claim about the source tree at a commit, the cargo log the record of this build.
-# For each such package, `polar.cargo/not-compiled` (the Binary, naming the Package by the purl the SBOM gives it, the
-# value the SBOM's content hash); then `polar.cargo/sbom-compared` (the Binary, naming the Sbom, the value how many it
-# names that were not compiled, "0" for none), which a binary never compared has not. The binary's target units only
-# (core/binaries.nu, `compiled-for-target`): a proc-macro or a build script runs on the build machine, and is not in it.
-# Observation only: what cannot be read or compared is logged, and the build goes on.
+# For each such package, by what the log says of it (core/binaries.nu, `sbom-gap`), the Binary naming the Package by the
+# purl the SBOM gives it, the value the SBOM's content hash:
+#
+# - `polar.cargo/not-compiled`: no unit of it was compiled, for any machine;
+# - `polar.cargo/build-machine-only`: compiled, but only for the build machine (a proc-macro, a build script, or what
+#   only they need), so not into the binary.
+#
+# Then `polar.cargo/sbom-compared` (the Binary, naming the Sbom), its value the total of the two, "0" for none, which a
+# binary never compared has not. Observation only: what cannot be read or compared is logged, and the build goes on.
 def report-sbom-gap [
     subject: record
     log: list<string>
@@ -633,23 +637,34 @@ def report-sbom-gap [
         let components = $doc.components? | default [] | each {|c|
             {name: ($c.name? | default ""), version: ($c.version? | default ""), purl: ($c.purl? | default "")}
         }
-        not-compiled $components (compiled-for-target $log $binary)
+        sbom-gap $components $log $binary
     } catch {|e|
         log-warn $"($binary): not compared with its package's SBOM: ($e.msg)" --component $COMPONENT
         null
     }
     if $gap == null { return }
-    for p in $gap {
-        if ($p.purl | str starts-with "pkg:") {
-            (emit-fact $subject "polar.cargo/not-compiled" $FACT_TOOL $version
-                --object {label: "Package", key: $p.purl} --value $sbom.content_hash)
-        } else {
-            log-warn $"($binary): ($p.name)@($p.version), not compiled, has no purl to name it by" --component $COMPONENT
+    let kinds = [
+        {fact: "polar.cargo/not-compiled", packages: $gap.not_compiled}
+        {
+            fact: "polar.cargo/build-machine-only"
+            packages: $gap.build_machine_only
+        }
+    ]
+    for kind in $kinds {
+        for p in $kind.packages {
+            if ($p.purl | str starts-with "pkg:") {
+                (emit-fact $subject $kind.fact $FACT_TOOL $version
+                    --object {label: "Package", key: $p.purl} --value $sbom.content_hash)
+            } else {
+                log-warn $"($binary): ($p.name)@($p.version) \(($kind.fact)\) has no purl to name it by" --component $COMPONENT
+            }
         }
     }
+    let never = $gap.not_compiled | length
+    let host = $gap.build_machine_only | length
     (emit-fact $subject "polar.cargo/sbom-compared" $FACT_TOOL $version
-        --object {label: "Sbom", key: $sbom.content_hash} --value ($gap | length | into string))
-    log-info $"($binary): its package's SBOM names ($gap | length) packages its build did not compile for its target" --component $COMPONENT
+        --object {label: "Sbom", key: $sbom.content_hash} --value ($never + $host | into string))
+    log-info $"($binary): its package's SBOM names ($never + $host) packages not in it: ($never) never compiled, ($host) compiled only for the build machine" --component $COMPONENT
 }
 
 # One derivation, realised: how its outputs came to be in the store (`realised`, from the dry run), when it was built
