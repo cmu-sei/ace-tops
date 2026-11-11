@@ -21,18 +21,25 @@
    DM26-0670
 */
 
-//! The falsifiability test (Blitz's risk-gradients.md, "Verification"). For adjacent ACE commits with a Cargo.lock
-//! change, the tree each real cargo-cyclonedx SBOM asserts must be what `cargo tree` resolves, at both commits, apart
-//! from the SBOM; a root cargo resolves the same at both must assert the same tree, and one it resolves differently a
-//! different one; and the change between them must agree with `git diff Cargo.lock`.
+//! The falsifiability tests for asserted trees (Blitz's risk-gradients.md, "Verification"), on real cargo-cyclonedx SBOMs of
+//! adjacent ACE commits with a Cargo.lock change. Two claims, kept apart:
 //!
-//! The fixtures are made on the host, in ACE's dev shell, by `tests/fixtures/sbom-trees/make.nu`; until they are
-//! committed the test is ignored. Run it with `cargo test -p build-processor --test sbom_trees -- --ignored`.
+//! - **(A), slice 2b's:** the tree an SBOM asserts is exactly what the SBOM says, read again here from the raw `.cdx.json`
+//!   by a parse of its own, apart from `extract-graph-fragment` and `asserted_tree`; one digest exactly when two SBOMs say
+//!   the same tree; and its change agrees with the lock file's.
+//! - **(B), the SBOM's:** what the SBOM says is what `cargo tree -e normal,build` resolves for the crate. It is not, and (B)
+//!   stays ignored: cargo-cyclonedx reads `cargo metadata` over the whole workspace, where features are unified across
+//!   every member, dev-dependencies included, so a crate's SBOM holds optional dependencies only other crates switch on
+//!   (git-repo-observer's: wiremock, through `polar-agent-builder/testing`, which dev-dependencies ask for; quinn,
+//!   rayon, pkcs5 and others, through features of crates outside its own tree). (B) reports every root that differs.
+//!
+//! The fixtures are made on the host, in ACE's dev shell, by `tests/fixtures/sbom-trees/make.nu`:
+//! `cargo test -p build-processor --test sbom_trees -- --ignored`.
 
-use build_processor::project::outputs::asserted_tree;
+use build_processor::project::outputs::{AssertedTree, asserted_tree};
 use polar::SbomGraphFragment;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 fn fixtures() -> PathBuf {
@@ -57,7 +64,7 @@ fn strings(value: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-/// A package as `cargo tree` names it: `pkg:cargo/itoa@1.0.18`, with whatever qualifiers, is `itoa@1.0.18`.
+/// A package as `cargo tree` and the lock name it: `pkg:cargo/itoa@1.0.18`, with whatever qualifiers, is `itoa@1.0.18`.
 fn named(purl: &str) -> String {
     let bare = purl
         .strip_prefix("pkg:cargo/")
@@ -65,69 +72,146 @@ fn named(purl: &str) -> String {
     bare.split('?').next().unwrap_or(bare).to_string()
 }
 
-#[test]
-#[ignore = "needs the fixtures tests/fixtures/sbom-trees/make.nu makes on the host"]
-fn an_asserted_tree_is_what_cargo_resolves_and_its_change_is_the_lock_files() {
-    let mut pairs_seen = 0;
-    for entry in std::fs::read_dir(fixtures()).unwrap() {
-        let dir = entry.unwrap().path();
-        if !dir.is_dir() {
-            continue;
-        }
-        pairs_seen += 1;
-        let manifest: Value = read(&dir.join("manifest.json"));
-        let lock_added = strings(&manifest["lock"]["added"]);
-        let lock_removed = strings(&manifest["lock"]["removed"]);
-        let roots = manifest["roots"].as_array().expect("roots");
-        assert!(
-            roots.iter().any(|r| r["touched"] == true),
-            "{}: no root the change touched",
-            dir.display()
-        );
+/// One commit pair's directory: its manifest, and each root it kept.
+struct Pair {
+    dir: PathBuf,
+    manifest: Value,
+    roots: Vec<(String, bool)>,
+}
 
-        for root in roots {
-            let name = root["name"].as_str().expect("a root's name");
-            let touched = root["touched"].as_bool().expect("touched");
-            let mut sides = vec![];
-            for which in ["base", "head"] {
-                let at = format!("{} {name} at {which}", dir.display());
-                let fragment: SbomGraphFragment =
-                    read(&dir.join(which).join(format!("{name}.fragment.json")));
-                let cargo: Value = read(&dir.join(which).join(format!("{name}.cargo-tree.json")));
-                let tree = asserted_tree(&fragment).unwrap_or_else(|| panic!("{at}: no root"));
-                assert!(tree.complete, "{at}: incomplete, {:?}", tree.gaps);
-
-                let packages: BTreeSet<String> = tree.packages.iter().map(|p| named(p)).collect();
-                let pairs: BTreeSet<(String, String)> = tree
-                    .pairs
-                    .iter()
-                    .map(|(from, to)| (named(from), named(to)))
-                    .collect();
-                let cargo_pairs: BTreeSet<(String, String)> = cargo["pairs"]
-                    .as_array()
-                    .expect("pairs")
-                    .iter()
-                    .map(|p| {
-                        (
-                            p[0].as_str().unwrap().to_string(),
-                            p[1].as_str().unwrap().to_string(),
-                        )
-                    })
-                    .collect();
-                assert_eq!(packages, strings(&cargo["packages"]), "{at}: the packages");
-                assert_eq!(pairs, cargo_pairs, "{at}: the dependencies");
-                sides.push((tree.digest, packages));
+fn pairs() -> Vec<Pair> {
+    let mut found: Vec<Pair> = std::fs::read_dir(fixtures())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .map(|dir| {
+            let manifest: Value = read(&dir.join("manifest.json"));
+            let roots = manifest["roots"]
+                .as_array()
+                .expect("roots")
+                .iter()
+                .map(|r| {
+                    let name = r["name"].as_str().expect("a root's name").to_string();
+                    (name, r["touched"].as_bool().expect("touched"))
+                })
+                .collect();
+            Pair {
+                dir,
+                manifest,
+                roots,
             }
-            let [(base_digest, base), (head_digest, head)] = <[_; 2]>::try_from(sides).unwrap();
+        })
+        .collect();
+    found.sort_by(|a, b| a.dir.cmp(&b.dir));
+    assert!(
+        !found.is_empty(),
+        "no fixtures: run tests/fixtures/sbom-trees/make.nu on the host"
+    );
+    found
+}
+
+/// The tree a raw CycloneDX document says, read apart from the pipeline and the processor: each bom-ref taken to the purl
+/// of the entry it names, a ref no entry gives a purl for left out, as the extraction's contract says
+/// (scripts/pipeline/core/sbom.nu, `extract-graph-fragment`), and nothing else assumed.
+#[derive(Debug, PartialEq, Eq)]
+struct Said {
+    root: String,
+    packages: BTreeSet<String>,
+    pairs: BTreeSet<(String, String)>,
+    /// Every component names a purl, and the root has an entry of its own (or there is nothing else in the tree).
+    complete: bool,
+}
+
+fn said(doc: &Value) -> Said {
+    let root = &doc["metadata"]["component"];
+    let root_purl = root["purl"].as_str().expect("the root's purl").to_string();
+    let components = doc["components"].as_array().cloned().unwrap_or_default();
+    let mut purl_of: BTreeMap<String, String> = BTreeMap::new();
+    for entry in std::iter::once(root).chain(components.iter()) {
+        if let (Some(bom_ref), Some(purl)) = (entry["bom-ref"].as_str(), entry["purl"].as_str())
+            && !bom_ref.is_empty()
+            && !purl.is_empty()
+        {
+            purl_of.insert(bom_ref.to_string(), purl.to_string());
+        }
+    }
+    let every_component_named = components
+        .iter()
+        .all(|c| c["purl"].as_str().is_some_and(|p| p.starts_with("pkg:")));
+    let mut pairs = BTreeSet::new();
+    let mut root_listed = false;
+    for entry in doc["dependencies"].as_array().cloned().unwrap_or_default() {
+        let Some(from) = entry["ref"].as_str().and_then(|r| purl_of.get(r)) else {
+            continue;
+        };
+        for to in entry["dependsOn"].as_array().cloned().unwrap_or_default() {
+            if let Some(to) = to.as_str().and_then(|r| purl_of.get(r)) {
+                pairs.insert((from.clone(), to.clone()));
+                root_listed |= *from == root_purl;
+            }
+        }
+    }
+    let packages: BTreeSet<String> = components
+        .iter()
+        .filter_map(|c| c["purl"].as_str())
+        .filter(|p| p.starts_with("pkg:"))
+        .map(str::to_string)
+        .chain(pairs.iter().flat_map(|(a, b)| [a.clone(), b.clone()]))
+        .filter(|p| *p != root_purl)
+        .collect();
+    let complete = every_component_named && (root_listed || packages.is_empty());
+    Said {
+        root: root_purl,
+        packages,
+        pairs,
+        complete,
+    }
+}
+
+/// (A): what each kept root's SBOM asserts, at both commits, is what its raw SBOM says.
+#[test]
+#[ignore = "needs the raw SBOMs (<root>.cdx.json), which tests/fixtures/sbom-trees/make.nu keeps from 2026-11-11: rerun it on the host"]
+fn an_asserted_tree_is_what_its_sbom_says_and_its_change_is_the_lock_files() {
+    for pair in pairs() {
+        let lock_added = strings(&pair.manifest["lock"]["added"]);
+        let lock_removed = strings(&pair.manifest["lock"]["removed"]);
+        for (name, _) in &pair.roots {
+            let mut sides: Vec<(AssertedTree, Said)> = vec![];
+            for which in ["base", "head"] {
+                let at = format!("{} {name} at {which}", pair.dir.display());
+                let dir = pair.dir.join(which);
+                let fragment: SbomGraphFragment = read(&dir.join(format!("{name}.fragment.json")));
+                let raw: Value = read(&dir.join(format!("{name}.cdx.json")));
+                let tree = asserted_tree(&fragment).unwrap_or_else(|| panic!("{at}: no root"));
+                let said = said(&raw);
+                assert_eq!(tree.root, said.root, "{at}: the root");
+                assert_eq!(tree.packages, said.packages, "{at}: the packages");
+                assert_eq!(tree.pairs, said.pairs, "{at}: the dependencies");
+                assert_eq!(
+                    tree.complete, said.complete,
+                    "{at}: complete, {:?}",
+                    tree.gaps
+                );
+                sides.push((tree, said));
+            }
+            let [(base, base_said), (head, head_said)] = <[_; 2]>::try_from(sides).unwrap();
             assert_eq!(
-                base_digest != head_digest,
-                touched,
-                "{name}: cargo resolves it {}, and its digests are {base_digest} and {head_digest}",
-                if touched { "differently" } else { "the same" },
+                base.digest == head.digest,
+                base_said == head_said,
+                "{name}: the SBOMs say {} tree, and its digests are {} and {}",
+                if base_said == head_said {
+                    "the same"
+                } else {
+                    "another"
+                },
+                base.digest,
+                head.digest,
             );
 
-            // The change agrees with the lock file's: a package the lock gained that the tree now holds was added
-            // to the tree, and one the lock lost that the tree held was removed from it.
+            // The change agrees with the lock file's: a package the lock gained that the tree now holds was added to
+            // the tree, and one the lock lost that the tree held was removed from it.
+            let base: BTreeSet<String> = base.packages.iter().map(|p| named(p)).collect();
+            let head: BTreeSet<String> = head.packages.iter().map(|p| named(p)).collect();
             let added = &head - &base;
             let removed = &base - &head;
             for package in head.intersection(&lock_added) {
@@ -144,8 +228,68 @@ fn an_asserted_tree_is_what_cargo_resolves_and_its_change_is_the_lock_files() {
             }
         }
     }
+}
+
+/// (B): what each kept root's SBOM says, against what `cargo tree -e normal,build` resolves for the crate. Every root that
+/// differs is reported, then the test fails.
+#[test]
+#[ignore = "cargo-cyclonedx's workspace SBOM overstates a crate: it reads `cargo metadata` over the whole workspace, \
+            where features are unified across members, dev-dependencies included"]
+fn what_an_sbom_says_is_what_cargo_tree_resolves() {
+    let mut differs: Vec<String> = vec![];
+    for pair in pairs() {
+        for (name, _) in &pair.roots {
+            for which in ["base", "head"] {
+                let at = format!(
+                    "{} {name} at {which}",
+                    pair.dir.file_name().unwrap().to_string_lossy()
+                );
+                let dir = pair.dir.join(which);
+                let fragment: SbomGraphFragment = read(&dir.join(format!("{name}.fragment.json")));
+                let cargo: Value = read(&dir.join(format!("{name}.cargo-tree.json")));
+                let tree = asserted_tree(&fragment).unwrap_or_else(|| panic!("{at}: no root"));
+                let packages: BTreeSet<String> = tree.packages.iter().map(|p| named(p)).collect();
+                let pairs: BTreeSet<(String, String)> = tree
+                    .pairs
+                    .iter()
+                    .map(|(from, to)| (named(from), named(to)))
+                    .collect();
+                let cargo_packages = strings(&cargo["packages"]);
+                let cargo_pairs: BTreeSet<(String, String)> = cargo["pairs"]
+                    .as_array()
+                    .expect("pairs")
+                    .iter()
+                    .map(|p| {
+                        (
+                            p[0].as_str().unwrap().to_string(),
+                            p[1].as_str().unwrap().to_string(),
+                        )
+                    })
+                    .collect();
+                if packages == cargo_packages && pairs == cargo_pairs {
+                    continue;
+                }
+                let only_sbom: Vec<&String> = packages.difference(&cargo_packages).collect();
+                let only_cargo: Vec<&String> = cargo_packages.difference(&packages).collect();
+                differs.push(format!(
+                    "{at}: SBOM {} packages, cargo tree {}; only in the SBOM ({}): {only_sbom:?}; only in cargo tree ({}): \
+                     {only_cargo:?}; dependencies only in the SBOM: {}, only in cargo tree: {}",
+                    packages.len(),
+                    cargo_packages.len(),
+                    only_sbom.len(),
+                    only_cargo.len(),
+                    pairs.difference(&cargo_pairs).count(),
+                    cargo_pairs.difference(&pairs).count(),
+                ));
+            }
+        }
+    }
+    for line in &differs {
+        eprintln!("{line}");
+    }
     assert!(
-        pairs_seen > 0,
-        "no fixtures: run tests/fixtures/sbom-trees/make.nu on the host"
+        differs.is_empty(),
+        "{} of the roots' SBOMs differ from cargo tree (above)",
+        differs.len()
     );
 }

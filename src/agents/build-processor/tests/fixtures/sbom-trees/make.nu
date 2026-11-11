@@ -10,8 +10,10 @@
 # in a temporary worktree of `src/agents`, it writes beside this script, in `<pair>/`:
 #
 # - `manifest.json`: the commits, the tool versions, the packages the lock file gained and lost, and the roots kept;
-# - `base/<root>.fragment.json` and `head/<root>.fragment.json`: the SBOM cargo-cyclonedx writes for the root, as
-#   the pipeline generates it (`generate-workspace-sboms`) and reduces it (`extract-graph-fragment`);
+# - `base/<root>.cdx.json` and `head/<root>.cdx.json`: the SBOM cargo-cyclonedx writes for the root, as the pipeline
+#   generates it (`generate-workspace-sboms`), byte for byte;
+# - `base/<root>.fragment.json` and `head/<root>.fragment.json`: that SBOM as the pipeline reduces it
+#   (`extract-graph-fragment`);
 # - `base/<root>.cargo-tree.json` and `head/<root>.cargo-tree.json`: the root's tree as `cargo tree` resolves it
 #   (normal and build dependencies, the host's target), each package as `name@version`, apart from the SBOM.
 #
@@ -100,6 +102,8 @@ def main [--target: string = ""] {
             mkdir ($dir | path join $which)
             for root in $kept {
                 let kept_root = $at.roots | get $root.name
+                # The SBOM as cargo-cyclonedx wrote it, byte for byte: what the tree is checked against (claim A).
+                $kept_root.raw | save --force --raw ($dir | path join $which $"($root.name).cdx.json")
                 $kept_root.fragment | to json | save --force ($dir | path join $which $"($root.name).fragment.json")
                 $kept_root.tree | to json | save --force ($dir | path join $which $"($root.name).cargo-tree.json")
             }
@@ -140,13 +144,14 @@ def side [
     exec-or-stop cargo ...$args | ignore
 
     let roots = (glob $"($ws)/**/*.cdx.json" --exclude ["**/target/**"] | each {|file|
-        let doc = open --raw $file | from json
+        let raw = open --raw $file
+        let doc = $raw | from json
         let hash = $"sha256:(open --raw $file | hash sha256)"
         let fragment = extract-graph-fragment $doc $hash | insert filename ($file | path basename)
         let name = $doc.metadata.component.name
         let version = $doc.metadata.component.version
-        {name: $name, fragment: $fragment, tree: (cargo-tree $manifest $name $version $target)}
-    } | reduce --fold {} {|root, acc| $acc | insert $root.name {fragment: $root.fragment, tree: $root.tree} })
+        {name: $name, raw: $raw, fragment: $fragment, tree: (cargo-tree $manifest $name $version $target)}
+    } | reduce --fold {} {|root, acc| $acc | insert $root.name {raw: $root.raw, fragment: $root.fragment, tree: $root.tree} })
 
     let lock = (open --raw ($ws | path join "Cargo.lock") | from toml | get package
         | each {|p| $"($p.name)@($p.version)" } | uniq)
