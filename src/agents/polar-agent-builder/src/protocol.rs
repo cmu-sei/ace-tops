@@ -966,6 +966,40 @@ pub(crate) struct Start<'a> {
     pub(crate) health: HealthHandle,
 }
 
+/// The cluster's name for each namespace key the deployment names (`POLAR_CLUSTER_NAMESPACES`), as the handler reads it
+/// from `env` when it starts. An operation of `operations` that names a key it does not map is refused here, once, so that
+/// an agent whose requests of it could never be allowed does not start, rather than have each refused.
+pub(crate) fn cluster_namespaces(
+    env: &dyn polar_env::Env,
+    operations: &[OperationDecl],
+) -> Result<BTreeMap<String, String>, String> {
+    let variable = crate::environment::CLUSTER_NAMESPACES.name();
+    let namespaces = match polar_env::Env::var(env, variable) {
+        Some(raw) => crate::environment::parse_cluster_namespaces(&raw)
+            .map_err(|why| format!("{variable}: {why}"))?,
+        None => BTreeMap::new(),
+    };
+    let unmapped: Vec<String> = operations
+        .iter()
+        .filter_map(|operation| match operation.location {
+            Location::Cluster {
+                namespace: Some(key),
+                ..
+            } if !namespaces.contains_key(key) => {
+                Some(format!("`{key}` (operation `{}`)", operation.name))
+            }
+            _ => None,
+        })
+        .collect();
+    if !unmapped.is_empty() {
+        return Err(format!(
+            "{variable} does not name the cluster's namespace for {}: the agent's requests there could never be allowed",
+            unmapped.join(", ")
+        ));
+    }
+    Ok(namespaces)
+}
+
 /// Starts the handler linked under `supervisor`, for an agent that declares operations or credentials.
 pub(crate) async fn start(
     supervisor: ActorCell,
@@ -975,17 +1009,9 @@ pub(crate) async fn start(
         return Ok(None);
     }
     // The cluster's name for each namespace its operations name by key, as the deployment says; read before the handler
-    // starts, as every variable the builder reads is.
-    let namespaces =
-        match polar_env::Env::var(start.config, crate::environment::CLUSTER_NAMESPACES.name()) {
-            Some(raw) => crate::environment::parse_cluster_namespaces(&raw).map_err(|why| {
-                ActorProcessingErr::from(format!(
-                    "{}: {why}",
-                    crate::environment::CLUSTER_NAMESPACES.name()
-                ))
-            })?,
-            None => BTreeMap::new(),
-        };
+    // starts, as every variable the builder reads is, and refused if it misses one they name.
+    let namespaces = cluster_namespaces(start.config, start.setup.operations)
+        .map_err(ActorProcessingErr::from)?;
     let instances = Instances::start(start.setup.operations, start.config)
         .await
         .map_err(ActorProcessingErr::from)?;
@@ -2615,6 +2641,57 @@ pub(crate) mod tests {
                 "{key:?}: {all}"
             );
         }
+    }
+
+    /// The handler reads the cluster's names for its operations' namespaces from the environment it starts in, by key: a
+    /// call in `polar-builds` is the operation's `builds`, and is allowed there. An operation whose key the deployment does
+    /// not name keeps the agent from starting, rather than have every request of it refused; and a variable that does not
+    /// read is refused, naming it.
+    #[test]
+    fn the_handler_reads_the_cluster_s_namespaces_from_its_environment() {
+        let variable = crate::environment::CLUSTER_NAMESPACES.name().to_string();
+        let held = [OperationDecl {
+            name: "held",
+            doc: "",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: WATCH_PODS,
+                namespace: Some("builds"),
+            },
+        }];
+        let env = |value: &str| HashMap::from([(variable.clone(), value.to_string())]);
+        let none = HashMap::<String, String>::new();
+        let deployed = env("builds=polar-builds,core=polar");
+        let namespaces = cluster_namespaces(&deployed, &held).unwrap();
+        assert_eq!(
+            namespaces.get("builds").map(String::as_str),
+            Some("polar-builds")
+        );
+        let in_polar_builds = Target {
+            host: "10.96.0.1".to_string(),
+            encrypted: true,
+            access: Some(WATCH_PODS[0]),
+            reaches_node: Vec::new(),
+            namespace: Some("polar-builds".to_string()),
+        };
+        assert_eq!(
+            judge(
+                &held[0],
+                &held,
+                &in_polar_builds,
+                namespaces.get("builds").map(String::as_str),
+                None
+            ),
+            Verdict::Allow { credential: None }
+        );
+
+        let unmapped = cluster_namespaces(&none, &held).unwrap_err();
+        assert!(unmapped.contains("`builds` (operation `held`)"), "{unmapped}");
+        assert!(cluster_namespaces(&env("core=polar"), &held).is_err());
+        let refused = cluster_namespaces(&env("builds"), &held).unwrap_err();
+        assert!(refused.contains(&variable), "{refused}");
+        // An agent whose operations name no namespace needs the variable no more than before.
+        assert!(cluster_namespaces(&none, &[]).unwrap().is_empty());
     }
 
     proptest! {
