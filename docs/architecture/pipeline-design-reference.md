@@ -319,7 +319,19 @@ confirmed example (a registry crate present in `Cargo.lock` but absent from
 every generated SBOM), mechanics researched (dev-dependencies default-
 excluded with no confirmed override flag; build-dependencies included by
 default but tagged non-runtime; platform-conditional dependencies
-structurally unclosable by a single invocation) — not implemented.
+structurally unclosable by a single invocation) — not implemented. A
+binary's own SBOM, beside the workspace member's (build-inspect-ship, S2):
+the dependency record `cargo auditable` embeds in a binary as it is built,
+written out as CycloneDX by `auditable2cdx` 0.1.0 (packaged in
+`src/flake/auditable2cdx.nix`, `polarPkgs.auditable2cdx`, in the CI image)
+and put through `SbomAnalyzed` like any SBOM — packaged, not yet used. Open
+until the host's test: whether that record overstates the binary as the
+workspace SBOM overstates a member (cargo-cyclonedx reads `cargo metadata`
+over the whole workspace, so features unify across members). This
+nixpkgs' `cargo-auditable` 0.6.2 writes format 0, which its own crate
+documents as taken from `cargo metadata` too, with proc-macros recorded as
+runtime dependencies; the test compares it with the crates the build's
+cargo log says it compiled.
 
 **Deliberately deferred, by design, not oversight:** cross-scanner
 vulnerability identity reconciliation (RUSTSEC/CVE/GHSA convergence) —
@@ -349,7 +361,8 @@ footnote.
 (`pkg:type/name@version`). Reliability varies by ecosystem; verified for
 `pkg:cargo` here, not assumed elsewhere. **SBOM** — Software Bill of
 Materials; here, CycloneDX JSON produced by `cargo-cyclonedx` per workspace
-member. **RUSTSEC** — the Rust ecosystem's own advisory database
+member, and (planned, §7) by `auditable2cdx` per binary, from the record
+`cargo auditable` embeds in it. **RUSTSEC** — the Rust ecosystem's own advisory database
 (volunteer-maintained, not centrally scored). **GHSA** — GitHub Security
 Advisory, the de facto advisory-of-record for much of the open-source
 ecosystem, often present where a CVE never was requested. **CVE** — the
