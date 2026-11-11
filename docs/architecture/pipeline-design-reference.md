@@ -190,8 +190,10 @@ package link. That's an honest gap (dependency-scope mismatch between what
 
 `IS` (type hierarchy, shared across both marker domains), `BUILT_BY`,
 `BUILT_FROM` (`Binary → Package` — the edge that makes "what's actually
-compiled into this binary" answerable), `PRODUCED`, `DEPENDS_ON` (`Package →
-Package`, the SBOM dependency tree), `DESCRIBES` (`Sbom → root Package`),
+compiled into this binary" answerable), `PRODUCED`, `ASSERTS` (`Sbom →
+DependencyTree`, the tree that one SBOM gives, content-addressed, its
+dependencies held on the tree; there is no global `Package → Package` edge),
+`INCLUDES` (`DependencyTree → Package`, `direct` when known), `DESCRIBES` (`Sbom → root Package`),
 `REPORTED` (`BuildJob → Finding`, timestamp is a `SET` property on the edge,
 *not* part of the MERGE pattern — see §5.5), `AFFECTS` / `CONCERNS`
 (`Finding → Package`, conditional), `FOUND_IN` (`Finding → BuildArtifact`,

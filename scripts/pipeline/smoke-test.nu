@@ -80,7 +80,7 @@ def main [] {
 
     # ── SbomAnalyzed ──────────────────────────────────────────────────────────
     # Carries the full dependency graph fragment extracted from the SBOM.
-    # The build processor writes Package nodes and DEPENDS_ON edges from this.
+    # The build processor writes Package nodes and the tree the SBOM asserts from this.
     log-info "emitting SbomAnalyzed" --component $COMPONENT
     emit-sbom-analyzed {
         artifact_content_hash: $sbom_hash
@@ -155,7 +155,7 @@ def main [] {
     log-info $"  MATCH \(j:BuildJob\)-[:FOUND_VULNERABILITY]->\(v:Vulnerability\) RETURN j, v" --component $COMPONENT
     log-info $"  MATCH \(b:Binary\)-[:BUILT_FROM]->\(p:Package\) RETURN b, p" --component $COMPONENT
     log-info $"  MATCH \(s:Sbom\)-[:DESCRIBES]->\(p:Package\) RETURN s, p" --component $COMPONENT
-    log-info $"  MATCH \(p:Package\)-[:DEPENDS_ON]->\(d:Package\) RETURN p, d" --component $COMPONENT
+    log-info $"  MATCH \(s:Sbom\)-[:ASSERTS]->\(t:DependencyTree\)-[:INCLUDES]->\(p:Package\) RETURN s, t, p" --component $COMPONENT
     log-info $"  MATCH \(i:ContainerImage\)-[:HAS_LAYER]->\(l:OCILayer\) RETURN i, l" --component $COMPONENT
     log-info $"  MATCH \(v:Vulnerability\)-[:FOUND_IN]->\(a:BuildArtifact\) RETURN v, a" --component $COMPONENT
 }

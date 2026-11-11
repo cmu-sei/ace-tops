@@ -32,7 +32,9 @@
 //! (BuildJob)-[:PRODUCED]->(BuildArtifact)
 //! (BuildArtifact)-[:ANALYZED_AS]->(Sbom)                     sbom files
 //! (BuildArtifact)-[:INSTANCE_OF]->(OCIArtifact)              pushed images
-//! (Sbom)-[:DESCRIBES]->(Package)-[:DEPENDS_ON]->(Package)
+//! (Sbom)-[:DESCRIBES]->(Package)                             its root
+//! (Sbom)-[:ASSERTS]->(DependencyTree)                        its own tree
+//! (DependencyTree)-[:INCLUDES {direct}]->(Package)
 //! (Binary)-[:BUILT_FROM]->(Package),  (Sbom)-[:ATTESTS]->(Binary)
 //! (OCIArtifact)-[:HAS_DIFF_ID {order}]->(OCILayerDiffId)
 //! ```

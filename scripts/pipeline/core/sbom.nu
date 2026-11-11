@@ -221,8 +221,9 @@ export def process-image-sbom [sbom_path: path, image_name: string, --oci_metada
 
     # Emit the image-specific analyzed event.
     # This carries both the standard graph fragment AND the layer
-    # attributions, so the linker can write both DEPENDS_ON edges
-    # and CONTAINS edges in one pass.
+    # attributions, so the linker can write both the tree the SBOM asserts,
+    # (Sbom)-[:ASSERTS]->(DependencyTree), and CONTAINS edges in one pass.
+    # Nothing projects this event yet: build-processor has no variant for it.
     emit "image-sbom.analyzed" {
         filename: $filename
         image_name: $image_name

@@ -198,8 +198,9 @@ pub struct PackageRef {
 /// `extract-graph-fragment`), and build-processor writes no package for a ref that is not one. This is NOT derived
 /// from iterating the flat `components` list — that list is an inventory.
 /// This is the actual tree structure the SBOM generator recorded.
-/// If the generator omits this key, the graph degrades gracefully to
-/// a flat node list with no edges, which is still useful for inventory queries.
+/// If the generator omits this key, the packages are still written, for
+/// inventory queries, and the tree the SBOM asserts is incomplete: build-processor
+/// links its root to nothing rather than to every component.
 #[derive(
     Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
 )]
@@ -211,9 +212,10 @@ pub struct DependencyEdge {
 /// The full graph fragment extracted from a CycloneDX SBOM document.
 ///
 /// Carries everything the build processor needs to write `Package` nodes
-/// and `DEPENDS_ON` edges in one pass, without re-fetching or re-parsing
-/// the SBOM file. The `artifact_content_hash` is the join key to the
-/// `ArtifactProduced` event that announced the SBOM file itself.
+/// and the tree this SBOM asserts, `(Sbom)-[:ASSERTS]->(DependencyTree)`,
+/// in one pass, without re-fetching or re-parsing the SBOM file. The
+/// `artifact_content_hash` is the join key to the `ArtifactProduced` event
+/// that announced the SBOM file itself.
 #[derive(
     Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
 )]

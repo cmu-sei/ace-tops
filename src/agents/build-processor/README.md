@@ -79,8 +79,8 @@ execution  (GitCommit)-[:BUILT_BY]->(BuildJob)                     git sources o
            (BuildJob)-[:TRANSITIONED_TO]->(BuildJobState {phase})-[:OF_TYPE]->(State)
 
 outputs    (BuildJob)-[:PRODUCED]->(BuildArtifact)
-           (BuildArtifact)-[:ANALYZED_AS]->(Sbom)-[:DESCRIBES]->(Package)
-           (Package)-[:DEPENDS_ON]->(Package)
+           (BuildArtifact)-[:ANALYZED_AS]->(Sbom)-[:DESCRIBES]->(Package)      its root
+           (Sbom)-[:ASSERTS]->(DependencyTree)-[:INCLUDES {direct}]->(Package)
            (Binary)-[:BUILT_FROM]->(Package),  (Sbom)-[:ATTESTS]->(Binary)
            (BuildArtifact)-[:INSTANCE_OF]->(OCIArtifact)            pushed images
            (OCIArtifact)-[:HAS_DIFF_ID {order}]->(OCILayerDiffId)

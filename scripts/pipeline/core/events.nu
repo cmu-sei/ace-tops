@@ -186,7 +186,8 @@ export def emit-artifact-produced [
 
 # Emit SbomAnalyzed — SBOM was parsed and its dependency graph extracted.
 # Carries the full graph fragment so the build processor can write Package
-# nodes and DEPENDS_ON edges in one pass.
+# nodes and the tree the SBOM asserts, (Sbom)-[:ASSERTS]->(DependencyTree),
+# in one pass.
 export def emit-sbom-analyzed [fragment: record, filename: string]: nothing -> nothing {
     emit {
         type: "sbom_analyzed"
