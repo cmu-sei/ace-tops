@@ -79,7 +79,7 @@ use ./core/cargo.nu [workspace-root source-commit]
 use ./core/hashing.nu *
 use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
-use ./core/binaries.nu [linked-binaries]
+use ./core/binaries.nu [linked-binaries compiled-for-target not-compiled]
 use ./core/nix.nu [realisation]
 use ./core/inspect.nu [inspect-archive placements]
 use ../../infra/check-sources.nu [summary_lines]
@@ -536,7 +536,8 @@ const FACT_TOOL = "polar-pipeline/ci.nu"
 # For each derivation: how it came to be in the store this run (`nix build --dry-run`: built, fetched or present before
 # the run, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it linked and the
 # package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix has stripped
-# it, and reported: ArtifactProduced, the facts of its realisation, and BinaryLinked to its package's SBOM from phase 1.
+# it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
+# what that SBOM names that the build did not compile for it (`report-sbom-gap`).
 #
 # Run from the repository's root, as phase 3's `nix build` is.
 def build-and-link-binaries [
@@ -592,6 +593,7 @@ def build-and-link-binaries [
             if $sbom_info != null {
                 emit-binary-linked $binary_hash $bin.name $sbom_info.root_purl $sbom_info.content_hash --binding_digest $binding
                 log-info $"($bin.name) -> ($sbom_info.root_purl)" --component $COMPONENT
+                report-sbom-gap $subject $log $bin.name $sbom_info $artifact_dir $version
             } else {
                 log-warn $"($bin.name): no SBOM for package ($pkg.name) — binary_linked not emitted" --component $COMPONENT
             }
@@ -609,6 +611,45 @@ def build-and-link-binaries [
         }
         | compact
     } | flatten
+}
+
+# What the workspace SBOM of a binary's package names that the binary's build did not compile for its target
+# (build-inspect-ship, S2): the SBOM is a claim about the source tree at a commit, the cargo log the record of this build.
+# For each such package, `polar.cargo/not-compiled` (the Binary, naming the Package by the purl the SBOM gives it, the
+# value the SBOM's content hash); then `polar.cargo/sbom-compared` (the Binary, naming the Sbom, the value how many it
+# names that were not compiled, "0" for none), which a binary never compared has not. The binary's target units only
+# (core/binaries.nu, `compiled-for-target`): a proc-macro or a build script runs on the build machine, and is not in it.
+# Observation only: what cannot be read or compared is logged, and the build goes on.
+def report-sbom-gap [
+    subject: record
+    log: list<string>
+    binary: string
+    sbom: record
+    artifact_dir: path
+    version: string
+]: nothing -> nothing {
+    let gap = try {
+        let doc = open ($artifact_dir | path join $"($sbom.name).cdx.json")
+        let components = $doc.components? | default [] | each {|c|
+            {name: ($c.name? | default ""), version: ($c.version? | default ""), purl: ($c.purl? | default "")}
+        }
+        not-compiled $components (compiled-for-target $log $binary)
+    } catch {|e|
+        log-warn $"($binary): not compared with its package's SBOM: ($e.msg)" --component $COMPONENT
+        null
+    }
+    if $gap == null { return }
+    for p in $gap {
+        if ($p.purl | str starts-with "pkg:") {
+            (emit-fact $subject "polar.cargo/not-compiled" $FACT_TOOL $version
+                --object {label: "Package", key: $p.purl} --value $sbom.content_hash)
+        } else {
+            log-warn $"($binary): ($p.name)@($p.version), not compiled, has no purl to name it by" --component $COMPONENT
+        }
+    }
+    (emit-fact $subject "polar.cargo/sbom-compared" $FACT_TOOL $version
+        --object {label: "Sbom", key: $sbom.content_hash} --value ($gap | length | into string))
+    log-info $"($binary): its package's SBOM names ($gap | length) packages its build did not compile for its target" --component $COMPONENT
 }
 
 # One derivation, realised: how its outputs came to be in the store (`realised`, from the dry run), when it was built

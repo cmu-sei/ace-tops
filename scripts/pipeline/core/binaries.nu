@@ -23,7 +23,8 @@
 #
 # What a binary's build says of it (build-inspect-ship, S2). A binary is built by Nix, from its crane derivation, which
 # keeps cargo's JSON log of the build as its `cargolog` output. This module reads that log: which binaries the build
-# linked, and the package each belongs to, by its id. Pure: no file is read and nothing is run.
+# linked, and the package each belongs to, by its id; which packages it compiled for a binary's target, and which of
+# those an SBOM names it did not. Pure: no file is read and nothing is run.
 
 # The package a cargo package id names: `{name, version}`. Cargo writes an id as its source, `#`, and `name@version`, or
 # only the version when the name is the last segment of the source's path (`path+file:///build/source/logger#1.0.0`);
@@ -71,14 +72,54 @@ export def linked-binaries [log: list<string>]: nothing -> list<record> {
     }
 }
 
-# The packages compiled for the target a binary runs on, from its build's cargo log: `{name, version}`, each once, in
-# order. Stub (S2, the SBOM's gap): nothing yet.
+# The packages compiled for the target a binary runs on, from its build's cargo log's lines: `{name, version}`, each
+# once, by name and version. A unit is the target's when every file it wrote lies under the directory of the binary's
+# executable: cargo writes a build for a target (`CARGO_BUILD_TARGET`, crane's musl triple) under `target/<triple>/`,
+# and what runs on the build machine under `target/<profile>/`. A proc-macro or a build script (kinds `proc-macro` and
+# `custom-build`) is the build machine's wherever it lies. With no target set, the two share a directory, and a library
+# only the build machine's units need is counted too: what was compiled is then overstated, never understated.
+#
+# A derivation that links more than one binary compiles them as one build: each binary's units are all of its target's.
+# A binary the log did not link is an error.
 export def compiled-for-target [log: list<string>, binary: string]: nothing -> list<record> {
-    []
+    let artifacts = (
+        $log
+        | each {|line| try { $line | from json } catch { null } }
+        | where {|m| ($m | describe | str starts-with "record") }
+        | where {|m| ($m.reason? | default "") == "compiler-artifact" }
+    )
+    let linked = (
+        $artifacts
+        | where {|m| "bin" in ($m.target?.kind? | default []) }
+        | where {|m| ($m.executable? | default null) != null }
+        | where {|m| ($m.executable | path basename) == $binary }
+    )
+    if ($linked | is-empty) {
+        error make {msg: $"($binary): its build's cargo log does not say it linked it"}
+    }
+    let dir = (
+        $linked
+        | first
+        | get executable
+        | path dirname
+    ) + "/"
+    $artifacts
+    | where {|m| ($m.target?.kind? | default [] | all {|k| $k not-in [proc-macro custom-build] }) }
+    | where {|m|
+        let files = $m.filenames? | default []
+        ($files | is-not-empty) and ($files | all {|f| $f | str starts-with $dir })
+    }
+    | each {|m| package-of-id $m.package_id }
+    | uniq
+    | sort-by name version
 }
 
 # The packages an SBOM names that a build did not compile for its target: each of `components` (`{name, version,
-# purl}`) whose name and version are not among `compiled`. Stub (S2, the SBOM's gap): nothing yet.
+# purl}`, as the SBOM gives them) whose name and version are not among `compiled` (`compiled-for-target`), once each,
+# in the SBOM's order.
 export def not-compiled [components: list<record>, compiled: list<record>]: nothing -> list<record> {
-    []
+    let have = $compiled | each {|p| $"($p.name)@($p.version)" }
+    $components
+    | where {|c| $"($c.name)@($c.version)" not-in $have }
+    | uniq
 }
