@@ -20,13 +20,13 @@
 # DM26-0670
 
 # scripts/pipeline/tests/nix.nu
-# How a derivation's outputs came to be in the store this run (core/nix.nu, `realisation`): built here, fetched from a
-# cache, or present before the run, read from what `nix build --dry-run` says it will do. Run: nu scripts/pipeline/tests/nix.nu
+# How a derivation's outputs came to be in the store (core/nix.nu, `observed-realisation`): present, built here or
+# fetched, or unknown, observed of the store before and after the build, never planned.
+# Run: nu scripts/pipeline/tests/nix.nu
 
 use std/assert
-use ../core/nix.nu [realisation observed-realisation]
+use ../core/nix.nu [observed-realisation]
 
-const DRV = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cassini-server-1.0.0.drv"
 const OUT = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cassini-server-1.0.0"
 const LOG = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cassini-server-1.0.0-cargolog"
 
@@ -68,40 +68,6 @@ def fetched-info [registered: int]: nothing -> record {
 def main [] {
     let outputs = [$OUT $LOG]
     let tests = [
-        {
-            name: "a derivation the dry run will build was built here"
-            body: {
-                let said = $"these 2 derivations will be built:\n  /nix/store/cccccccccccccccccccccccccccccccc-dep.drv\n  ($DRV)\nthese 3 paths will be fetched \(1.20 MiB download, 5.01 MiB unpacked\):\n  /nix/store/dddddddddddddddddddddddddddddddd-x\n"
-                assert equal (realisation $said $DRV $outputs) built
-                assert equal (
-                    realisation $"this derivation will be built:\n  ($DRV)\n" $DRV $outputs
-                ) built
-            }
-        }
-        {
-            name: "an output the dry run will fetch was fetched"
-            body: {
-                let said = $"this path will be fetched \(0.01 MiB download, 0.05 MiB unpacked\):\n  ($LOG)\n"
-                assert equal (realisation $said $DRV $outputs) fetched
-                let both = $"these 2 paths will be fetched \(4.10 MiB download, 9.00 MiB unpacked\):\n  ($OUT)\n  ($LOG)\n"
-                assert equal (realisation $both $DRV $outputs) fetched
-            }
-        }
-        {
-            name: "outputs the dry run will neither build nor fetch were present before the run"
-            body: {
-                assert equal (realisation "" $DRV $outputs) present
-                let others = "this derivation will be built:\n  /nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-other.drv\n"
-                assert equal (realisation $others $DRV $outputs) present
-            }
-        }
-        {
-            name: "only a list's own lines are its paths: a path named in other text is not"
-            body: {
-                let said = $"warning: Git tree is dirty\nnote: ($DRV) is mentioned here\n"
-                assert equal (realisation $said $DRV $outputs) present
-            }
-        }
         {
             name: "outputs valid in the store before the build were present, whatever a dry run planned"
             body: {

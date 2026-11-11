@@ -21,44 +21,64 @@
 
 # scripts/pipeline/core/nix.nu
 #
-# What a Nix build did, read from what it said (build-inspect-ship, S2). Pure: nothing is run here.
+# What a Nix build did, read from what the store says of its outputs (build-inspect-ship, S2). Pure: nothing is run here.
 
-# How a derivation's outputs came to be in the store this run, from what `nix build --dry-run` said it would do (its
-# standard error): `built` when its `.drv` is in a "will be built" list, `fetched` when one of `outputs` is in a "will be
-# fetched" list, `present` when neither, as they were in the store before the run. A list is its header's indented store
-# paths, and ends at the first line that is not one. When a binary was built is a fact only if it was built here.
-export def realisation [dry_run: string, drv: string, outputs: list<string>]: nothing -> string {
-    mut list = ""
-    mut built = []
-    mut fetched = []
-    for line in ($dry_run | lines) {
-        if $line =~ '^(this|these \d+) derivations? will be built:' {
-            $list = "built"
-            continue
-        }
-        if $line =~ '^(this|these \d+) paths? will be fetched' {
-            $list = "fetched"
-            continue
-        }
-        if ($list != "") and ($line =~ '^\s+/nix/store/\S+$') {
-            let path = $line | str trim
-            if $list == "built" { $built = ($built | append $path) } else { $fetched = ($fetched | append $path) }
-            continue
-        }
-        $list = ""
-    }
-    let fetched = $fetched
-    if $drv in $built {
-        "built"
-    } else if ($outputs | any {|o| $o in $fetched }) {
-        "fetched"
-    } else {
-        "present"
-    }
-}
-
-# How a derivation's outputs came to be in the store, observed of the store itself, before and after the build. Stub
-# (H2): nothing yet.
+# How a derivation's outputs came to be in the store, observed of the store itself, never planned: `before` is what
+# `nix-store --check-validity --print-invalid <outputs>` gave before the build (the outputs not valid, one a line), and
+# `after` what `nix path-info --json <outputs>` gave after it, each `{exit_code, stdout}` as `complete` gives them.
+#
+# - `present`: every output was valid before the build, so it realised none;
+# - `built`: every output not valid before is one the store records as built on this machine (`ultimate`); `at`, the
+#   latest time the store registered one of them, when it records one for each;
+# - `fetched`: every output not valid before is one the store records as not built here, and signed: substituted from a
+#   cache, or copied from another store;
+# - `unknown`: anything else (a command that failed or said what is not read here, an output not valid after, a mix),
+#   with no time.
+#
+# `path-info --json` is read in both shapes Nix writes: an object keyed by path (2.19 and after), or a list, each with
+# its `path`, `ultimate` left out when false (before).
 export def observed-realisation [outputs: list<string>, before: record, after: record]: nothing -> record {
-    {realised: "", at: null}
+    let unknown = {realised: "unknown", at: null}
+    if $before.exit_code != 0 { return $unknown }
+    let invalid = $before.stdout | lines | str trim | where {|l| $l | is-not-empty }
+    if ($invalid | any {|p| $p not-in $outputs }) { return $unknown }
+    if ($invalid | is-empty) { return {realised: "present", at: null} }
+    if $after.exit_code != 0 { return $unknown }
+    let parsed = try {
+        $after.stdout | from json
+    } catch {
+        null
+    }
+    let shape = $parsed | describe
+    let infos = if ($shape | str starts-with "record") {
+        $parsed | transpose path info
+    } else if $shape =~ '^(list|table)' {
+        $parsed
+        | where {|i| ($i | describe | str starts-with "record") }
+        | each {|i| {path: ($i.path? | default ""), info: $i} }
+    } else {
+        return $unknown
+    }
+    let realised = $invalid | each {|p|
+        let info = $infos | where path == $p | get -o 0.info
+        if not ($info | describe | str starts-with "record") {
+            {kind: "unknown", registered: null}
+        } else if ($info.ultimate? | default false) == true {
+            {kind: "built", registered: ($info.registrationTime? | default null)}
+        } else if ($info.signatures? | default [] | is-not-empty) {
+            {kind: "fetched", registered: null}
+        } else {
+            {kind: "unknown", registered: null}
+        }
+    }
+    let kinds = $realised | get kind | uniq
+    if ($kinds | length) != 1 or ($kinds | first) == "unknown" { return $unknown }
+    let times = $realised | get registered | compact
+    let at = if ($kinds | first) == "built" and ($times | length) == ($invalid | length) {
+        $times | math max | $in * 1_000_000_000 | into datetime | format date "%Y-%m-%dT%H:%M:%S%:z"
+    }
+    {
+        realised: ($kinds | first)
+        at: $at
+    }
 }

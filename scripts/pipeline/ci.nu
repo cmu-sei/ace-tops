@@ -48,7 +48,8 @@
 #     from: there is no cargo build here, and a pipeline without Nix reports no
 #     binary. Its cargo log (the derivation's `cargolog` output) says what it
 #     linked; it is hashed as installed, reported with how Nix realised it
-#     (built, fetched or present), and linked to its Phase 1 SBOM via a
+#     (present, built, fetched or unknown, as the store records it before and
+#     after the build), and linked to its Phase 1 SBOM via a
 #     cryptographic binding digest.
 #
 #   Phase 3 — OCI images
@@ -80,7 +81,7 @@ use ./core/hashing.nu *
 use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
 use ./core/binaries.nu [linked-binaries sbom-gap]
-use ./core/nix.nu [realisation]
+use ./core/nix.nu [observed-realisation]
 use ./core/inspect.nu [inspect-archive placements]
 use ../../infra/check-sources.nu [summary_lines]
 const COMPONENT = "ci"
@@ -533,10 +534,10 @@ const FACT_TOOL = "polar-pipeline/ci.nu"
 # derivations, as image-manifest names them; build-inspect-ship, S2). Nothing is built with cargo here: the binary
 # reported is the one the image is made from, out of the same store path.
 #
-# For each derivation: how it came to be in the store this run (`nix build --dry-run`: built, fetched or present before
-# the run, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it linked and the
-# package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix has stripped
-# it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
+# For each derivation: how it came to be in the store (observed of the store before and after the build: present, built
+# here, fetched or unknown, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it
+# linked and the package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix
+# has stripped it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
 # what that SBOM names that is not in the binary (`report-sbom-gap`).
 #
 # Run from the repository's root, as phase 3's `nix build` is.
@@ -578,7 +579,7 @@ def build-and-link-binaries [
             let subject = {label: "Binary", key: $binary_hash}
             emit-fact $subject "polar.nix/realised" $FACT_TOOL $version --value $derivation.realised
             emit-fact $subject "polar.nix/store-path" $FACT_TOOL $version --value $derivation.outputs.out
-            if $derivation.realised == "built" {
+            if $derivation.at != null {
                 emit-fact $subject "polar.nix/built-at" $FACT_TOOL $version --value $derivation.at
             }
 
@@ -667,42 +668,37 @@ def report-sbom-gap [
     log-info $"($binary): its package's SBOM names ($never + $host) packages not in it: ($never) never compiled, ($host) compiled only for the build machine" --component $COMPONENT
 }
 
-# One derivation, realised: how its outputs came to be in the store (`realised`, from the dry run), when it was built
-# if it was built here (`at`), and its outputs' paths. A derivation Nix cannot plan or build stops the pipeline, as a
+# One derivation, realised: how its outputs came to be in the store (`realised`, core/nix.nu, `observed-realisation`),
+# observed of the store before and after the build, never planned; when the store registered them if they were built
+# here (`at`, or null); and its outputs' paths. A derivation Nix cannot evaluate or build stops the pipeline, as a
 # failed cargo build did.
 def realise-derivation [ref: string]: nothing -> record {
     let installable = $"($ref)^*"
-    let drv = (^nix eval --raw $"($ref).drvPath" | complete)
     let outs = (
         ^nix eval --json $"($ref)" --apply "d: map (o: d.${o}.outPath) d.outputs"
         | complete
     )
-    if $drv.exit_code != 0 or $outs.exit_code != 0 {
+    if $outs.exit_code != 0 {
         error make {
-            msg: $"nix could not evaluate ($ref): ($drv.stderr)($outs.stderr | str trim | lines | last 3 | str join ' ')"
+            msg: $"nix could not evaluate ($ref): ($outs.stderr | str trim | lines | last 3 | str join ' ')"
         }
     }
-    let dry = (^nix build --dry-run --no-link $installable | complete)
-    if $dry.exit_code != 0 {
-        error make {
-            msg: $"nix could not plan ($ref): ($dry.stderr | str trim | lines | last 3 | str join ' ')"
-        }
-    }
-    let realised = ((realisation
-        $dry.stderr
-        ($drv.stdout | str trim)
-        ($outs.stdout | from json)
-    ))
-    log-info $"($ref): ($realised)" --component $COMPONENT
+    let outputs = $outs.stdout | from json
+    # Which outputs the store does not hold yet, before the build.
+    let before = (^nix-store --check-validity --print-invalid ...$outputs | complete)
     let built = (^nix build --json --no-link $installable | complete)
     if $built.exit_code != 0 {
         error make {
             msg: $"nix build failed for ($ref): ($built.stderr | str trim | lines | last 5 | str join ' ')"
         }
     }
+    # What the store records of them after: built here (`ultimate`), signed from elsewhere, and when registered.
+    let after = (^nix path-info --json ...$outputs | complete)
+    let realisation = observed-realisation $outputs $before $after
+    log-info $"($ref): ($realisation.realised)" --component $COMPONENT
     {
-        realised: $realised
-        at: (reported-now)
+        realised: $realisation.realised
+        at: $realisation.at
         outputs: (
             $built.stdout
             | from json
