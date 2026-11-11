@@ -324,7 +324,23 @@ impl Report {
                 digest: o.text_or_empty("digest")?,
                 uri: o.text_or_empty("uri")?,
             }),
-            Kind::FactReported => return Err(Refusal::UnknownKind),
+            Kind::FactReported => Report::FactReported(FactReported {
+                subject: fact_ref(&Object::at(
+                    text,
+                    tape,
+                    o.value("subject").ok_or(Refusal::MissingKey)?,
+                )?)?,
+                name: o.text("name")?,
+                object: match o.value("object") {
+                    Some(at) if tape.tokens.get(at) != Some(&Token::Null) => {
+                        Some(fact_ref(&Object::at(text, tape, at)?)?)
+                    }
+                    _ => None,
+                },
+                value: o.maybe_text("value")?,
+                tool: o.text("tool")?,
+                tool_version: o.text("tool_version")?,
+            }),
         })
     }
 
@@ -549,6 +565,13 @@ impl Report {
         }
         w.done()
     }
+}
+
+fn fact_ref(o: &Object<'_>) -> Result<FactRef, Refusal> {
+    Ok(FactRef {
+        label: FactLabel::of_word(&o.text("label")?).ok_or(Refusal::UnknownWord)?,
+        key: o.text("key")?,
+    })
 }
 
 fn fact_ref_line(r: &FactRef) -> String {
