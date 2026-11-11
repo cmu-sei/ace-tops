@@ -28,8 +28,8 @@ use super::git::Git;
 use super::http::Http;
 use super::kubernetes::Kubernetes;
 use super::{
-    CredentialSource, CredentialsApplied, Holds, Instances, LiveConfiguration, OperationDecl,
-    ProtocolActor, ProtocolArgs, ProtocolHandle, ProtocolMessage, RequestRecord,
+    CredentialSource, CredentialsApplied, Holds, Instances, LiveConfiguration, Location,
+    OperationDecl, ProtocolActor, ProtocolArgs, ProtocolHandle, ProtocolMessage, RequestRecord,
 };
 use crate::runtime::RuntimeValue;
 use async_trait::async_trait;
@@ -167,6 +167,17 @@ pub(crate) async fn handle_of(
             configuration: variables.clone(),
             health: Arc::new(NoHealth),
             record: Arc::new(move |record| recorded.lock().unwrap().push(record.clone())),
+            // Each namespace key an operation names, as the namespace of the same name: a test's calls name it as declared.
+            namespaces: operations
+                .iter()
+                .filter_map(|operation| match operation.location {
+                    Location::Cluster {
+                        namespace: Some(key),
+                        ..
+                    } => Some((key.to_string(), key.to_string())),
+                    _ => None,
+                })
+                .collect(),
             applied: applied.clone(),
             in_force: in_force.clone(),
         },

@@ -55,7 +55,7 @@ use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
 use egress.nu
-use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces, added_namespaces]
+use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces, role_namespace_problem, added_namespaces]
 use under-test.nu
 const CONFIG = ($INFRA | path join "config")
 
@@ -491,6 +491,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     mut sa_secret: any = null
     mut cluster_roles: list<any> = []
     mut namespaced_roles: list<any> = []
+    mut role_keys: list<string> = []
     mut pvcs: list<any> = []
     mut init_env: list<any> = []
     mut ports: list<any> = []
@@ -563,17 +564,33 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         for p in ($cap.resources.pvcs? | default []) {
             $pvcs = ($pvcs | append { name: (subst $p.name $vars $name), storage_class: $cluster.storage.class, size: $cluster.storage.size })
         }
+        # Where the agent's code holds the capability's role: the namespace its scaffold names for it, by its key, or none
+        # (polar-agent-builder/src/capability.rs, role_namespaces_of). The catalog places the role there and nowhere else.
+        let held_to = ($scaffold.role_namespaces? | default {} | get -o $n)
         for r in ($cap.resources.cluster_roles? | default []) {
+            let problem = (role_namespace_problem null $held_to $n)
+            if $problem != null { error make { msg: $"($name): ($problem)" } }
             $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: (declared_rules $r $scaffold $n $name), from: $n })
         }
         # A Role in the namespace it names (a key of the cluster's namespaces), or in each namespace Polar attests: its own, and
         # those the target names besides.
         for r in ($cap.resources.namespaced_roles? | default []) {
+            let problem = (role_namespace_problem ($r.namespace? | default null) $held_to $n)
+            if $problem != null { error make { msg: $"($name): ($problem)" } }
+            if ($r.namespace? | default null) != null { $role_keys = ($role_keys | append $r.namespace) }
             let rules = (declared_rules $r $scaffold $n $name)
             for namespace in (role_namespaces $r $cluster $n) {
                 $namespaced_roles = ($namespaced_roles | append { name: (subst $r.name $vars $name), namespace: $namespace, rules: $rules })
             }
         }
+    }
+
+    # Where its cluster operations that name a namespace may act: the cluster's name for each namespace a Role of its
+    # capabilities names, by its key (polar-agent-builder/src/environment.rs, CLUSTER_NAMESPACES). Its judge refuses a request
+    # of such an operation anywhere else, and every request of one whose key is not here.
+    if ($role_keys | is-not-empty) {
+        let named = ($role_keys | uniq | each {|key| $"($key)=($cluster.namespaces | get $key)" } | str join ",")
+        $env_list = ($env_list | append (env_entry { name: "POLAR_CLUSTER_NAMESPACES", value: $named } $vars "catalog" $name))
     }
 
     # The daemon's socket, shared by it, polar-init and the workload; the workload and polar-init are told where it is.

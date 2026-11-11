@@ -392,6 +392,11 @@ pub struct AgentDocument {
     /// when there is one, so every other agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub roles: std::collections::BTreeMap<String, Vec<crate::capability::RoleRule>>,
+    /// The namespace each of those roles is in, by the capability's name, for a capability held to one: its key in the
+    /// cluster's namespaces ([`crate::capability::role_namespaces_of`]). The catalog's Role must name the same, which
+    /// `resolve.nu` holds it to. Written only when there is one, so every other agent's scaffold is as it was.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub role_namespaces: std::collections::BTreeMap<String, String>,
     /// The evidence record types the agent writes ([`PolarAgent::RECORDS`]), sorted and each once. Written only when there
     /// is one, so every other agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -474,8 +479,9 @@ fn runtime_of<A: PolarAgent>() -> Vec<&'static RuntimeSection> {
 
 /// What an agent needs, from how it is declared: `Cassini` first for a Cassini client, then what it lists, then
 /// `SoftState` for an agent that declares a graph read, which the builder gives a state actor for
-/// (docs/architecture/soft-state.md), then `JobRun` for one whose cluster operations declare a write
-/// (docs/architecture/build-orchestrator.md). Each once, in that order.
+/// (docs/architecture/soft-state.md), then `JobRun` for one whose cluster operations declare a write it holds: one its
+/// grants hold, declared in its namespace (docs/architecture/build-orchestrator.md). A write it does not hold pulls in
+/// nothing, and is a declaration problem (`protocol::problems`). Each once, in that order.
 pub fn computed_needs(
     cassini_client: bool,
     listed: &[Capability],
@@ -499,7 +505,9 @@ pub fn computed_needs(
         needs.push(Capability::SoftState);
     }
     let writes = operations.iter().any(|operation| match operation.location {
-        crate::protocol::Location::Cluster { access } => access.iter().any(|a| a.verb.writes()),
+        crate::protocol::Location::Cluster { access, namespace } => access.iter().any(|a| {
+            a.verb.writes() && crate::capability::granted(&[Capability::JobRun], a, namespace)
+        }),
         _ => false,
     });
     if writes && !needs.contains(&Capability::JobRun) {
@@ -728,6 +736,7 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
         graph_edges: crate::graph_schema::edge_set(A::GRAPH_EDGES),
         operations: A::OPERATIONS.iter().map(OperationEntry::from).collect(),
         roles: crate::capability::roles_of(&needs_of::<A>(), A::OPERATIONS),
+        role_namespaces: crate::capability::role_namespaces_of(&needs_of::<A>(), A::OPERATIONS),
         records: A::RECORDS
             .iter()
             .map(|t| t.to_string())
@@ -1988,8 +1997,9 @@ mod tests {
         proptest::sample::select(Capability::ALL.to_vec())
     }
 
-    /// Operations of each kind a declaration may hold: none to the cluster, a watch, a write.
-    const OPERATION_KINDS: [crate::protocol::OperationDecl; 3] = {
+    /// Operations of each kind a declaration may hold: none to the cluster, a watch, a write held to no namespace, a write
+    /// held to job-run's.
+    const OPERATION_KINDS: [crate::protocol::OperationDecl; 4] = {
         use crate::protocol::{Access, Location, OperationDecl, ProtocolKind, Verb};
         [
             OperationDecl {
@@ -2004,6 +2014,7 @@ mod tests {
                 protocol: ProtocolKind::KUBERNETES,
                 location: Location::Cluster {
                     access: &[Access::new(Verb::Watch, "", "pods")],
+                    namespace: None,
                 },
             },
             OperationDecl {
@@ -2015,6 +2026,19 @@ mod tests {
                         Access::new(Verb::Get, "batch", "jobs"),
                         Access::new(Verb::Create, "batch", "jobs"),
                     ],
+                    namespace: None,
+                },
+            },
+            OperationDecl {
+                name: "makes-in-builds",
+                doc: "",
+                protocol: ProtocolKind::KUBERNETES,
+                location: Location::Cluster {
+                    access: &[
+                        Access::new(Verb::Get, "batch", "jobs"),
+                        Access::new(Verb::Create, "batch", "jobs"),
+                    ],
+                    namespace: Some("builds"),
                 },
             },
         ]
@@ -2033,7 +2057,8 @@ mod tests {
 
     proptest::proptest! {
         /// What an agent needs is computed from how it is declared: Cassini first for a client, then what it lists in
-        /// its order, then soft-state exactly when it declares a read; each once; nothing else.
+        /// its order, then soft-state exactly when it declares a read, then job-run exactly when it declares a write in the
+        /// build namespace; each once; nothing else.
         #[test]
         fn the_computed_needs_follow_the_declaration(
             cassini in proptest::prelude::any::<bool>(),
@@ -2043,8 +2068,10 @@ mod tests {
         ) {
             let needs = computed_needs(cassini, &listed, &graph, &operations);
             let reads = graph.iter().any(|d| d.access == crate::graph_schema::GraphAccess::Reads);
+            // A write pulls job-run in only where job-run holds it: declared in the build namespace, said apart from the
+            // code. One held to no namespace pulls in nothing.
             let writes = operations.iter().any(|o| matches!(o.location,
-                crate::protocol::Location::Cluster { access } if access.iter().any(|a| a.verb.writes())));
+                crate::protocol::Location::Cluster { access, namespace: Some("builds") } if access.iter().any(|a| a.verb.writes())));
             proptest::prop_assert_eq!(needs.contains(&Capability::JobRun), writes || listed.contains(&Capability::JobRun));
             proptest::prop_assert_eq!(needs.first() == Some(&Capability::Cassini), cassini || listed.first() == Some(&Capability::Cassini));
             proptest::prop_assert_eq!(needs.contains(&Capability::SoftState), reads || listed.contains(&Capability::SoftState));
@@ -2246,6 +2273,7 @@ mod tests {
                     Access::new(Verb::Watch, "", "pods"),
                     Access::new(Verb::Get, "", "namespaces"),
                 ],
+                namespace: None,
             },
         };
         struct Watching;
@@ -2273,6 +2301,84 @@ mod tests {
         );
         let back: AgentDocument = serde_json::from_value(json).unwrap();
         assert_eq!(back, doc);
+    }
+
+    /// A write pulls job-run in only when it is declared where job-run's role is, and then the scaffold says that
+    /// namespace beside the role, for the catalog to place it by; the same write held to no namespace pulls in nothing,
+    /// and is a declaration problem rather than a role somewhere else.
+    #[test]
+    fn a_write_pulls_job_run_in_only_in_its_namespace() {
+        use crate::protocol::{Access, Location, OperationDecl, ProtocolKind, Verb};
+        const IN_BUILDS: OperationDecl = OperationDecl {
+            name: "jobs.create",
+            doc: "makes a Job",
+            protocol: ProtocolKind::KUBERNETES,
+            location: Location::Cluster {
+                access: &[Access::new(Verb::Create, "batch", "jobs")],
+                namespace: Some("builds"),
+            },
+        };
+        const NOWHERE: OperationDecl = OperationDecl {
+            location: Location::Cluster {
+                access: &[Access::new(Verb::Create, "batch", "jobs")],
+                namespace: None,
+            },
+            ..IN_BUILDS
+        };
+        struct Builds;
+        impl PolarAgent for Builds {
+            const NAME: &'static str = "builds";
+            const ROLE: Role = Role::Observer;
+            const PURPOSE: &'static str = "makes Jobs where its builds run";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const OPERATIONS: &'static [OperationDecl] = &[IN_BUILDS];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        struct Nowhere;
+        impl PolarAgent for Nowhere {
+            const NAME: &'static str = "nowhere";
+            const ROLE: Role = Role::Observer;
+            const PURPOSE: &'static str = "makes Jobs it does not say where";
+            const NEEDS: &'static [Capability] = &[];
+            const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+            const OPERATIONS: &'static [OperationDecl] = &[NOWHERE];
+            async fn start(_configured: Configured) -> Result<(), StartError> {
+                Ok(())
+            }
+        }
+        assert!(needs_of::<Builds>().contains(&Capability::JobRun));
+        let json = serde_json::to_value(scaffold_document::<Builds>()).unwrap();
+        assert_eq!(
+            json["roles"],
+            serde_json::json!({
+                "job-run": [{ "api_groups": ["batch"], "resources": ["jobs"], "verbs": ["create"] }]
+            })
+        );
+        assert_eq!(
+            json["role_namespaces"],
+            serde_json::json!({ "job-run": "builds" })
+        );
+        assert!(
+            !declaration_problems::<Builds>()
+                .iter()
+                .any(|p| p.contains("grants it")),
+            "{:?}",
+            declaration_problems::<Builds>()
+        );
+
+        assert!(!needs_of::<Nowhere>().contains(&Capability::JobRun));
+        let json = serde_json::to_value(scaffold_document::<Nowhere>()).unwrap();
+        assert!(json.get("roles").is_none(), "{json}");
+        assert!(json.get("role_namespaces").is_none(), "{json}");
+        let problems = declaration_problems::<Nowhere>().join(" | ");
+        assert!(
+            problems
+                .contains("may create batch/jobs, and none of nowhere's capabilities grants it"),
+            "{problems}"
+        );
     }
 
     #[test]

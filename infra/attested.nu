@@ -105,6 +105,22 @@ export def role_namespaces [role: record, cluster: record, capability: string] {
     }
 }
 
+# Why a capability's role may not be placed where the catalog says, or null. The agent's code holds a capability to the
+# namespace its scaffold names (`role_namespaces`, by its key), or to none; the catalog's Role names the same key, and a
+# capability held to none has a Role in each attested namespace, or a ClusterRole, and names none. `catalog` and
+# `scaffold` are the two keys, null for none.
+export def role_namespace_problem [catalog: any, scaffold: any, capability: string] {
+    if $catalog == $scaffold {
+        null
+    } else if $catalog == null {
+        $"capability ($capability): the agent's code holds it to the namespace `($scaffold)`, and the catalog places its role in none"
+    } else if $scaffold == null {
+        $"capability ($capability): the catalog's Role names the namespace `($catalog)`, and the agent's code holds it to none \(or its image was built before roles said their namespace: rebuild it\)"
+    } else {
+        $"capability ($capability): the catalog's Role names the namespace `($catalog)`, and the agent's code holds it to `($scaffold)`"
+    }
+}
+
 # Polar's first namespaces, which the namespaces chart writes itself (namespaces.dhall), by their keys.
 const FIRST = ["polar" "graph" "auth"]
 const LEVELS = ["privileged" "baseline" "restricted"]

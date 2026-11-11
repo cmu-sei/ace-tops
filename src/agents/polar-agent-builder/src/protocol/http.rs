@@ -323,6 +323,7 @@ pub(super) fn target_of(url: &Url) -> Result<Target, String> {
         encrypted: url.scheme() == "https",
         access: None,
         reaches_node: Vec::new(),
+        namespace: None,
     })
 }
 

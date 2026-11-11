@@ -249,6 +249,24 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
   holds what it watches; the attestation agent's Roles lost `get`, which it never asks; the build orchestrator's lost
   `get pods`.
 
+  **An operation says the namespace it acts in, by its key** (2026-11-11, for review). `Location::Cluster { access,
+  namespace }`: `namespace` is the key, among the cluster's namespaces, of the one namespace the operation acts in
+  (`builds`), or none for one held to none (an object or a watch across the cluster, or the namespaces its capability's
+  Roles are placed in).
+  - **The judge:** a request of an operation that names one is refused in any other namespace, across the cluster
+    included (`Denial::OutsideTheNamespace`), and while the deployment does not say the cluster's name for the key
+    (`Denial::NamespaceUnknown`). The names come from `POLAR_CLUSTER_NAMESPACES` (`key=name`), which `resolve.nu` writes
+    from the namespace each Role of the agent's capabilities names.
+  - **The capability:** each Kubernetes capability is held to one namespace or to none (`Capability::namespace`:
+    `job-run` to `builds`, the others to none), and grants only to an operation held where it is. So a write pulls in
+    `job-run` only when it is declared in `builds`, and exactly one of the agent's capabilities must hold each access: none,
+    or two, is a declaration problem.
+  - **The catalog:** the scaffold says each role's namespace (`role_namespaces`), and `resolve.nu` refuses a Role the
+    catalog places elsewhere (`attested.nu`, `role_namespace_problem`), so `capabilities.nuon` and the code cannot drift.
+
+  The build orchestrator's operations name `builds`; the kube observer's and the attestation agent's name none. No role
+  changed with it.
+
   **No create gives a pod its node, whatever is declared** (2026-11-08, `build-orchestrator.md`, 5d and O2c). The judge refuses a create whose object would give a pod privileged mode, the host's network, PID or IPC namespace, a host port, a host path, an unconfined seccomp or AppArmor profile, an unmasked `/proc` or a Windows host process (`Denial::ReachesTheNode`), before anything is sent; no operation can declare an exception. The Kubernetes protocol reads it from the whole object, not from the path its kind puts a pod at (`kubernetes::reaches_node`), so no kind, nesting or container list is a way round it; a value of an unexpected type counts as asking, and the maps of anyone's names (labels, data) are not read for it. It is Polar's own floor, held in the handler for every agent that may create, so that a bug in a domain, or a domain that is compromised and stays inside its handler, cannot make a pod that reaches its node.
 
   **A stream is paced, and ends once.** What is published can have to wait (`cassini-backpressure.md`), and a watch that piled up in a mailbox would undo that. So each message holds a `Delivery`, and the next change is not read until the actor has let go of it, which it does by finishing with the message. One stream's wait holds no other's. Decided while building, to review.

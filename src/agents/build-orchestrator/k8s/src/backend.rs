@@ -54,6 +54,11 @@ const POD: Resource = Resource::of::<Pod>();
 /// The label every Job the orchestrator makes carries (job.rs, `standard_metadata`), by which it finds its own.
 const MANAGED_BY: &str = "app.kubernetes.io/managed-by=build-orchestrator";
 
+/// The key, in the cluster's namespaces, of the namespace its builds run in: where every one of its operations acts, and
+/// where `job-run` places its Role (`infra/config/capabilities.nuon`). The cluster's name for it is the deployment's
+/// (`POLAR_ORCHESTRATOR_NAMESPACE`, and `POLAR_CLUSTER_NAMESPACES` for the judge).
+pub const BUILD_NAMESPACE: &str = "builds";
+
 macro_rules! calls {
     ($( $kind:ident $decl:ident $name:literal $doc:literal [$( $access:expr ),+] ),+ $(,)?) => {
         $(
@@ -61,7 +66,10 @@ macro_rules! calls {
                 name: $name,
                 doc: $doc,
                 protocol: ProtocolKind::KUBERNETES,
-                location: Location::Cluster { access: &[$( $access ),+] },
+                location: Location::Cluster {
+                    access: &[$( $access ),+],
+                    namespace: Some(BUILD_NAMESPACE),
+                },
             };
 
             struct $kind(Call);
@@ -1080,13 +1088,15 @@ mod tests {
         );
     }
 
-    /// Each operation may do one thing to one kind, and none of them touches a Secret or a ServiceAccount.
+    /// Each operation may do one thing to one kind, in the build namespace and nowhere else, and none of them touches a
+    /// Secret or a ServiceAccount.
     #[test]
     fn each_operation_declares_one_access_and_none_is_of_a_secret() {
         for decl in OPERATIONS {
-            let Location::Cluster { access } = decl.location else {
+            let Location::Cluster { access, namespace } = decl.location else {
                 panic!("{} goes elsewhere", decl.name)
             };
+            assert_eq!(namespace, Some(BUILD_NAMESPACE), "{}", decl.name);
             assert_eq!(access.len(), 1, "{}", decl.name);
             assert!(
                 !["secrets", "serviceaccounts"].contains(&access[0].resource),
