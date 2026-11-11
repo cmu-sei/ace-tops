@@ -106,7 +106,8 @@ case "$1" in
 esac
 '
         cosign: '#!/usr/bin/env bash
-# cosign: signs nothing, and exits as $SHIP_COSIGN says.
+# cosign: signs nothing; appends its arguments to $COSIGN_CALLS, and exits as $SHIP_COSIGN says.
+echo "$*" >> "$COSIGN_CALLS"
 exit "${SHIP_COSIGN:-0}"
 '
     }
@@ -257,7 +258,8 @@ def link [store: record]: nothing -> record {
 
 # One run of ci.nu over the cassini image, as `run` says: `spoil` (the archive, as tests/support/oci-archive.nu takes
 # it), `registry` ("honest", the inspected digest; "lying", another; "failing", none), `key` (COSIGN_KEY, "" for none)
-# and `cosign` (its exit). Gives the process's `{exit_code, stdout, stderr}`.
+# `cosign` (its exit) and `host` (the registry, CI_REGISTRY; 127.0.0.1:5055, with a port, if not given). Gives the
+# process's `{exit_code, stdout, stderr}`, with the digest inspected (`inspected`) and cosign's calls (`signed`).
 def ship [run: record]: nothing -> record {
     let root = mktemp --directory --tmpdir ship-test.XXXXXX
     let repo = scratch-repo $root
@@ -281,6 +283,8 @@ def ship [run: record]: nothing -> record {
         lying => $another
         _ => ""
     }
+    let calls = $root | path join "cosign-calls"
+    "" | save --raw $calls
     let env_run = {
         PATH: ($env.PATH | prepend $bin)
         SHIP_IMAGE: (docker-archive $root)
@@ -288,7 +292,8 @@ def ship [run: record]: nothing -> record {
         SHIP_SERVES: $serves
         SHIP_COSIGN: ($run.cosign | into string)
         COSIGN_KEY: $run.key
-        CI_REGISTRY: "127.0.0.1:5055"
+        CI_REGISTRY: ($run.host? | default "127.0.0.1:5055")
+        COSIGN_CALLS: $calls
         CI_REGISTRY_USER: ""
         POLAR_REGISTRY_INSECURE: ""
         CI_COMMIT_SHA: "0123456789abcdef0123456789abcdef01234567"
@@ -300,9 +305,10 @@ def ship [run: record]: nothing -> record {
         (^$nu.current-exe $ci ship-test --skip-analysis --skip-audit --skip-build --filter cassini --tag t1
             --artifact-dir $out | complete)
     }
+    let signed = open --raw $calls | lines
     ^chmod -R u+w $root
     rm --recursive --force $root
-    $result
+    $result | merge {inspected: $made.digest, signed: $signed}
 }
 
 def said [result: record]: nothing -> string {
@@ -406,6 +412,38 @@ def main [] {
                 }
                 assert equal $r.exit_code 0 (brief $r)
                 assert (created $r) "the image is said to be created"
+            }
+        }
+        {
+            name: "with a key, cosign signs the image by its digest in the repository pushed to, the registry's port kept"
+            body: {
+                let r = ship {
+                    spoil: ""
+                    registry: "honest"
+                    key: "stand-in.key"
+                    cosign: 0
+                    host: "127.0.0.1:5055"
+                }
+                assert equal $r.exit_code 0 (brief $r)
+                assert equal $r.signed [
+                    $"sign --key stand-in.key --yes 127.0.0.1:5055/polar/cassini@($r.inspected)"
+                ]
+            }
+        }
+        {
+            name: "with a key, cosign signs the image by its digest in a registry named without a port"
+            body: {
+                let r = ship {
+                    spoil: ""
+                    registry: "honest"
+                    key: "stand-in.key"
+                    cosign: 0
+                    host: "registry.example"
+                }
+                assert equal $r.exit_code 0 (brief $r)
+                assert equal $r.signed [
+                    $"sign --key stand-in.key --yes registry.example/polar/cassini@($r.inspected)"
+                ]
             }
         }
         {
