@@ -898,14 +898,12 @@ def build-and-push-image [
         )
 
         # ── Cosign signature ───────────────────────────────────────────────────
-        # cosign requires a digest ref: registry.io/org/app@sha256:abc...
+        # cosign requires a digest ref: registry.io/org/app@sha256:abc... Only the final tag is cut, a `:` after the
+        # last `/`: a registry's port (127.0.0.1:5055/polar/app:tag) is part of the repository, and is kept.
         let base_ref = (
             $upload.remote_ref
-            | str replace "docker://" ""
-            | parse "{repo}:{tag}"
-            | get -o 0
-            | default {repo: ""}
-            | get repo
+            | str replace --regex '^docker://' ""
+            | str replace --regex ':[^:/]*$' ""
         )
         let digest_ref = $"($base_ref)@($upload.digest)"
         let signed = sign-image $digest_ref --name $upload.name
