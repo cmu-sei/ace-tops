@@ -17,33 +17,49 @@
 #
 # The roots kept are those whose `cargo tree` differs between the commits (at most MAX_TOUCHED, by name) and the first
 # whose tree does not, which must assert the same tree at both. Pass `--target` as the pipeline was given one.
+#
+# The pairs change a `[dependencies]` entry, which `-e normal,build` and the SBOM both hold. A change only to
+# `[dev-dependencies]` (a2165eeb's russh and proptest) is in neither, and no root's tree changes.
+#
+# Any command that fails stops the script: a tree read from a failed `cargo tree` would be empty, not absent.
 
 use ../../../../../../scripts/pipeline/core/sbom.nu [extract-graph-fragment]
 
 const PAIRS = [
     {
-        name: "ssh-keys"
-        base: "a2165eeb^"
-        head: "a2165eeb"
-        says: "packages added (an ssh client and its crypto) and versions changed"
+        name: "oci-client"
+        base: "ce6154f6^"
+        head: "ce6154f6"
+        says: "oci-client 0.15 to 0.18, under build-processor's and the resolver's [dependencies]: packages added, removed (jwt) and changed in version"
     }
     {
         name: "polar-version"
         base: "409a7a49^"
         head: "409a7a49"
-        says: "edges only: polar-version added under five crates, no package new to the lock"
+        says: "polar-version added under five crates' [dependencies]: new to their trees, no package new to the lock"
     }
 ]
 
 const MAX_TOUCHED = 6
 
+# Runs an external command and gives its output, or stops the script with what it said.
+def --wrapped exec-or-stop [command: string, ...args: string]: nothing -> string {
+    let result = ^$command ...$args | complete
+    if $result.exit_code != 0 {
+        error make {
+            msg: $"($command) ($args | str join ' ') exited ($result.exit_code): ($result.stderr | str trim)"
+        }
+    }
+    $result.stdout
+}
+
 def main [--target: string = ""] {
-    let repo = (^git rev-parse --show-toplevel | str trim)
+    let repo = exec-or-stop git rev-parse --show-toplevel | str trim
     let out = $env.FILE_PWD
     let scratch = (mktemp --directory --tmpdir sbom-trees.XXXXXX)
     for pair in $PAIRS {
-        let base = (^git -C $repo rev-parse $"($pair.base)^{commit}" | str trim)
-        let head = (^git -C $repo rev-parse $"($pair.head)^{commit}" | str trim)
+        let base = exec-or-stop git -C $repo rev-parse $"($pair.base)^{commit}" | str trim
+        let head = exec-or-stop git -C $repo rev-parse $"($pair.head)^{commit}" | str trim
         print $"($pair.name): ($base) .. ($head)"
         let before = ((side
             $repo
@@ -104,7 +120,7 @@ def main [--target: string = ""] {
         print $"  kept ($kept | length) roots, ($touched | length) of ($common | length) touched"
     }
     rm --recursive --force $scratch
-    ^git -C $repo worktree prune
+    exec-or-stop git -C $repo worktree prune | ignore
 }
 
 # One commit: its SBOMs reduced to fragments, each root's cargo tree, and the packages in its lock file.
@@ -114,14 +130,14 @@ def side [
     dir: string
     target: string
 ]: nothing -> record {
-    ^git -C $repo worktree add --detach $dir $commit
+    exec-or-stop git -C $repo worktree add --detach $dir $commit | ignore
     let ws = $dir | path join "src" "agents"
     let manifest = $ws | path join "Cargo.toml"
 
     # As generate-workspace-sboms runs it (scripts/pipeline/ci.nu).
     mut args = [cyclonedx --manifest-path $manifest -f json]
     if ($target | is-not-empty) { $args = ($args | append [--target $target]) }
-    ^cargo ...$args
+    exec-or-stop cargo ...$args | ignore
 
     let roots = (glob $"($ws)/**/*.cdx.json" --exclude ["**/target/**"] | each {|file|
         let doc = open --raw $file | from json
@@ -135,10 +151,10 @@ def side [
     let lock = (open --raw ($ws | path join "Cargo.lock") | from toml | get package
         | each {|p| $"($p.name)@($p.version)" } | uniq)
     let versions = {
-        cargo: (^cargo --version | str trim)
-        cyclonedx: (^cargo cyclonedx --version | str trim)
+        cargo: (exec-or-stop cargo --version | str trim)
+        cyclonedx: (exec-or-stop cargo cyclonedx --version | str trim)
     }
-    ^git -C $repo worktree remove --force $dir
+    exec-or-stop git -C $repo worktree remove --force $dir | ignore
     {
         roots: $roots
         lock: $lock
@@ -163,15 +179,15 @@ def cargo-tree [
         -p
         $"($name)@($version)"
         -e
-        normal
-        build
+        # One element: unquoted in a list, the comma would split it in two.
+        "normal,build"
         --prefix
         depth
         --format
         "{p}"
     ]
     if ($target | is-not-empty) { $args = ($args | append [--target $target]) }
-    let lines = (^cargo ...$args | lines | where {|l| $l | is-not-empty })
+    let lines = exec-or-stop cargo ...$args | lines | where {|l| $l | is-not-empty }
     mut path = []
     mut pairs = []
     for line in $lines {
