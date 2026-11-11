@@ -989,7 +989,12 @@ only.
   build, the image inspection (S3) about one image: which binary, by its hash, is in it. `cargo-auditable` was tested and dropped,
   with `auditable2cdx`: the record nixpkgs' 0.6.2 embedded in `cassini-server` equalled the workspace SBOM, 492 packages against the
   466 its build compiled. In its place phase 2 reports, per binary, what the SBOM names that the build did not compile for the
-  binary's target (`polar.cargo/not-compiled`, `polar.cargo/sbom-compared`; `docs/architecture/pipeline-design-reference.md` §7).
+  binary's target, each package as never compiled or compiled only for the build machine (`polar.cargo/not-compiled`,
+  `polar.cargo/build-machine-only`, `polar.cargo/sbom-compared`; `docs/architecture/pipeline-design-reference.md` §7). On the
+  host, at `e68b294b`, a single `not-compiled` was untrue of 102 of cassini-server's 128 (compiled for the build machine): hence
+  the split. Open, not this branch's: `image-manifest`'s purls predate it and are stale. The cassini row's
+  `pkg:cargo/cassini@0.1.0` names no package (the binary is cassini-broker's), and every other row says 0.1.0 against the
+  workspace's 1.0.0, so phase 3's cross-check warns for each.
   The history that follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's

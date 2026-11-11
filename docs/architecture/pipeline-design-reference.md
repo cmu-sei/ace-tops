@@ -340,19 +340,24 @@ did not say. Neither it nor `auditable2cdx` is in the build or the CI image.
 **Built in build-inspect-ship S2, to be seen on the host:** Phase 2 builds
 each binary an image ships with Nix and links it to its package's SBOM
 (`BinaryLinked`). It then compares that SBOM with the binary's cargo log and
-reports the gap as facts (`fact_reported`). It counts only the units cargo
-compiled for the binary's target, those whose files lie under the
-directory of its executable (`target/<triple>/release`, crane being given
-the musl target). A proc-macro or a build script (kinds `proc-macro` and
-`custom-build`) runs on the build machine, wherever it lies, and is not
-counted. With no target set, the build machine's libraries would share the
-directory and be counted too, so the gap would be understated, never
-overstated. The facts: `polar.cargo/not-compiled` for each package the
-SBOM names that was not compiled for the binary (the Binary, the Package by
-the SBOM's purl, the value the SBOM's content hash), and
-`polar.cargo/sbom-compared` once (the Binary, the Sbom, the value the count,
-"0" for none), so a binary compared and found whole reads apart from one
-never compared. Observation only: it fails nothing.
+reports the gap as facts (`fact_reported`): what the SBOM names that is not
+among the units cargo compiled for the binary's target, those whose files
+lie under the directory of its executable (`target/<triple>/release`, crane
+being given the musl target). A proc-macro or a build script (kinds
+`proc-macro` and `custom-build`) runs on the build machine, wherever it
+lies, and is never the target's. With no target set, the build machine's
+libraries would share the directory and read as the target's, so the gap
+would be understated, never overstated. Each package in the gap is reported
+by what the cargo log says of it, so each fact is true of what it names (the
+Binary, the Package by the SBOM's purl, the value the SBOM's content hash):
+`polar.cargo/not-compiled` when no unit of it was compiled for any machine;
+`polar.cargo/build-machine-only` when it was compiled, but only for the
+build machine (a proc-macro, a build script, or what only they need). Then
+`polar.cargo/sbom-compared` once (the Binary, the Sbom, the value the total
+of the two, "0" for none), so a binary compared and found whole reads apart
+from one never compared. On the host, cassini-server's gap was 128: 26 never
+compiled, 102 for the build machine only. Observation only: it fails
+nothing.
 `build-processor/tests/binary_trees.rs` (ignored; its fixtures are made on
 the host) compares the whole compiled set with the workspace SBOM, and
 reports every difference.
@@ -371,8 +376,9 @@ reported and stops nothing. Then that archive is pushed as it is (`skopeo
 copy --preserve-digests`), and the registry's digest must be the inspected
 one, or the upload is not recorded and not signed. Phase 2 reports
 `polar.nix/realised`, `polar.nix/store-path` and `polar.nix/built-at`, and
-(S2, above) `polar.cargo/not-compiled` and `polar.cargo/sbom-compared`. A
-build relayed by the orchestrator has these eight names relayed only if its
+(S2, above) `polar.cargo/not-compiled`, `polar.cargo/build-machine-only`
+and `polar.cargo/sbom-compared`. A
+build relayed by the orchestrator has these nine names relayed only if its
 mapping lists them (`facts`). Signing is cosign by the digest with
 `COSIGN_KEY`; no key is provisioned, so it says it skipped (`remaining-work.md`).
 
