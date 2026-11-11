@@ -61,6 +61,13 @@ export def literal_data [literals: list<string>] {
     | reduce --fold {} {|kv, acc| $acc | upsert $kv.key $kv.value }
 }
 
+# The Secret `kubectl create secret generic --from-literal` would make of `data`: Opaque, its values base64. Made
+# here and sent on kubectl's standard input, so no value is ever on a command line.
+export def new_secret [name: string, namespace: string, data: record] {
+    let encoded = ($data | items {|k, v| { key: $k, value: ($v | encode base64) } } | reduce --fold {} {|kv, acc| $acc | upsert $kv.key $kv.value })
+    { apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: { name: $name, namespace: $namespace }, data: $encoded }
+}
+
 # The data of a Secret as `kubectl get secret -o json` gives it, decoded; null when there is none.
 export def cluster_secret_data [secret: any] {
     if $secret == null { return null }
@@ -121,8 +128,8 @@ def sync_secret [kind: string, name: string, namespace: string, literals: list<s
     let action = (secret_action $kind (current_secret_data $name $namespace) $desired --placeholder=$placeholder)
     match $action {
         "create" => {
-            let args = ($literals | each {|l| ["--from-literal" $l] } | flatten)
-            let created = (do { ^kubectl create secret generic $name -n $namespace ...$args } | complete)
+            # Through stdin, as an update is, so no value is on a command line.
+            let created = (new_secret $name $namespace $desired | to json | do { ^kubectl create -f - } | complete)
             if $created.exit_code != 0 {
                 error make { msg: $"could not create secret/($name) in ($namespace): (first_line $created.stderr)" }
             }

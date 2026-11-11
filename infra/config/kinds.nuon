@@ -22,7 +22,8 @@
 # infra/config/kinds.nuon
 #
 # Defaults shared by every workload of a kind. A workload entry overrides any
-# of these by naming the field; `needs` is unioned with the kind's.
+# of these by naming the field. A kind's `needs` are unioned with what the agent's
+# scaffold requires and the entry's `provides`; an entry lists no `needs`.
 {
   agent: {
     # Every agent is a Cassini client, and sends its traces to Jaeger. Its polar-init trusts cert-issuer's CA as a

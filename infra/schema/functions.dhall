@@ -28,7 +28,7 @@ let Constants =
 
 let Agents =
       ./agents.dhall
-        sha256:8458543ac92aa19c950efdf97f5d89c85fbf3be94daad98d716c3217deddd570
+        sha256:970a2a614cf1e127c728e6bd92406845935850632de44609202ee446226b77e5
 
 let GraphConfig = Agents.GraphConfig
 
