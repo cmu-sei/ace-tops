@@ -744,7 +744,8 @@ def login-to-registries []: nothing -> nothing {
 # gzip-compressed; that archive inspected (core/inspect.nu), each layer checked against its digest and diff_id and
 # each binary Phase 2 linked for it (`binaries`, by derivation) found by its hash; then that same archive pushed
 # (build-and-push-image). A binary the image does not hold is reported, and stops nothing; an archive whose layers are
-# not what they say stops the image.
+# not what they say fails the image, as does a registry that does not serve the inspected digest; and any image failed
+# fails the pipeline.
 def process-image [
     entry: record
     image_tag: string
@@ -909,8 +910,15 @@ def build-and-push-image [
         sign-image $digest_ref --name $upload.name
     }
 
+    # Delivered only where the registry serves the inspected digest: one that serves another, or gives none, fails the
+    # image (a mismatch is cleared to none above).
+    let undelivered = $uploads | where {|u| $u.digest != $build.inspected }
+    for u in $undelivered {
+        log-error $"($u.remote_ref): not delivered as inspected" --component $COMPONENT
+    }
+
     {
-        success: true
+        success: ($undelivered | is-empty)
         image_name: $link_name
         tarball: $build.tarball
         oci_metadata: $oci_metadata
@@ -1049,7 +1057,9 @@ def main [
 
                 if $failed > 0 {
                     let failures = ($results | where success == false | get image_name | str join ", ")
-                    log-warn $"failed images: ($failures)" --component $COMPONENT
+                    # An image not built, not inspected as what it names, or not delivered as inspected fails the
+                    # pipeline: its process must not end well.
+                    error make {msg: $"($failed) image\(s\) failed: ($failures)"}
                 }
             }
         }
