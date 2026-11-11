@@ -21,11 +21,12 @@
 
 # scripts/pipeline/tests/binaries.nu
 # What a binary's build says of it (core/binaries.nu): the package a cargo package id names, and the binaries a crane
-# build's cargo log says it linked, the packages it compiled for its target, and those an SBOM names that it did not.
+# build's cargo log says it linked, the packages it compiled for its target, and those an SBOM names that it did not,
+# split into those never compiled and those compiled only for the build machine.
 # Run: nu scripts/pipeline/tests/binaries.nu
 
 use std/assert
-use ../core/binaries.nu [package-of-id linked-binaries compiled-for-target not-compiled]
+use ../core/binaries.nu [package-of-id linked-binaries compiled-for-target not-compiled sbom-gap]
 
 # A cargo log as crane keeps it (`--message-format json-render-diagnostics`): one JSON message a line, the paths the
 # build sandbox's, not the checkout's.
@@ -313,6 +314,61 @@ def main [] {
                 ]
                 assert equal (not-compiled ($sbom | first 1) $compiled) []
                 assert equal (not-compiled [] $compiled) []
+            }
+        }
+        {
+            name: "what the SBOM names that is not in the binary is split: never compiled, or compiled only for the build machine"
+            body: {
+                # syn is a library only the build machine's units need, serde_derive a proc-macro: compiled, but not for
+                # the target. ryu was compiled for no machine. itoa and memchr were compiled for the target.
+                let sbom = [
+                    (component itoa 1.0.18)
+                    (component syn 2.0.87)
+                    (component ryu 1.0.23)
+                    (component serde_derive 1.0.210)
+                    (component memchr 2.7.4)
+                    (component syn 2.0.87)
+                ]
+                assert equal (
+                    sbom-gap $sbom (cross_log "x86_64-unknown-linux-musl/release") cassini-server
+                ) {
+                    not_compiled: [(component ryu 1.0.23)]
+                    build_machine_only: [(component syn 2.0.87) (component serde_derive 1.0.210)]
+                }
+                assert equal (
+                    sbom-gap ($sbom | first 1) (cross_log "x86_64-unknown-linux-musl/release") cassini-server
+                ) {
+                    not_compiled: []
+                    build_machine_only: []
+                }
+            }
+        }
+        {
+            name: "with no target set, a library the build machine needs reads as the target's, and a proc-macro still does not"
+            body: {
+                let sbom = [
+                    (component syn 2.0.87)
+                    (component ryu 1.0.23)
+                    (component serde_derive 1.0.210)
+                ]
+                assert equal (sbom-gap $sbom (cross_log "release") cassini-server) {
+                    not_compiled: [(component ryu 1.0.23)]
+                    build_machine_only: [(component serde_derive 1.0.210)]
+                }
+            }
+        }
+        {
+            name: "a binary its log did not link has no gap to read"
+            body: {
+                let refused = try {
+                    sbom-gap [
+                        (component ryu 1.0.23)
+                    ] (cross_log "x86_64-unknown-linux-musl/release") git-repo-observer
+                    false
+                } catch {
+                    true
+                }
+                assert $refused "a binary not in the log is refused"
             }
         }
     ]

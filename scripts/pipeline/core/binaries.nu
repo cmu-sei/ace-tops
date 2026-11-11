@@ -123,3 +123,13 @@ export def not-compiled [components: list<record>, compiled: list<record>]: noth
     | where {|c| $"($c.name)@($c.version)" not-in $have }
     | uniq
 }
+
+# What an SBOM names that is not in a binary, split by what its build's cargo log says of each: `not_compiled`, no unit of
+# it compiled for any machine; `build_machine_only`, compiled, but only for the build machine (`compiled-for-target`).
+# Stub (S2, the gap split): nothing yet.
+export def sbom-gap [components: list<record>, log: list<string>, binary: string]: nothing -> record {
+    {
+        not_compiled: []
+        build_machine_only: []
+    }
+}
