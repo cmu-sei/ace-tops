@@ -2630,7 +2630,7 @@ pub(crate) mod tests {
                 },
             }]
         };
-        for key in ["builds", "blitz-workspaces2"] {
+        for key in ["builds", "workspaces-2"] {
             let all = problems("a", &held_in(key), None, &[], true, &[]).join(" | ");
             assert!(!all.contains("not a key"), "{key}: {all}");
         }
