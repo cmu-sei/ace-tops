@@ -68,9 +68,10 @@ pub const AT_REPORTS: &str = "reports";
 
 /// How a build begins.
 pub enum Start {
-    /// Admitted: its source to prepare and its Job to make, as its mapping says.
+    /// Admitted: its source to prepare and its Job to make, as its mapping says. The mapping is boxed: it is far larger
+    /// than an adopted build's handle, and a `Start` waits in the supervisor's map until its build is admitted.
     New {
-        mapping: Mapping,
+        mapping: Box<Mapping>,
         ref_name: String,
         /// Who reported the ref moved, as the broker stamped it.
         triggered_by: Option<String>,
