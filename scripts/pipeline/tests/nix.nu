@@ -25,7 +25,7 @@
 # Run: nu scripts/pipeline/tests/nix.nu
 
 use std/assert
-use ../core/nix.nu [observed-realisation]
+use ../core/nix.nu [observed-realisation store-records]
 
 const OUT = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cassini-server-1.0.0"
 const LOG = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-cassini-server-1.0.0-cargolog"
@@ -63,6 +63,53 @@ def fetched-info [registered: int]: nothing -> record {
         signatures: ["cache.nixos.org-1:abc"]
         narHash: "sha256-x"
     }
+}
+
+# A stand-in `nix` in `bin`, answering `path-info` as $STANDIN_NIX says: "new" knows `--json-format` (and warns at bare
+# `--json`, as Nix 2.34 does), "old" does not (as Nix 2.18, the CI image's, does not), "broken" fails. Each call's
+# arguments are appended to $NIX_CALLS. Each output is recorded as built here.
+def stand-in-nix [bin: path] {
+    mkdir $bin
+    let file = $bin | path join "nix"
+    "#!/usr/bin/env bash\n" + r#'
+echo "$*" >> "$NIX_CALLS"
+[ "$1" = path-info ] || { echo "stand-in nix: $*" >&2; exit 2; }
+shift
+fmt=""; paths=()
+while [ $# -gt 0 ]; do
+  case "$1" in --json) ;; --json-format) fmt="$2"; shift ;; *) paths+=("$1") ;; esac
+  shift
+done
+case "$STANDIN_NIX" in
+  broken) echo "error: something else" >&2; exit 1 ;;
+  old)
+    [ -n "$fmt" ] && { echo "error: unrecognised flag '--json-format'" >&2; exit 1; }
+    sep=""; printf "["
+    for p in "${paths[@]}"; do printf '%s{"path":"%s","ultimate":true,"registrationTime":1762890005,"signatures":[]}' "$sep" "$p"; sep=","; done
+    printf "]\n" ;;
+  new)
+    [ -z "$fmt" ] && echo "warning: '--json' without '--json-format' is deprecated" >&2
+    sep=""; printf "{"
+    for p in "${paths[@]}"; do printf '%s"%s":{"ultimate":true,"registrationTime":1762890005,"signatures":[]}' "$sep" "$p"; sep=","; done
+    printf "}\n" ;;
+esac
+'# | save --raw $file
+    ^chmod +x $file
+}
+
+# `store-records` of the outputs, with the stand-in `nix` as `mode` says first on PATH: its result, and the calls made.
+def records-with [mode: string]: nothing -> record {
+    let root = mktemp --directory --tmpdir nix-test.XXXXXX
+    let bin = $root | path join "bin"
+    stand-in-nix $bin
+    let calls = $root | path join "calls"
+    "" | save --raw $calls
+    let result = with-env {PATH: ($env.PATH | prepend $bin), STANDIN_NIX: $mode, NIX_CALLS: $calls} {
+        store-records [$OUT $LOG]
+    }
+    let made = open --raw $calls | lines
+    rm --recursive --force $root
+    {result: $result, calls: $made}
 }
 
 def main [] {
@@ -207,6 +254,40 @@ def main [] {
                 ] {
                     assert equal (observed-realisation $outputs $case.1 $case.2) {realised: unknown, at: null} $case.0
                 }
+            }
+        }
+        {
+            name: "a Nix that knows --json-format is asked for format 1, once, and has nothing to warn of"
+            body: {
+                let r = records-with new
+                assert equal $r.calls [$"path-info --json --json-format 1 ($OUT) ($LOG)"]
+                assert (not ($r.result.stderr | str contains "deprecated")) $r.result.stderr
+                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $r.result) {
+                    realised: built
+                    at: "2025-11-11T19:40:05+00:00"
+                }
+            }
+        }
+        {
+            name: "a Nix that does not know it, as 2.18 does not, is asked again with bare --json, and read"
+            body: {
+                let r = records-with old
+                assert equal $r.calls [
+                    $"path-info --json --json-format 1 ($OUT) ($LOG)"
+                    $"path-info --json ($OUT) ($LOG)"
+                ]
+                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $r.result) {
+                    realised: built
+                    at: "2025-11-11T19:40:05+00:00"
+                }
+            }
+        }
+        {
+            name: "a Nix that fails both ways leaves the realisation unknown"
+            body: {
+                let r = records-with broken
+                assert not equal $r.result.exit_code 0
+                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $r.result) {realised: unknown, at: null}
             }
         }
     ]

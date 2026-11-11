@@ -82,3 +82,9 @@ export def observed-realisation [outputs: list<string>, before: record, after: r
         at: $at
     }
 }
+
+# What the store records of `outputs`, as `nix path-info` gives it in JSON (`{exit_code, stdout}`), for
+# `observed-realisation`. Stub (the JSON format): nothing yet.
+export def store-records [outputs: list<string>]: nothing -> record {
+    {exit_code: 1, stdout: ""}
+}
