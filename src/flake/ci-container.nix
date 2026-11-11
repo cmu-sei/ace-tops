@@ -38,6 +38,7 @@
 , cassiniClient
 , certIssuerClient
 , scudo
+, auditable2cdx
 }:
 
 let
@@ -230,6 +231,9 @@ let
     cargo-hack
     cargo-mutants
     cargo-cyclonedx
+    # A binary's own SBOM, from the record cargo-auditable embeds in it: the inspect stage reads the binaries it takes
+    # out of an image (polarPkgs.auditable2cdx, src/flake/auditable2cdx.nix).
+    auditable2cdx
     cargo-audit
     skopeo
     cosign

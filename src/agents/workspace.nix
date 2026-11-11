@@ -289,7 +289,11 @@ let
       inherit pkgs crane workspaceFileset system;
       crateArgs = individualCrateArgs;
     };
+
+    # A binary's own SBOM, out of the dependency record cargo-auditable embeds in it (src/flake/auditable2cdx.nix): a
+    # pipeline tool, in the CI image, and exported here so that a flake on this one takes it rather than packaging it again.
+    auditable2cdx = import ../flake/auditable2cdx.nix { inherit pkgs; };
 in
 {
-        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit buildFetch buildOrchestrator polarCustody polarTools healthcheck credentialsAgent secretHarness;
+        inherit scudo auditable2cdx workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit buildFetch buildOrchestrator polarCustody polarTools healthcheck credentialsAgent secretHarness;
 }
