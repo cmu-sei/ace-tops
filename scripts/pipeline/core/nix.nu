@@ -56,3 +56,9 @@ export def realisation [dry_run: string, drv: string, outputs: list<string>]: no
         "present"
     }
 }
+
+# How a derivation's outputs came to be in the store, observed of the store itself, before and after the build. Stub
+# (H2): nothing yet.
+export def observed-realisation [outputs: list<string>, before: record, after: record]: nothing -> record {
+    {realised: "", at: null}
+}
