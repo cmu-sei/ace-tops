@@ -71,11 +71,10 @@ def --wrapped main [...args] {
             let f = ($dir | path join $"($ns)-($args | get 2).json")
             if ($f | path exists) { print (open --raw $f) } else { print -e "NotFound"; exit 1 }
         }
-        ["create" "secret"] => {
-            let name = ($args | get 3)
-            let data = ($args | window 2 | where {|w| ($w | get 0) == "--from-literal" } | each {|w| $w | get 1 | parse --regex "^(?<k>[^=]+)=(?<v>.*)$" | first } | reduce --fold {} {|kv, acc| $acc | upsert $kv.k ($kv.v | encode base64) })
-            { apiVersion: "v1", kind: "Secret", type: "Opaque", metadata: { name: $name, namespace: $ns }, data: $data } | to json | save --force ($dir | path join $"($ns)-($name).json")
-            print $"secret/($name) created"
+        ["create" "-f"] => {
+            let s = (^cat | from json)
+            $s | to json | save --force ($dir | path join $"($s.metadata.namespace)-($s.metadata.name).json")
+            print $"secret/($s.metadata.name) created"
         }
         ["replace" "-f"] => {
             let s = (^cat | from json)
@@ -373,6 +372,15 @@ def main [] {
             }
         }
         {
+            name: "a new Secret is Opaque, named and namespaced, and its data reads back as given, = and all"
+            body: {
+                let s = (new_secret "jira-secret" "polar" { token: "fake=1==", user: "u" })
+                assert equal $s.type "Opaque"
+                assert equal $s.metadata { name: "jira-secret", namespace: "polar" }
+                assert equal (cluster_secret_data $s) { token: "fake=1==", user: "u" }
+            }
+        }
+        {
             name: "the cluster's data is decoded from base64, and a Secret that is not there is null"
             body: {
                 let got = { data: { token: ("fake-1" | encode base64), empty: "" } }
@@ -440,6 +448,13 @@ def main [] {
                 assert equal $first.exit_code 0 $first.stderr
                 assert equal ($first.stdout | str trim) "secret/polar-graph-pw created in polar"
                 assert equal (stored $dir "polar" "polar-graph-pw" | get plain) { secret: "fake-password" }
+                # Never printed, and never on the command line that made it.
+                assert (not ($first.stdout + $first.stderr | str contains "fake-password"))
+                let create = (open --raw ($dir | path join "argv.log") | lines | where {|l| $l | str contains "create" })
+                assert equal ($create | length) 1
+                for s in (["fake-password"] ++ (spellings "fake-password")) {
+                    assert (not ($create | first | str contains $s)) ($create | first)
+                }
                 let second = (against $dir 'kubectl_sops_secret "polar-graph-pw" "polar" ["secret=fake-password"]')
                 assert equal ($second.stdout | str trim) "secret/polar-graph-pw in polar: unchanged"
                 rm -rf $dir
