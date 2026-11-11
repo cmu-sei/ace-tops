@@ -961,7 +961,7 @@ def main [
         let image_tag = if ($tag | is-not-empty) {
             $tag
         } else {
-            $env.CI_COMMIT_SHORT_SHA? | default ($commit_sha | str substring 0..8) | default "latest"
+            $env.CI_COMMIT_SHORT_SHA? | default ($commit_sha | str substring 0..<8) | default "latest"
         }
 
         let packages = (resolve-packages --package $package)
