@@ -49,8 +49,7 @@
 #     binary. Its cargo log (the derivation's `cargolog` output) says what it
 #     linked; it is hashed as installed, reported with how Nix realised it
 #     (built, fetched or present), and linked to its Phase 1 SBOM via a
-#     cryptographic binding digest, and to its own SBOM when it was built with
-#     cargo-auditable (auditable2cdx).
+#     cryptographic binding digest.
 #
 #   Phase 3 — OCI images
 #     nix build → OCI archive (layers gzip-compressed once) → inspect →
@@ -538,13 +537,6 @@ const FACT_TOOL = "polar-pipeline/ci.nu"
 # the run, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it linked and the
 # package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix has stripped
 # it, and reported: ArtifactProduced, the facts of its realisation, and BinaryLinked to its package's SBOM from phase 1.
-# A binary built with cargo-auditable carries a record of the crates it was built from, which auditable2cdx writes out
-# as CycloneDX. That record is reported (an SBOM of its own, linked to the binary by a second BinaryLinked) only when it
-# is asked for (`--auditable_sbom`, ci.nu's `--auditable-sbom`), and is off by default because it was measured false:
-# on cassini-server (build-processor/tests/binary_trees.rs, on the host 2026-11-11) cargo-auditable 0.6.2's record names
-# 492 packages where the build compiled 466, the same 26 more the workspace SBOM names, and 13 proc-macros as runtime
-# dependencies. It is the workspace's resolution, not the binary's. It goes on by default only when a cargo-auditable
-# version passes that test.
 #
 # Run from the repository's root, as phase 3's `nix build` is.
 def build-and-link-binaries [
@@ -553,7 +545,6 @@ def build-and-link-binaries [
     ws_manifest: path
     artifact_dir: path
     --filter_package: string = ""
-    --auditable_sbom # report the binary's cargo-auditable record as its own SBOM (off: see above)
 ]: nothing -> list<record> {
     let ws_root = $ws_manifest | path dirname
     let version = open --raw ($ws_root | path join ".." ".." "VERSION") | str trim
@@ -604,11 +595,6 @@ def build-and-link-binaries [
             } else {
                 log-warn $"($bin.name): no SBOM for package ($pkg.name) — binary_linked not emitted" --component $COMPONENT
             }
-            let own = if $auditable_sbom { binary-sbom $exe $bin.name $artifact_dir } else { null }
-            if $own != null {
-                let root_purl = $sbom_info.root_purl? | default $own.root_purl
-                emit-binary-linked $binary_hash $bin.name $root_purl $own.content_hash --binding_digest $binding
-            }
 
             {
                 name: $bin.name
@@ -618,7 +604,6 @@ def build-and-link-binaries [
                 realised: $derivation.realised
                 root_purl: ($sbom_info.root_purl? | default "")
                 sbom_content_hash: ($sbom_info.content_hash? | default "")
-                own_sbom_content_hash: ($own.content_hash? | default "")
                 derivation: $ref
             }
         }
@@ -669,34 +654,6 @@ def realise-derivation [ref: string]: nothing -> record {
             | get outputs
         )
     }
-}
-
-# A binary's own SBOM, out of the record cargo-auditable embedded in it, written out by auditable2cdx and reported as an
-# SBOM: its file, its content hash and its root's purl, or null when the binary carries no record (one not built with
-# cargo-auditable) or the tool is not here. Not a failure either way: the binary is still reported.
-def binary-sbom [exe: path, name: string, artifact_dir: path]: nothing -> any {
-    if (which auditable2cdx | is-empty) {
-        log-warn $"($name): auditable2cdx is not on PATH, so no SBOM is taken out of the binary" --component $COMPONENT
-        return null
-    }
-    let read = (^auditable2cdx $exe | complete)
-    if $read.exit_code != 0 or ($read.stdout | is-empty) {
-        log-info $"($name): no cargo-auditable record in it" --component $COMPONENT
-        return null
-    }
-    let file = $artifact_dir | path join $"($name).auditable.cdx.json"
-    $read.stdout | save --force --raw $file
-    let content_hash = (content-hash-file $file)
-    let filename = $file | path basename
-    emit-artifact-produced $content_hash "sbom" --name $filename --content_type "application/vnd.cyclonedx+json"
-    let fragment = extract-graph-fragment ($read.stdout | from json) $content_hash
-    if $fragment.root == null {
-        log-warn $"($name): its auditable record names no root" --component $COMPONENT
-        return null
-    }
-    emit-sbom-analyzed $fragment $filename
-    log-info $"($name): its own SBOM, ($fragment.components | length) components" --component $COMPONENT
-    {file: $file, content_hash: $content_hash, root_purl: $fragment.root.purl}
 }
 
 # ===========================================================================
@@ -922,9 +879,6 @@ def main [
     --skip-analysis
     --strict-analysis
     --skip-build
-    # Report each binary's cargo-auditable record as its own SBOM. Off: cargo-auditable 0.6.2's record was measured to be
-    # the workspace's, not the binary's (build-processor/tests/binary_trees.rs); on only for a version that passes it.
-    --auditable-sbom
     --skip-images
     --skip-audit
     --audit-offline
@@ -1003,7 +957,6 @@ def main [
             let built = (
                 build-and-link-binaries $refs $packages $ws_manifest $artifact_dir
                     --filter_package $package
-                    --auditable_sbom=$auditable_sbom
             )
             log-info $"($built | length) binary\(ies\) built and linked" --component $COMPONENT
             $built

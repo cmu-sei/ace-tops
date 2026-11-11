@@ -160,7 +160,6 @@
           cassiniClient = polarPkgs.cassini.client;
           certIssuerClient = polarPkgs.certIssuer.client;
           scudo = polarPkgs.scudo;
-          auditable2cdx = polarPkgs.auditable2cdx;
         };
 
         # ── Agent containers ───────────────────────────────────────────────────
