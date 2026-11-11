@@ -79,20 +79,46 @@ def archive [root: path, layers: list<record>, --spoil: string = ""]: nothing ->
     let config = {
         architecture: "amd64"
         os: "linux"
-        rootfs: {type: "layers", diff_ids: (if $spoil == "diff_id" { $diff_ids | update 0 (text-digest "another layer") } else { $diff_ids })}
+        rootfs: {
+            type: "layers"
+            diff_ids: (
+                if $spoil == "diff_id" {
+                    $diff_ids | update 0 (text-digest "another layer")
+                } else {
+                    $diff_ids
+                }
+            )
+        }
     } | to json --raw
     let config_digest = text-digest $config
     $config | save --raw ($blobs | path join ($config_digest | str replace "sha256:" ""))
     let manifest = {
         schemaVersion: 2
         mediaType: "application/vnd.oci.image.manifest.v1+json"
-        config: {mediaType: "application/vnd.oci.image.config.v1+json", digest: $config_digest, size: ($config | str length)}
-        layers: ($made | each {|m| {mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: $m.digest, size: $m.size} })
+        config: {
+            mediaType: "application/vnd.oci.image.config.v1+json"
+            digest: $config_digest
+            size: ($config | str length)
+        }
+        layers: (
+            $made
+            | each {|m| {mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", digest: $m.digest, size: $m.size} }
+        )
     } | to json --raw
     let digest = text-digest $manifest
     $manifest | save --raw ($blobs | path join ($digest | str replace "sha256:" ""))
-    {schemaVersion: 2, manifests: [{mediaType: "application/vnd.oci.image.manifest.v1+json", digest: $digest, size: ($manifest | str length)}]}
-    | to json --raw | save --raw ($layout | path join "index.json")
+    {
+        schemaVersion: 2
+        manifests: [
+            {
+                mediaType: "application/vnd.oci.image.manifest.v1+json"
+                digest: $digest
+                size: ($manifest | str length)
+            }
+        ]
+    }
+    | to json --raw
+    | save --raw ($layout | path join "index.json")
     '{"imageLayoutVersion":"1.0.0"}' | save --raw ($layout | path join "oci-layout")
     let file = $root | path join "image.oci.tar"
     ^tar -C $layout -cf $file .
@@ -104,17 +130,38 @@ def agent_layers []: nothing -> list<record> {
     [
         {
             files: [
-                {path: "/nix/store/aaaa-cassini-server-1.0.0/bin/cassini-server", text: "cassini", executable: true}
-                {path: "/nix/store/aaaa-cassini-server-1.0.0/share/doc.txt", text: "not a program", executable: false}
+                {
+                    path: "/nix/store/aaaa-cassini-server-1.0.0/bin/cassini-server"
+                    text: "cassini"
+                    executable: true
+                }
+                {
+                    path: "/nix/store/aaaa-cassini-server-1.0.0/share/doc.txt"
+                    text: "not a program"
+                    executable: false
+                }
             ]
             links: []
         }
         {
             files: [
-                {path: "/nix/store/bbbb-polar-healthcheck-1.0.0/bin/polar-healthcheck", text: "healthcheck", executable: true}
-                {path: "/nix/store/cccc-copy/bin/cassini-server", text: "cassini", executable: true}
+                {
+                    path: "/nix/store/bbbb-polar-healthcheck-1.0.0/bin/polar-healthcheck"
+                    text: "healthcheck"
+                    executable: true
+                }
+                {
+                    path: "/nix/store/cccc-copy/bin/cassini-server"
+                    text: "cassini"
+                    executable: true
+                }
             ]
-            links: [{path: "/bin/polar-healthcheck", to: "/nix/store/bbbb-polar-healthcheck-1.0.0/bin/polar-healthcheck"}]
+            links: [
+                {
+                    path: "/bin/polar-healthcheck"
+                    to: "/nix/store/bbbb-polar-healthcheck-1.0.0/bin/polar-healthcheck"
+                }
+            ]
         }
     ]
 }
@@ -143,11 +190,26 @@ def main [] {
             name: "a binary is found by its hash at each place it lies; one the image does not hold is missing, not refused"
             body: {
                 let executables = [
-                    {diff_id: "sha256:l0", path: "/nix/store/aaaa/bin/cassini-server", hash: "sha256:c"}
-                    {diff_id: "sha256:l1", path: "/nix/store/cccc/bin/cassini-server", hash: "sha256:c"}
-                    {diff_id: "sha256:l1", path: "/nix/store/bbbb/bin/polar-healthcheck", hash: "sha256:h"}
+                    {
+                        diff_id: "sha256:l0"
+                        path: "/nix/store/aaaa/bin/cassini-server"
+                        hash: "sha256:c"
+                    }
+                    {
+                        diff_id: "sha256:l1"
+                        path: "/nix/store/cccc/bin/cassini-server"
+                        hash: "sha256:c"
+                    }
+                    {
+                        diff_id: "sha256:l1"
+                        path: "/nix/store/bbbb/bin/polar-healthcheck"
+                        hash: "sha256:h"
+                    }
                 ]
-                let binaries = [{name: "cassini-server", hash: "sha256:c"} {name: "logger", hash: "sha256:x"}]
+                let binaries = [
+                    {name: "cassini-server", hash: "sha256:c"}
+                    {name: "logger", hash: "sha256:x"}
+                ]
                 assert equal (placements $binaries $executables) {
                     found: [
                         {name: "cassini-server", hash: "sha256:c", diff_id: "sha256:l0", path: "/nix/store/aaaa/bin/cassini-server"}
@@ -165,7 +227,12 @@ def main [] {
                 let root = mktemp --directory --tmpdir inspect-test.XXXXXX
                 let made = archive $root (agent_layers) --spoil diff_id
                 let scratch = $root | path join "scratch"
-                let refused = try { inspect-archive $made.archive $scratch; null } catch {|e| $e.msg }
+                let refused = try {
+                    inspect-archive $made.archive $scratch
+                    null
+                } catch {|e|
+                    $e.msg
+                }
                 assert ($refused != null) "a wrong diff_id was taken"
                 assert ($refused =~ "diff_id") $refused
                 assert (not ($scratch | path exists)) "the scratch is left"
@@ -177,7 +244,12 @@ def main [] {
             body: {
                 let root = mktemp --directory --tmpdir inspect-test.XXXXXX
                 let made = archive $root (agent_layers) --spoil blob
-                let refused = try { inspect-archive $made.archive ($root | path join "scratch"); null } catch {|e| $e.msg }
+                let refused = try {
+                    inspect-archive $made.archive ($root | path join "scratch")
+                    null
+                } catch {|e|
+                    $e.msg
+                }
                 assert ($refused != null) "a wrong blob was taken"
                 assert ($refused =~ "digest") $refused
                 rm --recursive --force $root
@@ -191,7 +263,10 @@ def main [] {
     for r in $results {
         if $r.error == null { print $"  ok    ($r.name)" } else { print -e $"  FAIL  ($r.name): ($r.error)" }
     }
-    let failed = ($results | where error != null | length)
-    if $failed > 0 { print -e $"($failed) of ($results | length) failed"; exit 1 }
+    let failed = $results | where error != null | length
+    if $failed > 0 {
+        print -e $"($failed) of ($results | length) failed"
+        exit 1
+    }
     print $"all ($results | length) passed"
 }
