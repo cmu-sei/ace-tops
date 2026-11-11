@@ -976,18 +976,16 @@ pub(crate) async fn start(
     }
     // The cluster's name for each namespace its operations name by key, as the deployment says; read before the handler
     // starts, as every variable the builder reads is.
-    let namespaces = match polar_env::Env::var(
-        start.config,
-        crate::environment::CLUSTER_NAMESPACES.name(),
-    ) {
-        Some(raw) => crate::environment::parse_cluster_namespaces(&raw).map_err(|why| {
-            ActorProcessingErr::from(format!(
-                "{}: {why}",
-                crate::environment::CLUSTER_NAMESPACES.name()
-            ))
-        })?,
-        None => BTreeMap::new(),
-    };
+    let namespaces =
+        match polar_env::Env::var(start.config, crate::environment::CLUSTER_NAMESPACES.name()) {
+            Some(raw) => crate::environment::parse_cluster_namespaces(&raw).map_err(|why| {
+                ActorProcessingErr::from(format!(
+                    "{}: {why}",
+                    crate::environment::CLUSTER_NAMESPACES.name()
+                ))
+            })?,
+            None => BTreeMap::new(),
+        };
     let instances = Instances::start(start.setup.operations, start.config)
         .await
         .map_err(ActorProcessingErr::from)?;
@@ -2470,7 +2468,8 @@ pub(crate) mod tests {
             )
             .join(" | ");
             assert!(
-                all.contains("may create batch/jobs") && all.contains("none of a's capabilities grants it"),
+                all.contains("may create batch/jobs")
+                    && all.contains("none of a's capabilities grants it"),
                 "{elsewhere:?}: {all}"
             );
         }
@@ -2584,7 +2583,10 @@ pub(crate) mod tests {
         assert_eq!(entry.namespace.as_deref(), Some("builds"));
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["namespace"], "builds");
-        assert_eq!(serde_json::from_value::<OperationEntry>(json).unwrap(), entry);
+        assert_eq!(
+            serde_json::from_value::<OperationEntry>(json).unwrap(),
+            entry
+        );
     }
 
     /// A cluster operation names its namespace by a key of the cluster's namespaces, which the catalog maps to the

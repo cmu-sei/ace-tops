@@ -2357,7 +2357,10 @@ mod tests {
                 "job-run": [{ "api_groups": ["batch"], "resources": ["jobs"], "verbs": ["create"] }]
             })
         );
-        assert_eq!(json["role_namespaces"], serde_json::json!({ "job-run": "builds" }));
+        assert_eq!(
+            json["role_namespaces"],
+            serde_json::json!({ "job-run": "builds" })
+        );
         assert!(
             !declaration_problems::<Builds>()
                 .iter()
@@ -2372,7 +2375,8 @@ mod tests {
         assert!(json.get("role_namespaces").is_none(), "{json}");
         let problems = declaration_problems::<Nowhere>().join(" | ");
         assert!(
-            problems.contains("may create batch/jobs, and none of nowhere's capabilities grants it"),
+            problems
+                .contains("may create batch/jobs, and none of nowhere's capabilities grants it"),
             "{problems}"
         );
     }

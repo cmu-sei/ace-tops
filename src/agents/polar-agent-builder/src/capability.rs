@@ -562,7 +562,11 @@ mod tests {
         // Who holds an access is each capability that grants it there, once, in the order they are listed.
         assert_eq!(
             holders(
-                &[Capability::PodRead, Capability::KubeApiRead, Capability::PodRead],
+                &[
+                    Capability::PodRead,
+                    Capability::KubeApiRead,
+                    Capability::PodRead
+                ],
                 &watch_pods,
                 None
             ),
