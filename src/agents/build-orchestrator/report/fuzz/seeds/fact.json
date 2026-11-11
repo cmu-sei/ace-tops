@@ -1,0 +1,1 @@
+{"type": "fact_reported", "subject": {"label": "Binary", "key": "sha256:06"}, "name": "polar.image/found-at", "object": {"label": "OCILayerDiffId", "key": "sha256:07"}, "value": "/nix/store/x-cassini-server/bin/cassini-server", "tool": "polar-pipeline/oci.nu", "tool_version": "3.0.0"}

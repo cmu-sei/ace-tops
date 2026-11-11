@@ -61,6 +61,9 @@ pub enum NotRelayed {
     TooMuch(u64),
     #[error("the report's {0} is not a sha256 digest (`sha256:` and 64 lower-case hex digits)")]
     NotADigest(&'static str),
+    /// A fact whose name the build's mapping does not list, or one the orchestrator cannot tell the mapping of.
+    #[error("the report is a fact its pipeline's mapping does not allow")]
+    FactNotAllowed,
 }
 
 /// What one build has reported so far, and what it may still.
@@ -181,6 +184,8 @@ fn judge(report: &Report) -> Result<(), NotRelayed> {
         | Report::StageCompleted { .. }
         | Report::SecurityAdvisoryFound(_)
         | Report::PackageStatusFound(_) => Ok(()),
+        // No mapping names a fact yet: every one is refused.
+        Report::FactReported(_) => Err(NotRelayed::FactNotAllowed),
     }
 }
 
@@ -320,5 +325,6 @@ fn event(report: Report, build_id: &str) -> ProvenanceEvent {
                 uri: c.uri,
             })
         }
+        Report::FactReported(_) => unreachable!("a fact is refused before it is re-encoded"),
     }
 }

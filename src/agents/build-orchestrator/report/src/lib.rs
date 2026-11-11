@@ -70,8 +70,8 @@ pub use answer::{HEADER, RECORD, answer, answer_len, kind_code, refusal_code};
 pub use gate::{Bounds, KEYS, NUMBER_DIGITS, Refusal, gate};
 pub use grammar::{Kind, check};
 pub use report::{
-    ContainerImageCreated, DependencyEdge, Layer, PackageRef, PackageStatusFound, Report,
-    SbomAnalyzed, SecurityAdvisoryFound, StageOutcome,
+    ContainerImageCreated, DependencyEdge, FactLabel, FactRef, FactReported, Layer, PackageRef,
+    PackageStatusFound, Report, SbomAnalyzed, SecurityAdvisoryFound, StageOutcome,
 };
 pub use tape::{Tape, Token, parse};
 

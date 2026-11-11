@@ -40,6 +40,9 @@ pub enum Kind {
     SbomAnalyzed,
     BinaryLinked,
     ContainerImageCreated,
+    /// A fact about a thing the graph knows by its key: a subject, a namespaced name, maybe an object and a value, and the
+    /// tool that found it. Which names a pipeline may report is its signed mapping's to say, not the grammar's.
+    FactReported,
 }
 
 /// The objects of the grammar: a report of each kind, and what one holds.
@@ -230,6 +233,7 @@ fn field(schema: Schema, key: &[u8]) -> (r: Option<(usize, Shape)>)
                     else if eq_bytes(key, b"uri") { Some((13, Shape::Text)) }
                     else { None }
                 },
+                Kind::FactReported => None,
             }
         },
         Schema::Package => {
@@ -284,6 +288,7 @@ fn required(schema: Schema, place: usize) -> bool {
                 Kind::SbomAnalyzed => place == 2 || place == 3 || place == 5 || place == 6,
                 Kind::BinaryLinked => 2 <= place && place <= 5,
                 Kind::ContainerImageCreated => 2 <= place && place <= 5,
+                Kind::FactReported => false,
             }
         },
         Schema::Package => place <= 3,
