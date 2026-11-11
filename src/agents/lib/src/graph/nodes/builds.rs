@@ -284,6 +284,12 @@ pub enum ArtifactNodeKey {
         digest: String, // sha256:...
     },
 
+    /// A fact a build's tool found, keyed by the digest of its content: the same fact is one node, whichever builds
+    /// report it.
+    Fact {
+        digest: String, // sha256:...
+    },
+
     /// A build artifact that was produced by a pipeline stage.
     /// Keyed on content hash. This is the provenance node — it
     /// links pipeline executions to their outputs.
@@ -348,6 +354,7 @@ impl GraphNodeKey for ArtifactNodeKey {
             Self::DependencyTree { digest } => {
                 NodeIdentity::fixed(&["DependencyTree"], vec![("digest", s(digest))])
             }
+            Self::Fact { digest } => NodeIdentity::fixed(&["Fact"], vec![("digest", s(digest))]),
             Self::BuildArtifact { content_hash } => {
                 NodeIdentity::fixed(&["BuildArtifact"], vec![("content_hash", s(content_hash))])
             }
@@ -390,6 +397,7 @@ impl NodeKeyVocabulary for ArtifactNodeKey {
             },
             Self::Package { purl: s() },
             Self::DependencyTree { digest: s() },
+            Self::Fact { digest: s() },
             Self::BuildArtifact { content_hash: s() },
             Self::ContainerImage { config_digest: s() },
             Self::SecurityAdvisory { identifier: s() },
@@ -410,6 +418,7 @@ impl NodeKeyVocabulary for ArtifactNodeKey {
                 | Self::Sbom { .. }
                 | Self::Package { .. }
                 | Self::DependencyTree { .. }
+                | Self::Fact { .. }
                 | Self::BuildArtifact { .. }
                 | Self::ContainerImage { .. }
                 | Self::SecurityAdvisory { .. }

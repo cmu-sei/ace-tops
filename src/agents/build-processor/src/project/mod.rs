@@ -41,6 +41,7 @@
 //! | [`execution`] | `BuildJob`: what ran, where, and how it ended   | orchestrator, CI     |
 //! | [`outputs`]   | what a build produced: artifacts, SBOMs, images | the producing build  |
 //! | [`findings`]  | facts about packages: advisories, analyses      | scanners, analyzers  |
+//! | [`facts`]     | what a build's tools found, as named facts     | the build's tools     |
 //! | [`registry`]  | what a registry actually serves                 | the resolver         |
 //!
 //! [`project`] is the only dispatch, and it has no wildcard arm: adding a

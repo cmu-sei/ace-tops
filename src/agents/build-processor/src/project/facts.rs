@@ -32,19 +32,102 @@
 //!
 //! A fact is content-addressed, as a dependency tree is: the same fact from two builds is one node, reported by each.
 
-use polar::FactReportedPayload;
-use polar::graph::controller::GraphOp;
+use super::{edge, upsert};
+use neo4rs::BoltType;
+use polar::graph::controller::{GraphOp, GraphValue, Property, rel};
+use polar::graph::nodes::builds::ArtifactNodeKey;
+use polar::{FactLabel, FactRef, FactReportedPayload};
+use tracing::trace;
 
-/// The writes for a fact a build reported. Written in S1c.
-pub fn fact_reported(p: FactReportedPayload, observed_at: &str) -> Vec<GraphOp> {
-    let _ = (p, observed_at);
-    vec![]
+/// The version of the form a fact's digest is taken over: a change to the form is a new version, so a digest never has two
+/// meanings.
+const FACT_FORM: &str = "polar.fact/1";
+
+/// The label's name in the graph.
+fn word(label: FactLabel) -> &'static str {
+    match label {
+        FactLabel::Binary => "Binary",
+        FactLabel::OCIArtifact => "OCIArtifact",
+        FactLabel::OCILayerDiffId => "OCILayerDiffId",
+        FactLabel::Package => "Package",
+        FactLabel::BuildArtifact => "BuildArtifact",
+        FactLabel::Sbom => "Sbom",
+    }
 }
 
-/// The digest a fact is keyed by: `sha256:` and the hex of the sha256 of its canonical form. Written in S1c.
+/// The graph's node a ref names, merged on its label's key.
+fn node(r: &FactRef) -> ArtifactNodeKey {
+    let key = r.key.clone();
+    match r.label {
+        FactLabel::Binary => ArtifactNodeKey::Binary { content_hash: key },
+        FactLabel::OCIArtifact => ArtifactNodeKey::OCIArtifact { digest: key },
+        FactLabel::OCILayerDiffId => ArtifactNodeKey::OCILayerDiffId { diff_id: key },
+        FactLabel::Package => ArtifactNodeKey::Package { purl: key },
+        FactLabel::BuildArtifact => ArtifactNodeKey::BuildArtifact { content_hash: key },
+        FactLabel::Sbom => ArtifactNodeKey::Sbom {
+            artifact_content_hash: key,
+        },
+    }
+}
+
+/// The digest a fact is keyed by: `sha256:` and the hex of the sha256 of the JSON of
+/// `[FACT_FORM, subject, name, object, value, tool, tool_version]`, each ref as `[label, key]`. What build reported it is
+/// not in it: the same fact from two builds is one node.
 pub fn fact_digest(p: &FactReportedPayload) -> String {
-    let _ = p;
-    unimplemented!("S1c: the tests come first")
+    let r = |r: &FactRef| (word(r.label), r.key.as_str());
+    let form = (
+        FACT_FORM,
+        r(&p.subject),
+        &p.name,
+        p.object.as_ref().map(r),
+        &p.value,
+        &p.tool,
+        &p.tool_version,
+    );
+    let canonical = serde_json::to_vec(&form).expect("text and options of text serialize");
+    format!("sha256:{}", polar::artifact_uid_from_bytes(&canonical))
+}
+
+/// The writes for a fact a build reported: the fact, by its digest; its build's REPORTED edge to it, `at` set when it is
+/// first reported; and its ABOUT and NAMES edges to the nodes it names. The raw Cypher must agree with
+/// `ArtifactNodeKey::Fact`'s label and key (`Fact {digest}`).
+pub fn fact_reported(p: FactReportedPayload, observed_at: &str) -> Vec<GraphOp> {
+    trace!(
+        "FactReported: {} about {:?} {}",
+        p.name, p.subject.label, p.subject.key
+    );
+    let digest = fact_digest(&p);
+    let fact = ArtifactNodeKey::Fact {
+        digest: digest.clone(),
+    };
+    let mut props = vec![
+        Property("name".into(), GraphValue::String(p.name)),
+        Property("tool".into(), GraphValue::String(p.tool)),
+        Property("tool_version".into(), GraphValue::String(p.tool_version)),
+    ];
+    if let Some(value) = p.value {
+        props.push(Property("value".into(), GraphValue::String(value)));
+    }
+    let mut ops = vec![
+        upsert(fact.clone(), props),
+        edge(fact.clone(), rel::ABOUT, node(&p.subject), vec![]),
+    ];
+    if let Some(object) = &p.object {
+        ops.push(edge(fact, rel::NAMES, node(object), vec![]));
+    }
+    ops.push(GraphOp::RawMergeWrite {
+        cypher: "MERGE (f:Fact { digest: $digest }) \
+                 MERGE (j:BuildJob { build_id: $build_id }) \
+                 MERGE (j)-[r:REPORTED]->(f) \
+                 SET r.at = coalesce(r.at, $observed_at)"
+            .to_string(),
+        params: vec![
+            ("digest".to_string(), BoltType::from(digest)),
+            ("build_id".to_string(), BoltType::from(p.build_id)),
+            ("observed_at".to_string(), BoltType::from(observed_at)),
+        ],
+    });
+    ops
 }
 
 #[cfg(test)]

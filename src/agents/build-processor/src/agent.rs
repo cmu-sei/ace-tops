@@ -73,6 +73,10 @@ impl PolarAgent for BuildProcessor {
             "DependencyTree",
             "each dependency tree an SBOM asserts, by the digest of its content",
         ),
+        GraphDecl::owns(
+            "Fact",
+            "each fact a build reported, by the digest of its content",
+        ),
         GraphDecl::owns("OCIArtifact", "each image manifest, by digest"),
         GraphDecl::owns(
             "OCILayer",
