@@ -23,7 +23,36 @@
 #
 # What a Nix build did, read from what it said (build-inspect-ship, S2). Pure: nothing is run here.
 
-# How a derivation's outputs came to be in the store this run, from `nix build --dry-run`'s report. Written in S2a.
+# How a derivation's outputs came to be in the store this run, from what `nix build --dry-run` said it would do (its
+# standard error): `built` when its `.drv` is in a "will be built" list, `fetched` when one of `outputs` is in a "will be
+# fetched" list, `present` when neither, as they were in the store before the run. A list is its header's indented store
+# paths, and ends at the first line that is not one. When a binary was built is a fact only if it was built here.
 export def realisation [dry_run: string, drv: string, outputs: list<string>]: nothing -> string {
-    ""
+    mut list = ""
+    mut built = []
+    mut fetched = []
+    for line in ($dry_run | lines) {
+        if $line =~ '^(this|these \d+) derivations? will be built:' {
+            $list = "built"
+            continue
+        }
+        if $line =~ '^(this|these \d+) paths? will be fetched' {
+            $list = "fetched"
+            continue
+        }
+        if ($list != "") and ($line =~ '^\s+/nix/store/\S+$') {
+            let path = $line | str trim
+            if $list == "built" { $built = ($built | append $path) } else { $fetched = ($fetched | append $path) }
+            continue
+        }
+        $list = ""
+    }
+    let fetched = $fetched
+    if $drv in $built {
+        "built"
+    } else if ($outputs | any {|o| $o in $fetched }) {
+        "fetched"
+    } else {
+        "present"
+    }
 }
