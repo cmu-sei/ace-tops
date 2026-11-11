@@ -227,3 +227,117 @@ https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-e
   over every earlier version, and the order in which consumers and producers must be upgraded for each.
 - Why it matters to Polar: compatibility as a rule a test checks, transitively, rather than a hope.
 - Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `rkyv2026docs`
+
+David Koloski et al. *rkyv* 0.8.18, crate documentation. https://docs.rs/rkyv/0.8.18/rkyv/; the book at https://rkyv.org/.
+MIT licence.
+
+- What it is: zero-copy deserialization for Rust: archived data read in place, validated first with `bytecheck` when it
+  is not trusted; readable only while the schema is unchanged, the writer was a semver-compatible rkyv, and its format
+  features (endianness, alignment, pointer width) are the same.
+- Why it matters to Polar: Cassini's wire is rkyv, and the maintainer prefers its properties for the credentials ledger.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `rkyv2026comparison`
+
+rkyv. "Feature comparison" (rkyv, Cap'n Proto, FlatBuffers). https://rkyv.org/feature-comparison.html
+
+- What it is: rkyv's own comparison: zero-copy and validation all round, schema evolution in Cap'n Proto and
+  FlatBuffers and not in rkyv, rkyv's schema in Rust derives where the others have their own languages.
+- Why it matters to Polar: the trade the ledger's encoding is chosen on.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `capnproto2025encoding`
+
+Cap'n Proto. "Encoding Spec." https://capnproto.org/encoding.html
+
+- What it is: the wire format: structs read in place through relative pointers, fields placed by their numbers so later
+  ones can be added, a canonical form defined for hashing and signing, and readers of untrusted messages bound to limit
+  traversal and nesting.
+- Why it matters to Polar: the alternative encoding for the ledger, with evolution and a canonical form rkyv lacks.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `capnproto2025language`
+
+Cap'n Proto. "Schema Language." https://capnproto.org/language.html
+
+- What it is: the schema language, its 64-bit type ids, and its rules for changing a schema compatibly (new members only
+  with higher numbers; never a changed number or type id).
+- Why it matters to Polar: the rules a Cap'n Proto ledger would be held to.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `capnprust2026`
+
+David Renshaw et al. *capnp* 0.27.3, Cap'n Proto for Rust. https://docs.rs/capnp/0.27.3/capnp/. MIT licence.
+
+- What it is: the Rust implementation, with reader options for the traversal and nesting limits and
+  `message::Reader::canonicalize` and `is_canonical`.
+- Why it matters to Polar: what a Cap'n Proto ledger would be built on.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `flatbuffers2025evolution`
+
+FlatBuffers. "Evolution." https://flatbuffers.dev/evolution/
+
+- What it is: FlatBuffers' rules for changing a schema: fields added at the end or by explicit id, never removed, only
+  deprecated.
+- Why it matters to Polar: one of the zero-copy formats weighed for the ledger.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `flatbuffers2025rust`
+
+FlatBuffers. "Rust." https://flatbuffers.dev/languages/rust/
+
+- What it is: the Rust guide: the verified `root` entry points for untrusted buffers, and the `_unchecked` ones that may
+  read arbitrary memory.
+- Why it matters to Polar: one of the zero-copy formats weighed for the ledger.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `rustsec2021flatbuffers`
+
+RustSec. "Generated code can read and write out of bounds in safe code." RUSTSEC-2021-0122 (flatbuffers).
+https://rustsec.org/advisories/RUSTSEC-2021-0122. Also RUSTSEC-2019-0028 and RUSTSEC-2020-0009.
+
+- What it is: the advisories against the flatbuffers crate's soundness, the latest critical.
+- Why it matters to Polar: why FlatBuffers is set aside for a security-critical ledger.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `musli2025zerocopy`
+
+John-John Tedro. *musli-zerocopy* 0.1.4. https://docs.rs/musli-zerocopy/. MIT or Apache-2.0.
+
+- What it is: safe zero-copy access to aligned buffers, validated as it is read, with explicit byte order for portable
+  archives; no schema evolution.
+- Why it matters to Polar: one of the zero-copy formats weighed for the ledger.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `bormann2020rfc8949`
+
+C. Bormann and P. Hoffman. *Concise Binary Object Representation (CBOR)*. RFC 8949 (STD 94), December 2020.
+https://doi.org/10.17487/RFC8949
+
+- What it is: CBOR, and in section 4.2 its deterministic encoding: shortest forms, definite lengths, map keys sorted by
+  their encodings.
+- Why it matters to Polar: the standard binary encoding with a canonical form, on which COSE and SCITT are built.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `c2sp2025tlogtiles`
+
+C2SP. "Tiled Transparency Logs" (tlog-tiles), with tlog-checkpoint and signed-note. https://c2sp.org/tlog-tiles
+
+- What it is: a transparency log served as static tiles: entries as length-prefixed bytes, opaque to the log, under an
+  RFC 6962 Merkle tree, with a signed checkpoint from which any inclusion or consistency proof is computed.
+- Why it matters to Polar: the container a ledger audited by others would take.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `ietf2025scitt`
+
+H. Birkholz, A. Delignat-Lavaud, C. Fournet, Y. Deshpande and S. Lasker. *An Architecture for Trustworthy and Transparent
+Digital Supply Chains*. Internet-Draft draft-ietf-scitt-architecture-22, October 2025 (work in progress).
+https://datatracker.ietf.org/doc/draft-ietf-scitt-architecture/
+
+- What it is: a transparency service that registers signed statements (COSE_Sign1) under a policy, in an append-only
+  log, and returns receipts proving their inclusion; statements' content opaque to it.
+- Why it matters to Polar: the shape of a signed, audited log of statements, near where Polar's evidence is going.
+- Cited by: `docs/architecture/ledger-evolution.md`.
