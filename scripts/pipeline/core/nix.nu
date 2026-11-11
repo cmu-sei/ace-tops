@@ -24,26 +24,33 @@
 # What a Nix build did, read from what the store says of its outputs (build-inspect-ship, S2). Pure but for
 # `store-records`, which asks nix.
 
-# How a derivation's outputs came to be in the store, observed of the store itself, never planned: `before` is what
-# `nix-store --check-validity --print-invalid <outputs>` gave before the build (the outputs not valid, one a line), and
-# `after` what `nix path-info` gave after it in JSON (`store-records`), each `{exit_code, stdout}` as `complete` gives them.
+# How one output of a derivation came to be in the store, observed of the store itself, never planned: `outputs` are
+# all the derivation's, `output` the one judged (a binary's is `out`: what is said of a binary is of the output that
+# holds it, never of another, such as its cargo log); `before` is what `nix-store --check-validity --print-invalid
+# <outputs>` gave before the build (the outputs not valid, one a line), and `after` what `nix path-info` gave after it in
+# JSON of `output` (`store-records`), each `{exit_code, stdout}` as `complete` gives them.
 #
-# - `present`: every output was valid before the build, so it realised none;
-# - `built`: every output not valid before is one the store records as built on this machine (`ultimate`); `at`, the
-#   latest time the store registered one of them, when it records one for each;
-# - `fetched`: every output not valid before is one the store records as not built here, and signed: substituted from a
-#   cache, or copied from another store;
-# - `unknown`: anything else (a command that failed or said what is not read here, an output not valid after, a mix),
-#   with no time.
+# - `present`: `output` was valid before the build, whatever became of the others;
+# - `built`: it was not, and the store records it as built on this machine (`ultimate`); `at`, the time the store
+#   registered it, when it records one;
+# - `fetched`: it was not, and the store records it as not built here, and signed: substituted from a cache, or copied
+#   from another store;
+# - `unknown`: anything else (a command that failed or said what is not read here, `output` not valid after), with no
+#   time.
 #
 # `path-info --json` is read in both shapes Nix writes: an object keyed by path (2.19 and after), or a list, each with
 # its `path`, `ultimate` left out when false (before).
-export def observed-realisation [outputs: list<string>, before: record, after: record]: nothing -> record {
+export def observed-realisation [
+    outputs: list<string>
+    output: string
+    before: record
+    after: record
+]: nothing -> record {
     let unknown = {realised: "unknown", at: null}
-    if $before.exit_code != 0 { return $unknown }
+    if $before.exit_code != 0 or $output not-in $outputs { return $unknown }
     let invalid = $before.stdout | lines | str trim | where {|l| $l | is-not-empty }
     if ($invalid | any {|p| $p not-in $outputs }) { return $unknown }
-    if ($invalid | is-empty) { return {realised: "present", at: null} }
+    if $output not-in $invalid { return {realised: "present", at: null} }
     if $after.exit_code != 0 { return $unknown }
     let parsed = try {
         $after.stdout | from json
@@ -60,27 +67,23 @@ export def observed-realisation [outputs: list<string>, before: record, after: r
     } else {
         return $unknown
     }
-    let realised = $invalid | each {|p|
-        let info = $infos | where path == $p | get -o 0.info
-        if not ($info | describe | str starts-with "record") {
-            {kind: "unknown", registered: null}
-        } else if ($info.ultimate? | default false) == true {
-            {kind: "built", registered: ($info.registrationTime? | default null)}
-        } else if ($info.signatures? | default [] | is-not-empty) {
-            {kind: "fetched", registered: null}
-        } else {
-            {kind: "unknown", registered: null}
+    let info = $infos | where path == $output | get -o 0.info
+    if not ($info | describe | str starts-with "record") {
+        $unknown
+    } else if ($info.ultimate? | default false) == true {
+        let registered = $info.registrationTime? | default null
+        {
+            realised: "built"
+            at: (
+                if ($registered | describe) == "int" {
+                    $registered * 1_000_000_000 | into datetime | format date "%Y-%m-%dT%H:%M:%S%:z"
+                }
+            )
         }
-    }
-    let kinds = $realised | get kind | uniq
-    if ($kinds | length) != 1 or ($kinds | first) == "unknown" { return $unknown }
-    let times = $realised | get registered | compact
-    let at = if ($kinds | first) == "built" and ($times | length) == ($invalid | length) {
-        $times | math max | $in * 1_000_000_000 | into datetime | format date "%Y-%m-%dT%H:%M:%S%:z"
-    }
-    {
-        realised: ($kinds | first)
-        at: $at
+    } else if ($info.signatures? | default [] | is-not-empty) {
+        {realised: "fetched", at: null}
+    } else {
+        $unknown
     }
 }
 

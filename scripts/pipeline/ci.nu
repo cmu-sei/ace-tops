@@ -535,11 +535,12 @@ const FACT_TOOL = "polar-pipeline/ci.nu"
 # derivations, as image-manifest names them; build-inspect-ship, S2). Nothing is built with cargo here: the binary
 # reported is the one the image is made from, out of the same store path.
 #
-# For each derivation: how it came to be in the store (observed of the store before and after the build: present, built
-# here, fetched or unknown, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says which binaries it
-# linked and the package of each (core/binaries.nu). Each binary is hashed as it is installed in `$out/bin`, after Nix
-# has stripped it, and reported: ArtifactProduced, the facts of its realisation, BinaryLinked to its package's SBOM from phase 1, and
-# the SBOM packages with no unit compiled for the binary's target (`report-sbom-gap`).
+# For each derivation: how its `out` came to be in the store (observed of the store before and after the build:
+# present, built here, fetched or unknown, core/nix.nu), then its outputs, `out` and `cargolog`. Its cargo log says
+# which binaries it linked and the package of each (core/binaries.nu). Each binary is hashed as it is installed in
+# `$out/bin`, after Nix has stripped it, and reported: ArtifactProduced, the facts of its realisation (its `out`'s),
+# BinaryLinked to its package's SBOM from phase 1, and the SBOM packages with no unit compiled for the binary's target
+# (`report-sbom-gap`).
 #
 # Run from the repository's root, as phase 3's `nix build` is.
 def build-and-link-binaries [
@@ -672,10 +673,10 @@ def report-sbom-gap [
     log-info $"($binary): ($never + $host) SBOM packages with no unit compiled for its target \(($never) never compiled, ($host) for the build machine only\)" --component $COMPONENT
 }
 
-# One derivation, realised: how its outputs came to be in the store (`realised`, core/nix.nu, `observed-realisation`),
-# observed of the store before and after the build, never planned; when the store registered them if they were built
-# here (`at`, or null); and its outputs' paths. A derivation Nix cannot evaluate or build stops the pipeline, as a
-# failed cargo build did.
+# One derivation, realised: how its `out`, the output its binaries are in, came to be in the store (`realised`,
+# core/nix.nu, `observed-realisation`), observed of the store before and after the build, never planned, and regardless
+# of its other outputs; when the store registered `out` if it was built here (`at`, or null); and its outputs'
+# paths. A derivation Nix cannot evaluate or build stops the pipeline, as a failed cargo build did.
 def realise-derivation [ref: string]: nothing -> record {
     let installable = $"($ref)^*"
     let outs = (
@@ -696,19 +697,16 @@ def realise-derivation [ref: string]: nothing -> record {
             msg: $"nix build failed for ($ref): ($built.stderr | str trim | lines | last 5 | str join ' ')"
         }
     }
-    # What the store records of them after: built here (`ultimate`), signed from elsewhere, and when registered.
-    let after = store-records $outputs
-    let realisation = observed-realisation $outputs $before $after
-    log-info $"($ref): ($realisation.realised)" --component $COMPONENT
+    let built_outputs = $built.stdout | from json | first | get outputs
+    # What the store records of `out` after: built here (`ultimate`), signed from elsewhere, and when registered. A
+    # binary is in `out`, so what is said of it is of `out` alone, never of the cargo log beside it.
+    let after = store-records [$built_outputs.out]
+    let realisation = observed-realisation $outputs $built_outputs.out $before $after
+    log-info $"($ref): out ($realisation.realised)" --component $COMPONENT
     {
         realised: $realisation.realised
         at: $realisation.at
-        outputs: (
-            $built.stdout
-            | from json
-            | first
-            | get outputs
-        )
+        outputs: $built_outputs
     }
 }
 

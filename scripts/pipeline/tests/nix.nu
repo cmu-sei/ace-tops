@@ -20,8 +20,8 @@
 # DM26-0670
 
 # scripts/pipeline/tests/nix.nu
-# How a derivation's outputs came to be in the store (core/nix.nu, `observed-realisation`): present, built here or
-# fetched, or unknown, observed of the store before and after the build, never planned.
+# How an output of a derivation came to be in the store (core/nix.nu, `observed-realisation`): present, built here or
+# fetched, or unknown, observed of the store before and after the build, never planned, and of that output alone.
 # Run: nu scripts/pipeline/tests/nix.nu
 
 use std/assert
@@ -116,16 +116,16 @@ def main [] {
     let outputs = [$OUT $LOG]
     let tests = [
         {
-            name: "outputs valid in the store before the build were present, whatever a dry run planned"
+            name: "an output valid in the store before the build was present, whatever a dry run planned"
             body: {
                 # A dry run that said `built` would have been wrong here: another process realised them first.
                 let after = path-info {
                     ($OUT): (built-info 1762890000)
                     ($LOG): (built-info 1762890005)
                 }
-                assert equal (observed-realisation $outputs (invalid) $after) {realised: present, at: null}
+                assert equal (observed-realisation $outputs $OUT (invalid) $after) {realised: present, at: null}
                 assert equal (
-                    observed-realisation $outputs (invalid) {exit_code: 1, stdout: ""}
+                    observed-realisation $outputs $OUT (invalid) {exit_code: 1, stdout: ""}
                 ) {
                     realised: present
                     at: null
@@ -133,42 +133,48 @@ def main [] {
             }
         }
         {
-            name: "outputs the store says were built here were built, at the time it registered them"
+            name: "an output the store says was built here was built, at the time it registered it, not another output's"
             body: {
                 # A substitution that failed and fell back to a build: the plan said fetched; the store says built.
                 let after = path-info {
                     ($OUT): (built-info 1762890000)
                     ($LOG): (built-info 1762890005)
                 }
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $after) {
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $after) {
                     realised: built
-                    at: "2025-11-11T19:40:05+00:00"
+                    at: "2025-11-11T19:40:00+00:00"
                 }
-                # Only what was not valid before is read: here the log alone was built.
+                # Out valid before is present, though the log beside it was built now (Test's N1).
                 let old = path-info {
                     ($OUT): (built-info 1)
                     ($LOG): (built-info 1762890005)
                 }
-                assert equal (observed-realisation $outputs (invalid $LOG) $old) {
-                    realised: built
-                    at: "2025-11-11T19:40:05+00:00"
+                assert equal (observed-realisation $outputs $OUT (invalid $LOG) $old) {
+                    realised: present
+                    at: null
                 }
                 # Built, with no registration time to say when: no time.
                 let untimed = path-info {
                     ($OUT): {ultimate: true}
                     ($LOG): {ultimate: true}
                 }
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $untimed) {realised: built, at: null}
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $untimed) {realised: built, at: null}
             }
         }
         {
-            name: "outputs the store says came signed from elsewhere were fetched, in either shape Nix writes path-info"
+            name: "an output the store says came signed from elsewhere was fetched, in either shape Nix writes path-info"
             body: {
                 let keyed = path-info {
                     ($OUT): (fetched-info 1762890000)
                     ($LOG): (fetched-info 1762890005)
                 }
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $keyed) {realised: fetched, at: null}
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $keyed) {realised: fetched, at: null}
+                # The log built here beside it says nothing of out.
+                let mixed = path-info {
+                    ($OUT): (fetched-info 1762890000)
+                    ($LOG): (built-info 1762890005)
+                }
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $mixed) {realised: fetched, at: null}
                 # Before Nix 2.19: a list, each with its path, and `ultimate` left out when false.
                 let listed = {
                     exit_code: 0
@@ -180,7 +186,7 @@ def main [] {
                         | to json --raw
                     )
                 }
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $listed) {realised: fetched, at: null}
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $listed) {realised: fetched, at: null}
             }
         }
         {
@@ -217,18 +223,18 @@ def main [] {
                         {exit_code: 0, stdout: "not json"}
                     ]
                     [
-                        "path-info without the log"
+                        "path-info without out"
                         (invalid $OUT $LOG)
                         (path-info {
-                            ($OUT): (built-info 1)
+                            ($LOG): (built-info 1)
                         })
                     ]
                     [
-                        "the log not valid after"
+                        "out not valid after"
                         (invalid $OUT $LOG)
                         (path-info {
-                            ($OUT): (built-info 1)
-                            ($LOG): null
+                            ($OUT): null
+                            ($LOG): (built-info 1)
                         })
                     ]
                     [
@@ -241,19 +247,13 @@ def main [] {
                             }
                         )
                     ]
-                    [
-                        "one built, one fetched"
-                        (invalid $OUT $LOG)
-                        (
-                            path-info {
-                                ($OUT): (built-info 1)
-                                ($LOG): (fetched-info 1)
-                            }
-                        )
-                    ]
                 ] {
-                    assert equal (observed-realisation $outputs $case.1 $case.2) {realised: unknown, at: null} $case.0
+                    assert equal (observed-realisation $outputs $OUT $case.1 $case.2) {realised: unknown, at: null} $case.0
                 }
+                # An output judged that is not among those asked of.
+                assert equal (
+                    observed-realisation $outputs "/nix/store/zzzz-other" (invalid $OUT $LOG) $built
+                ) {realised: unknown, at: null}
             }
         }
         {
@@ -262,7 +262,7 @@ def main [] {
                 let r = records-with new
                 assert equal $r.calls [$"path-info --json --json-format 1 ($OUT) ($LOG)"]
                 assert (not ($r.result.stderr | str contains "deprecated")) $r.result.stderr
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $r.result) {
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $r.result) {
                     realised: built
                     at: "2025-11-11T19:40:05+00:00"
                 }
@@ -276,7 +276,7 @@ def main [] {
                     $"path-info --json --json-format 1 ($OUT) ($LOG)"
                     $"path-info --json ($OUT) ($LOG)"
                 ]
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $r.result) {
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $r.result) {
                     realised: built
                     at: "2025-11-11T19:40:05+00:00"
                 }
@@ -287,7 +287,7 @@ def main [] {
             body: {
                 let r = records-with broken
                 assert not equal $r.result.exit_code 0
-                assert equal (observed-realisation $outputs (invalid $OUT $LOG) $r.result) {realised: unknown, at: null}
+                assert equal (observed-realisation $outputs $OUT (invalid $OUT $LOG) $r.result) {realised: unknown, at: null}
             }
         }
     ]
