@@ -319,23 +319,43 @@ confirmed example (a registry crate present in `Cargo.lock` but absent from
 every generated SBOM), mechanics researched (dev-dependencies default-
 excluded with no confirmed override flag; build-dependencies included by
 default but tagged non-runtime; platform-conditional dependencies
-structurally unclosable by a single invocation) — not implemented. A
-binary's own SBOM, beside the workspace member's (build-inspect-ship, S2):
-the dependency record `cargo auditable` embeds in a binary as it is built,
-written out as CycloneDX by `auditable2cdx` 0.1.0 (packaged in
-`src/flake/auditable2cdx.nix`, `polarPkgs.auditable2cdx`, in the CI image)
-and put through `SbomAnalyzed` like any SBOM, linked to the binary by a
-second `BinaryLinked`. Built in S2 for `cassini-server` alone, the first
-built with `cargo-auditable` (nixpkgs' wrapper around crane's toolchain);
-the other agents follow once the host's test shows what the record holds:
-whether it overstates the binary as the workspace SBOM overstates a member
-(cargo-cyclonedx reads `cargo metadata` over the whole workspace, so
-features unify across members). This nixpkgs' `cargo-auditable` 0.6.2
-writes format 0, which its own crate documents as taken from `cargo
-metadata` too, with proc-macros recorded as runtime dependencies;
-`build-processor/tests/binary_trees.rs` compares it, and the workspace
-SBOM, with the crates the build's cargo log says it compiled, the ground
-truth.
+structurally unclosable by a single invocation) — not implemented.
+
+**Three claims, each about its own subject (build-inspect-ship).** The
+**SBOM** is a claim about the *source tree*: the workspace at a commit, each
+member as `cargo metadata` resolves the whole workspace, features unified
+across members. It is not a claim about any binary, and is not reported as
+one: `BinaryLinked` says which SBOM describes the binary's package, nothing
+more. The **cargo log** (each crane derivation's `cargolog` output,
+`cargo-build.json`) is the record of *one build*: which crates were compiled,
+and for which machine. The **image inspection** of S3 is the one observation
+of the *artifact itself*: which binary, by its hash, lies in which image.
+There is no SBOM of a binary. `cargo-auditable` was tried for one and
+dropped: the record that nixpkgs' `cargo-auditable` 0.6.2 embedded in
+`cassini-server` (format 0, taken from `cargo metadata` too, proc-macros
+recorded as runtime dependencies) equalled the workspace SBOM, 492 packages
+against the 466 its build compiled, so it added nothing the workspace SBOM
+did not say. Neither it nor `auditable2cdx` is in the build or the CI image.
+
+**Built in build-inspect-ship S2, to be seen on the host:** Phase 2 builds
+each binary an image ships with Nix and links it to its package's SBOM
+(`BinaryLinked`). It then compares that SBOM with the binary's cargo log and
+reports the gap as facts (`fact_reported`). It counts only the units cargo
+compiled for the binary's target, those whose files lie under the
+directory of its executable (`target/<triple>/release`, crane being given
+the musl target). A proc-macro or a build script (kinds `proc-macro` and
+`custom-build`) runs on the build machine, wherever it lies, and is not
+counted. With no target set, the build machine's libraries would share the
+directory and be counted too, so the gap would be understated, never
+overstated. The facts: `polar.cargo/not-compiled` for each package the
+SBOM names that was not compiled for the binary (the Binary, the Package by
+the SBOM's purl, the value the SBOM's content hash), and
+`polar.cargo/sbom-compared` once (the Binary, the Sbom, the value the count,
+"0" for none), so a binary compared and found whole reads apart from one
+never compared. Observation only: it fails nothing.
+`build-processor/tests/binary_trees.rs` (ignored; its fixtures are made on
+the host) compares the whole compiled set with the workspace SBOM, and
+reports every difference.
 
 **Built in build-inspect-ship S3, to be seen on the host:** Phase 3 ships
 exactly what it inspected. The Nix image is made once into an OCI archive,
@@ -350,8 +370,9 @@ nowhere, `polar.image/executables` with the count. A missing binary is
 reported and stops nothing. Then that archive is pushed as it is (`skopeo
 copy --preserve-digests`), and the registry's digest must be the inspected
 one, or the upload is not recorded and not signed. Phase 2 reports
-`polar.nix/realised`, `polar.nix/store-path` and `polar.nix/built-at`. A
-build relayed by the orchestrator has these six names relayed only if its
+`polar.nix/realised`, `polar.nix/store-path` and `polar.nix/built-at`, and
+(S2, above) `polar.cargo/not-compiled` and `polar.cargo/sbom-compared`. A
+build relayed by the orchestrator has these eight names relayed only if its
 mapping lists them (`facts`). Signing is cosign by the digest with
 `COSIGN_KEY`; no key is provisioned, so it says it skipped (`remaining-work.md`).
 
@@ -383,8 +404,8 @@ footnote.
 (`pkg:type/name@version`). Reliability varies by ecosystem; verified for
 `pkg:cargo` here, not assumed elsewhere. **SBOM** — Software Bill of
 Materials; here, CycloneDX JSON produced by `cargo-cyclonedx` per workspace
-member, and (planned, §7) by `auditable2cdx` per binary, from the record
-`cargo auditable` embeds in it. **RUSTSEC** — the Rust ecosystem's own advisory database
+member: a claim about the source tree at a commit, not about a binary (§7).
+**RUSTSEC** — the Rust ecosystem's own advisory database
 (volunteer-maintained, not centrally scored). **GHSA** — GitHub Security
 Advisory, the de facto advisory-of-record for much of the open-source
 ecosystem, often present where a CVE never was requested. **CVE** — the

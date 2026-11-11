@@ -984,8 +984,13 @@ only.
   Nix. **OPEN, signing waits on a key** (build-inspect-ship S3, 2026-11-11): the pipeline pushes the archive it inspected and signs it
   with cosign by its digest, through the existing path (`scripts/pipeline/core/oci.nu`, `sign-image`, `COSIGN_KEY` or `--key`). No key is
   provisioned on the host or in CI, and none is made by the pipeline, so every image is shipped unsigned with "No signing key available,
-  skipping signature". The key is the lead's to provide. The history that
-  follows, superseded:
+  skipping signature". The key is the lead's to provide. **Decided, no SBOM of a binary** (build-inspect-ship S2, 2026-11-11,
+  the lead): each claim is named by its subject. The workspace SBOM is about the source tree at a commit, the cargo log about one
+  build, the image inspection (S3) about one image: which binary, by its hash, is in it. `cargo-auditable` was tested and dropped,
+  with `auditable2cdx`: the record nixpkgs' 0.6.2 embedded in `cassini-server` equalled the workspace SBOM, 492 packages against the
+  466 its build compiled. In its place phase 2 reports, per binary, what the SBOM names that the build did not compile for the
+  binary's target (`polar.cargo/not-compiled`, `polar.cargo/sbom-compared`; `docs/architecture/pipeline-design-reference.md` §7).
+  The history that follows, superseded:
   MERGE UPSTREAM (github.com/cmu-sei/Polar) AND MIGRATE THE BUILD PROCESSOR, IN AN ORDER NOT YET DECIDED. **Reopened 2026-11-07** (the maintainer, through
   the agentic-control-plane session): build-processor moves onto polar-agent-builder and into the catalog when the GitLab work is done, which takes Vaughn's
   upstream code, his restructure of it around cyclops (`312d5dec`) and the build orchestrator included; whether the merge comes before or after the migration
