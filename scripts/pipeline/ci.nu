@@ -78,6 +78,7 @@ use ./core/sbom.nu *
 use ./core/scanning.nu [run-vulnerability-scan]
 use ./core/binaries.nu [linked-binaries]
 use ./core/nix.nu [realisation]
+use ./core/inspect.nu [inspect-archive placements]
 use ../../infra/check-sources.nu [summary_lines]
 const COMPONENT = "ci"
 const CHECK_SOURCES = (path self | path dirname | path join ../../infra/check-sources.nu | path expand)
@@ -614,6 +615,7 @@ def build-and-link-binaries [
                 root_purl: ($sbom_info.root_purl? | default "")
                 sbom_content_hash: ($sbom_info.content_hash? | default "")
                 own_sbom_content_hash: ($own.content_hash? | default "")
+                derivation: $ref
             }
         }
         | compact
@@ -721,7 +723,18 @@ def login-to-registries []: nothing -> nothing {
     registry-login $creds
 }
 
-def process-image [entry: record, image_tag: string, --skip-upload]: nothing -> record {
+# One image (build-inspect-ship, S3): built by Nix; made once into the OCI archive that is shipped, its layers
+# gzip-compressed; that archive inspected (core/inspect.nu), each layer checked against its digest and diff_id and
+# each binary Phase 2 linked for it (`binaries`, by derivation) found by its hash; then that same archive pushed
+# (build-and-push-image). A binary the image does not hold is reported, and stops nothing; an archive whose layers are
+# not what they say stops the image.
+def process-image [
+    entry: record
+    image_tag: string
+    binaries: list<record>
+    artifact_dir: path
+    --skip-upload
+]: nothing -> record {
     # Cross-validate the manifest's hardcoded root_purl against what Phase 1
     # actually analyzed. Static image-manifest purls drift silently on the
     # first crate version bump; this makes that loud.
@@ -741,11 +754,30 @@ def process-image [entry: record, image_tag: string, --skip-upload]: nothing -> 
         }
     }
 
-    # Decouple the tarball hash from the return-record contract. Ideally this
-    # write lives inside nix-build-image next to content-hash-file; recorded
-    # here it still trusts $build once, but the guard in build-and-push-image
-    # turns any miss into a loud failure instead of a silent null.
-    record-tarball-hash $entry.name $build.tarball_hash
+    let archive = (to-oci-archive $build.tarball $entry.name $artifact_dir)
+    if $archive == null {
+        return {
+            success: false
+            image_name: $entry.name
+            uploads: []
+        }
+    }
+    let scratch = $artifact_dir | path join $"($entry.name).inspect"
+    let image = try {
+        inspect-archive $archive.path $scratch
+    } catch {|e|
+        log-error $"($entry.name): its archive is not the image it names: ($e.msg)" --component $COMPONENT
+        return {
+            success: false
+            image_name: $entry.name
+            uploads: []
+        }
+    }
+    report-placements $entry $image $binaries
+
+    # The tarball hash is the shipped archive's: the file inspected and pushed. Recorded here, not in the
+    # return record; the guard in build-and-push-image turns any miss into a loud failure instead of a silent null.
+    record-tarball-hash $entry.name $archive.hash
 
     if $skip_upload {
         return {
@@ -754,7 +786,30 @@ def process-image [entry: record, image_tag: string, --skip-upload]: nothing -> 
             uploads: []
         }
     }
-    build-and-push-image $entry.name $image_tag (registry-refs $entry.image) $build --root_purl $entry.root_purl
+    build-and-push-image $entry.name $image_tag (registry-refs $entry.image) ($build | merge {archive: $archive.path, inspected: $image.digest}) --root_purl $entry.root_purl
+}
+
+# Where the binaries an image should hold lie in it, as facts: polar.image/found-at for each place (the binary, the
+# layer by its diff_id, the path), polar.image/not-found for one it holds nowhere (against the image, by its inspected
+# digest), and polar.image/executables, how many executables it holds.
+def report-placements [entry: record, image: record, binaries: list<record>] {
+    let version = open --raw ((workspace-root) | path join ".." ".." "VERSION") | str trim
+    let expected = $binaries
+    | where {|b| ($b.derivation? | default "") in $entry.binaries }
+    | each {|b| {name: $b.name, hash: $b.binary_hash} }
+    let placed = placements $expected $image.executables
+    for f in $placed.found {
+        (emit-fact {label: "Binary", key: $f.hash} "polar.image/found-at" $FACT_TOOL $version
+            --object {label: "OCILayerDiffId", key: $f.diff_id} --value $f.path)
+    }
+    for m in $placed.missing {
+        log-warn $"($entry.name): ($m.name) is not in the image" --component $COMPONENT
+        (emit-fact {label: "Binary", key: $m.hash} "polar.image/not-found" $FACT_TOOL $version
+            --object {label: "OCIArtifact", key: $image.digest})
+    }
+    (emit-fact {label: "OCIArtifact", key: $image.digest} "polar.image/executables" $FACT_TOOL $version
+        --value ($image.executables | length | into string))
+    log-info $"($entry.name): ($image.digest), ($image.executables | length) executables, ($placed.found | length) places for ($expected | length) binaries, ($placed.missing | length) missing" --component $COMPONENT
 }
 
 
@@ -781,10 +836,17 @@ def build-and-push-image [
     let insecure = ($env.POLAR_REGISTRY_INSECURE? | default "" | is-not-empty)
     let uploads = ($registries | each {|template|
         let remote_ref = ($template | str replace "{tag}" $tag)
-        if $insecure {
-            upload-image $build.tarball $remote_ref --name $link_name --insecure
+        # The inspected archive itself, its digests kept: what the registry serves is what was inspected.
+        let upload = if $insecure {
+            push-archive $build.archive $remote_ref --name $link_name --insecure
         } else {
-            upload-image $build.tarball $remote_ref --name $link_name
+            push-archive $build.archive $remote_ref --name $link_name
+        }
+        if ($upload.digest | is-not-empty) and $upload.digest != $build.inspected {
+            log-error $"($remote_ref): the registry serves ($upload.digest), not the inspected ($build.inspected); not signed" --component $COMPONENT
+            $upload | update digest ""
+        } else {
+            $upload
         }
     })
 
@@ -926,19 +988,23 @@ def main [
         }
 
         # Phase 2 — the binaries the images in scope ship, built by Nix from their crane derivations
-        if not $skip_build {
+        # Kept for Phase 3, which finds each in the images that ship it.
+        let binaries = if not $skip_build {
             let rows = if ($filter | is-not-empty) {
                 image-manifest | where { $in.name | str contains $filter }
             } else {
                 image-manifest
             }
             let refs = $rows | get binaries | flatten | uniq
-            let binaries = (
+            let built = (
                 build-and-link-binaries $refs $packages $ws_manifest $artifact_dir
                     --filter_package $package
                     --auditable_sbom=$auditable_sbom
             )
-            log-info $"($binaries | length) binary\(ies\) built and linked" --component $COMPONENT
+            log-info $"($built | length) binary\(ies\) built and linked" --component $COMPONENT
+            $built
+        } else {
+            []
         }
 
         # Phase 3 — OCI images
@@ -961,7 +1027,7 @@ def main [
 
                 let results = ($manifest | each {|entry|
                     log-info $"--- ($entry.name) ---" --component $COMPONENT
-                    process-image $entry $image_tag --skip-upload=$skip_upload
+                    process-image $entry $image_tag $binaries $artifact_dir --skip-upload=$skip_upload
                 })
 
                 let succeeded = $results | where success == true | length
