@@ -55,6 +55,11 @@ fn word(label: FactLabel) -> &'static str {
     }
 }
 
+/// A ref as a fact's canonical form writes it: its label's name and its key.
+fn ref_form(r: &FactRef) -> (&'static str, &str) {
+    (word(r.label), r.key.as_str())
+}
+
 /// The graph's node a ref names, merged on its label's key.
 fn node(r: &FactRef) -> ArtifactNodeKey {
     let key = r.key.clone();
@@ -74,12 +79,11 @@ fn node(r: &FactRef) -> ArtifactNodeKey {
 /// `[FACT_FORM, subject, name, object, value, tool, tool_version]`, each ref as `[label, key]`. What build reported it is
 /// not in it: the same fact from two builds is one node.
 pub fn fact_digest(p: &FactReportedPayload) -> String {
-    let r = |r: &FactRef| (word(r.label), r.key.as_str());
     let form = (
         FACT_FORM,
-        r(&p.subject),
+        ref_form(&p.subject),
         &p.name,
-        p.object.as_ref().map(r),
+        p.object.as_ref().map(ref_form),
         &p.value,
         &p.tool,
         &p.tool_version,
