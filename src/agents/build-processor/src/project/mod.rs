@@ -47,6 +47,7 @@
 //! [`ProvenanceEvent`] variant fails to compile until it is routed here.
 
 pub mod execution;
+pub mod facts;
 pub mod findings;
 pub mod outputs;
 pub mod registry;
@@ -176,8 +177,7 @@ pub fn project(
         ProvenanceEvent::SbomAnalyzed(fragment) => outputs::sbom_analyzed(fragment),
         ProvenanceEvent::BinaryLinked(p) => outputs::binary_linked(p, observed_at),
         ProvenanceEvent::ContainerImageCreated(p) => outputs::container_image_created(p),
-        // Written in S1c.
-        ProvenanceEvent::FactReported(_) => vec![],
+        ProvenanceEvent::FactReported(p) => facts::fact_reported(p, observed_at),
 
         // ── Findings ──────────────────────────────────────────────────────────
         ProvenanceEvent::SecurityAdvisoryFound(p) => findings::security_advisory(p, observed_at),
@@ -651,6 +651,21 @@ mod tests {
             ProvenanceEvent::OCIRegistryDiscovered {
                 hostname: "reg.example".into(),
             },
+            ProvenanceEvent::FactReported(polar::FactReportedPayload {
+                build_id: "b1".into(),
+                subject: polar::FactRef {
+                    label: polar::FactLabel::Binary,
+                    key: "sha256:bin".into(),
+                },
+                name: "polar.image/found-at".into(),
+                object: Some(polar::FactRef {
+                    label: polar::FactLabel::OCILayerDiffId,
+                    key: "sha256:d0".into(),
+                }),
+                value: Some("/nix/store/x/bin/polar".into()),
+                tool: "polar-pipeline/oci.nu".into(),
+                tool_version: "3.0.0".into(),
+            }),
         ]
     }
 

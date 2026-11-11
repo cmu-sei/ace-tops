@@ -31,8 +31,9 @@ use build_processor::project::transaction;
 use neo4rs::{Graph, Query};
 use polar::graph::controller::compile_graph_op;
 use polar::{
-    ContainerImageCreatedPayload, DependencyEdge, DiscoverySourceRef, OciLayerEntry, PackageRef,
-    ProvenanceEvent, SbomGraphFragment, SecurityAdvisoryFoundPayload,
+    ContainerImageCreatedPayload, DependencyEdge, DiscoverySourceRef, FactLabel, FactRef,
+    FactReportedPayload, OciLayerEntry, PackageRef, ProvenanceEvent, SbomGraphFragment,
+    SecurityAdvisoryFoundPayload,
 };
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::neo4j::Neo4j;
@@ -572,5 +573,81 @@ async fn an_unchanged_tree_is_one_node_and_a_redelivery_adds_nothing() {
     assert_eq!(
         count(&graph, "MATCH ()-[r:DEPENDS_ON]->() RETURN count(r) AS n").await,
         0
+    );
+}
+
+/// A fact is one node by its content: the same fact from two builds, one of them delivered twice, is one Fact, reported
+/// by each build once, about the binary it names and naming the layer it names.
+#[tokio::test]
+async fn a_fact_is_one_node_reported_by_each_build() {
+    let container = Neo4j::default()
+        .with_version("5.26.2")
+        .start()
+        .await
+        .unwrap();
+    let config = neo4rs::ConfigBuilder::new()
+        .uri(format!(
+            "bolt://{}:{}",
+            container.get_host().await.unwrap(),
+            container.image().bolt_port_ipv4().unwrap()
+        ))
+        .user(container.image().user().unwrap())
+        .password(container.image().password().unwrap())
+        .build()
+        .unwrap();
+    let graph = Graph::connect(config).unwrap();
+
+    const BINARY: &str = "sha256:0101010101010101010101010101010101010101010101010101010101010101";
+    const LAYER: &str = "sha256:0202020202020202020202020202020202020202020202020202020202020202";
+    let fact = |build_id: &str| {
+        ProvenanceEvent::FactReported(FactReportedPayload {
+            build_id: build_id.into(),
+            subject: FactRef {
+                label: FactLabel::Binary,
+                key: BINARY.into(),
+            },
+            name: "polar.image/found-at".into(),
+            object: Some(FactRef {
+                label: FactLabel::OCILayerDiffId,
+                key: LAYER.into(),
+            }),
+            value: Some("/nix/store/x-cassini-server/bin/cassini-server".into()),
+            tool: "polar-pipeline/oci.nu".into(),
+            tool_version: "3.0.0".into(),
+        })
+    };
+    apply(&graph, fact("b1"), "2026-11-11T00:00:00Z").await;
+    apply(&graph, fact("b1"), "2026-11-11T00:00:01Z").await;
+    apply(&graph, fact("b2"), "2026-11-11T01:00:00Z").await;
+
+    assert_eq!(
+        count(&graph, "MATCH (f:Fact) RETURN count(f) AS n").await,
+        1
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:BuildJob)-[r:REPORTED]->(:Fact {name: 'polar.image/found-at'}) RETURN count(r) AS n"
+        )
+        .await,
+        2
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (:BuildJob {build_id: 'b1'})-[r:REPORTED]->(:Fact) WHERE r.at = '2026-11-11T00:00:00Z' RETURN count(r) AS n"
+        )
+        .await,
+        1,
+        "a redelivery moved when b1 reported it"
+    );
+    assert_eq!(
+        count(
+            &graph,
+            "MATCH (b:Binary {content_hash: 'sha256:0101010101010101010101010101010101010101010101010101010101010101'})<-[:ABOUT]-(f:Fact)-[:NAMES]->(l:OCILayerDiffId {diff_id: 'sha256:0202020202020202020202020202020202020202020202020202020202020202'}) \
+             WHERE f.value = '/nix/store/x-cassini-server/bin/cassini-server' RETURN count(*) AS n"
+        )
+        .await,
+        1
     );
 }
