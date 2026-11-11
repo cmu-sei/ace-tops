@@ -341,3 +341,110 @@ https://datatracker.ietf.org/doc/draft-ietf-scitt-architecture/
   log, and returns receipts proving their inclusion; statements' content opaque to it.
 - Why it matters to Polar: the shape of a signed, audited log of statements, near where Polar's evidence is going.
 - Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `laurie2021rfc9162`
+
+B. Laurie, E. Messeri and R. Stradling. *Certificate Transparency Version 2.0*. RFC 9162 (Experimental), December 2021;
+obsoletes RFC 6962. https://doi.org/10.17487/RFC9162
+
+- What it is: the Merkle tree transparency logs are built on: leaves and nodes hashed apart (0x00 and 0x01), inclusion
+  proofs, consistency proofs of the append-only property, and signed tree heads.
+- Why it matters to Polar: the tree the credentials ledger is proposed to become, so its history can be checked by more
+  than the agent.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `c2sp2025signednote`
+
+C2SP. "Signed Note" (signed-note), with "Transparency Log Checkpoints" (tlog-checkpoint). https://c2sp.org/signed-note
+
+- What it is: a text format signed by one or more keys, verifiers ignoring unknown keys and rejecting a note no known key
+  verifies; its signature types include Ed25519 and ECDSA (P-256 preferred). Checkpoints, a log's signed tree heads, are
+  written in it.
+- Why it matters to Polar: the form the ledger's checkpoints are proposed to take, signed with a P-256 key as every Polar
+  key is.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `c2sp2025witness`
+
+C2SP. "Transparency Log Witness Protocol" (tlog-witness), with "Transparency Log Cosignatures" (tlog-cosignature).
+https://c2sp.org/tlog-witness
+
+- What it is: a witness keeps the last checkpoint it verified for a log and cosigns a new one only if a consistency proof
+  shows it extends that one, persisting it before it answers.
+- Why it matters to Polar: the next step after publishing the ledger's checkpoints: an agent that witnesses them.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `minicbor2026`
+
+Toralf Wittner. *minicbor* 2.3.1. https://docs.rs/minicbor/, with *minicbor-derive*. BlueOak-1.0.0.
+
+- What it is: a small CBOR codec with derives that give each field and variant an index, encoded as an array or as a map
+  keyed by index; unknown fields ignored on decode, absent optional ones `None`, and decoding that borrows from the input.
+- Why it matters to Polar: the proposed encoder of the ledger's entries.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `ciborium2026`
+
+Nathaniel McCallum and the Enarx project. *ciborium* 0.2.2. https://docs.rs/ciborium/. Apache-2.0.
+
+- What it is: serde's CBOR, numbers in their smallest lossless encoding, with a recursion limit for untrusted input.
+- Why it matters to Polar: the alternative encoder, and what COSE's Rust crate is built on.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `birkholz2019rfc8610`
+
+H. Birkholz, C. Vigano and C. Bormann. *Concise Data Definition Language (CDDL): A Notational Convention to Express
+Concise Binary Object Representation (CBOR) and JSON Data Structures*. RFC 8610, June 2019.
+https://doi.org/10.17487/RFC8610
+
+- What it is: a schema language for CBOR and JSON, to "express structures for protocol messages" unambiguously.
+- Why it matters to Polar: the schema of each version of each ledger event, written for people to read and checked by
+  tests.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `cddl2026`
+
+Andrew Weiss et al. *cddl* 0.10.7. https://docs.rs/cddl/. MIT.
+
+- What it is: a CDDL parser that validates CBOR and JSON against a definition; its authors call it a learning project and
+  advise careful consideration before production use.
+- Why it matters to Polar: the ledger's schema checked in tests, not in the agent.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `coset2026`
+
+David Drysdale et al. *coset* 0.4.2. https://docs.rs/coset/. Apache-2.0.
+
+- What it is: COSE's structures in Rust (`CoseSign1`, `CoseKey`, and the rest), on `ciborium`, the cryptography left to
+  the caller.
+- Why it matters to Polar: what signing CBOR values would be built on, should entries or checkpoints be signed in COSE.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `schaad2022rfc9052`
+
+J. Schaad. *CBOR Object Signing and Encryption (COSE): Structures and Process*. RFC 9052 (STD 96), 2022; with RFC 9053,
+obsoletes RFC 8152. https://doi.org/10.17487/RFC9052
+
+- What it is: signatures, MACs and encryption over CBOR, and keys written in CBOR.
+- Why it matters to Polar: the signing format SCITT and WebAuthn use, and the one a CBOR ledger would sign values in.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `tlogtiles2026`
+
+Luke Valenta et al. (Cloudflare). *tlog_tiles* 0.2.0. https://docs.rs/tlog_tiles/, https://github.com/cloudflare/azul.
+BSD-3-Clause.
+
+- What it is: C2SP's tlog-tiles and checkpoint in Rust: a transparency log's Merkle tree, tiles and checkpoints, ported
+  from Go's `golang.org/x/mod/sumdb/tlog`.
+- Why it matters to Polar: the proposed source of the ledger's tree hashing and proofs, or what our own is checked
+  against.
+- Cited by: `docs/architecture/ledger-evolution.md`.
+
+### `ctmerkle2025`
+
+Michael Rosenberg. *ct-merkle*. https://docs.rs/ct-merkle/. 
+
+- What it is: RFC 6962's Merkle tree in memory, with inclusion and consistency proofs and their verification; its docs
+  say it has not been audited.
+- Why it matters to Polar: weighed for the ledger's tree, and set aside for `tlog_tiles` or our own.
+- Cited by: `docs/architecture/ledger-evolution.md`.

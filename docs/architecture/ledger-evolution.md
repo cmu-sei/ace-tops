@@ -22,8 +22,8 @@
 
 # The credentials ledger's evolution
 
-Status, 2026-11-10: research (the evolution of events, then the file format), and a plan proposed from it, not yet
-cleared. Owner: the runtime attestation session, at the
+Status, 2026-11-10: research (the evolution of events, the file format, then CBOR and a Merkle ledger), and a plan
+proposed from it, not yet cleared. Owner: the runtime attestation session, at the
 maintainer's word. The item it answers is in `remaining-work.md`, "A ledger written by newer code stops an older
 credentials agent".
 
@@ -167,13 +167,11 @@ inclusion (`ietf2025scitt`). So the choice is two choices: how an entry is encod
 1. *The envelope carries what a reader needs before it knows the type*: the type, its version, and whether it is
    critical, set by the writer, as X.509 puts the critical bit in the certificate, so a reader that has never heard of a
    type still knows whether it may pass over it. Then the event's bytes.
-2. *The event's bytes are rkyv's, in a version frozen per type* (recommended): versioned events and upcasting, the
-   tactics the evolution study ranks first, need no evolution from the encoding itself; a new field is a new version and
-   an upcaster. Every reader validates before it reads. rkyv's own format is pinned (its major version and format
-   features); moving it is a copy-and-transform into a new log, as any breaking change is. Its schema is the frozen Rust
-   types, recorded as archived samples for the compatibility test. *Or Cap'n Proto*, if an IDL apart from the code,
-   checked by its own compiler and readable by other languages, and a canonical form for signing values, weigh more than
-   one stack and no code generation.
+2. *The event's bytes: first proposed as rkyv's, in a version frozen per type; revised to CBOR* (below, "CBOR and a
+   Merkle ledger"). rkyv's zero-copy reading buys the ledger little, since it is replayed once, at start, and its format
+   is the crate's own, which moves with its major versions; a ledger must stay readable and checkable for years, by more
+   than the agent. CBOR is an Internet Standard with a deterministic form, a schema language and the signing and
+   transparency standards Polar's evidence is heading to (COSE, SCITT; WebAuthn's passkeys too).
 3. *The container frames each entry as length-prefixed bytes*, opaque to the chain, whichever encoding is chosen. The
    chain can stay linear (what is hashed: the previous hash, the time and the entry's bytes), or become a Merkle tree
    with signed checkpoints as transparency logs are, which lets someone other than the agent check that an entry is in
@@ -182,6 +180,66 @@ inclusion (`ietf2025scitt`). So the choice is two choices: how an entry is encod
 4. *A binary ledger needs a reader for people*: a command that prints a ledger's entries, their versions and their chain,
    so an operator or an auditor reads it as easily as the JSON now.
 
+## CBOR and a Merkle ledger
+
+Read 2026-11-10, after the maintainer asked why not CBOR, and found Merkle trees worth more than a mention.
+
+**Why a Merkle tree, not only a chain.** A linear hash chain is tamper-evident only to someone who holds an earlier hash:
+whoever holds the credentials agent can rewrite its history and every hash after it, and nothing in the chain shows it;
+today nothing outside the agent anchors it. A Merkle tree with signed tree heads is how Certificate Transparency answers
+this (`laurie2021rfc9162`): leaves hashed as `HASH(0x00 || entry)` and nodes as `HASH(0x01 || left || right)` (so a node
+cannot pass for a leaf), an *inclusion proof* of about log2 n hashes showing an entry is in the tree, a *consistency
+proof* showing a later tree only extends an earlier one (the append-only property), and a signed tree head the log
+cannot later deny. C2SP writes the tree head as a text *checkpoint* in a *signed note* (`c2sp2025signednote`), whose
+signature types include ECDSA on P-256, the curve every Polar key is on; *witnesses* cosign a checkpoint only after
+checking it is consistent with the last they saw (`c2sp2025witness`), which is what lets a reader detect a log that
+shows different histories to different readers.
+
+**The Rust crates.**
+- *CBOR*: `minicbor` 2.3 (`minicbor2026`, BlueOak-1.0.0, allowed by `src/deny.toml`): derives with an index per field
+  and variant, encoded as an array or as a map keyed by index; unknown fields are ignored on decode, absent optional ones
+  are `None`; its documented rule is that "non-optional fields need to be present forever", and enums cannot change
+  compatibly as top-level types, only structs. It borrows from the input. Its docs say nothing of limits on nesting or
+  allocation. `ciborium` 0.2 (`ciborium2026`, Apache-2.0) is serde's CBOR, with a recursion limit
+  (`from_reader_with_recursion_limit`) and no documented allocation limit; COSE's crate builds on it.
+- *Schema*: CDDL (`birkholz2019rfc8610`), with the `cddl` crate (`cddl2026`, MIT) to validate CBOR against it, whose
+  authors call it a learning project and advise "careful consideration" before production use: for tests, not for the
+  agent.
+- *Signing*: `coset` 0.4 (`coset2026`, Apache-2.0): COSE's structures (`CoseSign1` and the rest, COSE `STD 96`,
+  `schaad2022rfc9052`), the cryptography left to the caller.
+- *Merkle*: `tlog_tiles` 0.2 (`tlogtiles2026`, BSD-3-Clause; Cloudflare's Azul), C2SP's tlog-tiles and checkpoint, ported
+  from Go's `sumdb/tlog`, which the Go module checksum database runs on; `ct-merkle` (`ctmerkle2025`), RFC 6962's tree in
+  memory with proofs, whose docs say it "has not been audited in any sense of the word".
+
+**What follows, proposed for review.**
+1. *Each entry is deterministic CBOR* (RFC 8949, 4.2.1): an envelope map `{0: type, 1: version, 2: critical, 3: event}`,
+   the event itself a byte string holding its own deterministic CBOR, so a reader can pass over an event it does not know
+   without decoding it, and a value can be hashed or signed apart from the entry. Encoded with `minicbor`, index-keyed
+   maps, a test re-encoding every entry to the same bytes.
+2. *Every version of every event has a CDDL definition*, the schema a person reads; tests validate recorded samples
+   against it (`cddl`, as a test dependency only) and hold every recorded version readable (the transitive compatibility
+   above).
+3. *Untrusted bytes are bounded*: an entry's length is capped before it is read, and the events are not recursive, so
+   nesting is bounded by the schema; a decode with a depth limit besides, whichever crate decodes.
+4. *The ledger is a Merkle tree over its entries*, RFC 9162's hashing, rebuilt at start from the entries (about 13,000
+   on u7c: a few thousand hashes). Hashing and proofs from `tlog_tiles`, or our own few hundred lines checked against it
+   and Go's `sumdb/tlog` by property tests.
+5. *Checkpoints are signed and published*: a C2SP checkpoint, signed in a signed note with ECDSA P-256, made at each start
+   and after every so many entries, published as an evidence record to `polar-evidence` with a consistency proof from the
+   one before, so the history leaves the agent. A witness (an agent that checks each checkpoint against the last before
+   it cosigns, as tlog-witness does) is the step after.
+6. *A reader for people*: a command that prints a ledger's entries (in CBOR's diagnostic notation), their types and
+   versions, and verifies its tree, its checkpoints and the proofs between them.
+7. *The JSON ledger moves by copy-and-transform*: a new ledger whose first entry names the old file's last hash and how
+   many entries it held, every old event written again as version 1 of its type, the old file kept read-only beside it.
+
+**For the maintainer.**
+- *Which key signs checkpoints.* The escrow key's module says "one key, one purpose" (`consume/src/escrow.rs`). A key of
+  its own for the ledger's checkpoints (P-256, held as the authority key is) keeps it so; the authority key, already
+  signing revocation records in the evidence domain, would be one key fewer.
+- *How often a checkpoint is published*, and who witnesses it first: the attestation agent, polar-eden, or a person's
+  tool at audit.
+
 ## References
 
 The works are in [`docs/reference/citations.md`](../reference/citations.md), "Event-sourced logs and their evolution":
@@ -189,4 +247,6 @@ The works are in [`docs/reference/citations.md`](../reference/citations.md), "Ev
 `sigstore2025pluggable`, `cloudevents2022spec`, `google2025proto3`, `cooper2008rfc5280`, `confluent2025evolution`; and for
 the file format, `rkyv2026docs`, `rkyv2026comparison`, `capnproto2025encoding`, `capnproto2025language`, `capnprust2026`,
 `flatbuffers2025evolution`, `flatbuffers2025rust`, `rustsec2021flatbuffers`, `musli2025zerocopy`, `bormann2020rfc8949`,
-`c2sp2025tlogtiles`, `ietf2025scitt`.
+`c2sp2025tlogtiles`, `ietf2025scitt`; and for CBOR and the Merkle ledger, `laurie2021rfc9162`, `c2sp2025signednote`,
+`c2sp2025witness`, `minicbor2026`, `ciborium2026`, `birkholz2019rfc8610`, `cddl2026`, `coset2026`, `schaad2022rfc9052`,
+`tlogtiles2026`, `ctmerkle2025`.
