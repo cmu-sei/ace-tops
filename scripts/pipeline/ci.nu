@@ -428,7 +428,13 @@ def generate-workspace-sboms [
         log-warn $"cargo-cyclonedx failed: ($msg)" --component $COMPONENT
         return []
     }
-    let found = glob $"($ws_root)/**/*.cdx.json" | where { ($in | path type) == "file" }
+    # cargo-cyclonedx writes each SBOM beside its package's Cargo.toml: a .cdx.json anywhere else (a test's fixture, say)
+    # is not one this run made.
+    let found = (
+        glob $"($ws_root)/**/*.cdx.json" --exclude ["**/target/**"]
+        | where { ($in | path type) == "file" }
+        | where { ($in | path dirname | path join "Cargo.toml" | path exists) }
+    )
     log-debug $"found ($found | length) SBOM file\(s\) under ($ws_root)" --component $COMPONENT
     if ($found | is-empty) {
         log-warn "cargo-cyclonedx reported success but produced no *.cdx.json files" --component $COMPONENT
