@@ -36,7 +36,7 @@ use std/assert
 use ../test-cluster.nu
 use ../cluster-registry.nu
 use ../registry.nu [node_registry]
-use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also role_namespaces added_namespaces]
+use ../attested.nu [attest_also_problems attested_namespaces server_also_problems floor_entries_also role_namespaces role_namespace_problem added_namespaces]
 
 const RESOLVER = (path self | path dirname | path dirname | path join "resolve.nu")
 
@@ -571,6 +571,18 @@ def main [] {
             assert equal (role_namespaces { name: "r", namespace: "builds", rules: [] } $cluster "job-run") ["polar-builds"]
             let refused = (try { role_namespaces { name: "r", namespace: "nowhere", rules: [] } $cluster "job-run"; null } catch {|e| $e.msg })
             assert ($refused != null and ($refused | str contains "nowhere")) $"($refused)"
+        }
+
+        # The catalog places a capability's role where the agent's code holds it (its scaffold's role_namespaces), and nowhere
+        # else: a Role naming another key, a key for a capability held to none (or an image built before roles said their
+        # namespace), or none for one held to a key, is refused, naming the capability.
+        "a capability's Role names the namespace the agent's code holds it to, and no other": {
+            assert equal (role_namespace_problem "builds" "builds" "job-run") null
+            assert equal (role_namespace_problem null null "pod-read") null
+            for wrong in [[null "builds"] ["builds" null] ["core" "builds"]] {
+                let problem = (role_namespace_problem $wrong.0 $wrong.1 "job-run")
+                assert ($problem != null and ($problem | str contains "job-run")) $"($wrong): ($problem)"
+            }
         }
 
         # docs/architecture/build-orchestrator.md, 5b, 5c and revised 3: the build workload is a PodTemplate in the build namespace,

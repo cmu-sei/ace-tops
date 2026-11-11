@@ -55,7 +55,7 @@ use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
 use egress.nu
-use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces, added_namespaces]
+use attested.nu [attested_namespaces, attest_also_problems, server_also_problems, floor_entries_also, role_namespaces, role_namespace_problem, added_namespaces]
 use under-test.nu
 const CONFIG = ($INFRA | path join "config")
 
@@ -564,12 +564,19 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
         for p in ($cap.resources.pvcs? | default []) {
             $pvcs = ($pvcs | append { name: (subst $p.name $vars $name), storage_class: $cluster.storage.class, size: $cluster.storage.size })
         }
+        # Where the agent's code holds the capability's role: the namespace its scaffold names for it, by its key, or none
+        # (polar-agent-builder/src/capability.rs, role_namespaces_of). The catalog places the role there and nowhere else.
+        let held_to = ($scaffold.role_namespaces? | default {} | get -o $n)
         for r in ($cap.resources.cluster_roles? | default []) {
+            let problem = (role_namespace_problem null $held_to $n)
+            if $problem != null { error make { msg: $"($name): ($problem)" } }
             $cluster_roles = ($cluster_roles | append { name: (subst $r.name $vars $name), rules: (declared_rules $r $scaffold $n $name), from: $n })
         }
         # A Role in the namespace it names (a key of the cluster's namespaces), or in each namespace Polar attests: its own, and
         # those the target names besides.
         for r in ($cap.resources.namespaced_roles? | default []) {
+            let problem = (role_namespace_problem ($r.namespace? | default null) $held_to $n)
+            if $problem != null { error make { msg: $"($name): ($problem)" } }
             if ($r.namespace? | default null) != null { $role_keys = ($role_keys | append $r.namespace) }
             let rules = (declared_rules $r $scaffold $n $name)
             for namespace in (role_namespaces $r $cluster $n) {
