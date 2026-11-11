@@ -339,18 +339,19 @@ did not say. Neither it nor `auditable2cdx` is in the build or the CI image.
 
 **Built in build-inspect-ship S2, to be seen on the host:** Phase 2 builds
 each binary an image ships with Nix and links it to its package's SBOM
-(`BinaryLinked`). How each derivation's outputs came to be in the store is
-observed of the store itself, never planned: `polar.nix/realised` is
-`present` when every output was valid before the build
+(`BinaryLinked`). How a binary came to be in the store is observed of the
+store itself, never planned, and of its derivation's `out` alone, the
+output that holds it, whatever became of the others (its cargo log):
+`polar.nix/realised` is `present` when `out` was valid before the build
 (`nix-store --check-validity --print-invalid`), and otherwise what
-`nix path-info --json --json-format 1` records after it of the outputs
-that were not (bare `--json`, deprecated from Nix 2.34, only for a Nix
-that has no `--json-format`, as the CI image's 2.18.2 has not):
-`built` when the store records them as built on this machine (`ultimate`),
-`fetched` when as not built here and signed, `unknown` when anything else.
-`polar.nix/built-at` is the latest time the store registered one of them,
-reported only when they were built and the store gives one; a dry run's
-plan is not read. Phase 2 then compares the SBOM with the binary's cargo
+`nix path-info --json --json-format 1` records of it after (bare `--json`,
+deprecated from Nix 2.34, only for a Nix that has no `--json-format`, as
+the CI image's 2.18.2 has not): `built` when the store records it as built
+on this machine (`ultimate`), `fetched` when as not built here and signed,
+`unknown` when anything else. `polar.nix/built-at` is the time the store
+registered `out`, reported only when it was built and the store gives one;
+a dry run's plan is not read, and nothing is said of a derivation as a
+whole. Phase 2 then compares the SBOM with the binary's cargo
 log and reports, as facts (`fact_reported`), the SBOM packages with no unit
 compiled for the binary's target: the units cargo compiled whose files
 lie under the directory of its executable (`target/<triple>/release`, crane
@@ -394,7 +395,9 @@ whiteout marker never does). A missing binary is reported and stops
 nothing. Then that archive is pushed as it is (`skopeo copy
 --preserve-digests`). The image is delivered only if the registry's digest
 is non-empty and the inspected one; otherwise it is not recorded, not
-signed, and fails. Signing is cosign by the digest with `COSIGN_KEY`: with
+signed, and fails. Signing is cosign by the digest in the repository pushed
+to (`<registry>/<repository>@<digest>`, a registry's port kept), with
+`COSIGN_KEY`: with
 no key it is skipped, as now (no key is provisioned, `remaining-work.md`);
 with a key, a signature cosign does not make fails the image. Any image
 failed (not built, its archive not the image it names, not delivered as

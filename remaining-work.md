@@ -994,7 +994,9 @@ only.
   on a cache path, not yet as a fact. `path-info` is asked for `--json-format 1`, and with bare `--json` only when Nix refuses
   the flag (2.34 warns that bare `--json` is deprecated and will become an error; the CI image's 2.18.2 has no
   `--json-format`). OPEN: whether format 1 itself is to go is not known here (nothing found published); `nix path-info
-  --help` on the host's 2.34 may say. M1,
+  --help` on the host's 2.34 may say. Test's re-check (2026-11-11, on `blitz/integration`): N1, `realised` and `built-at` are
+  of the derivation's `out` alone, never of its cargo log beside it (`tests/ship.nu` runs phase 2 and asserts the Binary's
+  facts); N2, the signing reference keeps a registry's port (`127.0.0.1:5055/polar/cassini@<digest>`, not `127.0.0.1@…`). M1,
   `polar.image/executables` is renamed `polar.image/executable-entries`, the layers' entries, replaced and deleted files
   included; M2, the gap is worded as SBOM packages with no unit compiled for the binary's target, never as not in the binary;
   M3, above. **Decided, no SBOM of a binary** (build-inspect-ship S2, 2026-11-11,
