@@ -108,7 +108,8 @@ Each step is taken in bites, each reported before the next.
   cannot read; skipping one silently could skip a revocation, so stopping is right, but the stop says only a serde error. To decide: say
   plainly which version wrote the log and which this is, refuse to start with that (not a crash loop), and record what a rollback needs
   (a downgrade after a breaking event is a migration, `breaking-changes-need-migrations`). Put right on u7c by the branch merging main and
-  redeploying (the maintainer, 2026-11-10).
+  redeploying (the maintainer, 2026-11-10). *Researched 2026-11-10* (`docs/architecture/ledger-evolution.md`: how event-sourced
+  systems evolve their events, and what it means for this ledger); the plan from it is proposed there, not yet cleared.
 
 ## Runtime attestation
 
