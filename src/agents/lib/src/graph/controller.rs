@@ -75,6 +75,10 @@ pub mod rel {
     pub const ANALYZED_AS: &str = "ANALYZED_AS";
     pub const BUILT_FROM: &str = "BUILT_FROM";
     pub const ATTESTS: &str = "ATTESTS";
+    /// An SBOM asserts a dependency tree: what that SBOM said its root depends on, apart from every other SBOM's word.
+    pub const ASSERTS: &str = "ASSERTS";
+    /// A dependency tree includes a package, with whether its root depends on the package directly.
+    pub const INCLUDES: &str = "INCLUDES";
     /// An OCIArtifact (registry manifest) refers to a ContainerImage
     /// (content identity). Multiple OCIArtifacts can refer to the same
     /// ContainerImage when pushed to different registries.

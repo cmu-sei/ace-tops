@@ -69,6 +69,10 @@ impl PolarAgent for BuildProcessor {
         GraphDecl::owns("Binary", "each binary, by content hash"),
         GraphDecl::owns("Sbom", "each SBOM, by the artifact it describes"),
         GraphDecl::owns("Package", "each package, by purl"),
+        GraphDecl::owns(
+            "DependencyTree",
+            "each dependency tree an SBOM asserts, by the digest of its content",
+        ),
         GraphDecl::owns("OCIArtifact", "each image manifest, by digest"),
         GraphDecl::owns(
             "OCILayer",

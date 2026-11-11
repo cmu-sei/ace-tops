@@ -278,6 +278,12 @@ pub enum ArtifactNodeKey {
         purl: String,
     },
 
+    /// The dependency tree an SBOM asserts, keyed by the digest of its content: the root, the packages, the pairs
+    /// between them and what the SBOM left out. An unchanged tree is one node, whichever builds assert it.
+    DependencyTree {
+        digest: String, // sha256:...
+    },
+
     /// A build artifact that was produced by a pipeline stage.
     /// Keyed on content hash. This is the provenance node — it
     /// links pipeline executions to their outputs.
@@ -339,6 +345,9 @@ impl GraphNodeKey for ArtifactNodeKey {
                 vec![("artifact_content_hash", s(artifact_content_hash))],
             ),
             Self::Package { purl } => NodeIdentity::fixed(&["Package"], vec![("purl", s(purl))]),
+            Self::DependencyTree { digest } => {
+                NodeIdentity::fixed(&["DependencyTree"], vec![("digest", s(digest))])
+            }
             Self::BuildArtifact { content_hash } => {
                 NodeIdentity::fixed(&["BuildArtifact"], vec![("content_hash", s(content_hash))])
             }
@@ -380,6 +389,7 @@ impl NodeKeyVocabulary for ArtifactNodeKey {
                 artifact_content_hash: s(),
             },
             Self::Package { purl: s() },
+            Self::DependencyTree { digest: s() },
             Self::BuildArtifact { content_hash: s() },
             Self::ContainerImage { config_digest: s() },
             Self::SecurityAdvisory { identifier: s() },
@@ -399,6 +409,7 @@ impl NodeKeyVocabulary for ArtifactNodeKey {
                 | Self::Binary { .. }
                 | Self::Sbom { .. }
                 | Self::Package { .. }
+                | Self::DependencyTree { .. }
                 | Self::BuildArtifact { .. }
                 | Self::ContainerImage { .. }
                 | Self::SecurityAdvisory { .. }
