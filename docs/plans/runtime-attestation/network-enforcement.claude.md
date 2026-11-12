@@ -27,7 +27,8 @@ PAIR: `network-enforcement.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../runtime-attestation.claude.md` (C4-net). Old names: C4 Canal, N1 policy, N2 canary, N3 engine
 (build-orchestrator.md:963-992). AS-OF main 355a8a22 + nix-usernetes 10f3bcd (2026-11-02). Re-verify lines.
-STATUS: planned; nothing built; Q-flannel DECIDED 2026-11-12 (Calico policy-only first). u7c busy (branch proof).
+STATUS: planned; nothing built. Spike done 2026-11-12 on u7n: Calico can't run on whitey. Q-engine DECIDED 2026-11-12:
+Polar's own enforcer (maintainer picked it over patch-Felix, my recommendation, and kernel-with-IPv6).
 
 ## FOUND (people part 2, dated)
 - 2026-11-08 orchestrator review, verbatim: "No NetworkPolicy covers `polar-builds`, and u7c's network plugin enforces
@@ -78,22 +79,63 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
 - egress probe = reachability of the way out, not denial (egress.md:121-146).
 
 ## GAPS (build order)
-G0 done (Q-flannel). G1 spike in nix-usernetes (rootless; modules needed; nftables only; IPv4). G2 enforcement on u7c
-(nix-usernetes change; Polar pods unchanged). G3 N1 render (catalog → policy for polar-builds; hostAliases in orchestrator
-Jobs). G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result). G5 admission
-refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini under the engine. LATER: sensor
-egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
+G0 done (Q-flannel, spike, Q-engine). G1 enforcer: crate, DaemonSet catalog kind, rules vs upstream tests, on u7n first.
+G2 enforcer on u7c (no nix-usernetes change). G3 N1 render (catalog → policy for polar-builds; hostAliases in
+orchestrator Jobs). G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result).
+G5 admission refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini (enforcer no NAT).
+LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
 
-## Q-flannel — DECIDED (maintainer, 2026-11-12): "Calico alone first"
-spike = Calico policy-only (Felix over u7c's existing ptp + static routes; no Flannel, no vxlan). Canal = fallback.
-Canal-vs-Landlock untouched (11-11). Spike must run on whitey's kernel (u7c's host; 7.3, no IPv6) — the `inet` question
-is kernel-specific; a throwaway nix-usernetes cluster there, not u7c, avoids the shared cluster.
+## Q-flannel — DECIDED 2026-11-12 "Calico alone first" → spike run, superseded by Q-engine
+
+## SPIKE (2026-11-12, throwaway cluster u7n on whitey; topology + manifests in session scratchpad, not in any repo)
+- u7n = cluster.sh with TOPOLOGY=<scratch>/u7n.dhall: name u7n, apiserverPort 7444, cp + workers a, b (no taints).
+  Own hub/bridge/netns (all per-cluster: hub netns holds br0 10.77.0.0/24; netns dir $XDG_RUNTIME_DIR/nix-usernetes/u7n).
+  Nodes have NO spec.podCIDR (controller-manager allocates none) → host-local usePodCidr impossible.
+- Calico v3.33.0 calico.yaml, policy-only edits: calico_backend none; CLUSTER_TYPE k8s; IPIP Never; NO_DEFAULT_POOLS;
+  FELIX_NFTABLESMODE=Enabled; bird probes dropped; portmap backend nftables; per-node IPPools (crd v1) 10.244.{1,2}.0/24
+  nodeSelector hostname, blockSize 26 (matches cluster.sh static routes).
+- rootless results: install-cni OK (writes /opt/cni/bin, 10-calico.conflist sorts before 10-u7s.conflist → wins).
+  ebpf-bootstrap init FAILS ("/sys/fs is mounted on /sys but it is not a shared mount") → removed (eBPF only).
+  /sys/kernel/security mount FAILS (mkdir permission denied) → removed; bpffs mount removed.
+- Felix: creates v4 table OK, then PANIC felix/nftables/table.go:515 "Failed to create knftables client ... Operation
+  not supported": int_dataplane.go:1002 `nftables.NewTable("calico", 6, ..., nftablesEnabled)` — v6 root table
+  REQUIRED whenever nftables mode is on, regardless of IPv6Enabled (same in v3.31.0:836, v3.32.0:857). Patch would be:
+  required=nftablesEnabled&&IPv6Enabled + guard filterTableV6 uses (:1006, :1158, :1611).
+- node probe (`nft -c`): ip ✓, arp ✓, ip6 ✗, inet ✗ (EOPNOTSUPP).
+- kube-network-policies v1.1.3: pkg/dataplane/controller.go:568 TableFamilyINet (+ nfqueue) ✗. kube-router: iptables
+  + ipset ✗ (xt_* missing). Cilium: eBPF ✗ rootless.
+- u7n left UP for enforcer dev (kubeconfig in scratchpad/spike/kubeconfig). Tear down: TOPOLOGY=<u7n.dhall>
+  ./cluster.sh reset (nix develop, in nix-usernetes). Told polar-cc it exists.
+
+## Q-engine — DECIDED (maintainer, 2026-11-12): "Polar's own enforcer"
+options were: patch Felix (recommended), kernel with IPv6, own enforcer. Chosen: own enforcer.
+stance (maintainer, same day): IPv6 has been half-adopted for two decades and may never be; no IPv6 dependency is a
+design stance for Polar, not a workaround for whitey's kernel.
+also attack surface: many serious upstream kernel vulns in recent years centre on poorly tested IPv6 code (maintainer).
+
+## ENFORCER (my design, FOR REVIEW — decided by standing rules, not asked)
+- agent crate (name TBD, likely attestation/enforcer or kubernetes/…); DaemonSet = new catalog kind (sensor needs it too).
+- input: k8s API read-only watch NetworkPolicy+Pod+Namespace (rule: k8s is trust base; build pods aren't Polar agents,
+  so Polar's own records can't name them). Policies come from the signed deployment via Flux anyway.
+- semantics: full networking.k8s.io/v1 NetworkPolicy, IPv4: policyTypes, pod/ns selectors (matchLabels+Expressions),
+  ipBlock+except, ports (numeric, named → per-pod containerPort, endPort), default allow for unselected pods.
+  Check vs upstream e2e netpol suite (test/e2e/network/netpol) + proptests (decision follows rule for every input).
+- dataplane: one `table ip polar-netpol` in node netns; hooks forward (+input/output for node-local?) at priority after
+  kube-proxy DNAT (filter); ct state established,related accept; sets/vmaps per pod IP. No NAT, so C5 holds.
+- runs hostNetwork, cap NET_ADMIN only, in signed record (hardening schema must allow a declared cap — builder computes
+  facts from the build: capability declared by build, not hand). Landlock/seccomp lock: netlink sockets needed.
+- library: pure-Rust netlink nftables (one static musl artifact; no nft binary, no libnftnl). Candidates: rustables
+  0.9.0 (pure Rust), nftnl 0.9.4 (libnftnl C), nftables 0.6.3 (shells out to nft -j: ✗). Pick in build; dep needs reason.
+- reports over Cassini (status, ruleset generation); fails loud not open.
+- not deployed where the CNI enforces (cluster fact in catalog/target).
+OPEN (for later, not blocking plan): enforcer's own pool/tolerations (every node incl. tainted pools); what the
+  attestation agent's verdict says about hostNetwork+NET_ADMIN for this one workload (from signed record).
 
 ## ALTERNATIVES
-Landlock ports (rejected 11-11) | no enforcement + refuse foreign builds (= fallback now) | kube-router policy-only |
-kube-network-policies (nftables) | full Canal from the start (= fallback). Calico policy-only = the plan's first try
-(Q-flannel), no longer listed as an alternative on the people side.
+Calico/Canal (spike: v6 table) | patch Felix (not chosen) | kernel w/ IPv6 (rejected: host change, gives up no-IPv6) |
+kube-network-policies (inet) | kube-router (xt) | Cilium (eBPF) | Landlock ports (rejected 11-11) |
+no enforcement + refuse foreign builds (= fallback now).
 
 ## NOT CHECKED
-whether Calico/Felix runs in a user namespace (spike); Felix nftables on a kernel without `inet` family (IPv6 absent) —
-risk: Felix nftables may need inet tables → MUST check in spike; Flannel nftables mode experimental; C5 under engine.
+pod→own-node traffic path under ptp (input hook vs forward) for the enforcer; hostNetwork pods (exempt by standard);
+NET_ADMIN in node userns enough for nft netlink (kube-proxy does it → expected yes); rustables maturity.

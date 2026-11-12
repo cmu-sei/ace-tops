@@ -60,24 +60,37 @@ The same enforcement then serves two later cases:
 - **Reading the cluster's own configuration** (`nix-usernetes`) confirms it. Each node's pods use the plain
   reference plugins (`ptp`, `host-local`, `tuning`, `portmap`), which have no policy function, and nothing else
   enforces one. u7c's nodes reach each other's pods over a bridge with static routes, with no overlay network.
+- **Trying Calico on the development host** showed that no existing engine can run there. Calico's node agent always
+  creates an IPv6 nftables table, even with IPv6 support turned off, and the host's kernel is built without IPv6, so it
+  has neither the `ip6` nor the `inet` table family. Canal runs the same agent. The other engines need the `inet` family
+  (`kube-network-policies`), iptables extensions the kernel lacks (kube-router), or eBPF programs, which a rootless
+  cluster cannot load (Cilium). The same try showed what does work rootless: an agent on the node's own network, with
+  the capability to change it, programs `ip`-family nftables tables, as kube-proxy already does.
 
 ## 3. The plan
 
-Four steps, each seen working before the next.
+Polar enforces NetworkPolicy itself, with a small **enforcer** of its own, on clusters that have no engine. Four steps,
+each seen working before the next.
 
-1. **A spike of the enforcement engine, rootless,** in `nix-usernetes`. The engine must work unprivileged, on
-   nftables, and without IPv6. The engine chosen is **Canal**: Flannel for the pod network and Calico for policy, on
-   Calico's nftables dataplane.
-
-   **The spike tries Calico for policy alone first.** u7c already routes pod traffic between its nodes, so Calico can
-   enforce policy over that routing, with no Flannel overlay and no `vxlan`
-   module. Full Canal is the fallback if that fails. The spike answers what nobody has published:
-   - whether it runs inside a user namespace at all;
-   - which kernel modules the host must provide;
-   - whether Calico's nftables dataplane needs nftables' `inet` table family. u7c's kernel has no IPv6, and so no
-     `inet` family, which is already why one of the cluster's own plugins cannot use its nftables mode. If Calico
-     needs it too, it cannot run on this kernel as it is.
-2. **Enforcement on u7c,** as a change to `nix-usernetes`, with Polar's pods still running as before.
+1. **The enforcer.** One on every node, built and run as a Polar agent.
+   - **What it reads.** NetworkPolicy, pods and namespaces, from the Kubernetes API, read-only.
+   - **What it enforces.** Standard NetworkPolicy, with its standard meaning: ingress and egress; selection by pod and
+     namespace labels; address blocks with exceptions; ports, named or numbered, and port ranges. It is checked against
+     the Kubernetes project's own network policy tests, so what a policy means is upstream's meaning, not Polar's
+     reading of it.
+   - **Where it acts.** Every pod's traffic passes through its node's network namespace: between pods on one node,
+     between nodes, and out of the cluster. The enforcer filters it there, in nftables, in the IPv4 (`ip`) table family
+     only, after Kubernetes has translated service addresses, so a policy speaks of the pods actually reached. Replies
+     to a permitted connection are let through.
+   - **What it needs.** No IPv6, no iptables, no eBPF, and no kernel module beyond nftables. It runs on the node's
+     network with one capability, the one to change it (`NET_ADMIN`). That is written in its signed record and held to
+     it, like every other Polar pod's hardening.
+   - **What it reports.** Over Cassini: what it enforces, and when that last changed. It fails loudly, not open, when
+     it cannot program its rules.
+   - **Where it does not run.** On a cluster whose network plugin enforces NetworkPolicy, the enforcer is not deployed,
+     and that cluster's engine enforces the same policies.
+2. **Enforcement on u7c.** The enforcer on every node, with Polar's pods still running as before. Nothing changes in
+   `nix-usernetes`.
 3. **The builds' policy,** rendered from the catalog for `polar-builds`:
    - no ingress;
    - egress only to the registry's pods, on its port;
@@ -89,27 +102,41 @@ Four steps, each seen working before the next.
    bound. Where enforcement is not proved, a build is refused with the reason, and the result is published.
 
 Polar writes only **standard NetworkPolicy**, so the policies and the canary carry to any cluster whose network plugin
-enforces them: Calico, Cilium, a cloud provider's, or k3s's. The engine on Polar's own clusters only has to make the
-canary pass.
+enforces them: Calico, Cilium, a cloud provider's, or k3s's. On Polar's own clusters the enforcer is the engine, and
+the canary checks it the same way it would check any other.
 
 Until the canary passes, the rule already in force holds: **no build names a repository Polar does not control.**
 
 ## 4. Alternatives considered
 
-1. **Landlock's port rules,** computed by the agent builder per agent, with no Kubernetes involved. Rejected: rules by
+1. **Calico, alone or as Canal.** Tried on the development host: its node agent requires an IPv6 table, which that
+   kernel cannot give it (part 2).
+2. **Calico with a small patch,** skipping the IPv6 table when IPv6 is off, offered upstream. It would meet every
+   condition, but Polar would carry its own build of Calico's node image until upstream took the fix, and would rely on
+   a large outside agent, privileged on every node, for a small job.
+3. **Building the host's kernel with IPv6.** Stock Calico would then run. Rejected: it changes the host, and gives up
+   the condition that enforcement needs no IPv6.
+4. **Other engines.** `kube-network-policies` needs the `inet` family, kube-router needs iptables extensions, and
+   Cilium needs to load eBPF programs. None runs on the development host.
+5. **Landlock's port rules,** computed by the agent builder per agent, with no Kubernetes involved. Rejected: rules by
    port cannot say where traffic goes, only which ports.
-2. **No enforcement, and refuse foreign builds.** That is today's position, and it stays the fallback wherever
+6. **No enforcement, and refuse foreign builds.** That is today's position, and it stays the fallback wherever
    enforcement is not proved. But it leaves the build orchestrator unable to do its job.
-3. **Another policy engine:** kube-router in policy-only mode, or `kube-network-policies` (the Kubernetes network
-   group's small engine, which uses nftables). Both are candidates, untried.
-4. **Full Canal from the start,** with Flannel's overlay. Kept as the fallback: u7c already routes pod traffic between
-   its nodes, so on u7c the overlay would only add a moving part and a kernel module.
 
 ## 5. Why this plan
 
-- **Calico is mature,** enforces standard NetworkPolicy, and its nftables dataplane fits a cluster that already runs
-  without iptables.
-- **Standard policy keeps Polar off any one engine,** so what is proved here carries to a customer's cluster.
+- **It needs no IPv6.** Polar does not depend on IPv6 anywhere. After two decades IPv6 is still only half adopted
+  across systems, network gear and software. A kernel built without it is a fair place for Polar to run, and a
+  smaller target: the kernel's IPv6 code has been the site of serious vulnerabilities, and code left out cannot be
+  attacked.
+- **It runs where nothing else does:** IPv4 nftables only, in a rootless cluster, with no change to the host.
+- **The privileged thing on every node is Polar's own.** The enforcer is hardened, locked, attested and reporting,
+  like every Polar agent. An outside engine would be the one privileged agent on each node that Polar could not hold to
+  its own checks.
+- **The job is small:** one table on one node, from a standard whose meaning is fixed and has upstream tests to check
+  against.
+- **Standard policy keeps Polar off any one engine,** so what is proved here carries to a customer's cluster, with or
+  without the enforcer.
 - **The canary makes enforcement a fact Polar checks,** not a property of the cluster it assumes. That is the same rule
   as everywhere else in runtime attestation: Polar's own checks are the guard.
 - **Running the canary in the orchestrator,** not once at install, means a cluster that stops enforcing is noticed
@@ -117,7 +144,9 @@ Until the canary passes, the rule already in force holds: **no build names a rep
 
 ## 6. How much of the need is met now
 
-None of it is enforced:
+None of it is enforced. What is settled is how: no existing engine runs on Polar's development host, so Polar
+enforces policy itself.
+
 
 - **The clusters enforce no NetworkPolicy.**
 - **Polar renders no policy for its own namespaces.** The one policy it does make is a deny-all for a throwaway
@@ -129,10 +158,12 @@ None of it is enforced:
 
 ## 7. What is left before this is met
 
-- **The spike, then enforcement on u7c.**
+- **The enforcer:** its crate; one pod on every node, which the catalog has no kind for yet (the node sensor will need
+  it too); its rules, checked against upstream's network policy tests.
+- **Enforcement on u7c.**
 - **The builds' policy, and the canary,** in the orchestrator and the render.
 - **Refusing a build where enforcement is not proved.**
-- **Checking that pod addresses reach Cassini unchanged** under the new engine. Binding sessions to a pod's address,
-  a later feature, depends on it.
+- **Checking that pod addresses reach Cassini unchanged** under the enforcer. Binding sessions to a pod's address, a
+  later feature, depends on it. The enforcer translates no address, so this is expected to hold.
 
 It is met when the canary passes on u7c and a build of foreign code reaches only the registry.
