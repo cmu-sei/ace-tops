@@ -41,9 +41,7 @@
 //! 4. When the infrastructure has ended the builder stops this supervisor and `run` exits non-zero,
 //!    so the workload is restarted with fresh certificates.
 
-use crate::deployment_copy::{DeploymentCopyActor, DeploymentCopyArgs};
 use crate::deployment_record::{DeploymentRecordActor, DeploymentRecordArgs};
-use crate::git_ops::{GitTls, Remote};
 use crate::reads::{READ_TIMEOUT, ReadsMain, ServerReads, replies_subscription};
 use crate::settings::ObserverSettings;
 use crate::sync_actor::{GitSyncActor, GitSyncArgs, SyncMessage};
@@ -186,13 +184,6 @@ impl Actor for SchedulerObserverSupervisor {
             READ_TIMEOUT,
         ));
 
-        // The deployment copy's push presents this certificate to Polar's git server, until up.nu makes the copy (O3).
-        let target_tls = GitTls {
-            ca_cert: settings.git_ca_cert.map(PathBuf::from),
-            client_cert: settings.git_client_cert.map(PathBuf::from),
-            client_key: settings.git_client_key.map(PathBuf::from),
-        };
-
         let mut sync = None;
         let watched_repo = settings.schedules_repo.clone();
         if let Some(repo) = &settings.schedules_repo {
@@ -233,32 +224,6 @@ impl Actor for SchedulerObserverSupervisor {
                     repo: repo.clone(),
                     reads: reads.clone(),
                     tcp_client: resources.tcp_client.as_actor_ref().clone(),
-                    configuration: resources.configuration.clone(),
-                },
-                myself.get_cell(),
-            )
-            .await?;
-        }
-
-        if let Some(copy) = &settings.deployment_copy {
-            info!("copying the deployment until the handoff to Polar's git server is done");
-            Actor::spawn_linked(
-                Some(format!("{SERVICE_NAME}.deployment_copy")),
-                DeploymentCopyActor,
-                DeploymentCopyArgs {
-                    source: Remote {
-                        url: copy.source_url.clone(),
-                        tls: GitTls {
-                            ca_cert: Some(PathBuf::from(&copy.source_ca)),
-                            client_cert: Some(PathBuf::from(&copy.source_cert)),
-                            client_key: Some(PathBuf::from(&copy.source_key)),
-                        },
-                    },
-                    target: Remote {
-                        url: copy.target_url.clone(),
-                        tls: target_tls,
-                    },
-                    work: PathBuf::from(&settings.local_path).with_extension("deployment-copy"),
                     configuration: resources.configuration.clone(),
                 },
                 myself.get_cell(),

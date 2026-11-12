@@ -7508,10 +7508,8 @@ dependencies = [
 name = "polar-scheduler-observer"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "cassini-client",
  "cassini-types",
- "git2",
  "notify",
  "polar",
  "polar-agent-builder",

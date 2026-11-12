@@ -440,7 +440,6 @@ mod tests {
     const DEPLOYMENT_ONLY: &[&str] = &[
         "cassini-server",
         "deployment-ca",
-        "deployment-copy",
         "git-server",
         "persistent-data",
         "pinned-ca",

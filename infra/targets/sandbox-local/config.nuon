@@ -34,8 +34,6 @@
   cluster: {
     issuance: { floor_enforced: true }
     registry_in_cluster: { node_port: 30500, local_port: 5001 }
-    # The bootstrap repository, which the configuration agent copies until the handoff to Polar's git server is done (docs/architecture/cluster-bootstrap.md).
-    deployment_source: "https://polar-deploy-git.polar-deploy.svc.cluster.local:9443/deploy-sandbox-local.git"
     # The dedicated node pools its cluster has (nix-usernetes' u7c: a node each, labelled and tainted polar.dev/pool=<pool>),
     # where each workload goes by its catalog entry's pool; the rest go to the open pool, services
     # (docs/architecture/placement.md).

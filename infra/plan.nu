@@ -56,7 +56,6 @@ export def plan_secrets [plan: list, target: list] {
     if "deploy-host" in $on {
         $secrets = ($secrets | append [
             (do $made "deploy-host" $NAMESPACE $"($SERVICE)-tls" "the deployment git server's certificate and key, from the deployment PKI on this machine")
-            (do $made "deploy-host" "polar" "deployment-reader" "the configuration agent's certificate and key for copying the deployment, from the deployment PKI")
         ])
     }
     if "flux" in $on {

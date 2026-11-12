@@ -48,7 +48,7 @@ use document.nu *
 
 const INFRA = (path self | path dirname)
 
-use cluster-inputs.nu [env_for, env_merged, handed_off_of, path_of, read_inputs, topology_of]
+use cluster-inputs.nu [env_for, env_merged, path_of, read_inputs, topology_of]
 use registry.nu [node_registry, push_registry]
 use cluster-registry.nu [pod_registry]
 use agent-pods.nu [collect_scaffolds, run_checks]
@@ -116,7 +116,7 @@ def load_cluster [target: string] {
     let layouts = ($cluster.placement? | default null)
     let unknown = (topology_problem $layouts $chosen)
     if $unknown != null { error make { msg: $"($target): ($unknown)" } }
-    $cluster | upsert placement (placement_in_force $layouts $chosen) | upsert handed_off (handed_off_of (read_inputs (path_of $INFRA $target)))
+    $cluster | upsert placement (placement_in_force $layouts $chosen)
 }
 
 # Every workload the catalog defines, whatever a target says.
@@ -145,7 +145,7 @@ def all_workloads [target: string] {
 def service_vars [services: record, cluster: record] {
     $services
     | transpose name s
-    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _namespace_names: $cluster.namespaces, _pod_registry: (pod_registry $cluster), _attested: (attested_namespaces $cluster | str join ","), _deployment_source: ($cluster.deployment_source? | default ""), _handed_off: ($cluster.handed_off? | default false) } {|it, acc|
+    | reduce --fold { _registry: $cluster.registry, _namespaces: ($cluster.namespaces | values | str join ","), _namespace_names: $cluster.namespaces, _pod_registry: (pod_registry $cluster), _attested: (attested_namespaces $cluster | str join ",") } {|it, acc|
         let ns = ($cluster.namespaces | get $it.s.namespace)
         let dns = $"($it.s.dns_name).($ns).svc.($cluster.domain)"
         let addr = $"($dns):($it.s.port)"
@@ -168,10 +168,10 @@ def subst [text: string, vars: record, who: string] {
     if ($named | str contains "{pod-registry}") and ($vars._pod_registry? | default null) == null {
         error make { msg: $"($who): '($text)' names the registry in the cluster, and the target keeps none" }
     }
-    let start = ($named | str replace --all "{pod-registry}" ($vars._pod_registry? | default "") | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{deployment-source}" ($vars._deployment_source? | default "") | str replace --all "{deployment-writers}" (deployment_writers ($vars._handed_off? | default false)) | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
+    let start = ($named | str replace --all "{pod-registry}" ($vars._pod_registry? | default "") | str replace --all "{workload}" $who | str replace --all "{polar-namespaces}" ($vars._namespaces? | default "") | str replace --all "{attested-namespaces}" ($vars._attested? | default "") | str replace --all "{registry}" ($vars._registry? | default "{registry}"))
     let out = (
         $vars
-        | reject -o _registry _namespaces _namespace_names _pod_registry _attested _deployment_source _handed_off
+        | reject -o _registry _namespaces _namespace_names _pod_registry _attested
         | transpose name v
         | reduce --fold $start {|it, acc|
             $acc
@@ -448,7 +448,7 @@ export def resolve [name: string, target: string = $DEFAULT_TARGET] {
     # without needing it to be healthy, for example. The agent says what it requires in its
     # scaffold and the entry says what else it is provided.
     let provided = (($entry.provides? | default []) ++ ($ov.provides? | default []))
-    let needs = (needs_in_force ($kind.needs ++ (requires_of $scaffold) ++ $provided | uniq) ($cluster.handed_off? | default false))
+    let needs = ($kind.needs ++ (requires_of $scaffold) ++ $provided | uniq)
 
     let custody = (custody_of $cluster $spec)
     if $template and (($needs | is-not-empty) or ($spec.custody? | default false)) {
@@ -1001,7 +1001,7 @@ def floor_record [w: record, target: string, kinds: record, caps: record, vars: 
     let s = $merged.spec
     let scaffold = (scaffold_of $w.name $w)
     let provided = (($merged.entry.provides? | default []) ++ ($merged.ov.provides? | default []))
-    let needs = (needs_in_force ($merged.kind.needs ++ (requires_of $scaffold) ++ $provided | uniq) ($vars._handed_off? | default false))
+    let needs = ($merged.kind.needs ++ (requires_of $scaffold) ++ $provided | uniq)
     let certs = ($needs | each {|n|
         ($caps | get -o $n | default {} | get -o identity.certs | default []) | each {|c|
             let san = (if ($c.san? | is-empty) { "" } else { subst $c.san $vars $w.name })

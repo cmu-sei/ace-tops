@@ -312,16 +312,6 @@ export def pools_without_nodes [declared: any, nodes: list]: nothing -> list<str
     $declared.pools | where {|p| not ($p in $carried) }
 }
 
-# A workload's needs in force: once a cluster is handed off to Polar's git server (docs/architecture/cluster-bootstrap.md), the deployment copy's capability goes, with its settings and its key.
-export def needs_in_force [needs: list, handed_off: bool]: nothing -> list {
-    if $handed_off { $needs | where {|n| $n != "deployment-copy" } } else { $needs }
-}
-
-# Who may write the deployment repository on Polar's git server, as the JSON its catalog entry takes: the configuration agent, to copy it in, until the handoff. After that a person publishes, as an administrator.
-export def deployment_writers [handed_off: bool]: nothing -> string {
-    if $handed_off { "[]" } else { '["polar-scheduler-observer.polar.serviceaccount.cluster.local"]' }
-}
-
 # Where a workload of `pool` goes, as the pod's template takes it: `{ key, pool }` when the target declares the pool
 # (`declared` is `placement_in_force`, `{ pools: [...] }`, or null), so the pod gets the pool's selector and the
 # toleration of its taint; null for the open pool's (`pool` null), on a target that declares no placement, or for a pool

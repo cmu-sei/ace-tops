@@ -95,7 +95,7 @@ impl PolarAgent for SchedulerObserver {
          publishes the change to the scheduler. It reads when it joins Cassini, when the git server \
          announces a change to that repository, and on an interval if one is set; the server answers \
          on this observer's own topic, judging by the identity the broker stamped whether it may \
-         read. It runs git only to copy the deployment to Polar's git server until the handoff.",
+         read. It runs no git and holds no key file.",
     );
 
     async fn start(configured: Configured) -> Result<(), StartError> {

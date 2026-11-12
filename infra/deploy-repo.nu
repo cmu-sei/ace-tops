@@ -64,8 +64,6 @@ export const NAMESPACE = "polar-deploy"
 export const SERVICE = "polar-deploy-git"
 export const WRITER = "pipeline"
 export const READER = "flux"
-# What the configuration agent reads the bootstrap repository as, once, to copy it to Polar's git server (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server").
-export const COPIER = "configuration-agent"
 
 # The name Flux is given, and the server's certificate carries: its Service, in the cluster's DNS domain.
 export def server_name [domain: string] { $"($SERVICE).($NAMESPACE).svc.($domain)" }
@@ -89,13 +87,12 @@ export def cert_plan [server: string] {
         { name: "server", dns: [$server "localhost"], usage: "serverAuth" }
         { name: $WRITER, dns: [$WRITER], usage: "clientAuth" }
         { name: $READER, dns: [$READER], usage: "clientAuth" }
-        { name: $COPIER, dns: [$COPIER], usage: "clientAuth" }
     ]
 }
 
 # `POLAR_GIT_SERVER_REPOS`: one repository, written by the pipeline and read by Flux and the pipeline.
 export def repos_json [target: string] {
-    { admins: [$WRITER], repos: [{ name: (repo_name $target), readers: [$READER $WRITER $COPIER], writers: [$WRITER] }] }
+    { admins: [$WRITER], repos: [{ name: (repo_name $target), readers: [$READER $WRITER], writers: [$WRITER] }] }
     | to json --raw
 }
 
@@ -305,13 +302,6 @@ def "main ensure" [
     let pki = (pki_dir $env.HOME $target)
     let made = (ensure_pki $pki $target $server)
     kubectl_apply [(deployment_ca_configmap (open --raw ($pki | path join "ca.pem")) ($cluster.namespaces | get polar))]
-    # What the configuration agent copies the deployment with. It holds a key in a Secret, as Flux's does, for as long as the bootstrap repository exists.
-    let polar = ($cluster.namespaces | get polar)
-    let reader = (run_ok "building the configuration agent's Secret" {
-        ^kubectl -n $polar create secret generic deployment-reader $"--from-file=ca.crt=($pki | path join 'ca.pem')" $"--from-file=tls.crt=($pki | path join $'($COPIER).pem')" $"--from-file=tls.key=($pki | path join $'($COPIER).key')" --dry-run=client -o yaml
-    })
-    let reader_applied = ($reader | do { ^kubectl apply -f - } | complete)
-    if $reader_applied.exit_code != 0 { error make --unspanned { msg: "applying the configuration agent's Secret failed" } }
     if ($made | is-empty) { print $"  ok: the deployment PKI is in ($pki)" } else { print $"  made in ($pki): ($made | str join ', ')" }
 
     # The image by the digest the registry serves, under the name the nodes pull it by.
@@ -536,7 +526,8 @@ def git_out [args: list<string>] {
     run_ok $"git ($args | first)" { ^git ...$args } | str trim
 }
 
-# Removes the bootstrap repository once Flux reads Polar's git server: the server, its forward, and the two Secrets that read it. Nothing here is the record: Polar's git server and the mirror off the cluster hold the history. Safe to run again.
+# Removes the bootstrap repository once Flux reads Polar's git server: the server, its forward, and the Secrets that read it (`deployment-reader`
+# is the configuration agent's, which copied the deployment until up.nu did, 2026-11-10: on a cluster that has one it goes too). Nothing here is the record: Polar's git server and the mirror off the cluster hold the history. Safe to run again.
 def "main retire" [target: string] {
     let polar = ((cluster_of $target).namespaces | get polar)
     let stopped = (stop $NAMESPACE $SERVICE)
@@ -681,6 +672,40 @@ def "main publish" [
     }
 }
 
+# Copies the deployment from the bootstrap repository to Polar's git server, pushing as `as`, an administrator, which it was
+# the configuration agent's to do until 2026-11-10: no agent runs git (docs/architecture/runtime-attestation.md, slice C,
+# C2, O3; docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server"). Only this machine publishes, so
+# the head it copies holds still. The server takes it only if every commit it brings is the pipeline's, and only as a
+# move forward: a copy that has gone another way is refused, and nothing is taken.
+def "main copy" [
+    target: string
+    --as: string = ""   # the administrator to push as: a person Polar's git server knows
+    --port: int = 9443  # this machine's end of the forward to the bootstrap repository
+] {
+    if ($as | is-empty) { error make --unspanned { msg: "copy pushes as an administrator: give --as <username>" } }
+    let pki = (pki_dir $env.HOME $target)
+    let source = $"https://localhost:($port)/(repo_name $target).git"
+    let source_tls = (tls_config $pki $WRITER)
+    let polar = $"https://($GIT_HOST):($GIT_PORT)/deployment.git"
+    let polar_tls = (git_config $as ($env.HOME | path join ".config" "polar-admin"))
+    let head = (head_at $source_tls $source)
+    if ($head | is-empty) { error make --unspanned { msg: $"nothing is published to deploy-($target)" } }
+    if (head_at $polar_tls $polar) == $head {
+        print $"  ok: Polar's git server holds ($head | str substring 0..11) already, as the bootstrap repository does"
+        return
+    }
+    let work = (mktemp -d)
+    let copied = (try {
+        run_ok "making a place to copy through" { ^git init -q --bare $work }
+        run_ok "reading the bootstrap repository" { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git -C $work ...$source_tls fetch -q $source refs/heads/main:refs/heads/main }
+        run_ok "pushing to Polar's git server" { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git -C $work ...$polar_tls push -q $polar refs/heads/main:refs/heads/main }
+        null
+    } catch {|e| $e.msg })
+    rm -rf $work
+    if $copied != null { error make --unspanned { msg: $copied } }
+    print $"  ok: copied ($head | str substring 0..11) to Polar's git server, as ($as)"
+}
+
 def main [] {
-    print "usage: nu infra/deploy-repo.nu ensure <target> [--port N] [--image REF] | publish <target> [--port N] [--allow-dirty]"
+    print "usage: nu infra/deploy-repo.nu ensure <target> [--port N] [--image REF] | publish <target> [--port N] [--allow-dirty] | copy <target> --as <user> [--port N]"
 }

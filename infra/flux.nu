@@ -238,7 +238,7 @@ def "main recorded-inputs" [target: string, --port: int = 9443] {
     print ($fact | to json --raw)
 }
 
-# Waits until the copy on Polar's git server holds what the bootstrap repository does. Only this machine publishes, so what it waits for holds still.
+# Waits until the copy on Polar's git server holds what the bootstrap repository does (up.nu has just pushed it, `deploy-repo.nu copy`). Only this machine publishes, so what it waits for holds still.
 def "main copied" [target: string, --port: int = 9443] {
     let pki = (pki_dir $env.HOME $target)
     let head = (published_commit $pki $target $port)
@@ -247,7 +247,7 @@ def "main copied" [target: string, --port: int = 9443] {
         let copy = (try { published_commit $pki $target $port true } catch {|e| $e.msg })
         { ok: ($copy == $head), final: false, detail: $"it answered ($copy | default 'with no commit')" }
     })
-    if not $caught_up.ok { error make --unspanned { msg: $"the copy on Polar's git server did not reach ($head | str substring 0..11) after ($caught_up.tries) tries: ($caught_up.detail). See the logs of the polar-scheduler-observer" } }
+    if not $caught_up.ok { error make --unspanned { msg: $"the copy on Polar's git server did not reach ($head | str substring 0..11) after ($caught_up.tries) tries: ($caught_up.detail). Copy it again: nu infra/deploy-repo.nu copy ($target) --as <administrator>" } }
     print $"  ok: Polar's git server holds ($head | str substring 0..11), as the bootstrap repository does"
 }
 

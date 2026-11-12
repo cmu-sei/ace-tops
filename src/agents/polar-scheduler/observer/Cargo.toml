@@ -34,7 +34,6 @@ path = "src/main.rs"
 
 [dependencies]
 polar-scudo.workspace = true
-anyhow.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
 notify.workspace = true
@@ -54,14 +53,9 @@ tracing.workspace = true
 walkdir = "2"
 
 [dev-dependencies]
-git2.workspace = true
 tempfile = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-
-[[test]]
-name = "git_ops_tests"
-path = "tests/git_ops_tests.rs"
 
 [[test]]
 name = "sync_actor_tests"

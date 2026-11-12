@@ -43,51 +43,9 @@ pub static SYNC_INTERVAL: Optional<u64> = Optional::number(
      announces, and the observer joining Cassini, start one",
 );
 
-pub static GIT_CA_CERT: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_GIT_CA_CERT",
-    "path to the CA certificate (PEM) Polar's git server's certificate is verified against, for the deployment \
-     copy's push until up.nu makes it (runtime-attestation.md, slice C, C2, O3); unset, git uses its usual trust",
-);
-
-pub static GIT_CLIENT_CERT: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_GIT_CLIENT_CERT",
-    "path to the certificate (PEM) the deployment copy's push presents to Polar's git server, which is how it \
-     knows who is pushing; set together with POLAR_SCHEDULER_GIT_CLIENT_KEY",
-);
-
-pub static GIT_CLIENT_KEY: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_GIT_CLIENT_KEY",
-    "path to the private key (PEM) for POLAR_SCHEDULER_GIT_CLIENT_CERT",
-);
-
 pub static DEPLOYMENT_REPO: Optional<String> = Optional::text(
     "POLAR_SCHEDULER_DEPLOYMENT_REPO",
     "the deployment repository on Polar's git server, read over Cassini, whose signed record is delivered to the attestation agent (docs/architecture/runtime-attestation.md); unset, none is",
-);
-
-pub static DEPLOYMENT_SOURCE_URL: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL",
-    "the bootstrap repository to copy the deployment from, until the handoff to Polar's git server is done (docs/architecture/cluster-bootstrap.md); unset, nothing is copied",
-);
-
-pub static DEPLOYMENT_SOURCE_CA: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CA",
-    "path to the deployment CA's certificate (PEM), which the bootstrap repository's server's certificate is verified against",
-);
-
-pub static DEPLOYMENT_SOURCE_CERT: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CERT",
-    "path to this agent's certificate of the deployment PKI (PEM), presented to the bootstrap repository's server",
-);
-
-pub static DEPLOYMENT_SOURCE_KEY: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_KEY",
-    "path to the private key (PEM) for POLAR_SCHEDULER_DEPLOYMENT_SOURCE_CERT",
-);
-
-pub static DEPLOYMENT_TARGET_URL: Optional<String> = Optional::text(
-    "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL",
-    "the deployment repository on Polar's git server, which the copy goes to with this agent's own certificate",
 );
 
 /// How often the deployment's record is looked for.
@@ -96,15 +54,6 @@ pub static DEPLOYMENT_RECORD_SECS: Defaulted<u64> = Defaulted::seconds(
     "how often, in seconds, the observer looks in the deployment repository for the signed record to deliver to the \
      attestation agent; at least 1",
     "30",
-)
-.dynamic();
-
-/// How often the deployment is copied to Polar's git server, until the handoff.
-pub static DEPLOYMENT_COPY_SECS: Defaulted<u64> = Defaulted::seconds(
-    "POLAR_SCHEDULER_DEPLOYMENT_COPY_SECS",
-    "how often, in seconds, the observer looks for what is new to copy to Polar's git server, until the handoff is \
-     done; at least 1",
-    "10",
 )
 .dynamic();
 
@@ -121,43 +70,16 @@ where
 
 static VARIABLES: &[&dyn Described] = &[
     &DEPLOYMENT_REPO,
-    &DEPLOYMENT_SOURCE_URL,
-    &DEPLOYMENT_SOURCE_CA,
-    &DEPLOYMENT_SOURCE_CERT,
-    &DEPLOYMENT_SOURCE_KEY,
-    &DEPLOYMENT_TARGET_URL,
     &DEPLOYMENT_RECORD_SECS,
-    &DEPLOYMENT_COPY_SECS,
     &LOCAL_PATH,
     &SCHEDULES_REPO,
     &SYNC_INTERVAL,
-    &GIT_CA_CERT,
-    &GIT_CLIENT_CERT,
-    &GIT_CLIENT_KEY,
 ];
 
 pub static SECTION: Section = Section {
     name: "polar-scheduler-observer",
     vars: VARIABLES,
-    relations: |env| {
-        // The copy needs all of it, or none: half of it set is a deployment that thinks it is handing off and is not.
-        let set = [
-            DEPLOYMENT_SOURCE_URL.name(),
-            DEPLOYMENT_SOURCE_CA.name(),
-            DEPLOYMENT_SOURCE_CERT.name(),
-            DEPLOYMENT_SOURCE_KEY.name(),
-            DEPLOYMENT_TARGET_URL.name(),
-        ];
-        let present = set.iter().filter(|name| env.var(name).is_some()).count();
-        if present != 0 && present != set.len() {
-            vec![format!(
-                "{} must be set together, or not at all",
-                set.join(", ")
-            )]
-        } else {
-            Vec::new()
-        }
-    },
+    relations: |_| Vec::new(),
 };
 
 pub struct ObserverSettings {
@@ -165,22 +87,8 @@ pub struct ObserverSettings {
     /// The repository on Polar's git server the checkout is kept as.
     pub schedules_repo: Option<String>,
     pub sync_interval_secs: Option<u64>,
-    pub git_ca_cert: Option<String>,
-    pub git_client_cert: Option<String>,
-    pub git_client_key: Option<String>,
     /// The deployment repository on Polar's git server, whose signed record is delivered.
     pub deployment_repo: Option<String>,
-    /// The bootstrap repository to copy from, with the target: set only until the handoff is done.
-    pub deployment_copy: Option<DeploymentCopy>,
-}
-
-/// Where the deployment is copied from and to.
-pub struct DeploymentCopy {
-    pub source_url: String,
-    pub source_ca: String,
-    pub source_cert: String,
-    pub source_key: String,
-    pub target_url: String,
 }
 
 impl ObserverSettings {
@@ -189,32 +97,7 @@ impl ObserverSettings {
             local_path: config.read(&LOCAL_PATH)?,
             schedules_repo: config.read(&SCHEDULES_REPO)?,
             sync_interval_secs: config.read(&SYNC_INTERVAL)?,
-            git_ca_cert: config.read(&GIT_CA_CERT)?,
-            git_client_cert: config.read(&GIT_CLIENT_CERT)?,
-            git_client_key: config.read(&GIT_CLIENT_KEY)?,
             deployment_repo: config.read(&DEPLOYMENT_REPO)?,
-            deployment_copy: match (
-                config.read(&DEPLOYMENT_SOURCE_URL)?,
-                config.read(&DEPLOYMENT_SOURCE_CA)?,
-                config.read(&DEPLOYMENT_SOURCE_CERT)?,
-                config.read(&DEPLOYMENT_SOURCE_KEY)?,
-                config.read(&DEPLOYMENT_TARGET_URL)?,
-            ) {
-                (
-                    Some(source_url),
-                    Some(source_ca),
-                    Some(source_cert),
-                    Some(source_key),
-                    Some(target_url),
-                ) => Some(DeploymentCopy {
-                    source_url,
-                    source_ca,
-                    source_cert,
-                    source_key,
-                    target_url,
-                }),
-                _ => None,
-            },
         })
     }
 }
@@ -223,18 +106,6 @@ impl ObserverSettings {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_deployment_copy_is_all_of_its_settings_or_none() {
-        let all = |name: &str| {
-            name.starts_with("POLAR_SCHEDULER_DEPLOYMENT_")
-                .then(|| "x".to_string())
-        };
-        assert!((SECTION.relations)(&all).is_empty());
-        assert!((SECTION.relations)(&|_: &str| None).is_empty());
-        let some =
-            |name: &str| (name == "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL").then(|| "x".to_string());
-        assert_eq!((SECTION.relations)(&some).len(), 1);
-    }
     use std::collections::HashMap;
 
     fn config(pairs: &[(&str, &str)]) -> Config {
@@ -257,7 +128,6 @@ mod tests {
         assert_eq!(settings.schedules_repo, None);
         assert_eq!(settings.deployment_repo, None);
         assert_eq!(settings.sync_interval_secs, None);
-        assert_eq!(settings.git_client_cert, None);
         assert!(config(&[]).check().is_empty());
     }
 
@@ -268,14 +138,10 @@ mod tests {
             ("POLAR_SCHEDULER_SCHEDULES_REPO", "polar-schedules"),
             ("POLAR_SCHEDULER_DEPLOYMENT_REPO", "deployment"),
             ("POLAR_SCHEDULER_SYNC_INTERVAL", "60"),
-            ("POLAR_SCHEDULER_GIT_CA_CERT", "/c/ca.pem"),
-            ("POLAR_SCHEDULER_GIT_CLIENT_CERT", "/c/cert.pem"),
-            ("POLAR_SCHEDULER_GIT_CLIENT_KEY", "/c/key.pem"),
         ]))
         .unwrap();
         assert_eq!(settings.local_path, "/data/schedules");
         assert_eq!(settings.sync_interval_secs, Some(60));
-        assert_eq!(settings.git_client_key.as_deref(), Some("/c/key.pem"));
         assert_eq!(settings.schedules_repo.as_deref(), Some("polar-schedules"));
         assert_eq!(settings.deployment_repo.as_deref(), Some("deployment"));
     }

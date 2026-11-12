@@ -51,9 +51,11 @@ def main [] {
                 let c = (config ["cert-issuer" "neo4j"] ["namespaces.yaml" "credentials-agent.yaml" "polar-git-server.yaml" "polar-scheduler-observer.yaml"] | insert gitops true)
                 let secrets = (plan_secrets (build_plan $c false) $target)
                 let named = ($secrets | each {|s| $"($s.namespace)/($s.name)" })
-                for expected in ["polar/cert-issuer-ca" "polar/polar-graph-pw" "polar/cassini-shutdown-token" "polar-deploy/polar-deploy-git-tls" "polar/deployment-reader" "flux-system/deploy-repo-auth"] {
+                for expected in ["polar/cert-issuer-ca" "polar/polar-graph-pw" "polar/cassini-shutdown-token" "polar-deploy/polar-deploy-git-tls" "flux-system/deploy-repo-auth"] {
                     assert ($expected in $named) $"($expected) in ($named)"
                 }
+                # No agent copies the deployment, so none is given a key of the deployment PKI (runtime-attestation.md, C2, O3).
+                assert (not ("polar/deployment-reader" in $named)) ($named | to nuon)
                 # Handed off, Flux reads Polar's git server with another Secret, and there is no deployment git server.
                 let handed = ($c | insert handed_off true)
                 let named_after = (plan_secrets (build_plan $c false { handed_off: true }) $target | each {|s| $"($s.namespace)/($s.name)" })

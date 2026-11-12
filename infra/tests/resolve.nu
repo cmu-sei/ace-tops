@@ -358,11 +358,18 @@ def main [] {
         "cert-issuer has no daemon, and a workload that says custody false keeps its key files": {
             let ci = (resolve "cert-issuer")
             assert equal ($ci.custody? | default null) null
-            # The scheduler observer clones with the git command, which reads its key from a file.
+            # The scheduler observer was the catalog's one workload on key files, for its git; it runs none since slice C's C2
+            # (runtime-attestation.md, O2 and O3), so it has the daemon as every agent does.
             let s = (resolve "polar-scheduler-observer")
-            assert equal $s.custody null
-            assert ($s.certs | all {|c| $c | str contains ":ecdsa-p256:" })
-            assert equal (env_value $s "TLS_CLIENT_KEY") "/etc/tls/certs/key.pem"
+            assert ($s.custody != null) "the observer's key is the custody daemon's"
+            assert equal (env_value $s "TLS_CLIENT_KEY") null
+            # What custody false still means, for a workload a target puts on key files.
+            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon") | upsert workloads.polar-scheduler-observer.custody false) {|t|
+                let k = (resolve_for $t "polar-scheduler-observer")
+                assert equal $k.custody null
+                assert ($k.certs | all {|c| $c | str contains ":ecdsa-p256:" })
+                assert equal (env_value $k "TLS_CLIENT_KEY" $t) "/etc/tls/certs/key.pem"
+            }
         }
 
         # up.nu prepares the images `resolve.nu images` lists, and refuses a render naming one it did not.
@@ -830,35 +837,25 @@ def main [] {
 
         # docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": the deployment is a repository of Polar's git server, whose commits the pipeline must have
         # signed, that Flux may read and nothing may write yet. The server is given the deployment CA to check them with.
-        "the configuration agent is given what it copies the deployment with, and only it": {
-            # A throwaway copy of the target, so this machine's own cluster-inputs.nuon, whichever way it is, is not read.
-            with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
-                let r = (resolve_for $t "polar-scheduler-observer")
-                assert (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" $t | str contains "polar-deploy-git.polar-deploy.svc") "the bootstrap repository"
-                assert (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" $t | str ends-with "/deployment.git")
-                assert equal (env_value $r "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_KEY" $t) "/etc/polar-deployment-reader/tls.key"
-                let volume = ($r.volumes | where name == "deployment-reader" | first)
-                assert equal $volume.secret "deployment-reader"
-                assert ($r.mounts | where name == "deployment-reader" | first | get read_only)
-                for n in (^nu $RESOLVER names --target $t | from json | where {|n| $n != "polar-scheduler-observer" }) {
-                    assert ((resolve_for $t $n).volumes | where name == "deployment-reader" | is-empty) $n
+        # runtime-attestation.md, slice C, C2, O3: up.nu copies the deployment to Polar's git server as an administrator, so no workload holds a key of
+        # the deployment PKI, none writes the deployment, and the scheduler observer only reads it (over Cassini), before the hand-off as after.
+        "no workload copies the deployment: none holds a key of the deployment PKI, none writes it, the observer reads it": {
+            for handed_off in [false true] {
+                with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
+                    target_file $t "cluster-inputs.nuon" ({ cluster: null, handed_off: $handed_off, workloads: {} } | to nuon)
+                    let observer = (resolve_for $t "polar-scheduler-observer")
+                    for gone in ["POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" "POLAR_SCHEDULER_GIT_CLIENT_KEY"] {
+                        assert equal (env_value $observer $gone $t) null $"($gone), handed off ($handed_off)"
+                    }
+                    assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_REPO" $t) "deployment" "it still delivers the signed record"
+                    for n in (^nu $RESOLVER names --target $t | from json) {
+                        assert ((resolve_for $t $n).volumes | where name == "deployment-reader" | is-empty) $n
+                    }
+                    let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)
+                    let deployment = ($repos | where name == "deployment" | first)
+                    assert equal $deployment.writers [] $"handed off ($handed_off)"
+                    assert ("polar-scheduler-observer.polar.serviceaccount.cluster.local" in $deployment.readers) "it still reads"
                 }
-            }
-        }
-
-        "once handed off, the configuration agent has no copy settings, no key of the deployment PKI and no write to the deployment": {
-            let handed = (open ($INFRA | path join "targets/sandbox-local/config.nuon"))
-            with_target $handed {|t|
-                target_file $t "cluster-inputs.nuon" ({ cluster: null, handed_off: true, workloads: {} } | to nuon)
-                let observer = (resolve_for $t "polar-scheduler-observer")
-                assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" $t) null
-                assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_REPO" $t) "deployment" "it still delivers the signed record"
-                assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" $t) null
-                assert ($observer.volumes | where name == "deployment-reader" | is-empty)
-                let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)
-                let deployment = ($repos | where name == "deployment" | first)
-                assert equal $deployment.writers []
-                assert ("polar-scheduler-observer.polar.serviceaccount.cluster.local" in $deployment.readers) "it still reads"
             }
         }
 
@@ -870,8 +867,8 @@ def main [] {
                 let deployment = ($repos | where name == "deployment" | first)
                 assert equal $deployment.signed_by { ca: "/etc/polar-deploy-ca/ca.pem", signer: "pipeline" }
                 assert ("deployment:flux" in $deployment.readers)
-                # The configuration agent writes until the handoff is done, which is safe since the server takes only what the pipeline signed.
-                assert equal $deployment.writers ["polar-scheduler-observer.polar.serviceaccount.cluster.local"]
+                # No workload writes it: this machine copies it in and publishes to it as an administrator (runtime-attestation.md, C2, O3).
+                assert equal $deployment.writers []
                 assert equal (env_value $r "POLAR_GIT_SERVER_DEPLOYMENT_CA" $t) "/etc/polar-deploy-ca/ca.pem"
                 let volume = ($r.volumes | where name == "polar-deploy-ca" | first)
                 assert equal $volume.config_map "polar-deploy-ca"

@@ -654,9 +654,10 @@ def step_publish [target: string, allow_dirty: bool, polar_as: string = ""] {
 def step_flux [target: string, handed_off: bool = false] { run_script ([infra/flux.nu install $target] ++ (if $handed_off { ["--handed-off"] } else { [] })) }
 def step_flux_wait [target: string, handed_off: bool = false] { run_script ([infra/flux.nu wait $target] ++ (if $handed_off { ["--handed-off"] } else { [] })) }
 
-# This cluster's handoff to Polar's git server, in the order a crash can stop at any point of (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server"). Flux moves while both repositories hold the same commit, so where it reads says what state the cluster is in; the commit that takes away the agent's write is then an ordinary publish, and the next run makes it if this one does not. What is left of the bootstrap goes last, on any run.
+# This cluster's handoff to Polar's git server, in the order a crash can stop at any point of (docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server"). This machine copies the deployment to Polar's git server first, as an administrator (no agent runs git, 2026-11-10). Flux moves while both repositories hold the same commit, so where it reads says what state the cluster is in; the render that records the hand-off is then an ordinary publish, and the next run makes it if this one does not. What is left of the bootstrap goes last, on any run.
 def step_handoff [target: string, username: string, allow_dirty: bool] {
     if not (cluster_handed_off) {
+        copy_deployment $target $username --required
         run_script [infra/flux.nu copied $target]
         run_script [infra/flux.nu switch $target]
         record_handed_off $target true
@@ -681,6 +682,23 @@ def restore_inputs_from_record [target: string, forwards: list] {
     if $restored == null { fail $"this machine has no inputs for this cluster, and the record on its git server is another cluster's: nu infra/up.nu ($target) --bootstrap-again" }
     $restored | to nuon --indent 2 | save --force $path
     note $"took this cluster's inputs from its signed record: ($path | path relative-to $env.PWD)"
+}
+
+# The deployment's copy on Polar's git server, pushed by this machine as `username`, an administrator (`deploy-repo.nu copy`), since no agent
+# runs git (docs/architecture/runtime-attestation.md, slice C, C2, O3). Required at the hand-off. Before it, on every run that seeds, so the
+# record the attestation agent reads from Polar's git server keeps up with what Flux applies from the bootstrap repository, a run with
+# --bootstrap-again among them; one that cannot be made then is said, and the next hand-off makes it.
+def copy_deployment [target: string, username: string, --required] {
+    if $required {
+        run_script [infra/deploy-repo.nu copy $target --as $username]
+        return
+    }
+    let r = (do { ^$nu.current-exe infra/deploy-repo.nu copy $target --as $username } | complete)
+    if $r.exit_code == 0 {
+        print ($r.stdout | str trim)
+    } else {
+        note $"the deployment was not copied to Polar's git server now \(the next hand-off copies it\): ($r.stderr | str trim | lines | last 1 | str join)"
+    }
 }
 
 # Writes down where Flux reads, which is what the render takes it from.
@@ -1020,6 +1038,8 @@ def step_seed [target: string, config: record, username: string, mail: string, a
         }
         fail $"cannot clone polar-schedules after ($cloned.tries) tries: ($cloned.detail)"
     }
+    # Polar's git server answers: before the hand-off, the deployment is copied to it now.
+    if ($config.gitops? | default false) and not $handed_off { copy_deployment $target $username }
 
     let existing = (^git -C $repo ls-files | lines)
     let todo = (seed missing (seed documents) $existing)

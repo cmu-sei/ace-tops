@@ -46,22 +46,13 @@
     # The crate is not named for the image.
     scaffold_package: "polar-scheduler-observer"
     config: "document"
-    provides: ["working-checkout", "deployment-copy"]
-    # The deployment copy pushes with the git command until up.nu makes the copy (docs/architecture/
-    # runtime-attestation.md, slice C, C2, O3), and its libcurl reads the client key from a file
-    # (POLAR_SCHEDULER_GIT_CLIENT_KEY, below), so its keys stay files until then
-    # (docs/architecture/key-custody.md, "Degraded operation", item 4).
-    custody: false
+    provides: ["working-checkout"]
     env: [
       # The schedules repository on the Polar git server, read over Cassini (O2): the server judges the
       # identity the broker stamped against its access list, which names this workload (git-server.nuon).
       # Until the server answers, the observer asks again and holds its replays.
       { name: "POLAR_SCHEDULER_SCHEDULES_REPO", value: "polar-schedules" }
       { name: "POLAR_SCHEDULER_LOCAL_PATH", value: "/var/lib/{workload}/polar-schedules" }
-      # What the deployment copy's push presents to Polar's git server, until up.nu makes the copy (O3).
-      { name: "POLAR_SCHEDULER_GIT_CA_CERT", value: "/etc/tls/certs/ca.pem" }
-      { name: "POLAR_SCHEDULER_GIT_CLIENT_CERT", value: "/etc/tls/certs/cert.pem" }
-      { name: "POLAR_SCHEDULER_GIT_CLIENT_KEY", value: "/etc/tls/certs/key.pem" }
       # The git server announces every accepted push, so this is only a safety net for a missed
       # announcement.
       { name: "POLAR_SCHEDULER_SYNC_INTERVAL", value: "300" }

@@ -205,12 +205,12 @@ def main [] {
             }
         }
         {
-            name: "the configuration agent has a certificate of the deployment PKI, and may read the bootstrap repository and not write it"
+            name: "no agent has a certificate of the deployment PKI: the pipeline writes the bootstrap repository, and it and Flux read it"
             body: {
-                assert ("configuration-agent" in (cert_plan "s" | get name))
+                assert equal (cert_plan "s" | get name | sort) ["flux" "pipeline" "server"]
                 let repo = (repos_json "t" | from json | get repos | first)
-                assert ("configuration-agent" in $repo.readers)
-                assert (not ("configuration-agent" in $repo.writers))
+                assert equal ($repo.readers | sort) ["flux" "pipeline"]
+                assert equal $repo.writers ["pipeline"]
             }
         }
         {
@@ -349,7 +349,7 @@ spec:
                 let curve = {|pem| ^openssl x509 -in $pem -noout -pubkey | ^openssl pkey -pubin -noout -text | lines | where {|l| $l | str contains "ASN1 OID" } | first | str trim }
                 let pki = ($dir | path join "new")
                 ensure_pki $pki "t" "server.example" | ignore
-                for name in ["ca" "server" "pipeline" "flux" "configuration-agent"] {
+                for name in ["ca" "server" "pipeline" "flux"] {
                     assert equal (do $curve ($pki | path join $"($name).pem")) "ASN1 OID: prime256v1" $name
                 }
                 ensure_pki $pki "t" "server.example" | ignore

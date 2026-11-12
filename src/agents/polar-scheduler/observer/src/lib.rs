@@ -25,9 +25,7 @@
 
 pub mod agent;
 pub mod checkout;
-pub mod deployment_copy;
 pub mod deployment_record;
-pub mod git_ops;
 pub mod held;
 pub mod reads;
 pub mod settings;
