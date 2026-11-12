@@ -579,11 +579,75 @@ building, for review:*
 - *Found:* `polar-ledger` prints a certificate's PEM with its line breaks, so an entry holding one spans several lines.
   It is cosmetic, and left as it is.
 
-**L2, checkpoints, outlined.** The ledger key, P-256 and generated at first start beside the authority key
-(`CREDENTIALS_LEDGER_KEY_PATH`), is certified through `authority_certificate::certify` like the agent's other keys.
-How that certificate says "ledger checkpoints only" is settled when L2 is planned. The key signs a checkpoint at
-start and at most once a second while entries are appended, the store's cadence. `polar-ledger` verifies the
-checkpoints and the proofs between them.
+**L2, checkpoints: the plan (2026-11-12, for the maintainer to clear).** Read for it: `authority_certificate.rs`,
+`authority_key.rs`, `polar-signing/src/verify.rs` (`verify_authority_certificate`, `believed_leaf`,
+`for_signing_documents`), cert-issuer's `CertType`, `ca.rs` (the usages by type) and `handler.rs` (steps 1.2 and 1.5),
+`polar-log`'s `checkpoint.rs`, and the store's `logs.rs` (its key and its kept checkpoint).
+
+*Found in reading:* the authority key's certificate is a `Signing` one, and `verify_authority_certificate` asks only
+for `id-kp-documentSigning`, no TLS purpose, and the agent's name. A ledger key certified the same way would pass it,
+so it could sign snapshots a leaf believes. One key, one purpose needs a certificate that says the purpose.
+*Decided (the maintainer, 2026-11-12):* a certificate type of its own.
+
+1. *A checkpoint certificate.* cert-issuer gains `CertType::Checkpoint`. Its key usage is `digitalSignature`, and its
+   one extended key usage is `id-polar-kp-logCheckpoint`, `2.25.214751505132549872223803780954079323746.1`. That is an
+   X.667 UUID OID (`a18fa2ab-c873-451d-bff8-a0d22b3b6662`), which needs no registration. Polar allocates under it, so a
+   witness's co-signing key can later be `.2`. The type is signed only on `/internal/issue`, and only for the caller's
+   own identity, as steps 1.2 and 1.5 do for `Signing`. Later, the store's key takes the same type, for a pod, on its
+   custodian's behalf. The name in the certificate says whose log it is.
+2. *Its check.* `polar_signing::verify_checkpoint_certificate(chain, trust, now, identity)` is `believed_leaf`
+   with this purpose: `digitalSignature`, and the checkpoint usage, with no TLS purpose and no document signing. It
+   gives back the P-256 key. The checks that already exist require document signing, so they refuse a checkpoint
+   certificate, and this one refuses theirs. A test checks both directions for every type.
+3. *The certificates-reported event goes to v2.* `ReportedCertificate` carries a `CertType`, which gains a value. v1
+   stays as written and is read as before. The writer writes v2, so an L1 agent meets an unknown critical version and
+   holds with its plain line, instead of finding the entry malformed. v2's sample is recorded, and the samples test
+   covers both versions.
+4. *The key.* P-256, at `CREDENTIALS_LEDGER_KEY_PATH` (`WriteFile`, default
+   `/var/lib/credentials-agent/ledger-key.pem`), mode 0600. It is made at first start and never replaced, as the
+   authority key is (`authority_key::load_or_generate`). It is loaded after the ledger has opened without a refusal,
+   so a held agent still loads no key. It is named `<identity>/checkpoint`, as the store names its own key. The
+   checkpoint's origin is `<identity>/ledger`.
+5. *Certified as the other keys are.* The certifier that renews the authority and escrow keys certifies it at half
+   its life, and tries again while cert-issuer cannot answer. It gives the certificate to the ledger actor, not to the
+   publisher. The latest certificate is kept beside the key in `ledger-key.crt` (written to a new file, synced, and
+   renamed over). A checkpoint needs no certificate to be signed; the certificate is for whoever checks it.
+6. *Checkpoints.* The ledger actor signs one when it opens the ledger, and at most once a second while entries are
+   appended (a tick after an append, as the store does). It keeps only the latest, in `ledger.checkpoint` beside the
+   ledger: written to a new file, synced, renamed over, then the directory synced. The copy from the JSON ledger is
+   followed by the first one. An L1 ledger with no checkpoint gets one at start, and the run says so.
+7. *A rolled-back ledger is refused.* At open, the kept checkpoint must verify under the ledger key, and its tree must
+   be the ledger's own tree at its size, by a consistency proof. A ledger shorter than its checkpoint is refused, and
+   so is one whose tree at that size differs. That catches a restored older copy, which would forget revocations made
+   since. The refusal holds under `HoldReason::Version`, as L1's damaged ledger does: what the agent keeps is not what
+   it signed. A kept checkpoint that the key does not verify is refused too. Its way back is a person removing the
+   file, deliberately. *For review.*
+8. *`polar-ledger` checks them.* Given `--ca`, it prints the kept checkpoint and verifies four things:
+   - its signature, under the key in `ledger-key.crt`;
+   - that certificate, as a checkpoint certificate of the credentials agent, chaining to the CA, as of now (or
+     `--at <unix seconds>` for an old copy; the certificates last an hour);
+   - the ledger's tree at the checkpoint's size;
+   - with `--since <older checkpoint>`, the consistency proof from it.
+
+   *For review:* the certificate is checked as of a time the reader chooses, since a checkpoint carries none.
+
+*Tests:*
+- cert-issuer signs a checkpoint certificate only on `/internal/issue`, and only for the caller's own identity.
+- Each check refuses each other type's certificate, as a property over the types.
+- The v2 sample, with v1 still read.
+- The key is made once and kept across a restart. A held agent makes no key.
+- Many appends in a second make one checkpoint, and an open makes one.
+- The kept checkpoint survives a restart.
+- The hold is checked three ways: a shorter ledger, another tree at the same size, and a checkpoint under another key.
+- `polar-ledger` verifies a good checkpoint, and refuses a changed root, another key, and a certificate of another type.
+
+*Live, on u7c:*
+- After the deploy, cert-issuer signs the ledger key's checkpoint certificate.
+- `ledger.checkpoint` follows the appends.
+- After the pod is replaced, the key is the same.
+- `polar-ledger` verifies copies taken from the pod against the CA.
+- The rollback hold is checked as L1's was: the deployed binary, started here against an older copy of u7c's ledger
+  beside its newer checkpoint.
 
 **L3, checkpoints into the store, outlined.** A `ledger` log in the store. A checkpoint is admitted over Cassini
 when its note verifies under the ledger key's certificate and a consistency proof from the last one admitted holds.
