@@ -45,13 +45,15 @@ pub static NO_PROXY: Optional<String> = Optional::text(
      IP addresses and CIDRs",
 );
 
-pub static CA_CERT: Optional<String> = Optional::text(
+pub static CA_CERT: Optional<String> = Optional::path(
     "POLAR_EGRESS_CA_CERT",
+    polar_env::Access::ReadFile,
     "PEM CA certificates trusted beside the system's; set and unreadable or empty stops the agent",
 );
 
-pub static CLUSTER_CA: Optional<String> = Optional::text(
+pub static CLUSTER_CA: Optional<String> = Optional::path(
     "POLAR_EGRESS_CLUSTER_CA",
+    polar_env::Access::ReadFile,
     "the cluster's own CA, trusted beside the system's and POLAR_EGRESS_CA_CERT, for a service in the cluster whose \
      certificate the credentials agent issued; set only by a workload's catalog entry, and set and unreadable or empty \
      stops the agent",

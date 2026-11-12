@@ -52,6 +52,68 @@ pub enum Mutability {
     Dynamic,
 }
 
+/// How an agent uses the file a path variable names, which is what its lock grants (docs/architecture/runtime-attestation.md,
+/// "C3b, the builder's Landlock lock"). A path is read when the agent starts and may not change while it runs: a lock
+/// granted at start could not follow it, so a path variable cannot be Dynamic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Access {
+    /// A file it reads.
+    ReadFile,
+    /// A file it writes, whole or by appending, which may be made or replaced.
+    WriteFile,
+    /// A directory it reads.
+    ReadDir,
+    /// A directory it reads and writes.
+    WriteDir,
+    /// A Unix socket it connects to.
+    Socket,
+}
+
+impl Access {
+    pub const ALL: [Access; 5] = [
+        Access::ReadFile,
+        Access::WriteFile,
+        Access::ReadDir,
+        Access::WriteDir,
+        Access::Socket,
+    ];
+
+    /// What a scaffold's `type` says of it.
+    pub const fn type_name(self) -> &'static str {
+        match self {
+            Access::ReadFile => "path of a file it reads",
+            Access::WriteFile => "path of a file it writes",
+            Access::ReadDir => "path of a directory it reads",
+            Access::WriteDir => "path of a directory it reads and writes",
+            Access::Socket => "path of a socket it connects to",
+        }
+    }
+
+    /// What a scaffold's `type` says of a comma-separated list of such paths.
+    pub const fn list_type_name(self) -> &'static str {
+        match self {
+            Access::ReadFile => "comma-separated paths of files it reads",
+            Access::WriteFile => "comma-separated paths of files it writes",
+            Access::ReadDir => "comma-separated paths of directories it reads",
+            Access::WriteDir => "comma-separated paths of directories it reads and writes",
+            Access::Socket => "comma-separated paths of sockets it connects to",
+        }
+    }
+
+    /// The access a scaffold's `type` names, and whether it is of a list, if it names one.
+    pub fn of_type_name(type_name: &str) -> Option<(Access, bool)> {
+        Access::ALL.into_iter().find_map(|access| {
+            if access.type_name() == type_name {
+                Some((access, false))
+            } else if access.list_type_name() == type_name {
+                Some((access, true))
+            } else {
+                None
+            }
+        })
+    }
+}
+
 /// What a declaration says about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarDesc {
@@ -66,6 +128,8 @@ pub struct VarDesc {
     pub type_name: &'static str,
     /// A value it could take, for a type that cannot make one up (see [`VarDesc::another_value`]).
     pub example: Option<&'static str>,
+    /// For a path, how the agent uses what it names.
+    pub access: Option<Access>,
 }
 
 impl VarDesc {
@@ -120,6 +184,7 @@ struct Spec<T> {
     secret: bool,
     mutability: Mutability,
     example: Option<&'static str>,
+    access: Option<Access>,
     parse: fn(&str) -> Result<T, String>,
 }
 
@@ -137,6 +202,7 @@ impl<T> Spec<T> {
             secret: false,
             mutability: Mutability::Static,
             example: None,
+            access: None,
             parse,
         }
     }
@@ -149,11 +215,16 @@ impl<T> Spec<T> {
             secret: true,
             mutability: self.mutability,
             example: self.example,
+            access: self.access,
             parse: self.parse,
         }
     }
 
     const fn dynamic(&self) -> Self {
+        assert!(
+            self.access.is_none(),
+            "a path cannot be Dynamic: the lock granted at start could not follow it"
+        );
         Self {
             name: self.name,
             doc: self.doc,
@@ -161,6 +232,7 @@ impl<T> Spec<T> {
             secret: self.secret,
             mutability: Mutability::Dynamic,
             example: self.example,
+            access: self.access,
             parse: self.parse,
         }
     }
@@ -173,6 +245,24 @@ impl<T> Spec<T> {
             secret: self.secret,
             mutability: self.mutability,
             example: Some(example),
+            access: self.access,
+            parse: self.parse,
+        }
+    }
+
+    const fn accessed(&self, access: Access, many: bool) -> Self {
+        Self {
+            name: self.name,
+            doc: self.doc,
+            type_name: if many {
+                access.list_type_name()
+            } else {
+                access.type_name()
+            },
+            secret: self.secret,
+            mutability: self.mutability,
+            example: self.example,
+            access: Some(access),
             parse: self.parse,
         }
     }
@@ -215,6 +305,7 @@ impl<T> Spec<T> {
             mutability: self.mutability,
             type_name: self.type_name,
             example: self.example,
+            access: self.access,
         }
     }
 }
@@ -223,6 +314,18 @@ impl<T> Spec<T> {
 
 fn parse_text(s: &str) -> Result<String, String> {
     Ok(s.to_string())
+}
+
+fn parse_path(s: &str) -> Result<String, String> {
+    let path = s.trim();
+    if path.split('/').any(|part| part == "..") {
+        return Err("must not climb with '..'".to_string());
+    }
+    Ok(path.to_string())
+}
+
+fn parse_paths(s: &str) -> Result<Vec<String>, String> {
+    parse_list(s)?.iter().map(|path| parse_path(path)).collect()
 }
 
 fn parse_number<T: FromStr>(s: &str) -> Result<T, String> {
@@ -297,6 +400,10 @@ impl<T> Required<T> {
         Self(self.0.example(example))
     }
 
+    const fn accessed(self, access: Access, many: bool) -> Self {
+        Self(self.0.accessed(access, many))
+    }
+
     pub fn read(&self, env: &dyn Env) -> Result<T, EnvError> {
         match self.0.raw(env) {
             Some(text) => self.0.parse_text(&text),
@@ -333,6 +440,10 @@ impl<T> Optional<T> {
     /// A value it could take, for a Dynamic variable whose type cannot make one up.
     pub const fn example(self, example: &'static str) -> Self {
         Self(self.0.example(example))
+    }
+
+    const fn accessed(self, access: Access, many: bool) -> Self {
+        Self(self.0.accessed(access, many))
     }
 
     pub fn read(&self, env: &dyn Env) -> Result<Option<T>, EnvError> {
@@ -382,6 +493,13 @@ impl<T> Defaulted<T> {
     pub const fn example(self, example: &'static str) -> Self {
         Self {
             spec: self.spec.example(example),
+            default: self.default,
+        }
+    }
+
+    const fn accessed(self, access: Access, many: bool) -> Self {
+        Self {
+            spec: self.spec.accessed(access, many),
             default: self.default,
         }
     }
@@ -450,6 +568,12 @@ macro_rules! constructors {
             pub const fn text(name: &'static str, doc: &'static str $(, $extra: &'static str)*) -> Self {
                 Self::new(name, doc, "text", parse_text $(, $extra)*)
             }
+
+            /// A path, absolute or from the directory the agent was started in, used as `access` says: what the agent's
+            /// lock grants. It never climbs with `..`, and it cannot be Dynamic.
+            pub const fn path(name: &'static str, access: Access, doc: &'static str $(, $extra: &'static str)*) -> Self {
+                Self::new(name, doc, "", parse_path $(, $extra)*).accessed(access, false)
+            }
         }
 
         impl<T: FromStr> $Kind<T> {
@@ -471,6 +595,11 @@ macro_rules! constructors {
         impl $Kind<Vec<String>> {
             pub const fn list(name: &'static str, doc: &'static str $(, $extra: &'static str)*) -> Self {
                 Self::new(name, doc, "comma-separated list", parse_list $(, $extra)*)
+            }
+
+            /// Paths, comma-separated, each as [`path`](Self::path) takes one. It cannot be Dynamic.
+            pub const fn paths(name: &'static str, access: Access, doc: &'static str $(, $extra: &'static str)*) -> Self {
+                Self::new(name, doc, "", parse_paths $(, $extra)*).accessed(access, true)
             }
         }
     };
@@ -864,6 +993,80 @@ mod tests {
             let read = SOME_LIST.read(&env(&[("SOME_LIST", &next)])).unwrap();
             proptest::prop_assert_eq!(read.len(), items.len() + 1);
             proptest::prop_assert_eq!(&read[..items.len()], &items[..]);
+        }
+    }
+
+    static READ: Required<String> = Required::path("A_CERT", Access::ReadFile, "a certificate");
+    static DATA: Defaulted<String> = Defaulted::path(
+        "A_ROOT",
+        Access::WriteDir,
+        "where it keeps its data",
+        "/var/lib/a",
+    );
+
+    #[test]
+    fn a_path_says_how_it_is_used_and_is_static() {
+        let desc = READ.desc();
+        assert_eq!(desc.access, Some(Access::ReadFile));
+        assert_eq!(desc.type_name, "path of a file it reads");
+        assert_eq!(desc.mutability, Mutability::Static);
+        assert_eq!(DATA.desc().access, Some(Access::WriteDir));
+        assert_eq!(DATA.read(&env(&[])).unwrap(), "/var/lib/a");
+        assert_eq!(Required::<String>::text("A", "a").desc().access, None);
+        static CERTS: Optional<Vec<String>> =
+            Optional::paths("A_CERTS", Access::ReadFile, "certificates");
+        assert_eq!(
+            CERTS.desc().type_name,
+            "comma-separated paths of files it reads"
+        );
+        assert_eq!(
+            CERTS.read(&env(&[("A_CERTS", "/a.pem, /b.pem")])).unwrap(),
+            Some(vec!["/a.pem".to_string(), "/b.pem".to_string()])
+        );
+        assert!(CERTS.read(&env(&[("A_CERTS", "/a.pem,../b.pem")])).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "a path cannot be Dynamic")]
+    fn a_path_cannot_be_dynamic() {
+        let _ = Optional::<String>::path("A_SOCKET", Access::Socket, "a socket").dynamic();
+    }
+
+    #[test]
+    fn a_path_that_climbs_is_refused() {
+        let error = READ
+            .read(&env(&[("A_CERT", "/etc/tls/../passwd")]))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("must not climb with '..'"),
+            "{error}"
+        );
+        assert_eq!(
+            READ.read(&env(&[("A_CERT", "certs/cert.pem")])).unwrap(),
+            "certs/cert.pem"
+        );
+    }
+
+    proptest::proptest! {
+        /// Each access's scaffold type names it, and only it.
+        #[test]
+        fn each_access_is_read_back_from_its_type(access in proptest::sample::select(Access::ALL.to_vec())) {
+            proptest::prop_assert_eq!(Access::of_type_name(access.type_name()), Some((access, false)));
+            proptest::prop_assert_eq!(Access::of_type_name(access.list_type_name()), Some((access, true)));
+        }
+
+        /// A path is taken exactly when it does not climb, and as it was given, trimmed.
+        #[test]
+        fn a_path_is_taken_exactly_when_it_does_not_climb(text in "[ ]?/?[a-z./-]{0,24}[ ]?") {
+            let read = READ.read(&env(&[("A_CERT", &text)]));
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                proptest::prop_assert!(read.is_err());
+            } else if !trimmed.split('/').any(|part| part == "..") {
+                proptest::prop_assert_eq!(read.unwrap(), trimmed);
+            } else {
+                proptest::prop_assert!(read.is_err());
+            }
         }
     }
 

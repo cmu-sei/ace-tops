@@ -25,8 +25,9 @@
 
 use polar_env::{Config, ConfigError, Defaulted, Described, Optional, Section};
 
-pub static LOCAL_PATH: Defaulted<String> = Defaulted::text(
+pub static LOCAL_PATH: Defaulted<String> = Defaulted::path(
     "POLAR_SCHEDULER_LOCAL_PATH",
+    polar_env::Access::WriteDir,
     "where the schedules repository is checked out; the observer watches this directory",
     "/tmp/polar-schedules",
 );

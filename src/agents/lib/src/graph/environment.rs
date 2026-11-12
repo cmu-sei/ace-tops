@@ -39,16 +39,19 @@ pub const GRAPH_ENDPOINT: Required<String> = Required::text(
     "GRAPH_ENDPOINT",
     "the Neo4j address, for example bolt+s://host:7687",
 );
-pub const GRAPH_CLIENT_CERT: Optional<String> = Optional::text(
+pub const GRAPH_CLIENT_CERT: Optional<String> = Optional::path(
     "GRAPH_CLIENT_CERT",
+    polar_env::Access::ReadFile,
     "path to the client certificate presented to Neo4j; set with GRAPH_CLIENT_KEY and GRAPH_CA_CERT or not at all",
 );
-pub const GRAPH_CLIENT_KEY: Optional<String> = Optional::text(
+pub const GRAPH_CLIENT_KEY: Optional<String> = Optional::path(
     "GRAPH_CLIENT_KEY",
+    polar_env::Access::ReadFile,
     "path to the private key for GRAPH_CLIENT_CERT; this or POLAR_CUSTODY_SOCKET, the custody daemon holding the key, not both",
 );
-pub const GRAPH_CA_CERT: Optional<String> = Optional::text(
+pub const GRAPH_CA_CERT: Optional<String> = Optional::path(
     "GRAPH_CA_CERT",
+    polar_env::Access::ReadFile,
     "path to the CA certificate Neo4j's certificate is verified against",
 );
 

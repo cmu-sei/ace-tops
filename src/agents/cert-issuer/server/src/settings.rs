@@ -47,13 +47,15 @@ pub static ISSUERS: Required<String> = Required::text(
      jwks_cache_ttl_max}",
 );
 
-pub static CA_CERT_PATH: Required<String> = Required::text(
+pub static CA_CERT_PATH: Required<String> = Required::path(
     "CERT_ISSUER_CA_CERT_PATH",
+    polar_env::Access::WriteFile,
     "path to the CA certificate (PEM)",
 );
 
-pub static CA_KEY_PATH: Required<String> = Required::text(
+pub static CA_KEY_PATH: Required<String> = Required::path(
     "CERT_ISSUER_CA_KEY_PATH",
+    polar_env::Access::WriteFile,
     "path to the CA private key (PEM)",
 );
 
@@ -108,14 +110,16 @@ pub static BOOTSTRAP: Optional<String> = Optional::text(
      valid token is signed what it asks for, and cert-issuer says so at every start. Set, even to [], it is enforced",
 );
 
-pub static OWN_TOKEN: Required<String> = Required::text(
+pub static OWN_TOKEN: Required<String> = Required::path(
     "CERT_ISSUER_OWN_TOKEN",
+    polar_env::Access::ReadFile,
     "path to cert-issuer's own service account token, with the audience its Kubernetes issuer expects: it is signed its \
      own client certificate on it, through its own floor, as every bootstrap service is",
 );
 
-pub static RECORD_PATH: Required<String> = Required::text(
+pub static RECORD_PATH: Required<String> = Required::path(
     "CERT_ISSUER_RECORD_PATH",
+    polar_env::Access::WriteFile,
     "path to the record of every certificate cert-issuer signs, one JSON line each, which the credentials agent asks for \
      (docs/architecture/cert-issuer-isolation.md, \"Step 2\"). It must be persistent storage: a certificate that cannot \
      be recorded is not returned",
@@ -128,14 +132,16 @@ pub static MAX_TOKEN_LIFETIME_SECS: Defaulted<u64> = Defaulted::seconds(
     "86400",
 );
 
-pub static KUBERNETES_CA_CERT: Optional<String> = Optional::text(
+pub static KUBERNETES_CA_CERT: Optional<String> = Optional::path(
     "KUBERNETES_CA_CERT",
+    polar_env::Access::ReadFile,
     "path to the Kubernetes API server's CA certificate, trusted beside the system's when an issuer's keys are \
      fetched from it",
 );
 
-pub static KUBERNETES_SA_TOKEN: Defaulted<String> = Defaulted::text(
+pub static KUBERNETES_SA_TOKEN: Defaulted<String> = Defaulted::path(
     "KUBERNETES_SA_TOKEN",
+    polar_env::Access::ReadFile,
     "path to the token presented to the Kubernetes API server when an issuer's keys are fetched from it; read again at \
      every fetch, since Kubernetes rotates it",
     "/var/run/secrets/kubernetes.io/serviceaccount/token",

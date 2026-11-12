@@ -33,8 +33,9 @@ use std::path::PathBuf;
 
 pub const DEFAULT_CACHE_ROOT: &str = ".polar/cache";
 
-pub static CACHE_ROOT: Defaulted<String> = Defaulted::text(
+pub static CACHE_ROOT: Defaulted<String> = Defaulted::path(
     "POLAR_CACHE_ROOT",
+    polar_env::Access::WriteDir,
     "the directory the observed repositories are cloned into; a relative path is relative to the \
      directory the agent was started in. Clones can be fetched again, so it need not survive the pod",
     DEFAULT_CACHE_ROOT,

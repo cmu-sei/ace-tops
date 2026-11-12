@@ -32,8 +32,9 @@ pub static NAMESPACES: Required<String> = Required::text(
 );
 
 /// The deployment CA's certificate, which the record is checked against. Trusted for that alone.
-pub static DEPLOYMENT_CA: Required<String> = Required::text(
+pub static DEPLOYMENT_CA: Required<String> = Required::path(
     "POLAR_ATTESTATION_DEPLOYMENT_CA",
+    polar_env::Access::ReadFile,
     "path to the deployment CA's certificate (PEM), which the signed record of the deployment chains to (docs/architecture/runtime-attestation.md); it has no other authority here",
 );
 

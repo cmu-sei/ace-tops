@@ -36,8 +36,9 @@ pub static PORT: Defaulted<u16> = Defaulted::number(
     DEFAULT_PORT,
 );
 
-pub static REPO_ROOT: Required<String> = Required::text(
+pub static REPO_ROOT: Required<String> = Required::path(
     "POLAR_GIT_SERVER_REPO_ROOT",
+    polar_env::Access::WriteDir,
     "the directory the bare repositories live in; it must be persistent storage",
 );
 
@@ -48,8 +49,9 @@ pub const DEFAULT_SEED_ROOT: &str = match option_env!("POLAR_GIT_SERVER_BUILT_SE
     None => "/nonexistent/polar-git-server-seeds",
 };
 
-pub static SEED_ROOT: Defaulted<String> = Defaulted::text(
+pub static SEED_ROOT: Defaulted<String> = Defaulted::path(
     "POLAR_GIT_SERVER_SEED_ROOT",
+    polar_env::Access::ReadDir,
     "the directory a relative `seed` in POLAR_GIT_SERVER_REPOS is resolved against; the image \
      carries the deployment's seed trees here",
     DEFAULT_SEED_ROOT,
@@ -62,22 +64,26 @@ pub static REPOS: Required<String> = Required::text(
      {\"admins\": [..], \"repos\": [{\"name\", \"readers\", \"writers\", \"seed\"}]}",
 );
 
-pub static CERT: Required<String> = Required::text(
+pub static CERT: Required<String> = Required::path(
     "POLAR_GIT_SERVER_CERT",
+    polar_env::Access::ReadFile,
     "path to the server's own certificate chain (PEM), which it presents to every client",
 );
 
 const KEY_DOC: &str = "path to the private key (PEM) for the server's certificate; this or POLAR_CUSTODY_SOCKET, the custody daemon holding it, not both";
 
-pub static KEY: Optional<String> = Optional::text("POLAR_GIT_SERVER_KEY", KEY_DOC);
+pub static KEY: Optional<String> =
+    Optional::path("POLAR_GIT_SERVER_KEY", polar_env::Access::ReadFile, KEY_DOC);
 
-pub static CA_CERT: Required<String> = Required::text(
+pub static CA_CERT: Required<String> = Required::path(
     "POLAR_GIT_SERVER_CA_CERT",
+    polar_env::Access::ReadFile,
     "path to the CA certificate (PEM) that clients' certificates must chain to",
 );
 
-pub static DEPLOYMENT_CA: Optional<String> = Optional::text(
+pub static DEPLOYMENT_CA: Optional<String> = Optional::path(
     "POLAR_GIT_SERVER_DEPLOYMENT_CA",
+    polar_env::Access::ReadFile,
     "path to the deployment CA's certificate (PEM), whose clients are also taken, named `deployment:<name>` so that it speaks \
      for no one in Polar: how Flux reads the deployment (docs/architecture/cluster-bootstrap.md)",
 );

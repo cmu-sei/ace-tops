@@ -43,21 +43,24 @@ pub static CERT_ISSUER_URL: Required<String> = Required::text(
     "the address of cert-issuer, which signs the certificates this agent issues",
 );
 
-pub static CA_CERT: Optional<String> = Optional::text(
+pub static CA_CERT: Optional<String> = Optional::path(
     "CREDENTIALS_AGENT_CA_CERT",
+    polar_env::Access::ReadFile,
     "path to the Polar CA certificate (PEM) to verify cert-issuer against from the first request; \
      unset, the CA is fetched once from cert-issuer and pinned (the degraded self-bootstrap mode); \
      a path that is set but unreadable stops the agent",
 );
 
-pub static EVENT_LOG_PATH: Defaulted<String> = Defaulted::text(
+pub static EVENT_LOG_PATH: Defaulted<String> = Defaulted::path(
     "CREDENTIALS_EVENT_LOG_PATH",
+    polar_env::Access::WriteFile,
     "the ledger's event log, the source of truth; keep it on a persistent volume",
     CREDENTIALS_EVENT_LOG_PATH_DEFAULT,
 );
 
-pub static ESCROW_KEY_PATH: Defaulted<String> = Defaulted::text(
+pub static ESCROW_KEY_PATH: Defaulted<String> = Defaulted::path(
     "CREDENTIALS_ESCROW_KEY_PATH",
+    polar_env::Access::WriteFile,
     "where the escrow keypair is kept; generated on first start, so keep it on a persistent volume",
     CREDENTIALS_ESCROW_KEY_PATH_DEFAULT,
 );

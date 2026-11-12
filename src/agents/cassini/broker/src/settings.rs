@@ -34,17 +34,23 @@ use polar_env::{Config, ConfigError, Defaulted, Described, Env, Optional, Requir
 
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 
-pub static SERVER_CERT_CHAIN: Required<String> = Required::text(
+pub static SERVER_CERT_CHAIN: Required<String> = Required::path(
     "TLS_SERVER_CERT_CHAIN",
+    polar_env::Access::ReadFile,
     "path to the broker's own certificate (PEM), which it presents to every client",
 );
 
 const SERVER_KEY_DOC: &str = "path to the private key for the broker's certificate; this or POLAR_CUSTODY_SOCKET, the custody daemon holding it, not both";
 
-pub static SERVER_KEY: Optional<String> = Optional::text("TLS_SERVER_KEY", SERVER_KEY_DOC);
+pub static SERVER_KEY: Optional<String> = Optional::path(
+    "TLS_SERVER_KEY",
+    polar_env::Access::ReadFile,
+    SERVER_KEY_DOC,
+);
 
-pub static CA_CERT: Required<String> = Required::text(
+pub static CA_CERT: Required<String> = Required::path(
     "TLS_CA_CERT",
+    polar_env::Access::ReadFile,
     "path to the CA certificate the clients' certificates are verified against",
 );
 

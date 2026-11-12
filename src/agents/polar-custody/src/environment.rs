@@ -29,8 +29,9 @@ use polar_env::{Env, EnvError, Optional, Problem};
 
 /// The custody daemon's socket: the daemon in the pod signs this component's TLS 1.3 handshakes with a key the
 /// component never holds. The daemon binds the same variable.
-pub const CUSTODY_SOCKET: Optional<String> = Optional::text(
+pub const CUSTODY_SOCKET: Optional<String> = Optional::path(
     "POLAR_CUSTODY_SOCKET",
+    polar_env::Access::Socket,
     "path to the custody daemon's socket, through which the daemon signs this component's TLS 1.3 handshakes with a key it never holds; this or the key file, not both",
 );
 

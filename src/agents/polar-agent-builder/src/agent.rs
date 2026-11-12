@@ -160,6 +160,10 @@ pub trait PolarAgent: Sized + 'static {
     /// The workers the agent asks to do work on bytes it must not trust (`worker`): each forked at start, before the
     /// runtime, and locked as seccomp's strict mode locks a process. One that dies ends the agent.
     const WORKERS: &'static [crate::worker::WorkerDecl] = &[];
+    /// The paths the agent opens that no variable of its names, each with its access and why (`landlock`): what its lock
+    /// grants beside its path variables and the builder's own. The scaffold prints them under `filesystem`, so applying
+    /// the catalog is the sign-off.
+    const FILESYSTEM: &'static [crate::landlock::Grant] = &[];
     /// The topics the agent uses itself, each with its access and its purpose (docs/architecture/topics.md).
     /// The topics every agent uses, and those a need brings, are implied and not listed here; the scaffold
     /// prints the whole set, and the agent's client refuses what is outside it unless policy permits it.
@@ -403,11 +407,24 @@ pub struct AgentDocument {
     /// is one, so every other agent's scaffold is as it was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub records: Vec<String>,
+    /// The paths the agent opens that no variable names ([`grants_of`]), each with its access and why: what its lock
+    /// grants beside its path variables, whose `type` says theirs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filesystem: Vec<FilesystemEntry>,
     #[serde(flatten)]
     pub document: Document,
     /// Every problem found, when the document was filled from a file.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub problems: Vec<String>,
+}
+
+/// A path the agent opens that no variable names, as the scaffold shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesystemEntry {
+    pub path: String,
+    /// As a path variable's `type` says it ("path of a file it reads", ...).
+    pub access: String,
+    pub why: String,
 }
 
 /// A topic family an agent declares, as the scaffold shows it.
@@ -632,6 +649,86 @@ fn sections_of<A: PolarAgent>() -> Vec<(Option<Capability>, &'static Section)> {
     sections
 }
 
+/// The paths `A` opens that no variable names: name resolution's, the Kubernetes client's for an agent with an operation
+/// on the cluster, and its own ([`PolarAgent::FILESYSTEM`]).
+pub fn grants_of<A: PolarAgent>() -> Vec<crate::landlock::Grant> {
+    let mut grants = crate::landlock::NAME_RESOLUTION.to_vec();
+    if A::OPERATIONS
+        .iter()
+        .any(|operation| operation.protocol.to_the_cluster())
+    {
+        grants.push(crate::landlock::KUBERNETES_CLIENT);
+    }
+    grants.extend_from_slice(A::FILESYSTEM);
+    grants
+}
+
+/// Each of `A`'s path variables with its access and its value under `config`, or its default; a list of paths once for
+/// each; and a relative path from the directory the agent was started in, which is where it opens it.
+fn paths_of<A: PolarAgent>(
+    config: &dyn Env,
+) -> Vec<(&'static str, polar_env::Access, Option<String>)> {
+    let here = std::env::current_dir().ok();
+    let anchored = |path: String| match &here {
+        Some(here) if !path.starts_with('/') => here.join(&path).display().to_string(),
+        _ => path,
+    };
+    unanchored_paths_of::<A>(config)
+        .into_iter()
+        .map(|(name, access, value)| (name, access, value.map(anchored)))
+        .collect()
+}
+
+fn unanchored_paths_of<A: PolarAgent>(
+    config: &dyn Env,
+) -> Vec<(&'static str, polar_env::Access, Option<String>)> {
+    sections_of::<A>()
+        .into_iter()
+        .flat_map(|(_, section)| section.describe())
+        .flat_map(|desc| {
+            let Some(access) = desc.access else {
+                return Vec::new();
+            };
+            let value = config
+                .var(desc.name)
+                .filter(|v| !v.trim().is_empty())
+                .or(desc.default.map(str::to_string));
+            match value {
+                Some(list) if desc.type_name == access.list_type_name() => list
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| (desc.name, access, Some(path.to_string())))
+                    .collect(),
+                value => vec![(desc.name, access, value)],
+            }
+        })
+        .collect()
+}
+
+/// What `A`'s Landlock lock allows under `config` (`landlock`): each of its path variables at its value, or its default,
+/// and [`grants_of`]. A variable of an optional capability the deployment does not provide has no value, so no grant.
+pub fn landlock_plan_of<A: PolarAgent>(config: &dyn Env) -> crate::landlock::Plan {
+    let declared = paths_of::<A>(config);
+    crate::landlock::plan(
+        declared
+            .iter()
+            .map(|(name, access, value)| (*name, *access, value.as_deref())),
+        &grants_of::<A>(),
+    )
+}
+
+/// Makes each directory `A` writes that does not exist yet, so the lock can grant it: a cache root inside its claim.
+fn make_written_directories<A: PolarAgent>(config: &dyn Env) -> Result<(), String> {
+    for (name, access, value) in paths_of::<A>(config) {
+        if let (polar_env::Access::WriteDir, Some(path)) = (access, value) {
+            std::fs::create_dir_all(path.trim())
+                .map_err(|e| format!("{name}={path} cannot be made: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 /// How the builder's graph controller serves `A`: as a writer for `graph-write`, a reader for `graph-read`, and not at
 /// all for an agent that needs neither.
 pub(crate) fn graph_use_of<A: PolarAgent>() -> Option<crate::graph::GraphUse> {
@@ -744,6 +841,14 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
             .map(|t| t.to_string())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
+            .collect(),
+        filesystem: grants_of::<A>()
+            .iter()
+            .map(|g| FilesystemEntry {
+                path: g.path.to_string(),
+                access: g.access.type_name().to_string(),
+                why: g.why.to_string(),
+            })
             .collect(),
         document: Document::scaffold(&tagged),
         problems: Vec::new(),
@@ -1366,8 +1471,17 @@ fn start<A: PolarAgent>(process: impl Env + 'static, lock: Lock) -> u8 {
             return 1;
         }
     };
-    // The lock, once the workers are forked and before the runtime starts (`lock`).
+    // Read before the lock, which keeps the runtime from reading the cgroup's CPU limit itself: unread, it would size its
+    // threads by the node's.
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    // The lock, once the workers are forked and before the runtime starts: Landlock (`landlock`), then seccomp (`lock`).
     if lock == Lock::Install {
+        let plan = landlock_plan_of::<A>(startup.config.as_ref());
+        let landlocked = match make_written_directories::<A>(startup.config.as_ref()) {
+            Ok(()) => crate::landlock::install(&plan),
+            Err(why) => crate::landlock::Landlocked::Not(why),
+        };
+        eprintln!("{}", crate::landlock::said(&plan, &landlocked));
         eprintln!("{}", crate::lock::said(&crate::lock::install()));
     }
     let configured = Configured {
@@ -1396,6 +1510,7 @@ fn start<A: PolarAgent>(process: impl Env + 'static, lock: Lock) -> u8 {
     };
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(threads)
         .enable_all()
         .build()
     {
@@ -1487,6 +1602,95 @@ mod tests {
             WATCHED_STARTED.store(true, Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    static CA: Required<String> =
+        Required::path("LOCKED_CA", polar_env::Access::ReadFile, "the CA it trusts");
+    static DATA: polar_env::Defaulted<String> = polar_env::Defaulted::path(
+        "LOCKED_DATA",
+        polar_env::Access::WriteDir,
+        "where it keeps its data",
+        "data",
+    );
+    static LOCKED_VARS: &[&dyn Described] = &[&CA, &DATA];
+    static LOCKED: Section = Section {
+        name: "locked",
+        vars: LOCKED_VARS,
+        relations: |_| Vec::new(),
+    };
+
+    /// An agent with paths of its own and one no variable names.
+    struct Locked;
+
+    impl PolarAgent for Locked {
+        const NAME: &'static str = "locked-agent";
+        const ROLE: Role = Role::Observer;
+        const PURPOSE: &'static str = "Reads a CA and keeps data";
+        const NEEDS: &'static [Capability] = &[];
+        const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+        const SECTIONS: &'static [&'static Section] = &[&LOCKED];
+        const FILESYSTEM: &'static [crate::landlock::Grant] = &[crate::landlock::Grant {
+            path: "/sys/fs/cgroup",
+            access: polar_env::Access::ReadDir,
+            why: "its limits",
+        }];
+        async fn start(_: Configured) -> Result<(), StartError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_lock_grants_each_path_variable_at_its_value_and_what_no_variable_names() {
+        let env: HashMap<String, String> =
+            HashMap::from([("LOCKED_CA".to_string(), "/etc/polar-ca/ca.pem".to_string())]);
+        let plan = landlock_plan_of::<Locked>(&env);
+        let here = std::env::current_dir().unwrap();
+        let rules: Vec<&str> = plan.rules.keys().map(String::as_str).collect();
+        // Its CA's directory; its data, from where it was started, by default; its own grant; name resolution's files.
+        assert!(rules.contains(&"/etc/polar-ca"), "{rules:?}");
+        assert!(
+            rules.contains(&here.join("data").display().to_string().as_str()),
+            "{rules:?}"
+        );
+        assert!(rules.contains(&"/sys/fs/cgroup"), "{rules:?}");
+        assert!(rules.contains(&"/etc/resolv.conf"), "{rules:?}");
+        assert!(plan.not_granted.is_empty(), "{:?}", plan.not_granted);
+        // No Kubernetes operation, so no service account.
+        assert!(
+            !rules.iter().any(|r| r.contains("serviceaccount")),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn the_scaffold_says_how_each_path_is_used_and_what_no_variable_names() {
+        let scaffold = scaffold_document::<Locked>();
+        let json = serde_json::to_value(&scaffold).unwrap();
+        let variables: Vec<&serde_json::Value> = json["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|s| s["variables"].as_array().unwrap())
+            .collect();
+        let type_of = |name: &str| {
+            variables
+                .iter()
+                .find(|v| v["name"] == name)
+                .map(|v| v["type"].as_str().unwrap().to_string())
+                .unwrap()
+        };
+        assert_eq!(type_of("LOCKED_CA"), "path of a file it reads");
+        assert_eq!(
+            type_of("LOCKED_DATA"),
+            "path of a directory it reads and writes"
+        );
+        let paths: Vec<&str> = scaffold
+            .filesystem
+            .iter()
+            .map(|g| g.path.as_str())
+            .collect();
+        assert_eq!(paths, ["/etc/resolv.conf", "/etc/hosts", "/sys/fs/cgroup"]);
+        assert_eq!(scaffold.filesystem[2].why, "its limits");
     }
 
     struct Bare;

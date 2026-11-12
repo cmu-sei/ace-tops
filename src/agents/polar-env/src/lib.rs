@@ -79,4 +79,6 @@ pub use document::{
 pub use env::{Env, ProcessEnv};
 pub use error::{EnvError, Problem};
 pub use section::Section;
-pub use var::{Defaulted, Described, Kind, Mutability, Optional, Readable, Required, VarDesc};
+pub use var::{
+    Access, Defaulted, Described, Kind, Mutability, Optional, Readable, Required, VarDesc,
+};

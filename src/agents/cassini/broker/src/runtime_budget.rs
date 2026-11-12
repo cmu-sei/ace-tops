@@ -69,7 +69,12 @@ pub trait MemorySource: Send + Sync {
     fn sample(&self) -> MemorySample;
 }
 
-/// The real memory: `/proc/meminfo` and the cgroup v2 files under `/sys/fs/cgroup`.
+/// Where the real memory is read: the node's, and the pod's cgroup v2 files.
+pub const MEMINFO: &str = "/proc/meminfo";
+pub const CGROUP: &str = "/sys/fs/cgroup";
+
+/// The real memory: [`MEMINFO`] and the cgroup v2 files under [`CGROUP`], which the broker's lock grants it
+/// (`agent.rs`, `FILESYSTEM`). Unread, a sample would have no limit and say nothing of it.
 #[derive(Debug, Clone)]
 pub struct SystemMemory {
     pub meminfo: String,
@@ -79,8 +84,8 @@ pub struct SystemMemory {
 impl Default for SystemMemory {
     fn default() -> Self {
         Self {
-            meminfo: "/proc/meminfo".to_string(),
-            cgroup: "/sys/fs/cgroup".to_string(),
+            meminfo: MEMINFO.to_string(),
+            cgroup: CGROUP.to_string(),
         }
     }
 }
@@ -844,5 +849,63 @@ mod tests {
                 prop_assert_eq!(d.budget, s.budget);
             }
         }
+    }
+
+    const UNDER_LOCK: &str = "CASSINI_BUDGET_TEST_UNDER_LOCK";
+
+    /// In a child (CASSINI_BUDGET_TEST_UNDER_LOCK set): samples, locks itself with the broker's grants alone, and samples
+    /// again. Run alone, it does nothing.
+    #[test]
+    fn a_landlocked_sample() {
+        if polar_env::Env::var(&polar_env::ProcessEnv, UNDER_LOCK).is_none() {
+            return;
+        }
+        use polar_agent_builder::{PolarAgent, landlock};
+        let before = SystemMemory::default().sample();
+        let plan = landlock::plan(
+            std::iter::empty(),
+            <crate::agent::CassiniBroker as PolarAgent>::FILESYSTEM,
+        );
+        let landlocked = landlock::install(&plan);
+        assert!(
+            matches!(landlocked, landlock::Landlocked::Abi { ref missing, .. } if missing.is_empty()),
+            "{landlocked:?}"
+        );
+        // What it may not read stays unread: the lock is on.
+        assert!(std::fs::read_to_string("/etc/passwd").is_err());
+        let after = SystemMemory::default().sample();
+        assert_eq!(after.limit, before.limit);
+        assert_eq!(
+            after.mem_available.is_some(),
+            before.mem_available.is_some()
+        );
+        assert_eq!(after.current.is_some(), before.current.is_some());
+        assert_eq!(
+            after.psi_some_avg10.is_some(),
+            before.psi_some_avg10.is_some()
+        );
+        assert!(after.mem_available.is_some());
+        std::process::exit(0);
+    }
+
+    /// Under the broker's own lock, its memory budget reads what it read before: a limit it would otherwise lose
+    /// without a word.
+    #[test]
+    fn under_the_lock_the_memory_sample_is_what_it_was() {
+        if let Err(why) = polar_agent_builder::landlock::abi() {
+            eprintln!("skipping: {why}");
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "runtime_budget::tests::a_landlocked_sample",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(UNDER_LOCK, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status:?}");
     }
 }

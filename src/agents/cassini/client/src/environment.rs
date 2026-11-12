@@ -32,21 +32,27 @@
 use crate::ClientKey;
 use polar_env::{Described, Env, EnvError, Optional, Required, Section};
 
-pub const TLS_CLIENT_CERT: Required<String> = Required::text(
+pub const TLS_CLIENT_CERT: Required<String> = Required::path(
     "TLS_CLIENT_CERT",
+    polar_env::Access::ReadFile,
     "path to this agent's client certificate, which it presents to the broker",
 );
 
 const TLS_CLIENT_KEY_DOC: &str = "path to the private key for this agent's client certificate; this or POLAR_CUSTODY_SOCKET, not both";
 
-pub const TLS_CLIENT_KEY: Optional<String> = Optional::text("TLS_CLIENT_KEY", TLS_CLIENT_KEY_DOC);
+pub const TLS_CLIENT_KEY: Optional<String> = Optional::path(
+    "TLS_CLIENT_KEY",
+    polar_env::Access::ReadFile,
+    TLS_CLIENT_KEY_DOC,
+);
 
 /// The custody daemon's socket (docs/architecture/key-custody.md), declared once in `polar-custody` for every component
 /// that may be given the daemon's key.
 pub use polar_custody::environment::CUSTODY_SOCKET;
 
-pub const TLS_CA_CERT: Required<String> = Required::text(
+pub const TLS_CA_CERT: Required<String> = Required::path(
     "TLS_CA_CERT",
+    polar_env::Access::ReadFile,
     "path to the CA certificate the broker's certificate is verified against",
 );
 
@@ -58,8 +64,9 @@ pub const CASSINI_SERVER_NAME: Required<String> = Required::text(
     "the name on the broker's certificate, which the connection is verified against",
 );
 
-pub const CASSINI_QUEUE_PATH: Optional<String> = Optional::text(
+pub const CASSINI_QUEUE_PATH: Optional<String> = Optional::path(
     "CASSINI_QUEUE_PATH",
+    polar_env::Access::WriteFile,
     "where the client keeps a local queue of messages it could not deliver (none when unset)",
 );
 

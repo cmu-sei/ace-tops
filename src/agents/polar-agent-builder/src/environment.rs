@@ -66,8 +66,9 @@ pub static AUTHORITY_PUBLISHER: Defaulted<String> = Defaulted::text(
 
 /// Where `polar-init` leaves the one-use marker the agent takes as it starts (docs/architecture/deployments.md, step 4):
 /// set by the deployment for a pod that restarts in place; unset, nothing is checked.
-pub const START_MARKER: Optional<String> = Optional::text(
+pub const START_MARKER: Optional<String> = Optional::path(
     "POLAR_START_MARKER",
+    polar_env::Access::WriteFile,
     "where polar-init leaves the marker this agent takes as it starts; with none there, its container was restarted without polar-init, and it exits so that the pod restarts whole (unset: nothing is checked)",
 );
 

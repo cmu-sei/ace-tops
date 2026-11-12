@@ -50,15 +50,17 @@ macro_rules! seconds_variable {
 pub const POLAR_HEALTH_FILE_DEFAULT: &str = "/tmp/polar-health.json";
 
 /// Where the actor writes its state, and the probe reads it.
-pub const FILE: Defaulted<String> = Defaulted::text(
+pub const FILE: Defaulted<String> = Defaulted::path(
     "POLAR_HEALTH_FILE",
+    polar_env::Access::WriteFile,
     "where the health actor writes its state, which the liveness probe reads",
     POLAR_HEALTH_FILE_DEFAULT,
 );
 
 /// The agent's own certificates, watched for expiry.
-pub const CERTS: Optional<Vec<String>> = Optional::list(
+pub const CERTS: Optional<Vec<String>> = Optional::paths(
     "POLAR_HEALTH_CERTS",
+    polar_env::Access::ReadFile,
     "the agent's own certificate files the health actor watches, comma-separated",
 );
 

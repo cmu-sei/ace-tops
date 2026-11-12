@@ -58,8 +58,9 @@ pub static REGISTRY: Required<String> = Required::text(
      host and a port, and nothing more",
 );
 
-pub static CLONES: Required<String> = Required::text(
+pub static CLONES: Required<String> = Required::path(
     "POLAR_ORCHESTRATOR_CLONES",
+    polar_env::Access::WriteDir,
     "the directory the git handler keeps each mapped repository's clone in, to read a build's source from; the pod's own, \
      written by nothing else",
 );
