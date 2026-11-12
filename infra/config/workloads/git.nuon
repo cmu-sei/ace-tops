@@ -30,7 +30,7 @@
 # scheduler (docs/architecture/git-controller.md).
 [
   {
-    # The Job and ServiceAccount keep the name the chart gave them.
+    # It runs as a Deployment (no `job` here); it and its ServiceAccount keep the name the chart gave them.
     name: "git-repo-observer"
     kind: "agent"
     # Its node pool, where a target declares placement (docs/architecture/placement.md).

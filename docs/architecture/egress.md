@@ -139,8 +139,9 @@ and never the rest of it. It exits 0 when every protocol reached the URL, 1 when
 operation that goes out. A git URL over ssh is not probed: that needs a key, and its host key pinned.
 
 `up.nu` asks it at the end of a run (`report_egress`; `infra/egress.nu` `kube_probe`): a Job in `polar` made from
-git-repo-observer's Job (`probe_job`), with its image as pinned, its placement and hardening, its document and the egress
-CA it mounts, and nothing else: no init container, so no certificate, no ServiceAccount token, no Secret. The Job's pod is
+git-repo-observer's workload (`probe_job`; a Deployment, or a Job where its catalog entry makes one, read from the cluster),
+with its image as pinned, its placement and hardening, the ConfigMaps it mounts (its document, the cluster's CA, the egress
+CA), and nothing else: no init container, so no certificate, no ServiceAccount token, no Secret. The Job's pod is
 read, the Job deleted, and the verdict said as a note: it never stops the bring-up. With no git-repo-observer deployed the
 probe says it was not checked. A target with a proxy is probed through it.
 

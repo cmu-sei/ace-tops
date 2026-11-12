@@ -38,11 +38,11 @@ use ../egress.nu *
 
 const IMAGE = "registry.polar:5000/git-observer@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-# git-repo-observer's Job as the chart renders it, in the parts the probe reads: polar-init, the token it presents, its
-# certificates and its Secret, its document, the egress CA and its cache.
+# git-repo-observer's workload as the chart renders it (a Deployment, as on u7c), in the parts the probe reads: polar-init,
+# the token it presents, its certificates and its Secret, its document, the egress CA and its cache.
 def rendered_job [] {
     {
-        apiVersion: "batch/v1", kind: "Job"
+        apiVersion: "apps/v1", kind: "Deployment"
         metadata: { name: "git-repo-observer", namespace: "polar" }
         spec: { template: { spec: {
             serviceAccountName: "git-repo-observer"
@@ -176,6 +176,13 @@ def main [] {
                 assert equal ($c.volumeMounts | get name) ["config" "polar-egress-ca" "tmp"]
                 assert equal $pod.nodeSelector { "polar.dev/pool": "observers" }
                 assert equal $pod.securityContext { runAsNonRoot: true, seccompProfile: { type: "RuntimeDefault" } }
+            }
+        }
+        {
+            name: "a workload rendered as a Job gives the same probe as one rendered as a Deployment"
+            body: {
+                let as_job = (rendered_job | update apiVersion "batch/v1" | update kind "Job")
+                assert equal (probe_job $as_job "p" "https://example.org/") (probe_job (rendered_job) "p" "https://example.org/")
             }
         }
         {

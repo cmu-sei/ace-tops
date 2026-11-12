@@ -53,9 +53,12 @@ export const CLUSTER_CA_FILE = "/etc/polar-ca/ca.pem"
 # Who gives a workload an env entry, as `env_problems` names them.
 const GIVERS = { catalog: "its catalog entry", target: "the target's config", under-test: "a configuration under test", cluster: "this cluster's inputs" }
 
-# The agent the probe runs as: its workload (a Job, named as the chart named it) and the command its image runs. The images
-# set a Cmd and no Entrypoint (agent-pods.nu), so the Job names the command, and the binary is on the image's PATH.
+# The agent the probe runs as: its workload (a Deployment, or a Job where its catalog entry makes one; read from the cluster,
+# whichever it is) and the command its image runs. The images set a Cmd and no Entrypoint (agent-pods.nu), so the Job names
+# the command, and the binary is on the image's PATH.
 export const PROBE_WORKLOAD = "git-repo-observer"
+# The kinds a catalog workload is rendered as, each with the pod template the probe reads.
+const WORKLOAD_KINDS = ["deployment" "job"]
 const PROBE_BINARY = "git-repo-observer"
 export const PROBE_LABEL = "polar.dev/probe"
 const DEFAULT_URL = "https://github.com/octocat/Hello-World"
@@ -68,7 +71,7 @@ const PROBE_WAIT = 4min
 # The URL probed: POLAR_EGRESS_PROBE_URL if set.
 export def probe_url [] { $env.POLAR_EGRESS_PROBE_URL? | default $DEFAULT_URL }
 
-# The probe's Job, from the rendered Job of the workload it runs as (`job`, as the cluster holds it): its image, as pinned,
+# The probe's Job, from the workload it runs as (`job`, its Deployment or Job as the cluster holds it): its image, as pinned,
 # its placement, and its hardening; its document and egress CA, the ConfigMaps it mounts; and nothing else: no init
 # container, no Secret, no ServiceAccount token, and of its environment only where its document is. Never retried, gone
 # a while after it ends whether anyone deletes it or not.
@@ -166,12 +169,13 @@ export def egress_report [url: string, probe: closure] {
     { verdict: $v.verdict, lines: (egress_lines $v.verdict $url $v.detail) }
 }
 
-# The probe against the cluster: the probe's Job, made from the cluster's $PROBE_WORKLOAD Job, waited for, read, and deleted.
+# The probe against the cluster: the probe's Job, made from the cluster's $PROBE_WORKLOAD (a Deployment or a Job), waited for,
+# read, and deleted.
 export def kube_probe [url: string] {
-    let got = (^kubectl -n $POLAR get job $PROBE_WORKLOAD -o json | complete)
-    if $got.exit_code != 0 { return { skipped: true, exit: null, logs: "", reason: "" } }
+    let found = ($WORKLOAD_KINDS | each {|kind| ^kubectl -n $POLAR get $kind $PROBE_WORKLOAD -o json | complete } | where exit_code == 0 | get -o 0)
+    if $found == null { return { skipped: true, exit: null, logs: "", reason: "" } }
     let name = $"egress-probe-(random chars --length 6 | str lowercase)"
-    let job = (probe_job ($got.stdout | from json) $name $url)
+    let job = (probe_job ($found.stdout | from json) $name $url)
     let made = ($job | to json | ^kubectl create -f - | complete)
     if $made.exit_code != 0 { error make --unspanned { msg: $"the cluster refused the probe's Job: ($made.stderr | str trim)" } }
     let r = (try { wait_probe $name } catch {|e| { exit: null, logs: "", reason: $e.msg } })
