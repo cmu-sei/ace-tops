@@ -154,8 +154,8 @@ agent: no Polar identity, no Cassini, not attested — node infra in the trust b
   cluster.sh down/up/init issued kube-nftpolicy creds to joined workers. All pods Running (each container restarted
   once); Flux Ready (polar-deploy one fetch refused while git server started). Probe from another ns (pod deleted):
   source-controller :8080 OK, :9090 BLOCKED, polar-git-server OK, internet OK.
-- u7n torn down (reset; netns dir gone). Test images untagged. Left for the user (rmi blocked by classifier): dangling
-  58ff9b0bcbe7, fab185795ee7 (first nftpolicy-test loads); scratchpad spike dir.
+- u7n torn down (reset; netns dir gone); test images, dangling first loads and scratchpad spike dir removed (the last
+  two by the user; my rmi/rm was classifier-blocked). Kept: :pre-nftpolicy rollback images until the user says.
 DONE u7c step (checked on u7n first: Flux fetch+apply under its policies; check pods in deny-all ns). Upstream e2e
 netpol suite not yet run. Polar-side "offer" = target
 choice deploying the DaemonSet (not designed).
