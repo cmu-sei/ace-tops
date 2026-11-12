@@ -458,6 +458,85 @@ Bite 6 takes both kinds of change as the repository does.
 - the observer restarted;
 - a configuration under test removed.
 
+## The credentials ledger on the log: the plan (2026-11-11, for review)
+
+The ledger work from `ledger-evolution.md` (main) and bite 10. *Decided (the maintainer, 2026-11-11):* the
+checkpoints' key and the events' criticality (above, "The credentials ledger's checkpoints"), and the events are CBOR
+now, through minicbor 2's derives. Read for it: `lib/src/event_log.rs`, `credentials-agent/consume/src/ledger.rs`,
+`projection.rs`, `supervisor.rs`, `authority_certificate.rs`, `common/src/events.rs`, `polar-log` (`entry.rs`, `file.rs`,
+`checkpoint.rs`), the store's move of its repositories (`logs.rs`, the continuation) and `polar-agent-builder/src/health.rs`.
+Three bites. The first is planned in full; the other two are outlined and planned once it is built.
+
+**L1, the ledger on the log.**
+1. *Each event kind has frozen wire types.* `credentials-agent/common` gains a `ledger` module. Each variant of
+   `CredentialsEvent` is a kind (`credentials.grant`, `credentials.revoke`, and so on) at version 1. Each version is a
+   struct of its own, derived with minicbor as an index-keyed map, and is frozen once written. The domain enum
+   converts to and from them, so the enum can change while what is on disk stays as written. The types nested in an
+   event (cert-issuer's `Permission`, `Capability`, `CertType` and `IssuePath`; `EscrowedSecret`;
+   `SignedAdminAction`; and the rest) get index annotations where they are defined. The recorded samples (5) catch a
+   change to any of them.
+2. *Strict and deterministic.* An event's bytes are deterministic CBOR (RFC 8949, 4.2.1). Maps keyed by text, such as
+   a secret's labels, are written with their keys in that rule's order. That is the order of the encoded keys'
+   bytes, not `BTreeMap`'s. A decoded event is encoded again, and the bytes must match, so a non-canonical event is
+   *malformed* and is never read as some other value. Each entry's length is capped by `polar-log`'s frame. The
+   events are not recursive, so their nesting is bounded by their types.
+3. *Criticality is a match, not a list.* A function maps every variant to its kind, version and critical mark, with
+   the marks as decided. A new variant that is not given its arm fails the build.
+4. *Replay gives four outcomes* (above, "Replay"):
+   - *decoded*: the event is folded into state;
+   - *unknown and not critical*: the entry is passed over, counted and reported;
+   - *unknown and critical*, or *malformed*: the agent refuses to serve. Its supervisor starts nothing else and loads
+     no key. It stays up, held unhealthy with one line: "the ledger holds `<kind>` v`<n>`, written by `<writer>`,
+     which this agent (`<own version>`) cannot read; it serves nothing until a version that can is deployed";
+   - *torn*: the last entry is cut back, and the run says so, as `polar-log` does.
+
+   The hold needs a new `HoldReason`, `Version`. That changes the health report's wire type, which C3 avoided for the
+   lock state. Here the agent's own health is the only place the refusal can be seen. *For review.*
+5. *Compatibility is checked transitively.* `common/tests/ledger-samples/<kind>.v<n>.cbor` holds a recorded sample of
+   every version of every kind. A test decodes each sample with the current code. A second test checks that the
+   current writer's encoding of the example each kind declares equals the recorded sample of its current version. So
+   a change of shape without a new version and its upcaster fails the build. There are properties too: encoding then
+   decoding gives back any event, and every decoded byte string is the one encoding of its value.
+6. *The ledger is a `polar-log` file log.* It goes in `CREDENTIALS_LEDGER_PATH`, a new path setting, `WriteFile`,
+   default `/var/lib/credentials-agent/ledger.log`, beside the old file. Each leaf is admitted at the time of its
+   append and submitted by the agent's identity. Its writer is the platform version, as the store names its own
+   (`logs::writer`). `FileLog::open` gains `EventLog`'s exclusive lock and its `Held` refusal, so `open_log`'s wait
+   for a draining predecessor carries over. The store's logs gain the same guard.
+7. *The JSON ledger is copied, once.* At open, when there is no `ledger.log` and `CREDENTIALS_EVENT_LOG_PATH` names an
+   `events.jsonl`, the agent replays it with today's `EventLog`, so its chain is checked as it is read.
+   - It writes a continuation into `ledger.log.copying`: `{jsonl, sha256, the old last hash, its count}`.
+   - After it comes every old event, as version 1 of its kind, admitted at the old entry's timestamp.
+   - It syncs the file and renames it to `ledger.log`. The old file stays where it is, read-only (mode 0400).
+   - A `.copying` file left by a crash is removed, and the copy is made again. The run says what it copied.
+
+   An agent that finds both files reads only `ledger.log`.
+8. *Positions are sequence numbers.* The projection's checkpoint becomes the leaf's sequence number, where it was
+   the entry's hash. A checkpoint not found in the history used to stop the projection silently, since
+   `ops_for_catch_up` never got past it. It now projects from the start, and the run says so. The ops are `MERGE`s,
+   so a second pass gives the same graph. That covers a graph whose checkpoint is an old hash after the copy.
+   *For review.*
+9. *A reader for people.* `polar-ledger`, a CLI in the credentials agent's crate, prints a ledger's entries as CBOR's
+   diagnostic notation, with their kinds, versions, critical marks and writers. It verifies the frames and the tree,
+   and with `--against <events.jsonl>` it checks the copy: every old event decodes to the same value. It is the
+   operator's and the auditor's way to read the ledger now that it is binary.
+
+*Tests:* the samples and the properties (1 to 5); replay with an unknown critical kind, an unknown non-critical kind,
+a malformed event and a torn end; the hold, with no key loaded; the copy from a JSON ledger with every kind in it, and
+again after a crash mid-copy; the lock; the projection from an unknown checkpoint. *Live, on u7c:* the agent copies
+u7c's ledger (about 13,000 entries), with the time it took, and keeps serving. An image built with one event's critical
+version raised past what the deployed agent knows makes the deployed agent hold. The way back is the newer image.
+
+**L2, checkpoints, outlined.** The ledger key, P-256 and generated at first start beside the authority key
+(`CREDENTIALS_LEDGER_KEY_PATH`), is certified through `authority_certificate::certify` like the agent's other keys.
+How that certificate says "ledger checkpoints only" is settled when L2 is planned. The key signs a checkpoint at
+start and at most once a second while entries are appended, the store's cadence. `polar-ledger` verifies the
+checkpoints and the proofs between them.
+
+**L3, checkpoints into the store, outlined.** A `ledger` log in the store. A checkpoint is admitted over Cassini
+when its note verifies under the ledger key's certificate and a consistency proof from the last one admitted holds.
+So the store refuses a rewritten ledger, and the store's own checkpoints and the witness cover what it admitted.
+`polar-eden` can read it.
+
 ## Built
 
 **Bite 1, the format crate (`src/agents/polar-log`, 2026-11-10).** Choices made in building, by the design principles,
