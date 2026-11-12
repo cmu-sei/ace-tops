@@ -680,6 +680,33 @@ building, for review:*
   `every_binary` test refuses. L1's test runs did not catch it; L2's whole-workspace run did. It declares Scudo now.
   Cargo stops at the first failing test binary unless told not to, so the workspace is run with `--no-fail-fast`.
 
+*Live on u7c (2026-11-12, agentic-control-plane 09532662, the deployment Flux applied as `fba7c24`):*
+- *The key and its certificate.* At its first start the new agent made the ledger key (mode 0600) and signed the
+  ledger's first checkpoint, at 21,525 entries ("the ledger had no checkpoint kept; signed its first"). The certifier
+  then had it certified as `cert_type=Checkpoint`, renewed in 6 hours, and the ledger kept the certificate in
+  `ledger-key.crt`. OpenSSL reads it: digital signature, the one extended key usage
+  `2.25.214751505132549872223803780954079323746.1`, the agent's DNS name, 12 hours.
+- *Checkpoints follow the appends.* Two minutes later the kept checkpoint was at 21,682 entries, the ledger's size.
+  `polar-ledger --ca`, on copies taken from the pod with the CA the pods pin, found it signed by
+  `credentials-agent.polar.serviceaccount.cluster.local/checkpoint`, certified for that identity's checkpoints alone,
+  over the ledger's own tree, in half a second. Entries of `credentials.certificates-reported` are now written at v2.
+- *After the pod was replaced*, the certified key was the same (its public key's digest unchanged), and the kept
+  checkpoint already matched the ledger, so nothing was signed at the start. It then followed the ledger to 21,687,
+  and `polar-ledger --since` the first copy's checkpoint found the two consistent. Checked as of a time after the
+  certificate's end (`--at`), the certificate is refused.
+- *The hold, on copies.* The deployed image's own binary (`credentials-agent-consumer`, from its digest) was started
+  here against the older copy of u7c's ledger (21,682 entries) beside a checkpoint of the newer copy (21,687). That
+  checkpoint was signed with a throwaway key written beside it, so u7c's own ledger key never left the pod. It said:
+  "credentials-agent cannot start its work, and stays up to say so (a restart would not help): the ledger holds 21682
+  entries, and its last checkpoint was signed at 21687: it is not the ledger this agent signed (an older copy put
+  back?), and it serves nothing until the ledger it signed is put back, or a person removes …/ledger.checkpoint to
+  accept the ledger as it is". It ran its held infrastructure only, its health file said unhealthy under `version`,
+  and the checkpoint was left as it was. With the newer copy put back, the same binary replayed 21,686 events and
+  started its work. The copies were deleted afterwards. After the run all 27 pods were running, none restarted.
+- *Found:* a certificate refused as out of date is named by its subject's common name, and these certificates have
+  none, so the line reads "the certificate for `` is not valid at the time of checking". It is cosmetic, and left as
+  it is.
+
 **L3, checkpoints into the store, outlined.** A `ledger` log in the store. A checkpoint is admitted over Cassini
 when its note verifies under the ledger key's certificate and a consistency proof from the last one admitted holds.
 So the store refuses a rewritten ledger, and the store's own checkpoints and the witness cover what it admitted.
