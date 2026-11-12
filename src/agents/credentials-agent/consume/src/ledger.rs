@@ -55,7 +55,7 @@ use crate::state::{CertificateRecord, CredentialsState, GrantRecord};
 use credentials_agent_common::events::CredentialsEvent;
 use credentials_agent_common::issuance::WorkloadCertType;
 use credentials_agent_common::ledger::Read;
-use polar::event_log::EventLog;
+use polar::event_log::{EventLog, EventLogError};
 use polar_log::entry::{CONTINUATION, Continuation, Leaf};
 use polar_log::file::{FileLog, LogError, Replayed};
 use ractor::{Actor, ActorProcessingErr, ActorRef, OutputPort, RpcReplyPort, async_trait};
@@ -222,6 +222,30 @@ fn replay(seq: u64, replayed: Replayed) -> Replay {
     }
 }
 
+/// Why the JSON ledger at `json` is not copied, when what it holds is the reason, in one line: an event this agent
+/// does not read, or a ledger that is damaged. A restart would find the same, so the agent stays up and says so, as it
+/// does for the ledger. None for what a restart may change: another holder, or the disk.
+fn json_refusal(json: &str, e: &EventLogError) -> Option<String> {
+    match e {
+        EventLogError::EventDeserialize { line, kind, .. } => Some(format!(
+            "the JSON ledger at {json} holds, at line {line}, {} that this agent ({}) does not read (written by a \
+             newer version most likely): nothing is copied, and it serves nothing until a version that reads it is \
+             deployed",
+            kind.as_deref().map_or("an event".to_string(), |k| format!(
+                "an event of kind `{k}`"
+            )),
+            writer()
+        )),
+        EventLogError::Parse { line, .. }
+        | EventLogError::ChainBroken { line, .. }
+        | EventLogError::IntegrityCheckFailed { line, .. } => Some(format!(
+            "the JSON ledger at {json} is damaged at line {line} ({e}): nothing is copied, and it serves nothing until \
+             the ledger is looked at"
+        )),
+        _ => None,
+    }
+}
+
 /// Copies the JSON ledger at `json` into a new ledger at `path`, once (docs/architecture/record-store.md, "The
 /// credentials ledger on the log", 7): a first entry carrying on the JSON ledger (its last hash and how many it held),
 /// then every event as the current version of its kind, admitted when the JSON ledger appended it. It is written
@@ -232,8 +256,24 @@ async fn copy_json_ledger(
     path: &str,
     wait: Duration,
     every: Duration,
-) -> Result<(), String> {
-    let (old, _) = open_log(json, wait, every).await?;
+) -> Result<Option<String>, String> {
+    let (old, _) = match waiting_for(
+        json,
+        wait,
+        every,
+        |e| matches!(e, EventLogError::Held { .. }),
+        || EventLog::<CredentialsEvent>::open(json),
+    )
+    .await
+    {
+        Ok(opened) => opened,
+        Err(e) => {
+            return match json_refusal(json, &e) {
+                Some(why) => Ok(Some(why)),
+                None => Err(format!("Failed to open event log at {json}: {e}")),
+            };
+        }
+    };
     let entries = old
         .entries()
         .map_err(|e| format!("reading the JSON ledger at {json}: {e}"))?;
@@ -297,7 +337,7 @@ async fn copy_json_ledger(
         entries.len(),
         old.current_hash()
     );
-    Ok(())
+    Ok(None)
 }
 
 /// Opens the ledger at `path`, waiting up to `wait` (asking again every `every`) while another holder has it, and
@@ -317,8 +357,9 @@ pub async fn open_ledger(
     if let Some(json) = json
         && !std::path::Path::new(path).exists()
         && std::path::Path::new(json).exists()
+        && let Some(why) = copy_json_ledger(json, path, wait, every).await?
     {
-        copy_json_ledger(json, path, wait, every).await?;
+        return Ok(Opening::Refused(why));
     }
     let opened = match waiting_for(
         path,
@@ -1150,6 +1191,63 @@ pub(crate) mod tests {
         ready(opened(&path, None).await);
         assert!(since.elapsed() >= Duration::from_millis(300), "it waited");
         letting_go.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_json_ledger_holding_an_event_this_agent_does_not_read_holds_it_and_nothing_is_copied()
+     {
+        // Another version's event, as serde writes one: a kind this agent's events do not have.
+        #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        enum Newer {
+            Rotate { key: String },
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (path, json) = (
+            dir.path().join("ledger.log"),
+            dir.path().join("events.jsonl"),
+        );
+        {
+            let (mut old, _) = EventLog::<Newer>::open(&json).unwrap();
+            old.append(&Newer::Rotate { key: "k".into() }).unwrap();
+        }
+        let mode = |p: &std::path::Path| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        };
+        let before = mode(&json);
+
+        let why = refused(opened(&path, Some(&json)).await);
+        assert!(why.contains("at line 0"), "{why}");
+        assert!(why.contains("of kind `Rotate`"), "{why}");
+        assert!(why.contains("a version that reads it is deployed"), "{why}");
+        assert!(!why.contains('\n'));
+        // Nothing copied, nothing made, and the JSON ledger left as it was, for the version that reads it.
+        assert!(!path.exists());
+        assert!(!dir.path().join("ledger.log.copying").exists());
+        assert!(!dir.path().join("ledger-key.pem").exists());
+        assert_eq!(mode(&json), before);
+    }
+
+    #[tokio::test]
+    async fn a_damaged_json_ledger_holds_it_and_nothing_is_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, json) = (
+            dir.path().join("ledger.log"),
+            dir.path().join("events.jsonl"),
+        );
+        {
+            let (mut old, _) = EventLog::<CredentialsEvent>::open(&json).unwrap();
+            old.append(&grant(1)).unwrap();
+            old.append(&grant(2)).unwrap();
+        }
+        // An event changed in place: its recorded hash no longer holds.
+        let text = std::fs::read_to_string(&json).unwrap();
+        std::fs::write(&json, text.replacen("agent-2", "agent-9", 1)).unwrap();
+
+        let why = refused(opened(&path, Some(&json)).await);
+        assert!(why.contains("is damaged at line 1"), "{why}");
+        assert!(why.contains("until the ledger is looked at"), "{why}");
+        assert!(!path.exists());
     }
 
     #[tokio::test]

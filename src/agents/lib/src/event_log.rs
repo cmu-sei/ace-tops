@@ -64,9 +64,13 @@ pub enum EventLogError {
         #[source]
         source: serde_json::Error,
     },
+    /// The entry is whole and its hash holds, and its event is not one this code reads: of a kind it does not know, or
+    /// of a known kind in a form it does not read. Written by other code, a newer version most likely.
     #[error("failed to deserialize event at line {line} into its expected type: {source}")]
     EventDeserialize {
         line: usize,
+        /// The kind the event is written as (its variant's name), when it says one.
+        kind: Option<String>,
         #[source]
         source: serde_json::Error,
     },
@@ -124,6 +128,16 @@ fn compute_hash(prev_hash: &str, timestamp: &DateTime<Utc>, event_json: &str) ->
     hasher.update(timestamp.to_rfc3339().as_bytes());
     hasher.update(event_json.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// The kind an event's JSON is written as: the one key of an object, or the string of a unit variant, as serde writes an
+/// enum. None for anything else.
+fn written_kind(event_json: &str) -> Option<String> {
+    match serde_json::from_str::<serde_json::Value>(event_json).ok()? {
+        serde_json::Value::String(kind) => Some(kind),
+        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().cloned(),
+        _ => None,
+    }
 }
 
 /// A local, append-only, hash-chained event log.
@@ -197,8 +211,13 @@ where
                     });
                 }
 
-                let event: E = serde_json::from_str(entry.event.get())
-                    .map_err(|source| EventLogError::EventDeserialize { line: i, source })?;
+                let event: E = serde_json::from_str(entry.event.get()).map_err(|source| {
+                    EventLogError::EventDeserialize {
+                        line: i,
+                        kind: written_kind(entry.event.get()),
+                        source,
+                    }
+                })?;
 
                 last_hash = entry.hash.clone();
                 events.push(Replayed {
@@ -335,6 +354,71 @@ mod tests {
             serial: String,
             reason: String,
         },
+    }
+
+    /// An event written by other code is refused with the kind it was written as, whether this code knows the kind or not.
+    #[test]
+    fn an_event_this_code_does_not_read_is_refused_naming_the_kind_it_was_written_as() {
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        enum Newer {
+            Grant {
+                identity: String,
+                permissions: Vec<String>,
+            },
+            Rotate {
+                key: String,
+            },
+            Revoke {
+                serial: u64,
+                reason: String,
+            },
+        }
+        for (written, line, kind) in [
+            (Newer::Rotate { key: "k".into() }, 1, "Rotate"),
+            (
+                Newer::Revoke {
+                    serial: 7,
+                    reason: "r".into(),
+                },
+                1,
+                "Revoke",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("log.jsonl");
+            {
+                let (mut log, _) = EventLog::<Newer>::open(&path).unwrap();
+                log.append(&Newer::Grant {
+                    identity: "a".into(),
+                    permissions: vec![],
+                })
+                .unwrap();
+                log.append(&written).unwrap();
+            }
+            match EventLog::<TestEvent>::open(&path) {
+                Err(EventLogError::EventDeserialize {
+                    line: at,
+                    kind: Some(named),
+                    ..
+                }) => {
+                    assert_eq!((at, named.as_str()), (line, kind));
+                }
+                Err(other) => panic!("{kind}: expected EventDeserialize, got {other}"),
+                Ok(_) => panic!("{kind}: an event this code does not read was replayed"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_kind_an_event_is_written_as_is_its_one_key_or_its_name() {
+        assert_eq!(
+            written_kind(r#"{"Grant":{"a":1}}"#).as_deref(),
+            Some("Grant")
+        );
+        assert_eq!(written_kind(r#""Unit""#).as_deref(), Some("Unit"));
+        assert_eq!(written_kind(r#"{"A":1,"B":2}"#), None);
+        assert_eq!(written_kind("[1]"), None);
+        assert_eq!(written_kind("not json"), None);
     }
 
     #[test]
