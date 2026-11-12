@@ -44,6 +44,56 @@ def has [problems: list<string>, needle: string] {
 
 def main [] {
     let tests = {
+        "an agent's lock grants what its pod mounts, and every path it is given is declared as one": {
+            let mounts = ["/etc/tls/certs" "/var/lib/a" "/run/polar-custody"]
+            let document = {
+                sections: [{ variables: [
+                    { name: "TLS_CA_CERT", type: "path of a file it reads", value: "/etc/tls/certs/ca.pem", default: null }
+                    { name: "DATA", type: "path of a directory it reads and writes", value: null, default: "/var/lib/a/data" }
+                    { name: "CERTS", type: "comma-separated paths of files it reads", value: "/etc/tls/certs/a.pem, /etc/tls/certs/b.pem", default: null }
+                    { name: "SEEDS", type: "path of a directory it reads", value: "/nix/store/abc-seeds", default: null }
+                    { name: "BROKER_ADDR", type: "text", value: "cassini:8080", default: null }
+                ] }]
+                filesystem: [
+                    { path: "/etc/resolv.conf", access: "path of a file it reads", why: "name resolution" }
+                    { path: "/proc/meminfo", access: "path of a file it reads", why: "memory" }
+                ]
+            }
+            assert equal (landlock_document_problems "a/a" $document $mounts) []
+        }
+        "a path in a variable not declared as one, and a grant no mount holds, are each named": {
+            let document = {
+                sections: [{ variables: [
+                    { name: "CA", type: "text", value: "/etc/tls/certs/ca.pem", default: null }
+                    { name: "DATA", type: "path of a directory it reads and writes", value: "/var/lib/elsewhere", default: null }
+                ] }]
+                filesystem: [{ path: "/opt/thing", access: "path of a directory it reads", why: "a thing" }]
+            }
+            let problems = (landlock_document_problems "a/a" $document ["/etc/tls/certs" "/var/lib/a"])
+            assert equal ($problems | length) 3
+            assert ($problems | any {|p| ($p | str contains "CA=/etc/tls/certs/ca.pem") and ($p | str contains "would not grant") })
+            assert ($problems | any {|p| ($p | str contains "DATA grants /var/lib/elsewhere") })
+            assert ($problems | any {|p| ($p | str contains "a thing grants /opt/thing") })
+            # A mount's name is not a prefix of another path's.
+            let near = (landlock_document_problems "a/a" { sections: [{ variables: [
+                { name: "D", type: "path of a directory it reads", value: "/var/lib/ab", default: null }
+            ] }] } ["/var/lib/a"])
+            assert equal ($near | length) 1
+        }
+        "the render's agents are found by the ConfigMap mounted at /etc/polar": {
+            let config = ({ sections: [{ variables: [{ name: "X", type: "text", value: "/etc/x", default: null }] }] } | to json)
+            let docs = [
+                { kind: "ConfigMap", metadata: { name: "a-config" }, data: { "config.json": $config } }
+                { kind: "Deployment", metadata: { name: "a" }, spec: { template: { spec: {
+                    volumes: [{ name: "config", configMap: { name: "a-config" } }]
+                    containers: [{ name: "a", volumeMounts: [{ name: "config", mountPath: "/etc/polar" }] }]
+                } } } }
+                { kind: "Deployment", metadata: { name: "keycloak" }, spec: { template: { spec: { containers: [{ name: "k" }] } } } }
+            ]
+            let problems = (landlock_problems $docs)
+            assert equal ($problems | length) 1
+            assert ($problems.0 | str starts-with "a/a: X=/etc/x")
+        }
         # docs/architecture/key-custody.md, step 4: the daemon holds one key of each type, so a pod given it has at most one
         # certificate of each.
         "a pod given the custody daemon has at most one certificate of each type": {

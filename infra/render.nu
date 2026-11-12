@@ -36,7 +36,7 @@
 #   nu infra/up.nu <target>
 
 use validate.nu *
-use rules.nu [job_replacement_problems, in_place_problems, parallelism_problems, apply_order_problems, pull_policy_problems]
+use rules.nu [job_replacement_problems, in_place_problems, parallelism_problems, apply_order_problems, pull_policy_problems, landlock_problems]
 use layers.nu [layer_problems, to_apply]
 use registry.nu [node_registry]
 use lock.nu [effective, lock_problems, pin_refs, pin_text]
@@ -194,6 +194,10 @@ def main [
     check_pull_policies $output_dir
     print ""
 
+    print "Checking what each agent's lock grants..."
+    check_landlock $output_dir
+    print ""
+
     print "Checking cert-issuer's TLS identity..."
     check_cert_issuer_identity $output_dir $cert_issuer_url
     print ""
@@ -316,6 +320,16 @@ def check_pull_policies [output_dir: string] {
     let files = (ls $output_dir | get name | where {|f| $f | str ends-with ".yaml" })
     let docs = ($files | reduce --fold [] {|f, acc| $acc ++ (docs_in_file $f) })
     let problems = (pull_policy_problems $docs)
+    for p in $problems { print $"  ERROR: ($p)" }
+    if ($problems | length) > 0 { exit 1 }
+}
+
+# Each agent's lock grants only paths its pod holds, and every path it is given is declared as one (infra/rules.nu
+# landlock_problems).
+def check_landlock [output_dir: string] {
+    let files = (ls $output_dir | get name | where {|f| $f | str ends-with ".yaml" })
+    let docs = ($files | reduce --fold [] {|f, acc| $acc ++ (docs_in_file $f) })
+    let problems = (landlock_problems $docs)
     for p in $problems { print $"  ERROR: ($p)" }
     if ($problems | length) > 0 { exit 1 }
 }
