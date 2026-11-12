@@ -89,6 +89,8 @@ pub fn check_request_shape(
                 _ => Err(RequestNotPermitted),
             }
         }
+        // Read from a ledger another branch wrote, never issued here (WorkloadCertType::Signing).
+        WorkloadCertType::Signing => Err(RequestNotPermitted),
         WorkloadCertType::Client => {
             if names.is_empty() {
                 Ok(())
@@ -124,7 +126,9 @@ pub(crate) fn extra_sans_for(
             .map(|p| p.to_san_string())
             .chain(model_gives.map(|n| n.san_strings()).unwrap_or_default())
             .collect(),
-        WorkloadCertType::Server | WorkloadCertType::Custody => names.to_vec(),
+        WorkloadCertType::Server | WorkloadCertType::Custody | WorkloadCertType::Signing => {
+            names.to_vec()
+        }
     }
 }
 
@@ -161,6 +165,7 @@ pub(crate) fn signing_type(cert_type: WorkloadCertType) -> CertType {
         WorkloadCertType::Client => CertType::Client,
         WorkloadCertType::Server => CertType::Server,
         WorkloadCertType::Custody => CertType::Custody,
+        WorkloadCertType::Signing => CertType::Signing,
     }
 }
 
@@ -885,6 +890,20 @@ pub(crate) mod tests {
     /// workload's certificate names its pod by name beside its UID, required: a UUID alone is never what a person reads.
     /// A token that names no pod is refused, saying why; a single-instance workload's certificates, and any server
     /// certificate, name no instance, as before.
+    /// A pod's signing certificate is read from a ledger agentic-control-plane wrote, and never issued here, whatever
+    /// is asked for with it.
+    #[test]
+    fn main_issues_no_signing_certificate() {
+        for kind in [CredentialKind::Kubernetes, CredentialKind::LikelyIdp] {
+            for names in [vec![], vec!["c:record-evidence:attestation".to_string()]] {
+                assert!(
+                    check_request_shape(kind, WorkloadCertType::Signing, &names).is_err(),
+                    "{kind:?} {names:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_multi_instance_workload_s_certificate_requires_its_pod_s_name() {
         use cert_issuer_common::instance::InstanceError;

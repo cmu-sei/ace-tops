@@ -105,7 +105,7 @@ fn examples() -> Vec<CredentialsEvent> {
             instance_binding: "pod-uid".into(),
             serial: "0c0d".into(),
             timestamp: 1_762_900_002,
-            cert_type: WorkloadCertType::Custody,
+            cert_type: WorkloadCertType::Signing,
             grant_key: Some("cassini".into()),
             certificate_pem: "-----BEGIN CERTIFICATE-----\nMA==\n-----END CERTIFICATE-----\n"
                 .into(),

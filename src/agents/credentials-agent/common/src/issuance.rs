@@ -87,6 +87,11 @@ pub enum WorkloadCertType {
     /// asks for (`p:custody:client`, `server`, `escrow`).
     #[n(2)]
     Custody,
+    /// A pod's signing certificate, as agentic-control-plane issues one for the key its custody daemon makes
+    /// (docs/architecture/key-custody.md, "Workload signing keys", on that branch). Main issues none: it is here so that a
+    /// ledger that branch wrote, on a cluster both deploy to, is read and not refused, at that branch's index.
+    #[n(3)]
+    Signing,
 }
 
 impl WorkloadCertType {

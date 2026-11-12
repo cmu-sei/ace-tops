@@ -149,7 +149,8 @@ fn permission_for(cert_type: WorkloadCertType) -> Option<CustodyPermission> {
     match cert_type {
         WorkloadCertType::Client => Some(CustodyPermission::Client),
         WorkloadCertType::Server => Some(CustodyPermission::Server),
-        WorkloadCertType::Custody => None,
+        // Main issues no pod signing certificate (WorkloadCertType::Signing): there is no permission to ask under.
+        WorkloadCertType::Custody | WorkloadCertType::Signing => None,
     }
 }
 
@@ -370,6 +371,17 @@ pub(crate) mod tests {
     use proptest::prelude::*;
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A custodian asking for a pod signing certificate, which main does not issue, is asked under no permission, and
+    /// so refused before cert-issuer is asked.
+    #[test]
+    fn no_permission_asks_for_a_signing_certificate() {
+        assert_eq!(permission_for(WorkloadCertType::Signing), None);
+        assert_eq!(
+            permission_for(WorkloadCertType::Client),
+            Some(CustodyPermission::Client)
+        );
+    }
 
     pub(crate) const X: &str = "kube-consumer.polar.serviceaccount.cluster.local";
     pub(crate) const CUSTODIAN: &str = "custody.kube-consumer.polar.serviceaccount.cluster.local";

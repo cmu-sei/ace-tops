@@ -467,6 +467,7 @@ impl CredentialsState {
                 let cert_type = match cert_type {
                     CertType::Server => WorkloadCertType::Server,
                     CertType::Custody => WorkloadCertType::Custody,
+                    CertType::Signing => WorkloadCertType::Signing,
                     _ => WorkloadCertType::Client,
                 };
                 // cert-issuer's record says when in seconds; the ledger's times are milliseconds.
