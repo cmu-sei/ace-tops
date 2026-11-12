@@ -455,7 +455,7 @@ async fn an_unchanged_tree_is_one_node_and_a_redelivery_adds_nothing() {
             artifact_content_hash: hash.into(),
             filename: format!("{hash}.cdx.json"),
             root: Some(package(root)),
-            components: components.iter().map(|c| package(*c)).collect(),
+            components: components.iter().map(|c| package(c)).collect(),
             edges: edges
                 .into_iter()
                 .map(|(from, to)| DependencyEdge {
