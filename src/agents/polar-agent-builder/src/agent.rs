@@ -418,10 +418,14 @@ pub struct AgentDocument {
     pub problems: Vec<String>,
 }
 
-/// A path the agent opens that no variable names, as the scaffold shows it.
+/// What the agent opens beyond what its path variables' declarations grant, as the scaffold shows it: a path, or a
+/// variable it uses more widely than its declaration says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilesystemEntry {
-    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable: Option<String>,
     /// As a path variable's `type` says it ("path of a file it reads", ...).
     pub access: String,
     pub why: String,
@@ -709,12 +713,28 @@ fn unanchored_paths_of<A: PolarAgent>(
 /// What `A`'s Landlock lock allows under `config` (`landlock`): each of its path variables at its value, or its default,
 /// and [`grants_of`]. A variable of an optional capability the deployment does not provide has no value, so no grant.
 pub fn landlock_plan_of<A: PolarAgent>(config: &dyn Env) -> crate::landlock::Plan {
-    let declared = paths_of::<A>(config);
+    let grants = grants_of::<A>();
+    let mut declared = paths_of::<A>(config);
+    // A grant at a variable, at the variable's value: the same variable, with the access the grant says.
+    let widened: Vec<_> = grants
+        .iter()
+        .filter_map(|g| match g.at {
+            crate::landlock::At::Variable(name) => Some((name, g.access)),
+            crate::landlock::At::Path(_) => None,
+        })
+        .flat_map(|(name, access)| {
+            declared
+                .iter()
+                .filter(move |(declared, _, _)| *declared == name)
+                .map(move |(name, _, value)| (*name, access, value.clone()))
+        })
+        .collect();
+    declared.extend(widened);
     crate::landlock::plan(
         declared
             .iter()
             .map(|(name, access, value)| (*name, *access, value.as_deref())),
-        &grants_of::<A>(),
+        &grants,
     )
 }
 
@@ -844,10 +864,17 @@ pub fn scaffold_document<A: PolarAgent>() -> AgentDocument {
             .collect(),
         filesystem: grants_of::<A>()
             .iter()
-            .map(|g| FilesystemEntry {
-                path: g.path.to_string(),
-                access: g.access.type_name().to_string(),
-                why: g.why.to_string(),
+            .map(|g| {
+                let (path, variable) = match g.at {
+                    crate::landlock::At::Path(path) => (Some(path.to_string()), None),
+                    crate::landlock::At::Variable(name) => (None, Some(name.to_string())),
+                };
+                FilesystemEntry {
+                    path,
+                    variable,
+                    access: g.access.type_name().to_string(),
+                    why: g.why.to_string(),
+                }
             })
             .collect(),
         document: Document::scaffold(&tagged),
@@ -1629,11 +1656,18 @@ mod tests {
         const NEEDS: &'static [Capability] = &[];
         const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
         const SECTIONS: &'static [&'static Section] = &[&LOCKED];
-        const FILESYSTEM: &'static [crate::landlock::Grant] = &[crate::landlock::Grant {
-            path: "/sys/fs/cgroup",
-            access: polar_env::Access::ReadDir,
-            why: "its limits",
-        }];
+        const FILESYSTEM: &'static [crate::landlock::Grant] = &[
+            crate::landlock::Grant::path(
+                "/sys/fs/cgroup",
+                polar_env::Access::ReadDir,
+                "its limits",
+            ),
+            crate::landlock::Grant::variable(
+                "LOCKED_CA",
+                polar_env::Access::WriteFile,
+                "it writes it",
+            ),
+        ];
         async fn start(_: Configured) -> Result<(), StartError> {
             Ok(())
         }
@@ -1648,6 +1682,13 @@ mod tests {
         let rules: Vec<&str> = plan.rules.keys().map(String::as_str).collect();
         // Its CA's directory; its data, from where it was started, by default; its own grant; name resolution's files.
         assert!(rules.contains(&"/etc/polar-ca"), "{rules:?}");
+        // Its CA it also writes, as its own grant at the variable says: the directory, written.
+        assert_eq!(
+            plan.rules["/etc/polar-ca"],
+            crate::landlock::WRITE,
+            "{:?}",
+            plan.rules
+        );
         assert!(
             rules.contains(&here.join("data").display().to_string().as_str()),
             "{rules:?}"
@@ -1684,13 +1725,26 @@ mod tests {
             type_of("LOCKED_DATA"),
             "path of a directory it reads and writes"
         );
-        let paths: Vec<&str> = scaffold
+        let paths: Vec<Option<&str>> = scaffold
             .filesystem
             .iter()
-            .map(|g| g.path.as_str())
+            .map(|g| g.path.as_deref())
             .collect();
-        assert_eq!(paths, ["/etc/resolv.conf", "/etc/hosts", "/sys/fs/cgroup"]);
+        assert_eq!(
+            paths,
+            [
+                Some("/etc/resolv.conf"),
+                Some("/etc/hosts"),
+                Some("/sys/fs/cgroup"),
+                None
+            ]
+        );
         assert_eq!(scaffold.filesystem[2].why, "its limits");
+        assert_eq!(
+            scaffold.filesystem[3].variable.as_deref(),
+            Some("LOCKED_CA")
+        );
+        assert_eq!(scaffold.filesystem[3].access, "path of a file it writes");
     }
 
     struct Bare;

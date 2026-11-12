@@ -54,16 +54,16 @@ impl PolarAgent for CassiniBroker {
     const CASSINI_CLIENT: bool = false;
     // The memory budget samples these every second (`runtime_budget`).
     const FILESYSTEM: &'static [polar_agent_builder::landlock::Grant] = &[
-        polar_agent_builder::landlock::Grant {
-            path: crate::runtime_budget::MEMINFO,
-            access: polar_env::Access::ReadFile,
-            why: "the node's available memory, for the memory budget",
-        },
-        polar_agent_builder::landlock::Grant {
-            path: crate::runtime_budget::CGROUP,
-            access: polar_env::Access::ReadDir,
-            why: "the pod's memory limit, use and pressure, for the memory budget",
-        },
+        polar_agent_builder::landlock::Grant::path(
+            crate::runtime_budget::MEMINFO,
+            polar_env::Access::ReadFile,
+            "the node's available memory, for the memory budget",
+        ),
+        polar_agent_builder::landlock::Grant::path(
+            crate::runtime_budget::CGROUP,
+            polar_env::Access::ReadDir,
+            "the pod's memory limit, use and pressure, for the memory budget",
+        ),
     ];
     const HELP: Option<&'static str> = Some(
         "The broker accepts clients over mutual TLS, keeps their sessions, topics and \

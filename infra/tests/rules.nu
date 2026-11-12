@@ -57,6 +57,7 @@ def main [] {
                 filesystem: [
                     { path: "/etc/resolv.conf", access: "path of a file it reads", why: "name resolution" }
                     { path: "/proc/meminfo", access: "path of a file it reads", why: "memory" }
+                    { variable: "TLS_CA_CERT", access: "path of a file it writes", why: "it writes it" }
                 ]
             }
             assert equal (landlock_document_problems "a/a" $document $mounts) []

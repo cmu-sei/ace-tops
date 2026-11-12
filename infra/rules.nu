@@ -526,7 +526,8 @@ export def landlock_document_problems [who: string, document: record, mount_path
         }
         | flatten
     )
-    let grants = ($document.filesystem? | default [] | each {|g| { what: $g.why, path: $g.path } })
+    # A grant at a variable is at that variable's value, which is checked as the variable is.
+    let grants = ($document.filesystem? | default [] | where {|g| ($g.path? | default null) != null } | each {|g| { what: $g.why, path: $g.path } })
     let outside = (
         $paths ++ $grants
         | where {|g| not (do $held $g.path) }

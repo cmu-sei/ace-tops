@@ -27,8 +27,9 @@
 //!
 //! What it may open comes from two places, both in its scaffold, so applying the catalog signs them off: each variable
 //! declared as a path, with the access its code says ([`polar_env::Access`]), at the value the document gives it; and the
-//! [`Grant`]s no variable names, the builder's own (name resolution, the Kubernetes client's token for an agent with a
-//! Kubernetes operation) and the agent's ([`crate::agent::PolarAgent::FILESYSTEM`]).
+//! [`Grant`]s, the builder's own (name resolution, the Kubernetes client's token for an agent with a Kubernetes
+//! operation) and the agent's ([`crate::agent::PolarAgent::FILESYSTEM`]): a path no variable names, or a variable the
+//! agent uses more widely than its declaration says, as the cert issuer writes the certificate every other agent reads.
 //!
 //! A file grants the directory it is in, not the file alone: a file updated by writing a new one and renaming it over the
 //! old is a new file, which a grant on the old one would refuse. No grant covers a whole system directory ([`SYSTEM`]): a
@@ -44,36 +45,58 @@
 use polar_env::Access;
 use std::collections::BTreeMap;
 
-/// A path no variable names, which an agent opens all the same: the builder's own, and [`PolarAgent::FILESYSTEM`](crate::agent::PolarAgent::FILESYSTEM).
+/// Where a [`Grant`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum At {
+    /// A path no variable names.
+    Path(&'static str),
+    /// Wherever the variable of this name says, which its declaration grants less of than the agent needs.
+    Variable(&'static str),
+}
+
+/// What an agent opens beyond what its path variables' declarations grant: the builder's own, and
+/// [`PolarAgent::FILESYSTEM`](crate::agent::PolarAgent::FILESYSTEM).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grant {
-    pub path: &'static str,
+    pub at: At,
     pub access: Access,
     /// Why the agent opens it, in a few words.
     pub why: &'static str,
 }
 
+impl Grant {
+    /// A path no variable names.
+    pub const fn path(path: &'static str, access: Access, why: &'static str) -> Self {
+        Self {
+            at: At::Path(path),
+            access,
+            why,
+        }
+    }
+
+    /// The path a variable names, used as `access` says.
+    pub const fn variable(name: &'static str, access: Access, why: &'static str) -> Self {
+        Self {
+            at: At::Variable(name),
+            access,
+            why,
+        }
+    }
+}
+
 /// What every agent reads to resolve a name (musl reads both on each lookup).
 pub const NAME_RESOLUTION: &[Grant] = &[
-    Grant {
-        path: "/etc/resolv.conf",
-        access: Access::ReadFile,
-        why: "name resolution",
-    },
-    Grant {
-        path: "/etc/hosts",
-        access: Access::ReadFile,
-        why: "name resolution",
-    },
+    Grant::path("/etc/resolv.conf", Access::ReadFile, "name resolution"),
+    Grant::path("/etc/hosts", Access::ReadFile, "name resolution"),
 ];
 
 /// What the Kubernetes client reads, and reads again as its token is renewed, in an agent with a Kubernetes operation
 /// (`protocol::kubernetes`, `Config::incluster`).
-pub const KUBERNETES_CLIENT: Grant = Grant {
-    path: "/var/run/secrets/kubernetes.io/serviceaccount",
-    access: Access::ReadDir,
-    why: "the Kubernetes client's token and CA",
-};
+pub const KUBERNETES_CLIENT: Grant = Grant::path(
+    "/var/run/secrets/kubernetes.io/serviceaccount",
+    Access::ReadDir,
+    "the Kubernetes client's token and CA",
+);
 
 /// The directories no grant covers whole.
 pub const SYSTEM: &[&str] = &[
@@ -199,8 +222,9 @@ pub(crate) fn place(path: &str, access: Access) -> Result<(String, u64), String>
     })
 }
 
-/// The plan for `declared` (each path variable's name, access and value, if it has one) and `grants`: deterministic,
-/// whatever their order, and each path's rights the union of what it is granted.
+/// The plan for `declared` (each path variable's name, access and value, if it has one, and each grant at a variable,
+/// resolved to its value by the caller) and the `grants` at a path: deterministic, whatever their order, and each path's
+/// rights the union of what it is granted. A grant at a variable is not read here: only its caller knows the value.
 pub fn plan<'a>(
     declared: impl IntoIterator<Item = (&'a str, Access, Option<&'a str>)>,
     grants: &[Grant],
@@ -209,7 +233,10 @@ pub fn plan<'a>(
     let asked = declared
         .into_iter()
         .filter_map(|(name, access, value)| value.map(|value| (name, access, value)))
-        .chain(grants.iter().map(|g| (g.why, g.access, g.path)));
+        .chain(grants.iter().filter_map(|g| match g.at {
+            At::Path(path) => Some((g.why, g.access, path)),
+            At::Variable(_) => None,
+        }));
     for (name, access, value) in asked {
         match place(value, access) {
             Ok((path, rights)) => *plan.rules.entry(path).or_default() |= rights,

@@ -45,6 +45,25 @@ impl PolarAgent for CertIssuer {
     const SELF_TEST: bool = false;
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
+    // It signs its own client certificate and writes it where the Cassini client reads it (`own_certificate`), files
+    // every other agent only reads.
+    const FILESYSTEM: &'static [polar_agent_builder::landlock::Grant] = &[
+        polar_agent_builder::landlock::Grant::variable(
+            "TLS_CLIENT_CERT",
+            polar_env::Access::WriteFile,
+            "its own certificate, which it signs itself",
+        ),
+        polar_agent_builder::landlock::Grant::variable(
+            "TLS_CLIENT_KEY",
+            polar_env::Access::WriteFile,
+            "its own certificate's key",
+        ),
+        polar_agent_builder::landlock::Grant::variable(
+            "TLS_CA_CERT",
+            polar_env::Access::WriteFile,
+            "the CA chain its own certificate is signed under",
+        ),
+    ];
     // The record of every certificate it signs, which the credentials agent asks for, a page at a time
     // (docs/architecture/cert-issuer-isolation.md, "Step 2").
     const TOPICS: &'static [TopicDecl] = &[
