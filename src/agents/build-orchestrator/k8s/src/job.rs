@@ -57,12 +57,16 @@
 //! - What the Job may differ from its template in is said once, here, and checked before every create (`departures`);
 //!   whatever a Job asks of its node, the builder's judge refuses (`Denial::ReachesTheNode`).
 //! - restartPolicy=Never: retries are the orchestrator's decision, not Kubernetes's.
+//! - No DNS. The build namespace's NetworkPolicy lets a pod reach the registry's pods and nothing else, not the cluster's
+//!   name server, which forwards upstream (`infra/cluster-registry.nu`, `builds_policy`). The orchestrator resolves the
+//!   registry's name itself and gives the pod the address (`hostAliases`), so the pod reaches the registry by the name it
+//!   is told without resolving it.
 
 use k8s_openapi::{
     api::{
         batch::v1::{Job, JobSpec},
         core::v1::{
-            Capabilities, Container, EmptyDirVolumeSource, EnvVar, PodSpec, PodTemplate,
+            Capabilities, Container, EmptyDirVolumeSource, EnvVar, HostAlias, PodSpec, PodTemplate,
             PodTemplateSpec, ResourceRequirements, SeccompProfile, SecurityContext, Volume,
             VolumeMount,
         },
@@ -74,6 +78,7 @@ use orchestrator_core::backend::Retention;
 use orchestrator_core::types::{BuildSpec, Privileges, SourceRef, pinned_by_digest, source_env};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 use uuid::Uuid;
 
 /// The template's init container that fetches the source, and its one container that runs the pipeline.
@@ -154,6 +159,11 @@ pub struct JobOptions {
     /// on each Job is set to the longest of them, so that jobs are still collected if the orchestrator is not
     /// running to apply it.
     pub retention: Retention,
+    /// The registry's host, as a build's pod is told it (`registry_host`), when it is a name: the one name a pod is given
+    /// an address for. None where the registry is reached by its address, or there is none.
+    pub registry_host: Option<String>,
+    /// The address the registry's name resolved to when this build's Job was made, for the pod's `hostAliases`.
+    pub registry_address: Option<Ipv4Addr>,
 }
 
 impl JobOptions {
@@ -165,7 +175,28 @@ impl JobOptions {
             resources: PipelineResources::default(),
             workspace_size_limit: None,
             retention: Retention::default(),
+            registry_host: None,
+            registry_address: None,
         }
+    }
+}
+
+/// The host of a registry's address (`http(s)://host[:port]`, as the settings take it), when it is a name a pod would
+/// have to resolve; None for an address, or a value that is not a registry's.
+pub fn registry_host(registry: &str) -> Option<String> {
+    let rest = registry
+        .strip_prefix("http://")
+        .or_else(|| registry.strip_prefix("https://"))?;
+    let authority = rest.split('/').next()?;
+    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    (!host.is_empty() && host.parse::<Ipv4Addr>().is_err()).then(|| host.to_string())
+}
+
+/// The one alias a build's pod is given: the registry's name, at the address it resolved to.
+fn registry_alias(host: &str, address: Ipv4Addr) -> HostAlias {
+    HostAlias {
+        ip: address.to_string(),
+        hostnames: Some(vec![host.to_string()]),
     }
 }
 
@@ -256,6 +287,11 @@ pub fn build_job(
         }
     }
     volumes.push(tmp_volume());
+    if let (Some(host), Some(address)) = (&options.registry_host, options.registry_address) {
+        pod.host_aliases
+            .get_or_insert_with(Vec::new)
+            .push(registry_alias(host, address));
+    }
 
     let (labels, annotations) = standard_metadata(spec);
     let mut pod_metadata = pod_template.metadata.clone().unwrap_or_default();
@@ -449,7 +485,8 @@ fn standard_metadata(spec: &BuildSpec) -> (BTreeMap<String, String>, BTreeMap<St
 /// `build_job`, and checked before every create, so that a Job made otherwise, or changed after, is not made. What a
 /// build may change:
 ///
-/// - the pod: its volumes, by a scratch volume added and the workspace's size; its labels, by labels added; nothing else;
+/// - the pod: its volumes, by a scratch volume added and the workspace's size; its labels, by labels added; its host
+///   aliases, by one alias of `registry_host`, the registry's name, to an IPv4 address; nothing else;
 /// - the fetch: environment added (the blob and its digest, as plain values), its resources, its hardening, the scratch
 ///   mount;
 /// - the pipeline: its image, pinned by digest, and command; environment added, as plain values; its resources; its
@@ -458,7 +495,12 @@ fn standard_metadata(spec: &BuildSpec) -> (BTreeMap<String, String>, BTreeMap<St
 /// A hardening is within `privileges` when the container is not privileged, drops every capability and adds only those
 /// signed, escalates or runs as root only if signed, has a read-only root filesystem and the runtime's default seccomp
 /// profile, and sets nothing else.
-pub fn departures(template: &PodTemplate, job: &Job, privileges: &Privileges) -> Vec<String> {
+pub fn departures(
+    template: &PodTemplate,
+    job: &Job,
+    privileges: &Privileges,
+    registry_host: Option<&str>,
+) -> Vec<String> {
     let Some(want) = template.template.as_ref() else {
         return vec!["the template has no pod".into()];
     };
@@ -484,7 +526,7 @@ pub fn departures(template: &PodTemplate, job: &Job, privileges: &Privileges) ->
 
     let mut want_spec = to_value(want_pod);
     let mut got_spec = to_value(got_pod);
-    for field in ["containers", "initContainers", "volumes"] {
+    for field in ["containers", "initContainers", "volumes", "hostAliases"] {
         take(&mut want_spec, field);
         take(&mut got_spec, field);
     }
@@ -496,6 +538,7 @@ pub fn departures(template: &PodTemplate, job: &Job, privileges: &Privileges) ->
     }
 
     volumes_depart(want_pod, got_pod, &mut found);
+    aliases_depart(want_pod, got_pod, registry_host, &mut found);
     containers_depart(
         "init container",
         want_pod.init_containers.as_deref().unwrap_or_default(),
@@ -565,6 +608,39 @@ fn volumes_depart(want: &PodSpec, got: &PodSpec, found: &mut Vec<String>) {
     }
     if expected != got {
         found.push("the pod's volumes are not its template's and the scratch volume".into());
+    }
+}
+
+/// The template's host aliases, and at most one more: `registry_host`, alone, at an IPv4 address.
+fn aliases_depart(
+    want: &PodSpec,
+    got: &PodSpec,
+    registry_host: Option<&str>,
+    found: &mut Vec<String>,
+) {
+    let want = want.host_aliases.clone().unwrap_or_default();
+    let got = got.host_aliases.clone().unwrap_or_default();
+    let added = match got.strip_prefix(want.as_slice()) {
+        Some(added) => added,
+        None => {
+            found.push("the pod's host aliases change or drop its template's".into());
+            return;
+        }
+    };
+    match (added, registry_host) {
+        ([], _) => {}
+        ([alias], Some(host))
+            if alias.hostnames.as_deref() == Some(&[host.to_string()][..])
+                && alias.ip.parse::<Ipv4Addr>().is_ok() => {}
+        _ => found.push(format!(
+            "the pod's host aliases add {}, where a build may add only the registry's name ({}) at an IPv4 address",
+            added
+                .iter()
+                .map(|a| format!("{} → {:?}", a.ip, a.hostnames.clone().unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            registry_host.unwrap_or("none here")
+        )),
     }
 }
 
@@ -806,8 +882,14 @@ pub(crate) mod tests {
         )
     }
 
+    const REGISTRY_HOST: &str = "registry.polar-registry.svc.cluster.local";
+
     fn options() -> JobOptions {
-        JobOptions::new("polar-builds", "build-runner")
+        JobOptions {
+            registry_host: Some(REGISTRY_HOST.into()),
+            registry_address: Some(Ipv4Addr::new(10, 96, 97, 171)),
+            ..JobOptions::new("polar-builds", "build-runner")
+        }
     }
 
     fn built(spec: &BuildSpec) -> Job {
@@ -870,7 +952,7 @@ pub(crate) mod tests {
         assert!(env(fetch).contains(&(source_env::REGISTRY_INSECURE.into(), Some("true".into()))));
         assert_eq!(env(fetch).len(), 4, "{:?}", env(fetch));
         assert_eq!(
-            departures(&template(), &job, &build.privileges),
+            departures(&template(), &job, &build.privileges, Some(REGISTRY_HOST)),
             Vec::<String>::new()
         );
     }
@@ -891,7 +973,7 @@ pub(crate) mod tests {
         assert!(env(fetch).contains(&(source_env::DEPENDENCIES.into(), Some(index))));
         assert_eq!(env(fetch).len(), 4, "{:?}", env(fetch));
         assert_eq!(
-            departures(&template(), &job, &build.privileges),
+            departures(&template(), &job, &build.privileges, Some(REGISTRY_HOST)),
             Vec::<String>::new()
         );
     }
@@ -968,7 +1050,15 @@ pub(crate) mod tests {
             "the template's own labels stay"
         );
         assert_eq!(labels["app.kubernetes.io/managed-by"], "build-orchestrator");
-        assert!(departures(&template(), &job, &Privileges::default()).is_empty());
+        assert!(
+            departures(
+                &template(),
+                &job,
+                &Privileges::default(),
+                Some(REGISTRY_HOST)
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1085,7 +1175,15 @@ pub(crate) mod tests {
             workspace.empty_dir.as_ref().unwrap().size_limit,
             Some(Quantity("2Gi".into()))
         );
-        assert!(departures(&template(), &job, &Privileges::default()).is_empty());
+        assert!(
+            departures(
+                &template(),
+                &job,
+                &Privileges::default(),
+                Some(REGISTRY_HOST)
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1188,9 +1286,12 @@ pub(crate) mod tests {
         AnnotationAdded,
         TemplateLabelChanged,
         ProbeAdded,
+        AliasToAnotherHost,
+        AliasExtra,
+        AliasNotAnAddress,
     }
 
-    const DEPARTURES: [Departure; 21] = [
+    const DEPARTURES: [Departure; 24] = [
         Departure::AnotherAccount,
         Departure::TokenMounted,
         Departure::AnotherNode,
@@ -1212,6 +1313,9 @@ pub(crate) mod tests {
         Departure::AnnotationAdded,
         Departure::TemplateLabelChanged,
         Departure::ProbeAdded,
+        Departure::AliasToAnotherHost,
+        Departure::AliasExtra,
+        Departure::AliasNotAnAddress,
     ];
 
     fn depart(job: &mut Job, how: Departure) {
@@ -1281,6 +1385,18 @@ pub(crate) mod tests {
                     .value = Some("/".into())
             }
             Departure::AnotherAccount => pod.service_account_name = Some("polar".into()),
+            Departure::AliasToAnotherHost => {
+                pod.host_aliases.as_mut().unwrap()[0].hostnames =
+                    Some(vec!["kubernetes.default".into()])
+            }
+            Departure::AliasExtra => pod
+                .host_aliases
+                .as_mut()
+                .unwrap()
+                .push(registry_alias("github.com", Ipv4Addr::new(10, 0, 0, 9))),
+            Departure::AliasNotAnAddress => {
+                pod.host_aliases.as_mut().unwrap()[0].ip = "fd00::1".into()
+            }
             Departure::TokenMounted => pod.automount_service_account_token = Some(true),
             Departure::AnotherNode => {
                 pod.node_selector = Some(BTreeMap::from([("pool".into(), "core".into())]))
@@ -1346,7 +1462,7 @@ pub(crate) mod tests {
         #[test]
         fn a_job_made_from_its_template_departs_from_it_nowhere(build in any_build()) {
             let job = built(&build);
-            prop_assert_eq!(departures(&template(), &job, &build.privileges), Vec::<String>::new());
+            prop_assert_eq!(departures(&template(), &job, &build.privileges, Some(REGISTRY_HOST)), Vec::<String>::new());
         }
 
         /// Any one change a build may not make is found, whatever the build.
@@ -1357,7 +1473,7 @@ pub(crate) mod tests {
         ) {
             let mut job = built(&build);
             depart(&mut job, how);
-            prop_assert!(!departures(&template(), &job, &build.privileges).is_empty(), "{how:?} was not found");
+            prop_assert!(!departures(&template(), &job, &build.privileges, Some(REGISTRY_HOST)).is_empty(), "{how:?} was not found");
         }
     }
 
@@ -1399,6 +1515,76 @@ pub(crate) mod tests {
             gone,
             vec![0, 3],
             "an old success and a very old failure; a recent one of each stays"
+        );
+    }
+
+    #[test]
+    fn a_build_pod_is_given_the_registry_s_address_by_its_name_and_nothing_else() {
+        let job = built(&spec(git()));
+        let aliases = pod(&job).host_aliases.clone().unwrap();
+        assert_eq!(
+            aliases,
+            vec![registry_alias(
+                REGISTRY_HOST,
+                Ipv4Addr::new(10, 96, 97, 171)
+            )]
+        );
+        assert!(
+            departures(
+                &template(),
+                &job,
+                &Privileges::default(),
+                Some(REGISTRY_HOST)
+            )
+            .is_empty()
+        );
+        // The same alias where the deployment names no registry by name is a departure.
+        assert!(!departures(&template(), &job, &Privileges::default(), None).is_empty());
+    }
+
+    #[test]
+    fn without_a_resolved_address_a_pod_is_given_no_alias() {
+        let job = build_job(
+            &template(),
+            &spec(git()),
+            &JobOptions::new("polar-builds", "build-runner"),
+        )
+        .unwrap();
+        assert_eq!(pod(&job).host_aliases, None);
+        assert!(
+            departures(
+                &template(),
+                &job,
+                &Privileges::default(),
+                Some(REGISTRY_HOST)
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_registry_s_host_is_a_name_to_resolve_or_none() {
+        assert_eq!(
+            registry_host("http://registry.polar-registry.svc.cluster.local:5000").as_deref(),
+            Some("registry.polar-registry.svc.cluster.local")
+        );
+        assert_eq!(
+            registry_host("https://registry.example.com").as_deref(),
+            Some("registry.example.com")
+        );
+        assert_eq!(
+            registry_host("https://registry.example.com:443/v2").as_deref(),
+            Some("registry.example.com")
+        );
+        assert_eq!(
+            registry_host("http://10.0.2.2:5000"),
+            None,
+            "an address needs no alias"
+        );
+        assert_eq!(
+            registry_host("registry:5000"),
+            None,
+            "not a registry's address as the settings take one"
         );
     }
 

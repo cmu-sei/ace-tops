@@ -54,9 +54,11 @@ def main [context_nuon: string] {
         let metadata = if ($n.labels | is-empty) { { name: $n.name } } else { { name: $n.name, labels: $n.labels } }
         { apiVersion: "v1", kind: "Namespace", metadata: $metadata } | to yaml
     })
+    # The NetworkPolicies that go with them: the builds' (infra/cluster-registry.nu, builds_policy), after its namespace.
+    let policies = ($context.policies? | default [] | each {|p| $p | to yaml })
     # Polar's first namespaces, then the others it makes and each it attests besides (infra/attested.nu, added_namespaces), with
     # their Pod Security labels; the attestation agent has a Role in each.
-    [(dhall_yaml $src ["--documents"]) ...$added] | str join "---\n" | save --force $out
+    [(dhall_yaml $src ["--documents"]) ...$added ...$policies] | str join "---\n" | save --force $out
 
     print $"  namespaces: done"
 }

@@ -42,7 +42,7 @@ use crate::source::{GitSource, Source};
 use chrono::Utc;
 use git_agent_common::GitRepositoryMessage;
 use orchestrator_backend_k8s::backend::KubernetesBackend;
-use orchestrator_backend_k8s::job::JobOptions;
+use orchestrator_backend_k8s::job::{JobOptions, registry_host};
 use orchestrator_core::backend::{BuildBackend, InFlight};
 use orchestrator_core::types::{BuildRequest, BuildState, SourceRef};
 use orchestrator_report::Bounds;
@@ -179,6 +179,8 @@ impl OrchestratorSupervisor {
             resources: state.tuning.resources.clone(),
             workspace_size_limit: Some(state.tuning.workspace_limit.clone()),
             retention: state.tuning.retention,
+            registry_host: registry_host(&state.deployment.registry),
+            registry_address: None,
         };
         Arc::new(KubernetesBackend::new(state.protocols.clone(), options))
     }

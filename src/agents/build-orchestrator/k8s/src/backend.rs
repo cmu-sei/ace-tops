@@ -144,6 +144,22 @@ impl KubernetesBackend {
     }
 }
 
+/// The IPv4 address `host` resolves to, for a build pod that cannot resolve it itself; the reason where it has none.
+async fn resolve_ipv4(host: &str) -> Result<std::net::Ipv4Addr, String> {
+    let found = tokio::net::lookup_host((host, 0)).await.map_err(|e| {
+        format!("the registry's name {host} did not resolve, and a build's pod has no DNS: {e}")
+    })?;
+    found
+        .filter_map(|a| match a.ip() {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            std::net::IpAddr::V6(_) => None,
+        })
+        .next()
+        .ok_or_else(|| {
+            format!("the registry's name {host} has no IPv4 address, and a build's pod has no DNS")
+        })
+}
+
 /// An object's metadata field, as text.
 fn meta(object: &Value, field: &str) -> Option<String> {
     object["metadata"][field].as_str().map(str::to_string)
@@ -158,10 +174,28 @@ impl BuildBackend for KubernetesBackend {
     #[instrument(skip(self, spec), fields(build_id = %spec.build_id))]
     async fn submit(&self, spec: &BuildSpec) -> Result<SubmittedJob, BackendError> {
         let template = self.template().await?;
+        // A build's pod has no DNS (the build namespace's policy), so the registry's name is resolved here, for each Job,
+        // and the pod given the address.
+        let options = match &self.options.registry_host {
+            Some(host) => JobOptions {
+                registry_address: Some(
+                    resolve_ipv4(host)
+                        .await
+                        .map_err(BackendError::SubmissionFailed)?,
+                ),
+                ..self.options.clone()
+            },
+            None => self.options.clone(),
+        };
         let manifest =
-            build_job(&template, spec, &self.options).map_err(BackendError::SubmissionFailed)?;
+            build_job(&template, spec, &options).map_err(BackendError::SubmissionFailed)?;
         // What the Job may differ from its template in is said once, and held to before it is made.
-        let departed = departures(&template, &manifest, &spec.privileges);
+        let departed = departures(
+            &template,
+            &manifest,
+            &spec.privileges,
+            self.options.registry_host.as_deref(),
+        );
         if !departed.is_empty() {
             return Err(BackendError::SubmissionFailed(format!(
                 "the Job departs from the build workload's template: {}",

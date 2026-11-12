@@ -50,7 +50,7 @@ const INFRA = (path self | path dirname)
 
 use cluster-inputs.nu [env_for, env_merged, path_of, read_inputs, topology_of]
 use registry.nu [node_registry, push_registry]
-use cluster-registry.nu [pod_registry]
+use cluster-registry.nu [builds_policy, pod_registry]
 use agent-pods.nu [collect_scaffolds, run_checks]
 use topics.nu [served, judge, oversized]
 use graph.nu [unowned_reads, state_schema, health_agents, needs_workload]
@@ -1439,6 +1439,12 @@ def "main attest-also" [--target: string = $DEFAULT_TARGET] {
 # the CA's ConfigMap in each (attested.nu, added_namespaces).
 def "main added-namespaces" [--target: string = $DEFAULT_TARGET] {
     added_namespaces (load_cluster $target) | to json --raw
+}
+
+# The builds' NetworkPolicy, as a JSON list of none or one: the namespaces chart writes it beside the build namespace
+# (cluster-registry.nu, builds_policy).
+def "main builds-policy" [--target: string = $DEFAULT_TARGET] {
+    builds_policy (load_cluster $target) | to json --raw
 }
 
 # The floor's entries for the servers a target names beside Neo4j, as JSON: render.nu adds them as it adds Neo4j's.

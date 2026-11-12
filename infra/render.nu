@@ -135,8 +135,12 @@ def main [
                     # Its own projected token is for this audience: it is signed its client certificate on it.
                     certIssuerAudience: $cert_issuer_audience
                 }
-                # The namespaces Polar attests beside its own, made as Polar's are (resolve.nu, attest-also).
-                "namespaces" => { added: (^nu ($infra_root | path join "resolve.nu") added-namespaces --target $target | from json) }
+                # The namespaces Polar attests beside its own, made as Polar's are (resolve.nu, attest-also), and the builds'
+                # NetworkPolicy beside the build namespace (resolve.nu, builds-policy).
+                "namespaces" => {
+                    added: (^nu ($infra_root | path join "resolve.nu") added-namespaces --target $target | from json)
+                    policies: (^nu ($infra_root | path join "resolve.nu") builds-policy --target $target | from json)
+                }
                 # The node pools the target declares, for its own (docs/architecture/placement.md).
                 "neo4j" => { polarInitImage: $polar_init_image, credentialsObserverUrl: $credentials_observer_url, credentialsAgentIdentity: $credentials_agent_identity, placement: (^nu ($infra_root | path join "resolve.nu") placement --target $target | from json) }
                 "git"         => { neo4jBoltAddr: $neo4j_bolt_addr, certIssuerUrl: $cert_issuer_url, certIssuerAudience: $cert_issuer_audience, polarInitImage: $polar_init_image }

@@ -48,6 +48,8 @@ use dhall-cache.nu
 
 export const NAMESPACE = "polar-registry"
 export const NAME = "registry"
+# The port the registry listens on, and a pod reaches it at.
+export const PORT = 5000
 
 # The registry, and what the storage chart runs, from upstream by digest (each an index with linux/amd64 and linux/arm64).
 export const REGISTRY_IMAGE = "docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
@@ -82,7 +84,32 @@ export def settings_of [cluster: record] {
 # `localhost:N` is no address inside a pod. Pure.
 export def pod_registry [cluster: record] {
     if ($cluster.registry_in_cluster? | default null) == null { return null }
-    $"http://($NAME).($NAMESPACE).svc.($cluster.domain):5000"
+    $"http://($NAME).($NAMESPACE).svc.($cluster.domain):($PORT)"
+}
+
+# The builds' NetworkPolicy (docs/plans/runtime-attestation/network-enforcement.md, the builds' policy): every pod in the build
+# namespace takes no connection, and makes one only to the registry's pods on its port, where its source and dependencies are.
+# No DNS: a name server that forwards upstream is a way out, so the orchestrator gives each build pod the registry's address
+# itself (`hostAliases`). A cluster with no registry of its own gives its builds nothing to reach; one with no build namespace
+# gets no policy. Image pulls are the node's, which no policy touches. Pure.
+export def builds_policy [cluster: record] {
+    let ns = ($cluster.namespaces? | default {} | get -o builds)
+    if $ns == null { return [] }
+    let egress = if ($cluster.registry_in_cluster? | default null) == null { [] } else {
+        [{
+            to: [{
+                namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": $NAMESPACE } }
+                podSelector: { matchLabels: { app: $NAME } }
+            }]
+            ports: [{ protocol: "TCP", port: $PORT }]
+        }]
+    }
+    [{
+        apiVersion: "networking.k8s.io/v1"
+        kind: "NetworkPolicy"
+        metadata: { name: "builds", namespace: $ns }
+        spec: { podSelector: {}, policyTypes: ["Ingress" "Egress"], egress: $egress }
+    }]
 }
 
 export def manifests [s: record] {
@@ -109,9 +136,9 @@ export def manifests [s: record] {
                         containers: [{
                             name: $NAME
                             image: $REGISTRY_IMAGE
-                            ports: [{ containerPort: 5000 }]
+                            ports: [{ containerPort: $PORT }]
                             env: [{ name: "REGISTRY_STORAGE_DELETE_ENABLED", value: "true" }]
-                            readinessProbe: { httpGet: { path: "/v2/", port: 5000 }, periodSeconds: 5 }
+                            readinessProbe: { httpGet: { path: "/v2/", port: $PORT }, periodSeconds: 5 }
                             volumeMounts: [{ name: "data", mountPath: "/var/lib/registry" }]
                         }]
                         volumes: [{ name: "data", persistentVolumeClaim: { claimName: $NAME } }]
@@ -122,7 +149,7 @@ export def manifests [s: record] {
         {
             apiVersion: "v1", kind: "Service"
             metadata: { name: $NAME, namespace: $NAMESPACE }
-            spec: { type: "NodePort", selector: $labels, ports: [{ port: 5000, targetPort: 5000, nodePort: $s.node_port }] }
+            spec: { type: "NodePort", selector: $labels, ports: [{ port: $PORT, targetPort: $PORT, nodePort: $s.node_port }] }
         }
     ]
 }

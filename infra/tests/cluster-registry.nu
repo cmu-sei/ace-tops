@@ -25,7 +25,7 @@
 # come from. The pure parts only; `up.nu` applies it.
 
 use std/assert
-use ../cluster-registry.nu [manifests, pod_registry, settings_of, storage_images, NAMESPACE, REGISTRY_IMAGE, UPSTREAM_STORAGE_IMAGES]
+use ../cluster-registry.nu [builds_policy, manifests, pod_registry, settings_of, storage_images, NAMESPACE, PORT, REGISTRY_IMAGE, UPSTREAM_STORAGE_IMAGES]
 
 const INFRA = (path self | path dirname | path dirname)
 
@@ -102,6 +102,52 @@ def main [] {
                 let text = (open --raw ($INFRA | path join "layers/1-platform/infra/storage/local-path-provisioner.yaml"))
                 let found = ($text | parse --regex '(?<ref>node-registry\.invalid/[^\s"]+)' | get ref | uniq | sort)
                 assert equal $found ($UPSTREAM_STORAGE_IMAGES | columns | sort)
+            }
+        }
+        {
+            name: "a build reaches the registry's pods on its port and nothing else, and nothing reaches it"
+            body: {
+                let c = (cluster { node_port: 30500 } | insert domain "cluster.local" | insert namespaces { polar: "polar", builds: "polar-builds" })
+                let p = (builds_policy $c)
+                assert equal ($p | length) 1
+                let p = ($p | first)
+                assert equal $p.kind "NetworkPolicy"
+                assert equal $p.metadata.namespace "polar-builds"
+                assert equal $p.spec.podSelector {}
+                assert equal $p.spec.policyTypes ["Ingress" "Egress"]
+                assert equal ($p.spec.ingress? | default []) []
+                assert equal $p.spec.egress [{
+                    to: [{
+                        namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": $NAMESPACE } }
+                        podSelector: { matchLabels: { app: "registry" } }
+                    }]
+                    ports: [{ protocol: "TCP", port: $PORT }]
+                }]
+                # No DNS: the policy names no port 53, and no peer beyond the registry's pods.
+                assert (($p | to json) !~ '"port": ?53')
+            }
+        }
+        {
+            name: "builds on a cluster with no registry of its own reach nothing at all"
+            body: {
+                let p = (builds_policy (cluster null | insert domain "cluster.local" | insert namespaces { polar: "polar", builds: "polar-builds" }) | first)
+                assert equal $p.spec.policyTypes ["Ingress" "Egress"]
+                assert equal $p.spec.egress []
+            }
+        }
+        {
+            name: "a cluster with no build namespace gets no builds' policy"
+            body: {
+                assert equal (builds_policy (cluster { node_port: 30500 } | insert domain "cluster.local" | insert namespaces { polar: "polar" })) []
+            }
+        }
+        {
+            name: "the port a build reaches is the one the registry listens on and a pod is told"
+            body: {
+                let c = (cluster { node_port: 30500 } | insert domain "cluster.local")
+                assert ((pod_registry $c) | str ends-with $":($PORT)")
+                let registry = (manifests (settings_of $c) | where kind == "Deployment" | first)
+                assert equal ($registry.spec.template.spec.containers | first | get ports | first | get containerPort) $PORT
             }
         }
     ]
