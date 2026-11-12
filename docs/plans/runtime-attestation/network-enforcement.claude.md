@@ -82,6 +82,8 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
 people part 7 table: builds' policy (G3) | canary (G4, needs G3) | refuse unproved build (G5, needs G4) | network
 needs (network-needs.{md,claude.md}) | upstream e2e netpol vs kube-nftpolicy | Polar offers DaemonSet via target
 config. C5 precondition check rides with the first. Maintainer picks order.
+DECIDED 2026-11-12: builds' policy FIRST (my recommendation). :pre-nftpolicy rollback images: remove after u7c has run
+a day enforcing AND the next Polar deploy succeeds on it (i.e. not before 2026-11-13).
 
 ## GAPS (build order)
 G0 done (Q-flannel, spike, Q-engine). G1 kube-nftpolicy built + live on u7n (done); upstream e2e netpol suite (todo).
