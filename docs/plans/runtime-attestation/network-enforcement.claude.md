@@ -78,6 +78,11 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
   build pods hold no identity (build-orchestrator.md:200-202); build workload in observers pool (:420-422).
 - egress probe = reachability of the way out, not denial (egress.md:121-146).
 
+## NEXT = OPTIONS (maintainer 2026-11-12: "Include the other items you mentioned as options")
+people part 7 table: builds' policy (G3) | canary (G4, needs G3) | refuse unproved build (G5, needs G4) | network
+needs (network-needs.{md,claude.md}) | upstream e2e netpol vs kube-nftpolicy | Polar offers DaemonSet via target
+config. C5 precondition check rides with the first. Maintainer picks order.
+
 ## GAPS (build order)
 G0 done (Q-flannel, spike, Q-engine). G1 kube-nftpolicy built + live on u7n (done); upstream e2e netpol suite (todo).
 G2 DONE: nix-usernetes main 8ef1747 pushed; u7c rebuilt and enforcing. G3 N1 render (catalog → policy for polar-builds; hostAliases in

@@ -75,6 +75,7 @@ to enforce what each pod may reach.
 | **No agent runs git or holds a key file** | git's protocol in the git server's own process; agents read through it over Cassini; up.nu copies the deployment; the egress probe | built; not yet seen working on u7c from `main` |
 | **Each agent locks itself** | at start, seccomp refuses new programs, debugging and executable memory; Landlock limits the files to what its build declares | built; not yet seen working on u7c from `main` |
 | **Network enforcement** | an enforcer on every node (kube-nftpolicy, a project of its own) enforces what each pod may reach, starting with builds of foreign code; a canary proves it does | u7c enforces; the builds' policy and the canary to come: [`runtime-attestation/network-enforcement.md`](runtime-attestation/network-enforcement.md) |
+| **Polar's network needs** | each Polar pod reaches only the services its capabilities name, and the outside only if it declares `egress`, derived by the render | proposed: [`runtime-attestation/network-needs.md`](runtime-attestation/network-needs.md) |
 | **The node sensor** | a read-only reporter on every node: processes in each Polar container that are not its agent, and each agent's locks, read from outside the process | outlined, plan not yet written |
 | **Sessions bound to the pod's address** | a certificate carries its pod's address, and Cassini refuses a session from anywhere else | outlined, plan not yet written |
 
@@ -114,7 +115,8 @@ Not yet met:
 
 ## 7. What is left before this is a capability
 
-- **Network enforcement,** the next feature, with a plan of its own.
+- **Network enforcement,** under way: u7c enforces, and the pieces left are options in its plan.
+- **Polar's network needs,** derived from what each agent is built to use, with a plan of its own.
 - **The node sensor,** then **sessions bound to the pod's address,** each planned as it is reached.
 - **A capability document,** saying what runtime attestation is, why it exists and how it is used, once the last
   feature is in.

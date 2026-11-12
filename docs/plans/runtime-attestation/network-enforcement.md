@@ -176,12 +176,19 @@ u7c enforces NetworkPolicy; Polar renders none of its own yet.
 
 ## 7. What is left before this is met
 
-- **The enforcer against upstream's own network policy tests,** beside its property tests.
-- **Offering the enforcer from Polar** for clusters without an engine: a choice in a target's configuration that
-  deploys its DaemonSet.
-- **The builds' policy, and the canary,** in the orchestrator and the render.
-- **Refusing a build where enforcement is not proved.**
-- **Checking that pod addresses reach Cassini unchanged** under the enforcer. Binding sessions to a pod's address, a
-  later feature, depends on it. The enforcer translates no address, so this is expected to hold.
+The pieces left are options: each can be built on its own, in any order, except where one depends on another.
+
+| Option | What it gives | Depends on |
+|---|---|---|
+| **The builds' policy** | builds of foreign code reach only the registry, on its port, with no DNS | nothing |
+| **The canary** | Polar proves enforcement itself, at the orchestrator's start and before builds, and publishes the result | the builds' policy, which it runs under |
+| **Refusing a build where enforcement is not proved** | foreign code never runs on a cluster that does not enforce | the canary |
+| **Polar's network needs, from what each agent is built to use** ([plan](network-needs.md)) | every Polar pod reaches only the services its capabilities name, and the outside only if it declares `egress` | nothing; its rollout settles the question of DNS |
+| **The enforcer against upstream's network policy tests** | the enforcer's meaning checked against the Kubernetes project's own tests, beside its property tests | nothing |
+| **Polar offering the enforcer** | a target's configuration can deploy kube-nftpolicy as a DaemonSet on a cluster that has no engine | nothing |
+
+One check rides along with whichever comes first: **that pod addresses reach Cassini unchanged** under the enforcer.
+Binding sessions to a pod's address, a later feature, depends on it. The enforcer translates no address, so this is
+expected to hold.
 
 It is met when the canary passes on u7c and a build of foreign code reaches only the registry.

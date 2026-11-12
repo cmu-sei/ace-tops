@@ -70,6 +70,7 @@ Network enforcement=C4-net (+N1,N2), The node sensor=C4-sensor, Sessions bound t
 | C3a | seccomp lock at start | on main; live from branch 2026-11-11 | main:443-464 |
 | C3b | Landlock, files by build's declarations | on main; live from branch | branch:527-728; main 821c6d1c.. |
 | C4-net | network enforcement (kube-nftpolicy, own project, built 11-12) + N1 builds policy + N2 canary | IN PROGRESS | runtime-attestation/network-enforcement.{md,claude.md} |
+| C4-needs | Polar's network needs derived from capabilities + egress section → NetworkPolicy in render | PROPOSED 11-12 | runtime-attestation/network-needs.{md,claude.md} |
 | C4-sensor | node sensor DaemonSet (new catalog kind) | outline | :156-163, :418, open :503-505 |
 | C5 | session bound to pod address via cert | outline | :400-401, :420; open main:510 |
 
