@@ -69,7 +69,7 @@ Deployment-time tooling keeping runtime state is the registry smell the maintain
 whose keys have no owner and no lifecycle, so nothing in it is ever retired. The principle that already exists points the other way:
 "what an agent must know about others is a signed runtime section ... never a render-time env var" (`AGENTS.md:71-72`).
 
-**The GitOps controller as proposed** (`gitops-controller.md`, on branch `worktree-agent-a7c38f6253cca72da`, not merged): reconcile
+**The GitOps controller as proposed** (the deployer, `docs/plans/deployer.md`, a proposal): reconcile
 "from desired -> to deployed", the desired state a signed commit read as facts and a dependency graph, done "when invariants hold, not
 when objects are applied", in shadow mode first. Its desired state is a deployment; it has no phases either.
 

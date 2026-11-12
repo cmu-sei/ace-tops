@@ -23,6 +23,11 @@
 
 # What Flux has absorbed: apply, ownership and reconciliation edge cases
 
+> **Evidence for [the deployer's plan](../deployer.md).** Written 2026-11-02 for an earlier form of that plan, then called
+> `gitops-controller.md`; references to its sections ("section 8", "`gitops-controller.md`, section 2") are to that
+> version, which is in this file's history (`git log --follow`). Citations of Polar's code are at `eada654b` and have
+> drifted; the plan's Claude side (`../deployer.claude.md`, FACTS@main) holds the current ones.
+
 Status, 2026-11-02: a review for the proposal in `gitops-controller.md`. Nothing here is built. It was made by reading Flux's source at the versions Polar pins. No Flux code
 was built or run for it, so "what goes wrong" is what the code says would happen, unless an entry says it was seen. The maintainer: this list alone justifies the review.
 
