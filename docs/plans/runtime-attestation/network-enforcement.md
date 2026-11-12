@@ -29,7 +29,7 @@
 > A **feature-level plan**, part of [runtime attestation](../runtime-attestation.md). It describes Polar's `main` as it
 > is.
 
-**Status: the enforcer is built and seen working; Polar's side is not built.**
+**Status: u7c enforces NetworkPolicy; Polar's side (the builds' policy and the canary) is not built.**
 
 ## 1. The need
 
@@ -89,11 +89,17 @@ requirements, on Polar's own clusters and on anyone else's. Four steps, each see
      image (`nix-usernetes`), a service of the node like kube-proxy, with credentials of its own. On other clusters it
      runs as a DaemonSet, from the image its flake builds. Where a cluster's network plugin already enforces
      NetworkPolicy, it is not deployed.
+   - **A new pod starts isolated.** A pod starts before the API reports its address, and Kubernetes requires a pod
+     that an existing policy selects to be isolated before it starts. So within the node's pod range, an address that
+     is no pod the enforcer knows is refused until its rules are written. Every new pod has no network for a moment
+     (under a second); TCP's retries cover it.
    - **What it does on failure.** It fails loudly, not open: a table it cannot write is retried, and after repeated
-     failures the enforcer exits for its supervisor to restart, with the last table still in force.
+     failures the enforcer exits for its supervisor to restart, with the last table still in force. The table outlives
+     the enforcer on purpose, so that a crash or an upgrade leaves the node enforcing; uninstalling it therefore
+     includes removing its table (`kube-nftpolicy --remove`).
 2. **Enforcement on u7c.** u7c's node images rebuilt with the enforcer, with Polar's pods still running as before. The
    policies already in the cluster then take effect: Flux's own, and Polar's deny-all for the namespace where it runs
-   check pods.
+   check pods. Done.
 3. **The builds' policy,** rendered from the catalog for `polar-builds`:
    - no ingress;
    - egress only to the registry's pods, on its port;
@@ -150,15 +156,19 @@ Until the canary passes, the rule already in force holds: **no build names a rep
 
 ## 6. How much of the need is met now
 
-The enforcer is built and seen working; nothing of Polar's is enforced yet.
+u7c enforces NetworkPolicy; Polar renders none of its own yet.
 
 - **kube-nftpolicy works on a rootless cluster whose kernel has no IPv6.** On a throwaway three-node cluster, both
   as a DaemonSet and as a node service in the node image, a policy limiting a pod to one server's named port let that
   through, across nodes and within one, and blocked another pod, the Kubernetes API and the internet, and ingress to
-  the pod. Pods no policy selects were unaffected.
-- **u7c enforces nothing yet.** Its node images do not have the enforcer.
+  the pod. Pods no policy selects were unaffected. A new pod in a deny-all namespace was refused from its first
+  connection. Flux kept fetching and applying under its own three policies, and Polar's check pods ran as before in a
+  deny-all namespace.
+- **u7c enforces NetworkPolicy.** Its node images run the enforcer on every worker, and Polar came back on them with
+  every pod running. Flux's policies are in force there: another namespace reaches source-controller's metrics, but not
+  its artifacts.
 - **Polar renders no policy for its own namespaces.** The one policy it does make is a deny-all for a throwaway
-  namespace where it runs check pods, and that too goes unenforced until u7c has the enforcer.
+  namespace where it runs check pods, which is now enforced.
 - **The egress probe tests the other direction.** It checks that the way *out* works for an agent that needs it, so it
   proves nothing about denial.
 - **What holds the line is a rule,** not enforcement: no build names a repository Polar does not control. A build is
@@ -166,8 +176,6 @@ The enforcer is built and seen working; nothing of Polar's is enforced yet.
 
 ## 7. What is left before this is met
 
-- **The enforcer in `nix-usernetes`' main,** and u7c's node images rebuilt with it, checking first that Flux's
-  policies and Polar's check pods still work once enforced.
 - **The enforcer against upstream's own network policy tests,** beside its property tests.
 - **Offering the enforcer from Polar** for clusters without an engine: a choice in a target's configuration that
   deploys its DaemonSet.

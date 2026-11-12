@@ -27,7 +27,7 @@ PAIR: `network-enforcement.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../runtime-attestation.claude.md` (C4-net). Old names: C4 Canal, N1 policy, N2 canary, N3 engine
 (build-orchestrator.md:963-992). AS-OF main 355a8a22 + nix-usernetes 10f3bcd (2026-11-02). Re-verify lines.
-STATUS: enforcer built (kube-nftpolicy, own repo) + live on u7n; Polar side not built. Spike done 2026-11-12 on u7n: Calico can't run on whitey. Q-engine DECIDED 2026-11-12:
+STATUS: u7c ENFORCES (nix-usernetes main 8ef1747, 2026-11-12); Polar side (N1/N2) not built. Spike done 2026-11-12 on u7n: Calico can't run on whitey. Q-engine DECIDED 2026-11-12:
 Polar's own enforcer (maintainer picked it over patch-Felix, my recommendation, and kernel-with-IPv6).
 
 ## FOUND (people part 2, dated)
@@ -80,7 +80,7 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
 
 ## GAPS (build order)
 G0 done (Q-flannel, spike, Q-engine). G1 kube-nftpolicy built + live on u7n (done); upstream e2e netpol suite (todo).
-G2 nix-usernetes merge (branch ready) + u7c images rebuilt; check Flux/agent-pods policies first. G3 N1 render (catalog → policy for polar-builds; hostAliases in
+G2 DONE: nix-usernetes main 8ef1747 pushed; u7c rebuilt and enforcing. G3 N1 render (catalog → policy for polar-builds; hostAliases in
 orchestrator Jobs). G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result).
 G5 admission refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini (enforcer no NAT).
 LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
@@ -120,7 +120,14 @@ as specified by its own nix flake; an independent piece of infrastructure Polar 
 SUPERSEDED: enforcer as Polar agent/DaemonSet catalog kind/Cassini reporting/attested (my first design). Not a Polar
 agent: no Polar identity, no Cassini, not attested — node infra in the trust base, like kube-proxy; canary is Polar's check.
 - repo: ~/Documents/projects/kube-nftpolicy, github daveman1010221/kube-nftpolicy (public; created 2026-11-12).
-  commits ebd5811 (feat, all of it), 1d04a64 (share/kube-nftpolicy/{rbac,daemonset}.yaml in package).
+  commits ebd5811 (feat, all of it), 1d04a64 (share/kube-nftpolicy/{rbac,daemonset}.yaml in package), 6539cdf (fix:
+  startup isolation via --pod-cidr/POD_CIDR or Node spec.podCIDRs [rbac: nodes get]; sets pod_ranges+known_pods, forward/
+  input drop unknown in range; --remove deletes the table; README Uninstalling).
+- FOUND 2026-11-12 on u7n (deny-all ns): new pod's connection at +0s went out; isolated by +1s. K8s docs: a pod an
+  already-handled policy selects must be isolated before it starts → conformance bug, fixed in 6539cdf; retested:
+  deny-all new pod BLOCKED from +0s; unpoliced new pod OK at +0s (first SYN dropped, retransmit passes).
+- Table outlives the process by design (crash/upgrade stays enforcing). Uninstall = --remove. On u7 nodes,
+  cluster.sh down removes the node netns, so the table goes with it.
 - crate (edition 2024, kube 3.1 rustls+ring, k8s-openapi 0.27 v1_35): model, selector, ranges (ipBlock−except),
   compile (Ruleset: isolated sets + Allow{local,peer Range,Ports}), disjoint (non-overlapping elements: pipapo
   concat sets), nft (script: add/delete/define table ip kube_nftpolicy; chains forward+input → egress/ingress, ct
@@ -131,7 +138,7 @@ agent: no Polar identity, no Cassini, not attested — node infra in the trust b
   cover+no overlap. Mutations (ignore except; ignore egress) caught. kernel.rs: unshare -rn nft -f, whitey kernel OK
   (pipapo concat interval sets fine without ip6/inet).
 - flake: rustPlatform.buildRustPackage, wrapProgram PATH nftables; packages default/image (buildLayeredImage); checks.
-- nix-usernetes branch feat/kube-nftpolicy @ 91bafdc (LOCAL ONLY, not pushed, not merged): flake input
+- nix-usernetes main 8ef1747 (pushed; was branch feat/kube-nftpolicy 91bafdc + 8ef1747 pod-cidr): flake input
   (follows nixpkgs/flake-utils); u7s-kube-nftpolicy wrapper (kube-nftpolicy.conf else admin.conf; NODE_NAME else
   /etc/hostname); podScripts; service kubeNftpolicy in node-common.dhall, worker.dhall, node.dhall (after kube-apiserver);
   rbac.yaml copied to /var/lib/cluster-bootstrap (runsControlPlane); cluster.sh nftpolicy_credentials (CN
@@ -141,9 +148,16 @@ agent: no Polar identity, no Cassini, not attested — node infra in the trust b
 - LIVE (u7n, 2026-11-12): DaemonSet and node-service runs both: build pod (builds ns, node a) → registry (reg, node b,
   named port http 5000) OK, near (reg, node a) OK, other (reg) BLOCKED, API 10.96.0.1:443 BLOCKED, 1.1.1.1:443
   BLOCKED, ingress to build BLOCKED, other→registry OK; policy removed → all OK. (agnhost 2.53 netexec/connect;
-  scenario/policy/probe.sh in scratchpad/spike.)
-OPEN for u7c step: Flux's stock policies (flux-controllers.yaml:39-96) and agent-pods.nu:80-87 deny-all become
-enforced — check before rebuilding u7c images. Upstream e2e netpol suite not yet run. Polar-side "offer" = target
+  scenario files were in session scratchpad, now deleted: namespaces builds/reg, pods registry/near/other/build,
+  policy builds = podSelector {} Ingress+Egress, egress to ns reg app=registry port named http.)
+- u7c (2026-11-12 ~21:27Z): :1.37.1 rebuilt (old kept :pre-nftpolicy, IDs 56244774f769 cp, f4cdcd1ede0a worker);
+  cluster.sh down/up/init issued kube-nftpolicy creds to joined workers. All pods Running (each container restarted
+  once); Flux Ready (polar-deploy one fetch refused while git server started). Probe from another ns (pod deleted):
+  source-controller :8080 OK, :9090 BLOCKED, polar-git-server OK, internet OK.
+- u7n torn down (reset; netns dir gone). Test images untagged. Left for the user (rmi blocked by classifier): dangling
+  58ff9b0bcbe7, fab185795ee7 (first nftpolicy-test loads); scratchpad spike dir.
+DONE u7c step (checked on u7n first: Flux fetch+apply under its policies; check pods in deny-all ns). Upstream e2e
+netpol suite not yet run. Polar-side "offer" = target
 choice deploying the DaemonSet (not designed).
 
 ## ALTERNATIVES
