@@ -474,7 +474,8 @@ export def floor_entries [records: list]: nothing -> record {
 # be refused by the lock, and a grant no mount of the pod holds points at the image's own files, which is a mistake: the
 # image is read-only and its files are the build's. The kernel's (`/proc`, `/sys`), the files the kubelet puts in every
 # container for name resolution, and the store's (`/nix/store`, where an image carries what its build made) are no mount
-# and are fine. `docs` is every rendered object.
+# and are fine; and a pod that asks for its service account's token automounted has it at the usual place, a mount
+# Kubernetes adds when it makes the pod, not one the render writes. `docs` is every rendered object.
 export def landlock_problems [docs: list]: nothing -> list<string> {
     let maps = ($docs | where {|d| ($d.kind? | default "") == "ConfigMap" and ("config.json" in ($d.data? | default {} | columns)) })
     $docs
@@ -484,6 +485,9 @@ export def landlock_problems [docs: list]: nothing -> list<string> {
         let volumes = ($w.pod.volumes? | default [])
         $w.pod.containers? | default [] | each {|c|
             let mounts = ($c.volumeMounts? | default [])
+            let automounted = (if ($w.pod.automountServiceAccountToken? | default false) {
+                ["/var/run/secrets/kubernetes.io/serviceaccount"]
+            } else { [] })
             let config = ($mounts | where mountPath == "/etc/polar" | get -o 0)
             let map_name = (if $config == null { null } else {
                 $volumes | where name == $config.name | get -o 0.configMap.name
@@ -491,7 +495,7 @@ export def landlock_problems [docs: list]: nothing -> list<string> {
             let map = (if $map_name == null { null } else { $maps | where {|m| $m.metadata.name == $map_name } | get -o 0 })
             if $map == null { [] } else {
                 let document = ($map.data."config.json" | from json)
-                landlock_document_problems $"($w.name)/($c.name)" $document ($mounts | get mountPath)
+                landlock_document_problems $"($w.name)/($c.name)" $document (($mounts | get mountPath) ++ $automounted)
             }
         } | flatten
     }

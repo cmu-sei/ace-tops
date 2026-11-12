@@ -94,6 +94,22 @@ def main [] {
             assert equal ($problems | length) 1
             assert ($problems.0 | str starts-with "a/a: X=/etc/x")
         }
+        "a pod that asks for its service account's token automounted holds it, though the render writes no such mount": {
+            let token = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            let config = ({ sections: [{ variables: [{ name: "SA_TOKEN", type: "path of a file it reads", value: $token, default: null }] }] } | to json)
+            let pod = {|automount| {
+                kind: "Deployment", metadata: { name: "a" }, spec: { template: { spec: {
+                    automountServiceAccountToken: $automount
+                    volumes: [{ name: "config", configMap: { name: "a-config" } }]
+                    containers: [{ name: "a", volumeMounts: [{ name: "config", mountPath: "/etc/polar" }] }]
+                } } }
+            } }
+            let map = { kind: "ConfigMap", metadata: { name: "a-config" }, data: { "config.json": $config } }
+            assert equal (landlock_problems [$map (do $pod true)]) []
+            let without = (landlock_problems [$map (do $pod false)])
+            assert equal ($without | length) 1
+            assert ($without.0 | str contains $"grants ($token), which no mount")
+        }
         # docs/architecture/key-custody.md, step 4: the daemon holds one key of each type, so a pod given it has at most one
         # certificate of each.
         "a pod given the custody daemon has at most one certificate of each type": {
