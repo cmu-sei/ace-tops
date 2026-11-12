@@ -161,6 +161,10 @@ pub struct EscrowSpec {
     pub not_before_year: i32,
     pub not_after_year: i32,
     pub is_ca: bool,
+    /// Whether it also carries `id-polar-kp-logCheckpoint`, which rcgen's `ExtendedKeyUsagePurpose` cannot write: the
+    /// extended key usage extension is then written whole, holding it after `extended_key_usages`' OIDs, if those are
+    /// all `Other`.
+    pub log_checkpoint: bool,
 }
 
 impl Default for EscrowSpec {
@@ -172,7 +176,21 @@ impl Default for EscrowSpec {
             not_before_year: 2026,
             not_after_year: 2030,
             is_ca: false,
+            log_checkpoint: false,
         }
+    }
+}
+
+/// A log's checkpoint certificate as cert-issuer makes one (`CertType::Checkpoint`), for `identity`:
+/// `digitalSignature` and the one extended key usage `id-polar-kp-logCheckpoint`. Over any key, by
+/// `escrow_certificate_for`.
+pub fn checkpoint_spec(identity: &'static str) -> EscrowSpec {
+    EscrowSpec {
+        identity,
+        key_usages: vec![KeyUsagePurpose::DigitalSignature],
+        extended_key_usages: vec![],
+        log_checkpoint: true,
+        ..EscrowSpec::default()
     }
 }
 
@@ -210,7 +228,28 @@ pub fn escrow_certificate_for(
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
     params.subject_alt_names = vec![SanType::DnsName(spec.identity.try_into().unwrap())];
     params.key_usages = spec.key_usages;
-    params.extended_key_usages = spec.extended_key_usages;
+    if spec.log_checkpoint {
+        // One extension holding every usage asked for: the `Other` ones' OIDs, then the checkpoint's.
+        let mut oids = Vec::new();
+        for usage in &spec.extended_key_usages {
+            let ExtendedKeyUsagePurpose::Other(arcs) = usage else {
+                panic!("beside the checkpoint usage, only `Other` usages are written here")
+            };
+            oids.extend(der_oid(arcs));
+        }
+        let eku = cert_issuer_common::log_checkpoint_extended_key_usage();
+        oids.extend(&eku[2..]);
+        let mut value = vec![0x30, oids.len() as u8];
+        value.extend(oids);
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[2, 5, 29, 37],
+                value,
+            ));
+    } else {
+        params.extended_key_usages = spec.extended_key_usages;
+    }
     params.not_before = date_time_ymd(spec.not_before_year, 1, 1);
     params.not_after = date_time_ymd(spec.not_after_year, 1, 1);
     if spec.is_ca {
@@ -218,6 +257,23 @@ pub fn escrow_certificate_for(
     }
     let subject = SubjectPublicKeyInfo::from_pem(public_key_pem).unwrap();
     params.signed_by(&subject, &issuer.issuer).unwrap().pem()
+}
+
+/// The DER of an OID whose arcs are `arcs`, tag and length included.
+fn der_oid(arcs: &[u64]) -> Vec<u8> {
+    let mut content = vec![(arcs[0] * 40 + arcs[1]) as u8];
+    for &arc in &arcs[2..] {
+        let mut digits = vec![(arc & 0x7f) as u8];
+        let mut rest = arc >> 7;
+        while rest > 0 {
+            digits.push((rest & 0x7f) as u8 | 0x80);
+            rest >>= 7;
+        }
+        content.extend(digits.iter().rev());
+    }
+    let mut der = vec![0x06, content.len() as u8];
+    der.extend(content);
+    der
 }
 
 /// A `pipeline` certificate with the RSA key `deploy-repo.nu` gives one, and what it needs to sign a commit as `gpgsm` does.

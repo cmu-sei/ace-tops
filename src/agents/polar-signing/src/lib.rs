@@ -56,5 +56,5 @@ pub use document::{Algorithm, Document, Domain, LayoutError, SignatureBlock};
 pub use sign::{SignError, sign, sign_in};
 pub use verify::{
     SignerInfo, Trust, VerifyError, verify, verify_authority_certificate,
-    verify_escrow_certificate, verify_in,
+    verify_checkpoint_certificate, verify_escrow_certificate, verify_in,
 };

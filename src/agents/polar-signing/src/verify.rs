@@ -75,6 +75,8 @@ pub enum VerifyError {
     NotAnEscrowCertificate(&'static str),
     #[error("the authority's certificate is not a signing certificate: {0}")]
     NotASigningCertificate(&'static str),
+    #[error("the certificate is not a log's checkpoint certificate: {0}")]
+    NotACheckpointCertificate(&'static str),
     #[error("the certificate does not name `{expected}`")]
     WrongIdentity { expected: String },
     #[error("the certificate's public key cannot be read: {0}")]
@@ -241,6 +243,70 @@ pub fn verify_authority_certificate(
         cert_issuer_common::public_key::extract_public_key_pem(&leaf)
             .map_err(|e| VerifyError::NoUsableKey(e.to_string()))
     })
+}
+
+/// The P-256 public key `identity` signs its log's checkpoints with, from its checkpoint certificate
+/// (docs/architecture/record-store.md, "L2, checkpoints"), if the certificate can be believed: valid at `now`, chaining
+/// to one of `trust`'s anchors, not a CA, permitting digital signatures, a checkpoint certificate by its extended key
+/// usage (`id-polar-kp-logCheckpoint` and nothing else), and carrying `identity` as a DNS name exactly. Then the key is
+/// the holder's for its checkpoints, and for nothing else: no other check here takes the certificate.
+pub fn verify_checkpoint_certificate(
+    chain_pem: &str,
+    trust: &Trust,
+    now: i64,
+    identity: &str,
+) -> Result<String, VerifyError> {
+    believed_leaf(chain_pem, trust, now, identity, |leaf| {
+        match leaf.key_usage() {
+            Ok(Some(usage)) if usage.value.digital_signature() => {}
+            _ => return Err(VerifyError::KeyUsage),
+        }
+        for_log_checkpoints(leaf).map_err(VerifyError::NotACheckpointCertificate)
+    })
+    .and_then(|leaf| p256_key_pem(&leaf))
+}
+
+/// The P-256 public key of the certificate `leaf_pem`, as a public-key PEM: a log's checkpoints are signed with one.
+fn p256_key_pem(leaf_pem: &str) -> Result<String, VerifyError> {
+    use p256::pkcs8::{DecodePublicKey, EncodePublicKey, LineEnding};
+    let der = cert::der_from_pem(leaf_pem).map_err(VerifyError::NoUsableKey)?;
+    let leaf = cert::parse(&der).map_err(VerifyError::NoUsableKey)?;
+    p256::PublicKey::from_public_key_der(leaf.tbs_certificate.subject_pki.raw)
+        .map_err(|e| VerifyError::NoUsableKey(format!("not a P-256 key: {e}")))?
+        .to_public_key_pem(LineEnding::LF)
+        .map_err(|e| VerifyError::NoUsableKey(e.to_string()))
+}
+
+/// Whether `leaf` is a checkpoint certificate by its extended key usage: `id-polar-kp-logCheckpoint`, and no other
+/// purpose at all; why not, if it is not.
+fn for_log_checkpoints(leaf: &X509Certificate<'_>) -> Result<(), &'static str> {
+    let checkpoint = cert_issuer_common::log_checkpoint_oid();
+    match leaf.extended_key_usage() {
+        Ok(Some(eku)) if eku.value.any || eku.value.client_auth || eku.value.server_auth => {
+            Err("it may be used for TLS")
+        }
+        Ok(Some(eku))
+            if eku
+                .value
+                .other
+                .iter()
+                .any(|oid| oid.as_bytes() == checkpoint.as_slice()) =>
+        {
+            let usage = &eku.value;
+            if usage.code_signing
+                || usage.email_protection
+                || usage.time_stamping
+                || usage.ocsp_signing
+                || usage.other.len() > 1
+            {
+                Err("it is for more than log checkpoints")
+            } else {
+                Ok(())
+            }
+        }
+        Ok(Some(_)) => Err("it is not for log checkpoints"),
+        _ => Err("it has no extended key usage, so it is taken for any use"),
+    }
 }
 
 /// The public key of the leaf of `chain_pem` if it chains to `trust`, is valid at `now`, is no CA, passes `purpose`, and

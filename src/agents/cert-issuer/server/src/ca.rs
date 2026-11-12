@@ -314,10 +314,25 @@ impl CaClient for RcgenCaClient {
             CertType::Signing => vec![ExtendedKeyUsagePurpose::Other(
                 cert_issuer_common::OID_DOCUMENT_SIGNING.to_vec(),
             )],
+            // Its usage's arc is wider than rcgen writes, so the extension is written whole, below.
+            CertType::Checkpoint => Vec::new(),
         };
         csr.params.extended_key_usages = eku;
+        if req.cert_type == CertType::Checkpoint {
+            // Present, as for a signing certificate, and holding the log-checkpoint usage alone.
+            csr.params
+                .custom_extensions
+                .push(rcgen::CustomExtension::from_oid_content(
+                    &[2, 5, 29, 37],
+                    cert_issuer_common::log_checkpoint_extended_key_usage(),
+                ));
+        }
         csr.params.key_usages = match req.cert_type {
-            CertType::Client | CertType::Server | CertType::Signing | CertType::Custody => {
+            CertType::Client
+            | CertType::Server
+            | CertType::Signing
+            | CertType::Custody
+            | CertType::Checkpoint => {
                 vec![KeyUsagePurpose::DigitalSignature]
             }
             // What a secret is sealed to, not anything that signs: by key agreement to a P-256 key (HPKE), or by
@@ -1024,6 +1039,13 @@ mod tests {
         }
     }
 
+    fn checkpoint_request(identity: &str) -> CaIssueRequest {
+        CaIssueRequest {
+            cert_type: CertType::Checkpoint,
+            ..signing_request(identity)
+        }
+    }
+
     fn parsed(pem: &str) -> Vec<u8> {
         x509_parser::pem::parse_x509_pem(pem.as_bytes())
             .expect("pem")
@@ -1055,6 +1077,34 @@ mod tests {
         assert!(!eku.value.any && !eku.value.code_signing && !eku.value.email_protection);
         let oids: Vec<String> = eku.value.other.iter().map(|o| o.to_id_string()).collect();
         assert_eq!(oids, vec!["1.3.6.1.5.5.7.3.36".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_cert_permits_signatures_for_log_checkpoints_and_nothing_else() {
+        let issued = make_client()
+            .issue(checkpoint_request(
+                "credentials-agent.polar.serviceaccount.cluster.local",
+            ))
+            .await
+            .expect("must succeed");
+        let der = parsed(&issued.certificate_pem);
+        let (_, cert) = x509_parser::parse_x509_certificate(&der).expect("x509");
+
+        let ku = cert.key_usage().expect("one").expect("KeyUsage present");
+        assert_eq!(ku.value.flags, 1, "digitalSignature and nothing else");
+
+        let eku = cert
+            .extended_key_usage()
+            .expect("one")
+            .expect("EKU present: one that is absent permits every use");
+        assert!(!eku.value.client_auth && !eku.value.server_auth);
+        assert!(!eku.value.any && !eku.value.code_signing && !eku.value.email_protection);
+        let oids: Vec<&[u8]> = eku.value.other.iter().map(|o| o.as_bytes()).collect();
+        assert_eq!(
+            oids,
+            vec![cert_issuer_common::log_checkpoint_oid().as_slice()],
+            "the log-checkpoint usage alone, not document signing"
+        );
     }
 
     /// Whether rustls takes `pem` as a client certificate, and as a server certificate for `name`, under the test CA.
@@ -1091,12 +1141,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tls_refuses_a_signing_cert_in_either_role() {
+    async fn tls_refuses_a_signing_or_checkpoint_cert_in_either_role() {
         let identity = "credentials-agent.polar.serviceaccount.cluster.local";
         let client = make_client();
         let signing = client.issue(signing_request(identity)).await.unwrap();
         assert_eq!(
             tls_takes(&signing.certificate_pem, identity),
+            (false, false)
+        );
+        let checkpoint = client.issue(checkpoint_request(identity)).await.unwrap();
+        assert_eq!(
+            tls_takes(&checkpoint.certificate_pem, identity),
             (false, false)
         );
         // The check itself can say yes: a server certificate is taken in both roles.

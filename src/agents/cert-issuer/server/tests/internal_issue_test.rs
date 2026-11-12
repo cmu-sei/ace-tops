@@ -287,6 +287,81 @@ async fn a_signing_certificate_for_anyone_but_the_caller_is_refused_before_the_c
     }
 }
 
+// ---- a checkpoint certificate: the caller's own, naming nothing else, never a pod's ----
+
+const WORKLOAD: &str = "attestation.polar.serviceaccount.cluster.local";
+const POD: &str = "pod-uid-1";
+
+fn checkpoint_request_for(identity: &str) -> InternalIssueRequest {
+    InternalIssueRequest {
+        cert_type: CertType::Checkpoint,
+        ..signing_request_for(identity)
+    }
+}
+
+#[tokio::test]
+async fn an_internal_caller_is_signed_a_checkpoint_certificate_for_itself_for_the_server_lifetime()
+{
+    let h = handler(real_ca(), vec![ALLOWED_CALLER]);
+    let response = h
+        .handle_internal_issue(Some(ALLOWED_CALLER), checkpoint_request_for(ALLOWED_CALLER))
+        .await;
+
+    assert_eq!(response.status, 200);
+    match response.body {
+        HandlerBody::Success(issued) => {
+            let left = issued.expires_at - time::OffsetDateTime::now_utc();
+            assert!(
+                left > time::Duration::seconds(43200 - 60),
+                "the server lifetime, renewed by the caller: {left}"
+            );
+        }
+        other => panic!("expected success, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_checkpoint_certificate_for_anyone_but_the_caller_or_naming_more_is_refused_before_the_ca()
+ {
+    let h = handler(Arc::new(PanicCa), vec![ALLOWED_CALLER, TARGET_IDENTITY]);
+    let for_a_pod = InternalIssueRequest {
+        instance_binding: Some(POD.to_string()),
+        expires_by: Some(time::OffsetDateTime::now_utc().unix_timestamp() + 7200),
+        ..checkpoint_request_for(WORKLOAD)
+    };
+    let naming_more = InternalIssueRequest {
+        extra_sans: vec!["c:record-evidence:attestation".to_string()],
+        ..checkpoint_request_for(ALLOWED_CALLER)
+    };
+    for (what, request, status, outcome) in [
+        (
+            "another identity",
+            checkpoint_request_for(TARGET_IDENTITY),
+            403,
+            IssueOutcome::CallerNotAuthorized,
+        ),
+        (
+            "a pod, on its custodian's behalf",
+            for_a_pod,
+            403,
+            IssueOutcome::CallerNotAuthorized,
+        ),
+        (
+            "another name beside its own",
+            naming_more,
+            400,
+            IssueOutcome::InvalidCsr,
+        ),
+    ] {
+        let response = h.handle_internal_issue(Some(ALLOWED_CALLER), request).await;
+        assert_eq!(response.status, status, "{what}");
+        match response.body {
+            HandlerBody::Error(e) => assert_eq!(e.outcome, outcome, "{what}"),
+            other => panic!("expected an error for {what}, got {other:?}"),
+        }
+    }
+}
+
 // ---- authoritative account subject (uid, mail) ----
 
 const OID_UID: &str = "0.9.2342.19200300.100.1.1";

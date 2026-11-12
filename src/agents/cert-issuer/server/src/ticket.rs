@@ -210,6 +210,7 @@ mod tests {
             Just(CertType::Custody),
             Just(CertType::Server),
             Just(CertType::Signing),
+            Just(CertType::Checkpoint),
         ]
     }
 

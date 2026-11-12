@@ -197,6 +197,7 @@ proptest! {
             not_before_year: if current { 2024 } else { 2020 },
             not_after_year: if current { 2100 } else { 2025 },
             is_ca: !leaf,
+            log_checkpoint: false,
         };
         let cert = escrow_certificate(if trusted { &ca } else { &other }, spec);
         let believed = verify_authority_certificate(&cert, &trust(&ca.pem), now(), CREDENTIALS).is_ok();

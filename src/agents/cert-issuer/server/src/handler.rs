@@ -398,6 +398,14 @@ impl Handler {
                 "a signing certificate is issued only to an internal caller, for itself",
             );
         }
+        // Nor a checkpoint certificate, for the same reason: the key that signs a log's checkpoints is its keeper's.
+        if request.cert_type == cert_issuer_common::CertType::Checkpoint {
+            warn!(workload = %claims.workload_identity, "checkpoint certificate requested on /issue: refused");
+            return error_response(
+                IssueOutcome::CallerNotAuthorized,
+                "a checkpoint certificate is issued only to an internal caller, for itself",
+            );
+        }
 
         // ---- Step 1.5: who is asking ----
         //
@@ -693,7 +701,8 @@ impl Handler {
                     // is to be revocation, once built, not a tight expiry; the lifetime is to be revisited then.
                     cert_issuer_common::CertType::Service => self.service_lifetime,
                     // The same: the agent's own, renewed by it.
-                    cert_issuer_common::CertType::Signing => self.server_lifetime,
+                    cert_issuer_common::CertType::Signing
+                    | cert_issuer_common::CertType::Checkpoint => self.server_lifetime,
                 }
             });
 
@@ -808,6 +817,31 @@ impl Handler {
                 IssueOutcome::CallerNotAuthorized,
                 "a signing certificate is issued only for the caller's own identity",
             );
+        }
+
+        // ---- Step 1.5, for a checkpoint certificate: the caller's own, naming nothing else ----
+        //
+        // The key that signs a log's checkpoints is its keeper's (docs/architecture/record-store.md, "L2,
+        // checkpoints"): the caller's alone, for no pod, and with no name that would let it stand for anything more.
+        if request.cert_type == cert_issuer_common::CertType::Checkpoint {
+            if request.identity != caller || request.instance_binding.is_some() {
+                warn!(
+                    peer_identity = %caller,
+                    identity = %request.identity,
+                    "internal issuance refused: a checkpoint certificate that is not the caller's own"
+                );
+                return error_response(
+                    IssueOutcome::CallerNotAuthorized,
+                    "a checkpoint certificate is issued only for the caller's own identity",
+                );
+            }
+            if !request.extra_sans.is_empty() {
+                warn!(peer_identity = %caller, "internal issuance refused: a checkpoint certificate naming more");
+                return error_response(
+                    IssueOutcome::InvalidCsr,
+                    "a checkpoint certificate names its holder and nothing else",
+                );
+            }
         }
 
         // ---- Step 1.6: no custodian here ----

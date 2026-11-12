@@ -381,7 +381,8 @@ async fn a_capability_is_refused_on_issue_even_for_the_credentials_agent() {
 }
 
 #[tokio::test]
-async fn a_signing_certificate_is_refused_on_issue_to_every_caller_whatever_the_floor_says() {
+async fn a_signing_or_checkpoint_certificate_is_refused_on_issue_to_every_caller_whatever_the_floor_says()
+ {
     // Signed only on /internal/issue, for the internal caller itself: a token proves whose workload it is, and the
     // credentials agent vouches for workloads, never for a key to sign as it with.
     let floor_writing_it_down = Some(vec![BootstrapIdentity {
@@ -400,13 +401,16 @@ async fn a_signing_certificate_is_refused_on_issue_to_every_caller_whatever_the_
         floor_writing_it_down,
     ] {
         let (handler, ca) = rig(floor.clone());
-        for peer in [None, Some(CREDENTIALS_AGENT)] {
+        for (peer, cert_type) in [None, Some(CREDENTIALS_AGENT)]
+            .into_iter()
+            .flat_map(|peer| [(peer, CertType::Signing), (peer, CertType::Checkpoint)])
+        {
             let response = handler
-                .handle(peer, &mint_default_token(), request(CertType::Signing, &[]))
+                .handle(peer, &mint_default_token(), request(cert_type.clone(), &[]))
                 .await;
             assert!(
                 refused_as_not_authorized(&response),
-                "{peer:?}, {floor:?}: {response:?}"
+                "{peer:?}, {cert_type}, {floor:?}: {response:?}"
             );
         }
         assert!(ca.asked.lock().unwrap().is_empty(), "{}", signed(&ca));

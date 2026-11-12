@@ -98,10 +98,54 @@ pub enum CertType {
     /// on X's behalf. Signed only on a token, never on `/internal/issue`: it is what the pod proves itself for.
     #[n(4)]
     Custody,
+    /// A key that signs a log's checkpoints and nothing else (docs/architecture/record-store.md, "L2, checkpoints"):
+    /// `digitalSignature` and the one extended key usage `id-polar-kp-logCheckpoint` ([`OID_LOG_CHECKPOINT`]), so no
+    /// TLS stack takes it and no check of a signed document does. Signed only on `/internal/issue`, for the internal
+    /// caller's own identity and no other name: the credentials agent's ledger key has one.
+    #[n(5)]
+    Checkpoint,
 }
 
 /// `id-kp-documentSigning` (RFC 9336): the extended key usage of a [`CertType::Signing`] certificate.
 pub const OID_DOCUMENT_SIGNING: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 3, 36];
+
+/// Polar's own arc, an X.667 UUID OID (`a18fa2ab-c873-451d-bff8-a0d22b3b6662`), which needs no registration. Polar
+/// allocates under it.
+const POLAR_ARC: u128 = 214_751_505_132_549_872_223_803_780_954_079_323_746;
+
+/// `id-polar-kp-logCheckpoint`, `2.25.<POLAR_ARC>.1`: the extended key usage of a [`CertType::Checkpoint`]
+/// certificate, as dotted text. Its arc does not fit the `u64` arcs the other OIDs are written in, so its encoding is
+/// [`log_checkpoint_oid`]'s.
+pub const OID_LOG_CHECKPOINT: &str = "2.25.214751505132549872223803780954079323746.1";
+
+/// The content octets of `id-polar-kp-logCheckpoint`'s DER encoding (X.690, 8.19): what a parsed OID's bytes are.
+pub fn log_checkpoint_oid() -> Vec<u8> {
+    // The first two arcs share one subidentifier, 2 × 40 + 25.
+    let mut content = vec![105];
+    let mut digits = Vec::new();
+    let mut arc = POLAR_ARC;
+    while arc > 0 {
+        digits.push((arc & 0x7f) as u8);
+        arc >>= 7;
+    }
+    content.extend(
+        digits
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(i, d)| if i + 1 < digits.len() { d | 0x80 } else { *d }),
+    );
+    content.push(1);
+    content
+}
+
+/// The DER value of an extended key usage extension holding `id-polar-kp-logCheckpoint` alone: a SEQUENCE of one OID.
+pub fn log_checkpoint_extended_key_usage() -> Vec<u8> {
+    let oid = log_checkpoint_oid();
+    let mut der = vec![0x30, (oid.len() + 2) as u8, 0x06, oid.len() as u8];
+    der.extend(oid);
+    der
+}
 
 impl std::fmt::Display for CertType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -111,6 +155,7 @@ impl std::fmt::Display for CertType {
             Self::Service => "service",
             Self::Signing => "signing",
             Self::Custody => "custody",
+            Self::Checkpoint => "checkpoint",
         };
         write!(f, "{s}")
     }
@@ -315,4 +360,55 @@ pub enum IssueOutcome {
 pub enum WireError {
     #[error("malformed request: {0}")]
     Malformed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dotted text of an OID's content octets, read as X.690 says, with arcs as wide as `u128`.
+    fn dotted(content: &[u8]) -> String {
+        let mut arcs: Vec<u128> = Vec::new();
+        let mut arc: u128 = 0;
+        for (i, b) in content.iter().enumerate() {
+            assert!(
+                !(b == &0x80 && (i == 0 || content[i - 1] & 0x80 == 0)),
+                "a subidentifier in its fewest octets"
+            );
+            arc = (arc << 7) | u128::from(b & 0x7f);
+            if b & 0x80 == 0 {
+                arcs.push(arc);
+                arc = 0;
+            }
+        }
+        assert_eq!(arc, 0, "the last subidentifier ends");
+        let first = arcs.remove(0);
+        let (a, b) = if first < 80 {
+            (first / 40, first % 40)
+        } else {
+            (2, first - 80)
+        };
+        std::iter::once(a)
+            .chain(std::iter::once(b))
+            .chain(arcs)
+            .map(|arc| arc.to_string())
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    #[test]
+    fn the_checkpoint_usage_is_encoded_as_its_dotted_text_says() {
+        assert_eq!(dotted(&log_checkpoint_oid()), OID_LOG_CHECKPOINT);
+        assert_eq!(
+            OID_LOG_CHECKPOINT,
+            format!("2.25.{POLAR_ARC}.1"),
+            "under Polar's arc"
+        );
+        let eku = log_checkpoint_extended_key_usage();
+        assert_eq!(
+            &eku[..4],
+            &[0x30, eku.len() as u8 - 2, 0x06, eku.len() as u8 - 4]
+        );
+        assert_eq!(&eku[4..], log_checkpoint_oid().as_slice());
+    }
 }
