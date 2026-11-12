@@ -75,8 +75,9 @@ pub fn mark_of(event: &CredentialsEvent) -> Mark {
         AdminActionRecorded { .. } => mark("credentials.admin-action-recorded", 1, true),
         // Its sequence must go on rising across restarts.
         AuthorityPublished { .. } => mark("credentials.authority-published", 1, true),
-        // It moves the cursor into cert-issuer's record and the supersessions it implies.
-        CertificatesReported { .. } => mark("credentials.certificates-reported", 1, true),
+        // It moves the cursor into cert-issuer's record and the supersessions it implies. Version 2: a certificate's
+        // type may be `Checkpoint`.
+        CertificatesReported { .. } => mark("credentials.certificates-reported", 2, true),
         // They fold nothing: a record of what was refused or let through.
         AuthorityRefused { .. } => mark("credentials.authority-refused", 1, false),
         InstanceRefused { .. } => mark("credentials.instance-refused", 1, false),
@@ -94,7 +95,17 @@ pub fn entry_of(event: &CredentialsEvent, writer: &str) -> Entry {
         version: m.version,
         critical: m.critical,
         writer: writer.to_string(),
-        event: v1::encode(event),
+        event: encode_at(m.version, event)
+            .expect("each kind is written at a version this code has"),
+    }
+}
+
+/// `event`'s bytes at `version` of its kind; none when its kind has no such version.
+fn encode_at(version: u64, event: &CredentialsEvent) -> Option<Vec<u8>> {
+    match version {
+        1 => Some(v1::encode(event)),
+        2 => v2::encode(event),
+        _ => None,
     }
 }
 
@@ -114,15 +125,18 @@ pub enum Read {
 pub fn read(entry: &Entry) -> Read {
     let decoded = match entry.version {
         1 => v1::decode(&entry.kind, &entry.event),
+        2 => v2::decode(&entry.kind, &entry.event),
         _ => None,
     };
     match decoded {
         None => Read::Unknown,
         Some(Err(why)) => Read::Malformed(why),
-        Some(Ok(event)) if v1::encode(&event) != entry.event => Read::Malformed(format!(
-            "{} v{} is not in its one encoding",
-            entry.kind, entry.version
-        )),
+        Some(Ok(event)) if encode_at(entry.version, &event).as_ref() != Some(&entry.event) => {
+            Read::Malformed(format!(
+                "{} v{} is not in its one encoding",
+                entry.kind, entry.version
+            ))
+        }
         // The mark goes with the kind: an entry that says otherwise was not written by this code's rule.
         Some(Ok(event)) if mark_of(&event).critical != entry.critical => Read::Malformed(format!(
             "{} v{} is marked {}critical, which it is not",
@@ -745,12 +759,21 @@ mod v1 {
                 })
             }
             "credentials.certificates-reported" => {
-                from::<CertificatesReported>(bytes).map(|v| E::CertificatesReported {
-                    log: v.log,
-                    through: v.through,
-                    certificates: v.certificates,
-                    tickets: v.tickets,
-                    timestamp: v.timestamp,
+                from::<CertificatesReported>(bytes).and_then(|v| {
+                    // Version 2 brought the checkpoint certificate's type: in version 1 it is no value at all.
+                    if v.certificates
+                        .iter()
+                        .any(|c| c.cert_type == cert_issuer_common::CertType::Checkpoint)
+                    {
+                        return Err("a certificate type version 1 did not have".to_string());
+                    }
+                    Ok(E::CertificatesReported {
+                        log: v.log,
+                        through: v.through,
+                        certificates: v.certificates,
+                        tickets: v.tickets,
+                        timestamp: v.timestamp,
+                    })
                 })
             }
             "credentials.attestation-reported" => {
@@ -766,5 +789,69 @@ mod v1 {
             }
             _ => return None,
         })
+    }
+}
+
+/// Version 2 of the kinds that have one (frozen 2026-11-12): `credentials.certificates-reported`, whose certificates'
+/// type may be `Checkpoint` (docs/architecture/record-store.md, "L2, checkpoints"). Its shape is version 1's; what
+/// changed is the values it holds, so a reader of version 1 alone finds it unknown, and holds as for any critical
+/// kind it does not know, instead of finding a value it never had.
+mod v2 {
+    use super::*;
+
+    #[derive(minicbor::Encode, minicbor::Decode)]
+    #[cbor(map)]
+    struct CertificatesReported {
+        #[n(0)]
+        log: String,
+        #[n(1)]
+        through: u64,
+        #[n(2)]
+        certificates: Vec<ReportedCertificate>,
+        #[n(3)]
+        tickets: Vec<ReportedTicket>,
+        #[n(4)]
+        timestamp: i64,
+    }
+
+    /// `event`'s bytes at version 2; none when its kind has no version 2.
+    pub(super) fn encode(event: &CredentialsEvent) -> Option<Vec<u8>> {
+        match event.clone() {
+            CredentialsEvent::CertificatesReported {
+                log,
+                through,
+                certificates,
+                tickets,
+                timestamp,
+            } => Some(
+                minicbor::to_vec(CertificatesReported {
+                    log,
+                    through,
+                    certificates,
+                    tickets,
+                    timestamp,
+                })
+                .expect("encoding to a vector does not fail"),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The event `bytes` hold as version 2 of `kind`; none when there is no such kind at version 2.
+    pub(super) fn decode(kind: &str, bytes: &[u8]) -> Option<Result<CredentialsEvent, String>> {
+        match kind {
+            "credentials.certificates-reported" => Some(
+                minicbor::decode::<CertificatesReported>(bytes)
+                    .map(|v| CredentialsEvent::CertificatesReported {
+                        log: v.log,
+                        through: v.through,
+                        certificates: v.certificates,
+                        tickets: v.tickets,
+                        timestamp: v.timestamp,
+                    })
+                    .map_err(|e| e.to_string()),
+            ),
+            _ => None,
+        }
     }
 }

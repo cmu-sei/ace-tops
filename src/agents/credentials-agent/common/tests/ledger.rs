@@ -196,18 +196,33 @@ fn examples() -> Vec<CredentialsEvent> {
         E::CertificatesReported {
             log: "cert-issuer".into(),
             through: 77,
-            certificates: vec![ReportedCertificate {
-                seq: 77,
-                identity: "cassini".into(),
-                instance_binding: Some("pod-uid".into()),
-                cert_type: cert_issuer_common::CertType::Server,
-                path: IssuePath::Vouched,
-                serial: "1415".into(),
-                signed_at: 1_762_900_013,
-                not_after: 1_762_990_013,
-                certificate_pem: "pem".into(),
-                unexpected: false,
-            }],
+            certificates: vec![
+                ReportedCertificate {
+                    seq: 77,
+                    identity: "cassini".into(),
+                    instance_binding: Some("pod-uid".into()),
+                    cert_type: cert_issuer_common::CertType::Server,
+                    path: IssuePath::Vouched,
+                    serial: "1415".into(),
+                    signed_at: 1_762_900_013,
+                    not_after: 1_762_990_013,
+                    certificate_pem: "pem".into(),
+                    unexpected: false,
+                },
+                ReportedCertificate {
+                    seq: 78,
+                    identity: "credentials-agent".into(),
+                    instance_binding: None,
+                    // Version 2's: a type version 1 did not have.
+                    cert_type: cert_issuer_common::CertType::Checkpoint,
+                    path: IssuePath::Internal,
+                    serial: "1416".into(),
+                    signed_at: 1_762_900_013,
+                    not_after: 1_762_943_213,
+                    certificate_pem: "pem".into(),
+                    unexpected: false,
+                },
+            ],
             tickets: vec![ReportedTicket {
                 seq: 76,
                 identity: "cassini".into(),
@@ -365,6 +380,47 @@ fn a_kind_or_version_it_does_not_know_is_unknown() {
     entry.version = 1;
     entry.kind = "credentials.something-new".into();
     assert_eq!(read(&entry), Read::Unknown);
+}
+
+#[test]
+fn a_certificates_report_holding_a_type_its_version_did_not_have_is_malformed() {
+    // Version 2 is version 1's shape with the checkpoint certificate's type, so its bytes under version 1 hold a
+    // value version 1 never had: not read as some other value.
+    let report = examples()
+        .into_iter()
+        .find(|e| matches!(e, CredentialsEvent::CertificatesReported { .. }))
+        .unwrap();
+    let mut entry = entry_of(&report, WRITER);
+    assert_eq!(entry.version, 2);
+    entry.version = 1;
+    assert!(
+        matches!(read(&entry), Read::Malformed(ref why) if why.contains("version 1")),
+        "{:?}",
+        read(&entry)
+    );
+    // Without one, version 1 and version 2 hold the same bytes, and either is read.
+    let CredentialsEvent::CertificatesReported {
+        log,
+        through,
+        mut certificates,
+        tickets,
+        timestamp,
+    } = report
+    else {
+        unreachable!()
+    };
+    certificates.retain(|c| c.cert_type != cert_issuer_common::CertType::Checkpoint);
+    let older = CredentialsEvent::CertificatesReported {
+        log,
+        through,
+        certificates,
+        tickets,
+        timestamp,
+    };
+    let mut entry = entry_of(&older, WRITER);
+    assert_eq!(read(&entry), Read::Decoded(older.clone()));
+    entry.version = 1;
+    assert_eq!(read(&entry), Read::Decoded(older));
 }
 
 #[test]
