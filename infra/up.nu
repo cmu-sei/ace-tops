@@ -1103,9 +1103,6 @@ def step_seed [target: string, config: record, username: string, mail: string, a
     ok "the credentials agent has applied and published the policy"
 }
 
-# Whether a pod can reach the outside, said once the cluster is up. A note, never a failure: the cluster works
-# offline, and a probe that cannot run is not a reason to stop. A target that goes out through cluster.egress.proxy is
-# not probed: the probe's git does not use it.
 # What the attestation agent says of itself. Its rollout may still be finishing, so it is given a minute to say, and either way the run goes on.
 def report_attestation [] {
     mut r = { verdict: "unknown", line: "" }
@@ -1118,14 +1115,16 @@ def report_attestation [] {
     if $r.verdict == "proved" { ok $r.line } else { note $r.line }
 }
 
-def report_egress [target: string] {
+# Whether a pod can reach the outside, said once the cluster is up. A note, never a failure: the cluster works
+# offline, and a probe that cannot run is not a reason to stop. The probe is the git observer's own, with its egress
+# settings, its proxy among them (egress.nu).
+def report_egress [] {
     let r = try {
-        let proxy = ((cluster-registry cluster_of $target).egress? | default {} | get -o proxy)
-        egress_report (probe_url) {|u| kube_probe $u } $proxy
+        egress_report (probe_url) {|u| kube_probe $u }
     } catch {|e|
         { verdict: "error", lines: [$"could not check access to the outside: ($e.msg)"] }
     }
-    for l in $r.lines { if $r.verdict == "ok" { ok $l } else { note $l } }
+    for l in $r.lines { if $r.verdict == "reached" { ok $l } else { note $l } }
 }
 
 def main [
@@ -1233,7 +1232,7 @@ def main [
     print ""
     print $"=== Target ($target) is up ==="
     ^kubectl -n $POLAR get pods
-    report_egress $target
+    report_egress
     if ($env.POLAR_DEV_POD? | default "") == "1" {
         note "for a browser on your own machine: bin/polar-dev forward there (Neo4j and ACE); just port-forwards-up there has every service"
     } else {

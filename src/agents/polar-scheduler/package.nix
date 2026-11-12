@@ -62,9 +62,9 @@ let
     inherit system pkgs;
     inputs = healthcheckInputs;
     configNixPath    = ./container-observer.nix;
-    # The observer runs no git (it reads over Cassini, and up.nu copies the deployment). Git stays in its image only for
-    # the egress probe, infra/egress.nu's `git ls-remote` in its pod, until that moves (runtime-attestation.md, C2, O4).
-    extraDerivations = [ observer pkgs.git ];
+    # No git: the observer reads over Cassini, up.nu copies the deployment, and the egress probe is the git observer's
+    # own (runtime-attestation.md, C2, O4).
+    extraDerivations = [ observer ];
   };
 in
 {

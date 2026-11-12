@@ -33,6 +33,8 @@ pub struct ProtocolKind {
     goes_out: bool,
     to_the_cluster: bool,
     pub(crate) start: super::Starter,
+    /// How it makes the egress probe's request, for a protocol that goes out (`--probe-egress`, [`super::probe`]).
+    probe: Option<super::probe::Prober>,
 }
 
 impl ProtocolKind {
@@ -41,12 +43,14 @@ impl ProtocolKind {
         goes_out: true,
         to_the_cluster: false,
         start: super::http::start,
+        probe: Some(super::http::probe),
     };
     pub const GIT: Self = Self {
         name: "git",
         goes_out: true,
         to_the_cluster: false,
         start: super::git::start,
+        probe: Some(super::git::probe),
     };
     /// The Kubernetes API of the cluster the pod runs in, which goes no further than that cluster.
     pub const KUBERNETES: Self = Self {
@@ -54,6 +58,7 @@ impl ProtocolKind {
         goes_out: false,
         to_the_cluster: true,
         start: super::kubernetes::start,
+        probe: None,
     };
     /// Only in this crate's tests, for the framework alone.
     #[cfg(test)]
@@ -62,6 +67,7 @@ impl ProtocolKind {
         goes_out: false,
         to_the_cluster: false,
         start: super::tests::start_test_protocol,
+        probe: None,
     };
 
     pub const fn as_str(self) -> &'static str {
@@ -71,6 +77,11 @@ impl ProtocolKind {
     /// Whether it reaches outside the cluster, and so goes out as the egress section says.
     pub(crate) const fn goes_out(self) -> bool {
         self.goes_out
+    }
+
+    /// How it makes the egress probe's request, if it goes out and is probed.
+    pub(crate) const fn prober(self) -> Option<super::probe::Prober> {
+        self.probe
     }
 
     /// Whether it goes to [`Location::Cluster`], and nowhere else. Asked of the kind and not by comparing with one: naming a kind in

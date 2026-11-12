@@ -28,13 +28,20 @@
 # not resolve host" long after the bring-up that caused it. up.nu runs this at the end and says what it finds. It
 # reports and never stops the bring-up: a cluster used offline is a working cluster.
 #
-# The probe is `git ls-remote` run in the polar-scheduler-observer pod, the one image that has a git CLI. It reads
-# one public repository and sends no credentials.
+# The probe is the agent's own (docs/architecture/egress.md, "The probe"): git-repo-observer's image, run once as
+# `git-repo-observer --probe-egress URL` in a Job of its own in Polar's namespace. It goes out as the observer does, with
+# the observer's egress settings (its document, and the egress CA it mounts) through its own git client, and presents no
+# credential: the Job has no init container, so no certificate, and no ServiceAccount token. It prints its verdict as
+# JSON. The Job is deleted once its verdict is read. Its pod is owned by the Job, whose template pins the image by digest,
+# so the attestation agent holds it to that owner and finds nothing (runtime-attestation.md, C2, O4); a Job is not held
+# to the signed record.
 #
 # And the target's way out (docs/architecture/egress.md): `cluster.egress` in its config.nuon, a proxy, the hosts that
 # bypass it, and a CA to trust beside the system's, all optional. `settings_of` judges it; `egress_entries` is what a
 # workload whose agent declares the egress section (polar::egress) is given for it. A target that sets nothing gives
 # nothing, and every pod is as it was.
+
+use agent-pods.nu [pod_outcome]
 
 const POLAR = "polar"
 
@@ -45,67 +52,148 @@ export const CLUSTER_CA_FILE = "/etc/polar-ca/ca.pem"
 
 # Who gives a workload an env entry, as `env_problems` names them.
 const GIVERS = { catalog: "its catalog entry", target: "the target's config", under-test: "a configuration under test", cluster: "this cluster's inputs" }
-const PROBE_JOB = "polar-scheduler-observer"
+
+# The agent the probe runs as: its workload (a Job, named as the chart named it) and the command its image runs. The images
+# set a Cmd and no Entrypoint (agent-pods.nu), so the Job names the command, and the binary is on the image's PATH.
+export const PROBE_WORKLOAD = "git-repo-observer"
+const PROBE_BINARY = "git-repo-observer"
+export const PROBE_LABEL = "polar.dev/probe"
 const DEFAULT_URL = "https://github.com/octocat/Hello-World"
 
-# How long the probe may take. The pod has no `timeout`, so the limit is on kubectl.
-const PROBE_SECS = 30
+# How long the probe's pod may run once it has started: the agent's own bounds are 15 seconds to connect and 120 for
+# an answer. And how long up.nu waits for it, its image's pull included.
+const PROBE_DEADLINE_SECS = 150
+const PROBE_WAIT = 4min
 
 # The URL probed: POLAR_EGRESS_PROBE_URL if set.
 export def probe_url [] { $env.POLAR_EGRESS_PROBE_URL? | default $DEFAULT_URL }
 
-# What git's answer means. `ok` includes an HTTP error from the server: the network got there. A probe killed for
-# taking too long (exit 124, from `timeout`) printed nothing; it hung, as a connection to a black hole does.
-# The wording is git's, as observed from the pod: "Could not resolve host", "Failed to connect to", "The requested
-# URL returned error".
-export def egress_verdict [exit_code: int, stderr: string] {
-    if $exit_code == 0 { return "ok" }
-    if $exit_code == 124 { return "unreachable" }
-    if ($stderr | str contains "Could not resolve host") { return "dns" }
-    if ($stderr | str contains "The requested URL returned error") { return "ok" }
-    if ($stderr | str contains "Failed to connect to") { return "unreachable" }
-    "other"
+# The probe's Job, from the rendered Job of the workload it runs as (`job`, as the cluster holds it): its image, as pinned,
+# its placement, and its hardening; its document and egress CA, the ConfigMaps it mounts; and nothing else: no init
+# container, no Secret, no ServiceAccount token, and of its environment only where its document is. Never retried, gone
+# a while after it ends whether anyone deletes it or not.
+export def probe_job [job: record, name: string, url: string] {
+    let workload = $job.metadata.name
+    let pod = $job.spec.template.spec
+    let container = ($pod.containers | where name == $workload | get -o 0)
+    if $container == null { error make --unspanned { msg: $"($workload) has no container named for it to probe as" } }
+    if not ($container.image =~ '@sha256:[0-9a-f]{64}$') {
+        error make --unspanned { msg: $"($workload)'s image is not pinned by digest \(($container.image)\): a probe of it would not be what its owner pins" }
+    }
+    let config_maps = ($pod.volumes? | default [] | where {|v| ($v.configMap? | default null) != null })
+    let kept = ($config_maps | get name)
+    let mounts = ($container.volumeMounts? | default [] | where {|m| $m.name in $kept })
+    let document = ($container.env? | default [] | where name == "POLAR_CONFIG" | where {|e| ($e.valueFrom? | default null) == null })
+    let placement = ($pod | select -o nodeSelector tolerations affinity | transpose k v | where v != null | reduce --fold {} {|p, acc| $acc | insert $p.k $p.v })
+    let labels = { $PROBE_LABEL: "egress" }
+    {
+        apiVersion: "batch/v1"
+        kind: "Job"
+        metadata: { name: $name, namespace: $job.metadata.namespace, labels: $labels }
+        spec: {
+            backoffLimit: 0
+            activeDeadlineSeconds: $PROBE_DEADLINE_SECS
+            ttlSecondsAfterFinished: 600
+            template: {
+                metadata: { labels: $labels }
+                spec: ({
+                    restartPolicy: "Never"
+                    automountServiceAccountToken: false
+                    enableServiceLinks: false
+                    securityContext: ($pod.securityContext? | default {})
+                    containers: [{
+                        name: "probe"
+                        image: $container.image
+                        imagePullPolicy: ($container.imagePullPolicy? | default "IfNotPresent")
+                        command: [$PROBE_BINARY "--probe-egress" $url]
+                        env: $document
+                        securityContext: ($container.securityContext? | default {})
+                        volumeMounts: ($mounts ++ [{ name: "tmp", mountPath: "/tmp" }])
+                    }]
+                    volumes: ($config_maps ++ [{ name: "tmp", emptyDir: {} }])
+                } | merge $placement)
+            }
+        }
+    }
+}
+
+# What the probe found, from its pod's exit code and log (`r`: { exit, logs, reason }): { verdict, detail }. The agent
+# prints one JSON line for each protocol it goes out with; the verdict is the first that did not reach, or reached. A pod
+# that printed none says why in its reason or its last lines.
+export def probe_verdict [r: record] {
+    let found = ($r.logs | lines | each {|l| try { $l | from json } catch { null } } | where {|v| ($v | describe | str starts-with "record") and ($v.verdict? | default null) != null })
+    if ($found | is-empty) {
+        let said = ($r.logs | lines | where {|l| $l | is-not-empty } | last 3 | str join " | ")
+        let why = ([$r.reason? $said] | compact --empty | str join ": ")
+        return { verdict: "other", detail: $"the probe gave no verdict \(exit ($r.exit | default 'none')\)(if ($why | is-empty) { '' } else { $': ($why)' })" }
+    }
+    let failed = ($found | where verdict != "reached")
+    let chosen = if ($failed | is-empty) { $found | first } else { $failed | first }
+    { verdict: $chosen.verdict, detail: ($chosen.detail? | default "") }
 }
 
 # The lines to print for a verdict. Every one is a note: none of them stops anything.
-export def egress_lines [verdict: string, url: string, stderr: string] {
+export def egress_lines [verdict: string, url: string, detail: string] {
     match $verdict {
-        "ok" => [$"pods can reach ($url)"]
+        "reached" => [$"pods can reach ($url)"]
         "dns" => [
-            $"pods cannot resolve names outside the cluster \(git could not resolve the host in ($url)\). Anything that reads a repository outside the cluster, such as the git agents, will fail until they can. If you are working offline, ignore this."
+            $"pods cannot resolve names outside the cluster \(the probe could not resolve the host in ($url)\). Anything that reads a repository outside the cluster, such as the git agents, will fail until they can. If you are working offline, ignore this."
             "CoreDNS sends names it does not own to the upstream in its Corefile. Its errors: kubectl -n kube-system logs -l k8s-app=kube-dns --tail=20"
             "If the cluster's DNS forwards to a resolver that runs only on the host (a second systemd-resolved listener, say), is that listener there: ss -lun 'sport = :5300' (the port is whatever the cluster forwards to)"
         ]
         "unreachable" => [
             $"pods resolved the name but could not connect to ($url), or the attempt hung. Check the host's network, VPN and firewall. If you are working offline, ignore this."
         ]
+        "tls" => [
+            $"pods reached ($url) and did not trust its certificate: ($detail). Something between that presents its own \(a TLS-inspecting proxy\) needs its CA in the target's cluster.egress.ca_file."
+        ]
+        "proxy" => [
+            $"the way out is through cluster.egress.proxy, and the proxy could not be reached or would not open the way to ($url): ($detail)"
+        ]
         _ => [
-            $"the outside-access probe of ($url) failed in a way this check does not recognise: ($stderr | lines | where {|l| $l | is-not-empty } | first | default '')"
+            $"the outside-access probe of ($url) failed in a way this check does not recognise: ($detail | lines | where {|l| $l | is-not-empty } | first | default '')"
         ]
     }
 }
 
-# Runs `probe` (url -> { skipped, exit_code, stderr }) and says what it found. Returns { verdict, lines }. A target that
-# goes out through a proxy (`proxy`, its cluster.egress.proxy) is not probed: git in the pod knows nothing of it.
-export def egress_report [url: string, probe: closure, proxy: any = null] {
-    if $proxy != null {
-        return { verdict: "skipped", lines: [$"skipped: the target reaches the outside through cluster.egress.proxy, which the probe \(git in ($PROBE_JOB)\) does not use"] }
-    }
+# Runs `probe` (url -> { skipped, exit, logs, reason }) and says what it found. Returns { verdict, lines }.
+export def egress_report [url: string, probe: closure] {
     let r = (do $probe $url)
     if $r.skipped {
-        return { verdict: "skipped", lines: [$"no ($PROBE_JOB) pod is running to probe from, so access to the outside was not checked"] }
+        return { verdict: "skipped", lines: [$"no ($PROBE_WORKLOAD) is deployed, and the probe runs as that agent, so access to the outside was not checked"] }
     }
-    let verdict = (egress_verdict $r.exit_code $r.stderr)
-    { verdict: $verdict, lines: (egress_lines $verdict $url $r.stderr) }
+    let v = (probe_verdict $r)
+    { verdict: $v.verdict, lines: (egress_lines $v.verdict $url $v.detail) }
 }
 
-# The probe against the cluster: `git ls-remote <url> HEAD` in the running polar-scheduler-observer pod.
+# The probe against the cluster: the probe's Job, made from the cluster's $PROBE_WORKLOAD Job, waited for, read, and deleted.
 export def kube_probe [url: string] {
-    let pods = (^kubectl -n $POLAR get pods -l $"job-name=($PROBE_JOB)" --field-selector status.phase=Running -o name | complete)
-    let pod = if $pods.exit_code == 0 { $pods.stdout | lines | where {|l| $l | is-not-empty } | get -o 0 } else { null }
-    if $pod == null { return { skipped: true, exit_code: 0, stderr: "" } }
-    let r = (^timeout $PROBE_SECS kubectl -n $POLAR exec -c $PROBE_JOB $pod -- git ls-remote $url HEAD | complete)
-    { skipped: false, exit_code: $r.exit_code, stderr: $r.stderr }
+    let got = (^kubectl -n $POLAR get job $PROBE_WORKLOAD -o json | complete)
+    if $got.exit_code != 0 { return { skipped: true, exit: null, logs: "", reason: "" } }
+    let name = $"egress-probe-(random chars --length 6 | str lowercase)"
+    let job = (probe_job ($got.stdout | from json) $name $url)
+    let made = ($job | to json | ^kubectl create -f - | complete)
+    if $made.exit_code != 0 { error make --unspanned { msg: $"the cluster refused the probe's Job: ($made.stderr | str trim)" } }
+    let r = (try { wait_probe $name } catch {|e| { exit: null, logs: "", reason: $e.msg } })
+    ^kubectl -n $POLAR delete job $name --cascade=background --wait=false --ignore-not-found | complete | ignore
+    $r | insert skipped false
+}
+
+# Waits for the probe's pod to finish, or to be stuck, or for PROBE_WAIT: { exit, logs, reason }.
+def wait_probe [name: string] {
+    let deadline = ((date now) + $PROBE_WAIT)
+    loop {
+        let listed = (^kubectl -n $POLAR get pods -l $"job-name=($name)" -o json | complete)
+        let pod = if $listed.exit_code == 0 { $listed.stdout | from json | get items | get -o 0 } else { null }
+        let out = if $pod == null { { state: "running", exit: null, reason: "" } } else { pod_outcome $pod }
+        if $out.state == "done" {
+            let logs = (^kubectl -n $POLAR logs $pod.metadata.name | complete)
+            return { exit: $out.exit, logs: $logs.stdout, reason: $out.reason }
+        }
+        if $out.state == "stuck" { return { exit: null, logs: "", reason: $out.reason } }
+        if (date now) > $deadline { return { exit: null, logs: "", reason: $"the probe did not finish within ($PROBE_WAIT)" } }
+        sleep 2sec
+    }
 }
 
 # ── The target's egress setting (pure, but for reading the CA file) ──────────

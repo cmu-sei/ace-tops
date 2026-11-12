@@ -37,7 +37,9 @@
 //!   applies, with its type, default, secrecy and documentation, and each value empty. With
 //!   `--config FILE` it is the same document filled from FILE, with where each value came from
 //!   and every problem found;
-//! - `--check --config FILE`: the judgement the agent makes when it starts, on FILE, offline.
+//! - `--check --config FILE`: the judgement the agent makes when it starts, on FILE, offline;
+//! - `--probe-egress URL`: for an agent with an operation that goes outside the cluster, whether its way out reaches URL,
+//!   with no credential (`protocol::probe`).
 //!
 //! The document an agent reads at runtime is one of these, filled in: see `polar_env::Document`.
 //!
@@ -923,9 +925,13 @@ pub enum Command {
     Check {
         config: PathBuf,
     },
+    /// `--probe-egress URL`: whether the agent's way out reaches URL (protocol::probe).
+    ProbeEgress {
+        url: String,
+    },
 }
 
-const USAGE: &str = "usage: <agent> [--help | --version [--json] | --scaffold [--config FILE] | --check --config FILE]";
+const USAGE: &str = "usage: <agent> [--help | --version [--json] | --scaffold [--config FILE] | --check --config FILE | --probe-egress URL]";
 
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -949,6 +955,10 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             Some(config) => Ok(Command::Check { config }),
             None => Err(format!("--check needs --config FILE\n{USAGE}")),
         },
+        ["--probe-egress", url] => Ok(Command::ProbeEgress {
+            url: url.to_string(),
+        }),
+        ["--probe-egress"] => Err(format!("--probe-egress needs a URL\n{USAGE}")),
         _ => Err(USAGE.to_string()),
     }
 }
@@ -1039,8 +1049,15 @@ pub fn help_text<A: PolarAgent>() -> String {
          \x20 --version --json          the same, as JSON\n\
          \x20 --scaffold                the configuration document, every value empty, as JSON\n\
          \x20 --scaffold --config FILE  the same, filled from FILE, with sources and problems\n\
-         \x20 --check --config FILE     judge FILE the way the agent does when it starts\n\
-         With no flag it starts the agent, reading POLAR_CONFIG if it is set and the environment \
+         \x20 --check --config FILE     judge FILE the way the agent does when it starts\n",
+    );
+    if !crate::protocol::probe::outside(A::OPERATIONS).is_empty() {
+        text.push_str(
+            "\x20 --probe-egress URL        whether its way out reaches URL, with no credential, as JSON\n",
+        );
+    }
+    text.push_str(
+        "With no flag it starts the agent, reading POLAR_CONFIG if it is set and the environment \
          otherwise.\n",
     );
     text
@@ -1224,8 +1241,56 @@ pub fn run_with<A: PolarAgent>(args: &[String], process: impl Env + 'static) -> 
                 1
             }
         }
+        Command::ProbeEgress { url } => probe_egress::<A>(&url, process),
         Command::Run => start::<A>(process),
     }
+}
+
+/// `--probe-egress URL`: whether the agent's way out of the cluster reaches `url`, by each protocol it goes out with, with
+/// the egress settings it is given (POLAR_CONFIG's, or the environment's) and no credential. One JSON line for each on
+/// stdout. 0 when each reached it, 1 when one did not, and 2 for an agent with nothing that goes out.
+fn probe_egress<A: PolarAgent>(url: &str, process: impl Env + 'static) -> u8 {
+    let kinds = crate::protocol::probe::outside(A::OPERATIONS);
+    if kinds.is_empty() {
+        eprintln!(
+            "ERROR: {} has no operation that goes outside the cluster, so nothing to probe with",
+            A::NAME
+        );
+        return 2;
+    }
+    let env = match polar_env::from_environment(process) {
+        Ok((env, _)) => env,
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            return 1;
+        }
+    };
+    let config = polar_env::Config::builder(&*env)
+        .register(&polar::egress::SECTION)
+        .build();
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("ERROR: cannot start the async runtime: {error}");
+            return 1;
+        }
+    };
+    let lines = runtime.block_on(crate::protocol::probe::probe(A::NAME, &kinds, &config, url));
+    let mut reached = true;
+    for line in &lines {
+        match serde_json::to_string(line) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("ERROR: the verdict cannot be written: {error}");
+                return 1;
+            }
+        }
+        reached &= line.verdict == crate::protocol::probe::Reach::Reached;
+    }
+    if reached { 0 } else { 1 }
 }
 
 /// Judges the configuration the process was given and, if it is sound, runs the agent.
@@ -1829,6 +1894,98 @@ mod tests {
         assert!(unknown.contains("usage:"), "{unknown}");
         let dangling = parse_command(&strings(&["--scaffold", "--config"])).unwrap_err();
         assert!(dangling.contains("--config"), "{dangling}");
+    }
+
+    #[test]
+    fn a_probe_of_the_way_out_names_its_url_and_nothing_else() {
+        assert_eq!(
+            parse_command(&strings(&["--probe-egress", "https://example.org/r.git"])),
+            Ok(Command::ProbeEgress {
+                url: "https://example.org/r.git".to_string()
+            })
+        );
+        let bare = parse_command(&strings(&["--probe-egress"])).unwrap_err();
+        assert!(bare.contains("--probe-egress needs a URL"), "{bare}");
+        let more = parse_command(&strings(&["--probe-egress", "a", "b"])).unwrap_err();
+        assert!(more.contains("usage:"), "{more}");
+    }
+
+    const OUTSIDE: crate::protocol::OperationDecl = crate::protocol::OperationDecl {
+        name: "out.read",
+        doc: "reads something outside",
+        protocol: crate::protocol::ProtocolKind::HTTP,
+        location: crate::protocol::Location::Arbitrary,
+    };
+
+    struct Probing;
+    impl PolarAgent for Probing {
+        const NAME: &'static str = "probing";
+        const ROLE: Role = Role::Observer;
+        const PURPOSE: &'static str = "goes out";
+        const NEEDS: &'static [Capability] = &[];
+        const SHUTDOWN_BUDGET: Duration = Duration::from_secs(5);
+        const OPERATIONS: &'static [crate::protocol::OperationDecl] = &[OUTSIDE];
+        async fn start(_configured: Configured) -> Result<(), StartError> {
+            Ok(())
+        }
+    }
+
+    /// An address that answers each connection with a 200, from a thread of its own, for a test with no runtime.
+    fn answering() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+            }
+        });
+        format!("http://{address}/")
+    }
+
+    #[test]
+    fn the_probe_answers_zero_when_the_way_out_reaches_and_one_when_it_does_not() {
+        let env = std::collections::HashMap::<String, String>::new();
+        assert_eq!(
+            run_with::<Probing>(&strings(&["--probe-egress", &answering()]), env.clone()),
+            0
+        );
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert_eq!(
+            run_with::<Probing>(
+                &strings(&["--probe-egress", &format!("http://127.0.0.1:{port}/")]),
+                env
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn the_probe_goes_by_the_egress_setting_the_agent_is_given() {
+        // The proxy named in its environment, which is not there: the way out is the proxy's, and fails.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy = format!("http://127.0.0.1:{}", closed.local_addr().unwrap().port());
+        drop(closed);
+        let env = std::collections::HashMap::from([("POLAR_EGRESS_PROXY".to_string(), proxy)]);
+        assert_eq!(
+            run_with::<Probing>(&strings(&["--probe-egress", &answering()]), env),
+            1
+        );
+    }
+
+    #[test]
+    fn an_agent_that_does_not_go_out_has_nothing_to_probe_with() {
+        let env = std::collections::HashMap::<String, String>::new();
+        assert_eq!(
+            run_with::<Reading>(&strings(&["--probe-egress", "https://example.org/"]), env),
+            2
+        );
+        assert!(!help_text::<Reading>().contains("--probe-egress"));
+        assert!(help_text::<Probing>().contains("--probe-egress URL"));
     }
 
     // -- help ----------------------------------------------------------------------------------

@@ -28,6 +28,7 @@
 //! of authenticating ([`Request::at_a_registry`]): the login goes only where a judged challenge sends it, and what comes
 //! back goes only to the registry.
 
+use super::probe::{Probed, Reach, classify};
 use super::{
     CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
 };
@@ -442,6 +443,22 @@ impl Http {
             exchanged: Some((presented, looks)),
         }))
     }
+}
+
+/// The egress probe's request ([`super::probe`]): a GET of the URL with the agent's client, presenting nothing and following
+/// nothing. Any answer, whatever its status, is reached.
+pub(crate) fn probe(started: Started, url: String, proxied: bool) -> Pending<Probed> {
+    Box::pin(async move {
+        let Ok(http) = started.downcast::<Http>() else {
+            return Probed::new(Reach::Other, "the http protocol did not start as http");
+        };
+        match http.client.get(&url).send().await {
+            Ok(response) => {
+                Probed::new(Reach::Reached, format!("it answered {}", response.status()))
+            }
+            Err(e) => classify(&error_chain(&e.without_url()), proxied),
+        }
+    })
 }
 
 impl super::sealed::Sealed for Http {}
@@ -2132,6 +2149,116 @@ mod tests {
             if let Ok(target) = Http::target(&Request::get(path.clone()), Some("https://site.example.org/ctx")) {
                 prop_assert_eq!(target.host, "site.example.org", "{}", path);
             }
+        }
+    }
+
+    // -- the egress probe -------------------------------------------------------------------------------------------
+
+    /// The probe of `url` by the agent's client going out as `egress` says.
+    async fn probe_of(url: &str, egress: polar::egress::Egress) -> Probed {
+        let client = Http::client(&egress, CONNECT_TIMEOUT, REQUEST_TIMEOUT)
+            .await
+            .unwrap();
+        let proxied = egress.proxy_for(url).is_some();
+        probe(
+            Arc::new(Http::with_client(client)),
+            url.to_string(),
+            proxied,
+        )
+        .await
+    }
+
+    /// The egress settings that trust `ca`, whose file is in `dir`.
+    fn trusting(ca: &TestCa, dir: &std::path::Path) -> polar::egress::Egress {
+        polar::egress::Egress {
+            ca_cert: Some(ca.write(dir, "ca.pem").display().to_string()),
+            ..polar::egress::Egress::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_probe_reaches_whatever_answers_and_presents_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let probed = probe_of(&server.uri(), polar::egress::Egress::default()).await;
+        assert_eq!(probed.reach, Reach::Reached, "{probed:?}");
+        assert!(probed.detail.contains("401"), "{probed:?}");
+        let received = server.received_requests().await.unwrap();
+        assert!(
+            received
+                .iter()
+                .all(|r| !r.headers.contains_key("authorization"))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_says_a_name_that_does_not_resolve_is_dns() {
+        let probed = probe_of("https://nowhere.invalid/", polar::egress::Egress::default()).await;
+        assert_eq!(probed.reach, Reach::Dns, "{probed:?}");
+    }
+
+    #[tokio::test]
+    async fn the_probe_says_a_port_that_refuses_is_unreachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let probed = probe_of(
+            &format!("https://127.0.0.1:{port}/"),
+            polar::egress::Egress::default(),
+        )
+        .await;
+        assert_eq!(probed.reach, Reach::Unreachable, "{probed:?}");
+    }
+
+    #[tokio::test]
+    async fn the_probe_says_a_certificate_it_does_not_trust_is_tls_and_one_it_does_is_reached() {
+        use polar::egress::testing::https_server;
+        let dir = tempfile::tempdir().unwrap();
+        let ca = TestCa::new("the egress CA");
+        let server = https_server(&ca).await;
+        let untrusted = probe_of(&server.url, polar::egress::Egress::default()).await;
+        assert_eq!(untrusted.reach, Reach::Tls, "{untrusted:?}");
+        let trusted = probe_of(&server.url, trusting(&ca, dir.path())).await;
+        assert_eq!(trusted.reach, Reach::Reached, "{trusted:?}");
+    }
+
+    #[tokio::test]
+    async fn the_probe_goes_through_the_proxy_as_the_agent_does() {
+        use polar::egress::testing::{forwarding_proxy, https_server};
+        let dir = tempfile::tempdir().unwrap();
+        let ca = TestCa::new("the egress CA");
+        let server = https_server(&ca).await;
+        let (proxy, seen) = forwarding_proxy().await;
+        let egress = polar::egress::Egress {
+            proxy: Some(proxy),
+            ..trusting(&ca, dir.path())
+        };
+        let probed = probe_of(&server.url, egress).await;
+        assert_eq!(probed.reach, Reach::Reached, "{probed:?}");
+        let at = server.url.trim_start_matches("https://");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![format!("CONNECT {at} HTTP/1.1")]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_says_a_proxy_that_will_not_open_the_way_or_is_not_there_is_the_proxy() {
+        use polar::egress::testing::recording_proxy;
+        let (refusing, _) = recording_proxy().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gone = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        drop(listener);
+        for proxy in [refusing, gone] {
+            let egress = polar::egress::Egress {
+                proxy: Some(proxy.clone()),
+                ..polar::egress::Egress::default()
+            };
+            let probed = probe_of("https://outside.example.org/", egress).await;
+            assert_eq!(probed.reach, Reach::Proxy, "{proxy}: {probed:?}");
         }
     }
 }

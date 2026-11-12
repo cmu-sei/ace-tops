@@ -23,9 +23,10 @@
 
 # infra/tests/egress.nu
 #
-# The check at the end of up.nu that a pod can reach an outside host: how git's answer is read, what is said for
-# each, and that the check reports and never stops the bring-up (a person working offline has a working cluster).
-# The messages are the ones git printed from inside the polar-scheduler-observer pod.
+# The check at the end of up.nu that a pod can reach an outside host: the probe's Job (git-repo-observer's image,
+# run once with `--probe-egress`, its document and egress CA and nothing else), how the agent's verdict is read, what
+# is said for each, and that the check reports and never stops the bring-up (a person working offline has a working
+# cluster).
 #
 # And the target's egress setting (cluster.egress: a proxy, the hosts that bypass it, a CA): what is accepted, what
 # is refused and how it is said, the bypass list the render writes, and what an agent's pod is given for it.
@@ -35,9 +36,65 @@
 use std/assert
 use ../egress.nu *
 
-const DNS = "fatal: unable to access 'https://github.com/octocat/Hello-World/': Could not resolve host: github.com"
-const REFUSED = "fatal: unable to access 'https://127.0.0.1:1/x/': Failed to connect to 127.0.0.1:1 after 0 ms: Could not connect to server"
-const HTTP = "fatal: unable to access 'https://140.82.112.3/octocat/Hello-World/': The requested URL returned error: 301"
+const IMAGE = "registry.polar:5000/git-observer@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# git-repo-observer's Job as the chart renders it, in the parts the probe reads: polar-init, the token it presents, its
+# certificates and its Secret, its document, the egress CA and its cache.
+def rendered_job [] {
+    {
+        apiVersion: "batch/v1", kind: "Job"
+        metadata: { name: "git-repo-observer", namespace: "polar" }
+        spec: { template: { spec: {
+            serviceAccountName: "git-repo-observer"
+            automountServiceAccountToken: false
+            nodeSelector: { "polar.dev/pool": "observers" }
+            securityContext: { runAsNonRoot: true, seccompProfile: { type: "RuntimeDefault" } }
+            initContainers: [{ name: "polar-init", image: "registry.polar:5000/polar-init@sha256:aa", volumeMounts: [{ name: "token", mountPath: "/var/run/token" }] }]
+            containers: [{
+                name: "git-repo-observer"
+                image: $IMAGE
+                securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+                env: [
+                    { name: "POLAR_CONFIG", value: "/etc/polar/config.json" }
+                    { name: "POLAR_CUSTODY_SOCKET", value: "/run/polar-custody/sock" }
+                    { name: "GIT_TOKEN", valueFrom: { secretKeyRef: { name: "git-repo-observer-secrets", key: "token" } } }
+                ]
+                volumeMounts: [
+                    { name: "config", mountPath: "/etc/polar" }
+                    { name: "polar-egress-ca", mountPath: "/etc/polar-egress-ca", readOnly: true }
+                    { name: "certs", mountPath: "/etc/tls/certs" }
+                    { name: "secrets", mountPath: "/etc/secrets" }
+                    { name: "cache", mountPath: "/var/lib/git-repo-observer/cache" }
+                ]
+            }]
+            volumes: [
+                { name: "config", configMap: { name: "git-repo-observer-config" } }
+                { name: "polar-egress-ca", configMap: { name: "git-repo-observer-egress-ca" } }
+                { name: "token", projected: { sources: [{ serviceAccountToken: { path: "token", audience: "polar" } }] } }
+                { name: "certs", emptyDir: {} }
+                { name: "secrets", secret: { secretName: "git-repo-observer-secrets" } }
+                { name: "cache", emptyDir: {} }
+            ]
+        } } }
+    }
+}
+
+# A volume of any kind a pod may have.
+def random_volume [i: int] {
+    let name = $"extra-($i)"
+    match (random int 0..4) {
+        0 => { name: $name, configMap: { name: $"cm-($i)" } }
+        1 => { name: $name, secret: { secretName: $"s-($i)" } }
+        2 => { name: $name, emptyDir: {} }
+        3 => { name: $name, projected: { sources: [{ serviceAccountToken: { path: "token" } }] } }
+        _ => { name: $name, persistentVolumeClaim: { claimName: $"c-($i)" } }
+    }
+}
+
+# One line of the agent's verdict, as it prints it.
+def line [protocol: string, verdict: string, detail: string] {
+    { agent: "git-repo-observer", protocol: $protocol, host: "example.org", verdict: $verdict, detail: $detail } | to json --raw
+}
 
 def has [lines: list, needle: string] { $lines | any {|l| $l | str contains $needle } }
 
@@ -96,33 +153,79 @@ def random_entry [domain: string] {
 def main [] {
     let tests = [
         {
-            name: "success is reachable"
-            body: { assert equal (egress_verdict 0 "") "ok" }
+            name: "the probe's Job runs the agent's image once, with its document and egress CA and nothing else"
+            body: {
+                let j = (probe_job (rendered_job) "egress-probe-abc123" "https://example.org/r.git")
+                assert equal $j.kind "Job"
+                assert equal $j.metadata.namespace "polar"
+                assert equal $j.metadata.labels { "polar.dev/probe": "egress" }
+                assert equal $j.spec.backoffLimit 0
+                let pod = $j.spec.template.spec
+                assert equal $j.spec.template.metadata.labels { "polar.dev/probe": "egress" }
+                assert equal $pod.restartPolicy "Never"
+                assert equal $pod.automountServiceAccountToken false
+                assert equal ($pod | get -o initContainers) null
+                assert equal ($pod | get -o serviceAccountName) null
+                assert equal ($pod.containers | length) 1
+                let c = ($pod.containers | first)
+                assert equal $c.image $IMAGE
+                assert equal $c.command ["git-repo-observer" "--probe-egress" "https://example.org/r.git"]
+                assert equal $c.env [{ name: "POLAR_CONFIG", value: "/etc/polar/config.json" }]
+                assert equal $c.securityContext (rendered_job).spec.template.spec.containers.0.securityContext
+                assert equal ($pod.volumes | get name) ["config" "polar-egress-ca" "tmp"]
+                assert equal ($c.volumeMounts | get name) ["config" "polar-egress-ca" "tmp"]
+                assert equal $pod.nodeSelector { "polar.dev/pool": "observers" }
+                assert equal $pod.securityContext { runAsNonRoot: true, seccompProfile: { type: "RuntimeDefault" } }
+            }
         }
         {
-            name: "an HTTP error from the server means the network works"
-            body: { assert equal (egress_verdict 128 $HTTP) "ok" }
+            name: "a Job of whatever volumes and environment keeps only ConfigMaps and the document, never a Secret or a token"
+            body: {
+                for _ in 1..50 {
+                    let extra = (1..(random int 0..6) | each {|i| random_volume $i })
+                    let job = (rendered_job | update spec.template.spec.volumes {|j| $j.spec.template.spec.volumes ++ $extra }
+                        | update spec.template.spec.containers.0.volumeMounts {|j| $j.spec.template.spec.containers.0.volumeMounts ++ ($extra | each {|v| { name: $v.name, mountPath: $"/v/($v.name)" } }) })
+                    let pod = (probe_job $job "p" "https://example.org/").spec.template.spec
+                    for v in $pod.volumes {
+                        assert ((($v.configMap? | default null) != null) or $v.name == "tmp") ($v | to nuon)
+                    }
+                    let mounted = ($pod.containers.0.volumeMounts | get name)
+                    assert equal ($pod.volumes | get name | sort) ($mounted | sort)
+                    assert ($pod.containers.0.env | all {|e| $e.name == "POLAR_CONFIG" and ($e.valueFrom? | default null) == null })
+                }
+            }
         }
         {
-            name: "a name that does not resolve is a DNS problem, not a network one"
-            body: { assert equal (egress_verdict 128 $DNS) "dns" }
+            name: "an image not pinned by digest is not probed: its pod would not be what its owner pins"
+            body: {
+                let job = (rendered_job | update spec.template.spec.containers.0.image "registry/git-observer:latest")
+                let refused = (try { probe_job $job "p" "https://example.org/"; null } catch {|e| $e.msg })
+                assert ($refused | str contains "not pinned by digest")
+            }
         }
         {
-            name: "a refused or failed connection is unreachable"
-            body: { assert equal (egress_verdict 128 $REFUSED) "unreachable" }
+            name: "the verdict is the agent's: the first protocol that did not reach, or reached"
+            body: {
+                let reached = (line "git" "reached" "it listed 2 refs")
+                let dns = (line "http" "dns" "failed to lookup address")
+                assert equal (probe_verdict { exit: 0, logs: $reached, reason: "" }) { verdict: "reached", detail: "it listed 2 refs" }
+                assert equal (probe_verdict { exit: 1, logs: ([$reached $dns] | str join "\n"), reason: "" }) { verdict: "dns", detail: "failed to lookup address" }
+            }
         }
         {
-            name: "a probe that hung until it was killed (exit 124 from timeout, no output) is unreachable"
-            body: { assert equal (egress_verdict 124 "") "unreachable" }
-        }
-        {
-            name: "anything else is not guessed at"
-            body: { assert equal (egress_verdict 128 "fatal: something nobody has seen") "other" }
+            name: "a pod that printed no verdict is other, and says why"
+            body: {
+                let v = (probe_verdict { exit: null, logs: "", reason: "ErrImagePull: not found" })
+                assert equal $v.verdict "other"
+                assert ($v.detail | str contains "ErrImagePull: not found")
+                let w = (probe_verdict { exit: 2, logs: "ERROR: git-repo-observer has no operation that goes outside the cluster", reason: "Error" })
+                assert ($w.detail | str contains "no operation that goes outside")
+            }
         }
         {
             name: "the DNS advice says what is wrong, that offline can ignore it, and where to look"
             body: {
-                let l = (egress_lines "dns" "https://example.org/r" $DNS)
+                let l = (egress_lines "dns" "https://example.org/r" "failed to resolve address")
                 assert (has $l "cannot resolve names outside the cluster")
                 assert (has $l "offline")
                 assert (has $l "kubectl -n kube-system logs -l k8s-app=kube-dns")
@@ -132,58 +235,49 @@ def main [] {
         {
             name: "the unreachable advice does not blame DNS"
             body: {
-                let l = (egress_lines "unreachable" "https://example.org/r" $REFUSED)
+                let l = (egress_lines "unreachable" "https://example.org/r" "Connection refused")
                 assert (has $l "could not connect")
                 assert (not (has $l "cannot resolve"))
             }
         }
         {
+            name: "a certificate not trusted points at the egress CA, and a proxy at the proxy"
+            body: {
+                assert (has (egress_lines "tls" "https://example.org/r" "the SSL certificate is invalid") "cluster.egress.ca_file")
+                let p = (egress_lines "proxy" "https://example.org/r" "proxy returned unexpected status: 403")
+                assert (has $p "cluster.egress.proxy")
+                assert (has $p "403")
+            }
+        }
+        {
             name: "an answer nobody recognises is shown, not hidden"
             body: {
-                let l = (egress_lines "other" "https://example.org/r" "fatal: something nobody has seen")
+                let l = (egress_lines "other" "https://example.org/r" "something nobody has seen")
                 assert (has $l "something nobody has seen")
             }
         }
         {
-            name: "a pod that can be probed from and a good answer: one line saying so, ok"
+            name: "a probe that reached: one line saying so"
             body: {
-                let r = (egress_report "https://example.org/r" {|u| { skipped: false, exit_code: 0, stderr: "" } })
-                assert equal $r.verdict "ok"
-                assert equal ($r.lines | length) 1
-                assert ($r.lines.0 | str contains "https://example.org/r")
+                let r = (egress_report "https://example.org/r" {|u| { skipped: false, exit: 0, logs: (line "git" "reached" "ok"), reason: "" } })
+                assert equal $r.verdict "reached"
+                assert equal $r.lines ["pods can reach https://example.org/r"]
             }
         }
         {
-            name: "no pod to probe from is said, and is not a failure"
+            name: "no agent to probe as is said plainly, and is not a failure"
             body: {
-                let r = (egress_report "https://example.org/r" {|u| { skipped: true, exit_code: 0, stderr: "" } })
+                let r = (egress_report "https://example.org/r" {|u| { skipped: true, exit: null, logs: "", reason: "" } })
                 assert equal $r.verdict "skipped"
+                assert (has $r.lines "no git-repo-observer is deployed")
                 assert (has $r.lines "was not checked")
-            }
-        }
-        {
-            name: "a DNS failure is reported with its advice"
-            body: {
-                let r = (egress_report "https://github.com/x" {|u| { skipped: false, exit_code: 128, stderr: $DNS } })
-                assert equal $r.verdict "dns"
-                assert (has $r.lines "cannot resolve")
             }
         }
         {
             name: "the probe is given the URL it is to try"
             body: {
-                let r = (egress_report "https://example.org/the-url" {|u| { skipped: false, exit_code: 128, stderr: $"asked ($u)" } })
+                let r = (egress_report "https://example.org/the-url" {|u| { skipped: false, exit: 1, logs: (line "git" "other" $"asked ($u)"), reason: "" } })
                 assert (has $r.lines "asked https://example.org/the-url")
-            }
-        }
-        {
-            name: "a target that goes out through a proxy is not probed: git in the pod does not use it"
-            body: {
-                let r = (egress_report "https://example.org/r" {|u| error make { msg: "the probe ran" } } "http://proxy.corp.example:3128")
-                assert equal $r.verdict "skipped"
-                assert equal $r.lines ["skipped: the target reaches the outside through cluster.egress.proxy, which the probe (git in polar-scheduler-observer) does not use"]
-                let direct = (egress_report "https://example.org/r" {|u| { skipped: false, exit_code: 0, stderr: "" } } null)
-                assert equal $direct.verdict "ok"
             }
         }
         {

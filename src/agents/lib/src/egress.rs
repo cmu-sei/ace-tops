@@ -404,6 +404,62 @@ pub mod testing {
         (format!("http://127.0.0.1:{port}"), seen)
     }
 
+    /// A proxy that opens the tunnel each CONNECT asks for and keeps the first line of each request it is sent. Anything
+    /// else it refuses with a 405. Returns its address and the lines.
+    pub async fn forwarding_proxy() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut tcp, _)) = listener.accept().await else {
+                    return;
+                };
+                let record = record.clone();
+                tokio::spawn(async move {
+                    // The head of the request, up to its blank line: a CONNECT has no body.
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        match tcp.read(&mut byte).await {
+                            Ok(1) => head.push(byte[0]),
+                            _ => return,
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&head);
+                    let first = text.lines().next().unwrap_or("").to_string();
+                    record.lock().unwrap().push(first.clone());
+                    let to = match first.split_whitespace().collect::<Vec<_>>()[..] {
+                        ["CONNECT", to, _] => to.to_string(),
+                        _ => {
+                            let _ = tcp
+                                .write_all(
+                                    b"HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\n\r\n",
+                                )
+                                .await;
+                            return;
+                        }
+                    };
+                    let Ok(mut upstream) = tokio::net::TcpStream::connect(&to).await else {
+                        let _ = tcp
+                            .write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n")
+                            .await;
+                        return;
+                    };
+                    if tcp
+                        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        .await
+                        .is_ok()
+                    {
+                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut upstream).await;
+                    }
+                });
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), seen)
+    }
+
     /// Runs the test `name` of the running test binary again, alone, in a child process with `env` set as well
     /// as what this process has: for what reads the process environment, which a test must not change in place.
     pub async fn rerun(name: &str, env: &[(&str, &str)]) -> Output {

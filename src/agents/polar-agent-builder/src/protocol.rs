@@ -34,6 +34,7 @@ pub mod git;
 pub mod http;
 pub mod judge;
 pub mod kubernetes;
+pub mod probe;
 #[cfg(test)]
 mod ssh_origin;
 #[cfg(any(test, feature = "testing"))]

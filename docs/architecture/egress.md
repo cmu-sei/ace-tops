@@ -116,8 +116,33 @@ The agents that declare the section:
   agent starts, the handler reads the CA through `ca_bundle` and gives it to libgit2 once, `git2::opts::set_ssl_cert_file` (`trust_ca_file`): it is global to the process, and libgit2
   adds it to OpenSSL's default locations. Each request is given `proxy_for` its repository's URL, set as `ProxyOptions::url` for the clone or the fetch; with none, libgit2 connects directly.
 
-The outside-access probe at the end of `up.nu` is skipped for a target with a proxy (`egress_report`,
-`infra/egress.nu:82`; `infra/up.nu:770`): it runs git in polar-scheduler-observer, which does not use it.
+## The probe
+
+Whether the way out works is asked of an agent, as the agent goes out (built 2026-11-10; `runtime-attestation.md`, slice C,
+C2, O4). Every agent with an operation that goes outside the cluster answers `--probe-egress URL`
+(`polar-agent-builder` `agent.rs` `probe_egress`, `protocol/probe.rs`): for each protocol its operations use, the
+protocol starts as it does when the agent starts (its CA given to the client, the proxy and bypass list read), makes one
+request of the URL with no credential, and prints one JSON line, `{agent, protocol, host, verdict, detail}`:
+
+- `reached`: something answered, whatever it said (git listed its refs, or asked for a login; http answered any status);
+- `dns`: the name did not resolve;
+- `unreachable`: nothing could be connected to, or nothing answered within the protocol's bound;
+- `tls`: a connection was made and its certificate is not trusted (a TLS-inspecting proxy whose CA is not in
+  `cluster.egress.ca_file`, say);
+- `proxy`: the way out is through the proxy, and the proxy could not be reached or would not open the tunnel; through a
+  proxy the agent resolves and connects to nothing else, so a failure to resolve or connect is the proxy's;
+- `other`: anything else, with what the client said.
+
+The verdict is read from what the client says, in that order: a certificate first (a tunnel that opened and a TLS that
+did not is the destination's), then the proxy, then a name, then a connection (`classify`). The line names the URL's host
+and never the rest of it. It exits 0 when every protocol reached the URL, 1 when one did not, and 2 for an agent with no
+operation that goes out. A git URL over ssh is not probed: that needs a key, and its host key pinned.
+
+`up.nu` asks it at the end of a run (`report_egress`; `infra/egress.nu` `kube_probe`): a Job in `polar` made from
+git-repo-observer's Job (`probe_job`), with its image as pinned, its placement and hardening, its document and the egress
+CA it mounts, and nothing else: no init container, so no certificate, no ServiceAccount token, no Secret. The Job's pod is
+read, the Job deleted, and the verdict said as a note: it never stops the bring-up. With no git-repo-observer deployed the
+probe says it was not checked. A target with a proxy is probed through it.
 
 ## Found on the way
 

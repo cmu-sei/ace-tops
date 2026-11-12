@@ -33,14 +33,15 @@
 //! server presents before anything is offered, and the fetch ends there if it is not the pinned one. There is no trust on
 //! first use, no known-hosts file, and no ssh through the egress proxy, which carries http only.
 
+use super::probe::{Probed, Reach, classify};
 use super::{
     CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
 };
 use async_trait::async_trait;
 use base64::Engine;
 use git2::{
-    CertificateCheckStatus, Cred, CredentialType, FetchOptions, ProxyOptions, RemoteCallbacks,
-    RemoteRedirect, Repository,
+    CertificateCheckStatus, Cred, CredentialType, Direction, FetchOptions, ProxyOptions,
+    RemoteCallbacks, RemoteRedirect, Repository,
 };
 use polar::egress::Egress;
 use polar_crypto::CryptoError;
@@ -348,6 +349,51 @@ impl<'a> Fetching<'a> {
     }
 }
 
+/// The egress probe's request ([`super::probe`]): the repository's refs, as a fetch begins, with nothing presented. A repository
+/// that asks for a login has answered, and is reached. Over ssh it is not made: that needs a key, and a host key pinned.
+pub(crate) fn probe(started: Started, url: String, proxied: bool) -> Pending<Probed> {
+    Box::pin(async move {
+        let Ok(git) = started.downcast::<Git>() else {
+            return Probed::new(Reach::Other, "the git protocol did not start as git");
+        };
+        if Url::parse(&url).is_ok_and(|url| url.scheme() == "ssh") {
+            return Probed::new(
+                Reach::Other,
+                "an ssh address is not probed: it needs a key, and its host key pinned",
+            );
+        }
+        let proxy = git.egress.proxy_for(&url);
+        tokio::task::spawn_blocking(move || {
+            let asked = Cell::new(false);
+            let listed = (|| {
+                let mut remote = git2::Remote::create_detached(url.as_str())?;
+                let mut callbacks = RemoteCallbacks::new();
+                callbacks.credentials(|_, _, _| {
+                    asked.set(true);
+                    Err(git2::Error::from_str("the probe presents no credential"))
+                });
+                let mut through = ProxyOptions::new();
+                if let Some(proxy) = &proxy {
+                    through.url(proxy);
+                }
+                let connection =
+                    remote.connect_auth(Direction::Fetch, Some(callbacks), Some(through))?;
+                Ok::<_, git2::Error>(connection.list()?.len())
+            })();
+            match listed {
+                Ok(refs) => Probed::new(Reach::Reached, format!("it listed {refs} refs")),
+                Err(_) if asked.get() => Probed::new(
+                    Reach::Reached,
+                    "it asked for a login, and the probe presents none",
+                ),
+                Err(e) => classify(e.message(), proxied),
+            }
+        })
+        .await
+        .unwrap_or_else(|e| Probed::new(Reach::Other, format!("the probe did not finish: {e}")))
+    })
+}
+
 impl super::sealed::Sealed for Git {}
 
 #[async_trait]
@@ -447,7 +493,9 @@ mod tests {
     use crate::protocol::judge::{Credential, Denial, Location, OperationDecl};
     use crate::protocol::testing::{GitOrigin, Site, git_ca, git_handle_for, handle_of};
     use crate::protocol::{Instances, Operation, ReadFailure};
-    use polar::egress::testing::{TestCa, given, https_server, recording_proxy, rerun};
+    use polar::egress::testing::{
+        TestCa, forwarding_proxy, given, https_server, recording_proxy, rerun,
+    };
     use polar_crypto::registry::{SecretBinding, SecretKind};
     use proptest::prelude::*;
 
@@ -1046,6 +1094,96 @@ mod tests {
         drop(connection);
         drop(listener);
         assert!(stuck.await.unwrap().is_err());
+    }
+
+    // -- the egress probe -------------------------------------------------------------------------------------------
+
+    /// The probe of `url` by git going out as `egress` says.
+    async fn probe_of(url: &str, egress: Egress) -> Probed {
+        git_ca();
+        let proxied = egress.proxy_for(url).is_some();
+        probe(
+            Arc::new(Git::with_egress(egress, MAX_FETCH)),
+            url.to_string(),
+            proxied,
+        )
+        .await
+    }
+
+    /// A port nothing listens on.
+    async fn closed_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_probe_reaches_a_repository_and_presents_nothing_even_when_asked() {
+        let r = rig().await;
+        let url = r.origin.url_over_tls().await;
+        let reached = probe_of(&url, Egress::default()).await;
+        assert_eq!(reached.reach, Reach::Reached, "{reached:?}");
+        r.origin.asks_for("svc", TOKEN);
+        let asked = probe_of(&url, Egress::default()).await;
+        assert_eq!(asked.reach, Reach::Reached, "{asked:?}");
+        assert!(r.origin.presented().await.iter().all(Option::is_none));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_probe_says_a_name_that_does_not_resolve_is_dns() {
+        let probed = probe_of("https://nowhere.invalid/r.git", Egress::default()).await;
+        assert_eq!(probed.reach, Reach::Dns, "{probed:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_probe_says_a_port_that_refuses_is_unreachable() {
+        let url = format!("https://127.0.0.1:{}/r.git", closed_port().await);
+        let probed = probe_of(&url, Egress::default()).await;
+        assert_eq!(probed.reach, Reach::Unreachable, "{probed:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_probe_says_a_certificate_it_does_not_trust_is_tls() {
+        let server = https_server(&TestCa::new("nobody trusts this")).await;
+        let probed = probe_of(&format!("{}/r.git", server.url), Egress::default()).await;
+        assert_eq!(probed.reach, Reach::Tls, "{probed:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_probe_goes_through_the_proxy_as_the_agent_does() {
+        let (proxy, seen) = forwarding_proxy().await;
+        let r = rig().await;
+        let url = r.origin.url_over_tls().await;
+        let egress = Egress {
+            proxy: Some(proxy),
+            ..Egress::default()
+        };
+        let probed = probe_of(&url, egress).await;
+        assert_eq!(probed.reach, Reach::Reached, "{probed:?}");
+        let port = Url::parse(&url).unwrap().port().unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![format!("CONNECT localhost:{port} HTTP/1.1")]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_probe_says_a_proxy_that_will_not_open_the_way_or_is_not_there_is_the_proxy() {
+        let (refusing, _) = recording_proxy().await;
+        let gone = format!("http://127.0.0.1:{}", closed_port().await);
+        for proxy in [refusing, gone] {
+            let egress = Egress {
+                proxy: Some(proxy.clone()),
+                ..Egress::default()
+            };
+            let probed = probe_of("https://outside.example.org/r.git", egress).await;
+            assert_eq!(probed.reach, Reach::Proxy, "{proxy}: {probed:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_probe_does_not_go_over_ssh() {
+        let probed = probe_of("ssh://git@example.org/r.git", Egress::default()).await;
+        assert_eq!(probed.reach, Reach::Other, "{probed:?}");
     }
 
     // -- the way out ------------------------------------------------------------------------------------------------
