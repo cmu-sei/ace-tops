@@ -29,7 +29,7 @@
 > A **feature-level plan**, part of [runtime attestation](../runtime-attestation.md). It describes Polar's `main` as it
 > is on 2026-11-12. In the older design notes it is "C4, Canal" with "N1 and N2".
 
-**Status: planned, not built.** One question for the maintainer is in part 7.
+**Status: planned, not built.** The spike's first try was decided by the maintainer on 2026-11-12 (part 3).
 
 ## 1. The need
 
@@ -67,7 +67,11 @@ Four steps, each seen working before the next.
 
 1. **A spike of the enforcement engine, rootless,** in `nix-usernetes`. The maintainer's choice is **Canal**: Flannel
    for the pod network and Calico for policy, on Calico's nftables dataplane. The maintainer's terms are that it must
-   work "unprivileged, using nftables, and no requirement for ipv6". The spike answers what nobody has published:
+   work "unprivileged, using nftables, and no requirement for ipv6".
+
+   **The spike tries Calico for policy alone first** (decided by the maintainer, 2026-11-12). u7c already routes pod
+   traffic between its nodes, so Calico enforces policy over that routing, with no Flannel overlay and no `vxlan`
+   module. Full Canal is the fallback if that fails. The spike answers what nobody has published:
    - whether it runs inside a user namespace at all;
    - which kernel modules the host must provide;
    - whether Calico's nftables dataplane needs nftables' `inet` table family. u7c's kernel has no IPv6, and so no
@@ -130,11 +134,5 @@ None of it is enforced:
 - **Refusing a build where enforcement is not proved.**
 - **Checking the address binding still holds.** The address binding (C5) needs pod addresses to reach Cassini
   unchanged. That has to be confirmed under the new engine.
-
-**A question for the maintainer, before the spike.** Canal brings Flannel's VXLAN overlay to replace u7c's pod
-routing. u7c already routes pods between nodes with static routes, and what it lacks is only policy enforcement.
-Calico can enforce policy on its own, over routing that already works, without the overlay or the `vxlan` module.
-Should the spike try Calico for policy alone first, keeping full Canal as the fallback if that fails? Or go straight to
-Canal as planned?
 
 It is met when the canary passes on u7c and a build of foreign code reaches only the registry.

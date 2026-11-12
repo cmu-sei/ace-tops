@@ -26,7 +26,7 @@
 PAIR: `network-enforcement.md` (people). Same plan, two forms; change together.
 PARENT: `../runtime-attestation.claude.md` (C4-net). Old names: C4 Canal, N1 policy, N2 canary, N3 engine
 (build-orchestrator.md:963-992). AS-OF main 355a8a22 + nix-usernetes 10f3bcd (2026-11-02). Re-verify lines.
-STATUS: planned; nothing built; ONE OPEN QUESTION (Q-flannel) before spike. u7c busy (branch proof) until handed back.
+STATUS: planned; nothing built; Q-flannel DECIDED 2026-11-12 (Calico policy-only first). u7c busy (branch proof).
 
 ## INVARIANT
 build pod (polar-builds): ingress none; egress only registry pods:port; no DNS (hostAliases from orchestrator).
@@ -70,16 +70,16 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
 - egress probe = reachability of the way out, not denial (egress.md:121-146).
 
 ## GAPS (build order)
-G0 answer Q-flannel. G1 spike in nix-usernetes (rootless; modules needed; nftables only; IPv4). G2 enforcement on u7c
+G0 done (Q-flannel). G1 spike in nix-usernetes (rootless; modules needed; nftables only; IPv4). G2 enforcement on u7c
 (nix-usernetes change; Polar pods unchanged). G3 N1 render (catalog → policy for polar-builds; hostAliases in orchestrator
 Jobs). G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result). G5 admission
 refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini under the engine. LATER: sensor
 egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
 
-## Q-flannel (to maintainer, before G1)
-u7c has routing (static routes, no overlay); lacks only enforcement. Calico policy-only (Felix over existing routes, no
-Flannel, no vxlan module) vs Canal (Flannel VXLAN replaces ptp routing). REC: spike Calico policy-only first; Canal as
-fallback. Not re-litigating Canal-vs-Landlock (decided 11-11).
+## Q-flannel — DECIDED (maintainer, 2026-11-12): "Calico alone first"
+spike = Calico policy-only (Felix over u7c's existing ptp + static routes; no Flannel, no vxlan). Canal = fallback.
+Canal-vs-Landlock untouched (11-11). Spike must run on whitey's kernel (u7c's host; 7.3, no IPv6) — the `inet` question
+is kernel-specific; a throwaway nix-usernetes cluster there, not u7c, avoids the shared cluster.
 
 ## ALTERNATIVES
 Landlock ports (rejected 11-11) | no enforcement + refuse foreign builds (= fallback now) | kube-router policy-only |
