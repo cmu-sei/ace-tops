@@ -147,6 +147,8 @@ From then on a run has no deployment git server to start. It starts the forwards
    moves is signed. A head's certificate must be valid now, and what is under it when it was made, or a repository could not be copied a year on (for review). `deployment` sets it.
 2. ~~Who makes the copy.~~ *Decided (the maintainer, 2026-11-02):* the configuration agent, which reads the bootstrap repository once with one client certificate from the deployment PKI, and whose
    write access to `deploy-T` is withdrawn when the copy is done. It runs on the low-trust `observers` pool, so item 1 comes first: with it, the agent could copy signed commits and forge none.
+   *Revised (the maintainer, 2026-11-10): `up.nu` pushes the copy*, as an administrator, as it publishes after the hand-off; an agent neither runs git nor pushes
+   (`runtime-attestation.md`, slice C, C2, O3; `git-server.md`, "Inside the boundary"). Not built yet: until it is, the agent copies as above.
 3. ~~How Flux is identified to Polar's git server.~~ *Decided (the maintainer, 2026-11-02):* for now, the server also trusts the deployment CA, and what that CA signs is named `deployment:<name>`, so it speaks for no one in Polar (`tls.rs`, `ClientIdentities`). `deployment:flux` may read the repository `deployment` alone. Flux
    reads its credential only from a Secret, and nothing renews one. Moving Flux onto `polar-init` was considered, and then replacing Flux with a controller of Polar's own: `gitops-controller.md` (a proposal).
 4. ~~Who publishes later.~~ `pipeline` still signs the commit, but it pushes with a Polar identity now, since the server's mTLS is Polar's: the admin's certificate.
