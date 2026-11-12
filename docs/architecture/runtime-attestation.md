@@ -446,7 +446,10 @@ protection, and then a pod without it is refused its certificate. Probed on whit
    name resolution reads), printed in its scaffold so applying the catalog signs them off. In two bites (the maintainer,
    2026-11-11): seccomp first, then Landlock after a short plan of its own (which variables are paths, the platform's
    fixed paths, what the scaffold prints), since nothing says yet which of an agent's variables name files.
-   - *C3a, seccomp.* **Built 2026-11-11, branch `c3-seccomp`, not yet seen live** (`polar-agent-builder/src/lock.rs`).
+   - *C3a, seccomp.* **Built and seen live on u7c 2026-11-11** (`polar-agent-builder/src/lock.rs`). *Live:* `up.nu` brought
+     every pod up, and each of the 24 builder agents (cassini and cert-issuer among them) said `locked: seccomp refuses …`
+     as it started, none `not locked`; after fifteen minutes no container had restarted or ended, the attestation agent
+     had found nothing, there was no warning event, and the egress probe still reached the outside.
      Read for it: no builder agent runs a program (every `Command::new` outside the CLI tools is in a test), workers
      already lock themselves further, and slice B already reports `SIGSYS` as a crash (`report.rs`, `CrashSignal::Sys`).
      The filter kills `execve`, `execveat`, `ptrace`, `memfd_create`, `bpf`, `init_module`, `finit_module`,
