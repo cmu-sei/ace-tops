@@ -443,7 +443,26 @@ protection, and then a pod without it is refused its certificate. Probed on whit
 3. *C3, the builder's lock*, installed in `run` before the runtime starts: seccomp refusing `execve`, `ptrace`,
    `memfd_create`, new executable memory, `bpf` and module loading, by killing (a `SIGSYS` slice B catches); Landlock
    allowing only the paths the agent's build declares (its document, certificates, the custody socket, its volumes, what
-   name resolution reads), printed in its scaffold so applying the catalog signs them off.
+   name resolution reads), printed in its scaffold so applying the catalog signs them off. In two bites (the maintainer,
+   2026-11-11): seccomp first, then Landlock after a short plan of its own (which variables are paths, the platform's
+   fixed paths, what the scaffold prints), since nothing says yet which of an agent's variables name files.
+   - *C3a, seccomp.* **Built 2026-11-11, branch `c3-seccomp`, not yet seen live** (`polar-agent-builder/src/lock.rs`).
+     Read for it: no builder agent runs a program (every `Command::new` outside the CLI tools is in a test), workers
+     already lock themselves further, and slice B already reports `SIGSYS` as a crash (`report.rs`, `CrashSignal::Sys`).
+     The filter kills `execve`, `execveat`, `ptrace`, `memfd_create`, `bpf`, `init_module`, `finit_module`,
+     `delete_module`, and `mmap`, `mprotect` and `pkey_mprotect` asking for `PROT_EXEC`; a call of another architecture,
+     or with x86-64's x32 bit, is killed too, as the worker's filter does (an x32 number carries the same architecture,
+     the classic way round a deny list). Everything else passes to the runtime's own filter. `run` installs it, with no
+     new privileges and `TSYNC`, once the workers are forked and before the runtime, and says so on standard error;
+     `run_with`, which tests use to run agents in their own process, does not. A kernel that will not take it leaves the
+     agent running and saying so ("run, report, policy may require"); the sensor reads `Seccomp` from `/proc` itself (C4).
+     *Decided while building, for review:* `process_vm_readv` and `process_vm_writev` are refused with `ptrace`, being
+     its way of reading and writing another process's memory; the health answer does not carry the lock's state, since
+     the sensor reads it and a field would change the health report's wire type. *Tests:* the filter run through an
+     interpreter of its own instructions, for any architecture, call and arguments, kills exactly what its rule refuses
+     (a property); in child processes, under the real lock, each refused call dies by `SIGSYS`, and an agent's ordinary
+     work (threads, a runtime, a connection, a name resolved, files, memory) goes on, with `Seccomp: 2` and
+     `NoNewPrivs: 1` in its status.
 4. *C4, Canal and the node sensor*: a spike of Canal rootless, then enforcement on u7c, and the sensor (a DaemonSet, a kind
    the catalog gains), its traffic limited by policy to Cassini.
 5. *N1 and N2*, the builds' policy and its canary.

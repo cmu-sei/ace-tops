@@ -48,6 +48,7 @@
 //! is refused and the actor fails, and the supervisor ends the agent as it does for any child of the builder's that ends
 //! unexpectedly (its health says it is draining); the pod restarts it with a fresh worker.
 
+use crate::lock::{ARCH, jump_if, statement};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::collections::BTreeMap;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -240,31 +241,6 @@ fn child<W: Work>(requests: RawFd, answers: RawFd, make: impl FnOnce() -> W) -> 
         if !write_all(1, &(n as u64).to_le_bytes()) || !write_all(1, &answer[..n]) {
             die(15);
         }
-    }
-}
-
-/// The architecture a system call's number is of, as the kernel names it to a filter (`AUDIT_ARCH_*`): a call made under
-/// another (x86-64's 32-bit entry, which numbers calls differently) is refused, not read by the wrong table.
-#[cfg(target_arch = "x86_64")]
-const ARCH: u32 = 0xc000_003e;
-#[cfg(target_arch = "aarch64")]
-const ARCH: u32 = 0xc000_00b7;
-
-const fn statement(code: u32, k: u32) -> libc::sock_filter {
-    libc::sock_filter {
-        code: code as u16,
-        jt: 0,
-        jf: 0,
-        k,
-    }
-}
-
-const fn jump_if(k: u32, ahead: u8) -> libc::sock_filter {
-    libc::sock_filter {
-        code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
-        jt: ahead,
-        jf: 0,
-        k,
     }
 }
 

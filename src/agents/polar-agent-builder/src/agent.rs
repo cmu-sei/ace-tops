@@ -1197,11 +1197,23 @@ macro_rules! polar_agent_tests {
 /// never ends well, and exits 1 whether `start` returned an error or not.
 pub fn run<A: PolarAgent>() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    ExitCode::from(run_with::<A>(&args, ProcessEnv))
+    ExitCode::from(answer::<A>(&args, ProcessEnv, Lock::Install))
 }
 
-/// As [`run`], with the arguments and the process environment given, returning the exit status.
+/// As [`run`], with the arguments and the process environment given, returning the exit status. It does not lock the
+/// process ([`crate::lock`]): a test runs agents in its own process, which goes on running programs.
 pub fn run_with<A: PolarAgent>(args: &[String], process: impl Env + 'static) -> u8 {
+    answer::<A>(args, process, Lock::Leave)
+}
+
+/// Whether a started agent locks its process (`crate::lock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lock {
+    Install,
+    Leave,
+}
+
+fn answer<A: PolarAgent>(args: &[String], process: impl Env + 'static, lock: Lock) -> u8 {
     let command = match parse_command(args) {
         Ok(command) => command,
         Err(message) => {
@@ -1242,7 +1254,7 @@ pub fn run_with<A: PolarAgent>(args: &[String], process: impl Env + 'static) -> 
             }
         }
         Command::ProbeEgress { url } => probe_egress::<A>(&url, process),
-        Command::Run => start::<A>(process),
+        Command::Run => start::<A>(process, lock),
     }
 }
 
@@ -1294,7 +1306,7 @@ fn probe_egress<A: PolarAgent>(url: &str, process: impl Env + 'static) -> u8 {
 }
 
 /// Judges the configuration the process was given and, if it is sound, runs the agent.
-fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
+fn start<A: PolarAgent>(process: impl Env + 'static, lock: Lock) -> u8 {
     let (env, source) = match polar_env::from_environment(process) {
         Ok(chosen) => chosen,
         Err(error) => {
@@ -1354,6 +1366,10 @@ fn start<A: PolarAgent>(process: impl Env + 'static) -> u8 {
             return 1;
         }
     };
+    // The lock, once the workers are forked and before the runtime starts (`lock`).
+    if lock == Lock::Install {
+        eprintln!("{}", crate::lock::said(&crate::lock::install()));
+    }
     let configured = Configured {
         topics: Arc::new(topic_set_serving::<A>(&served)),
         startup,

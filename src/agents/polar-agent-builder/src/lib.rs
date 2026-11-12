@@ -71,6 +71,7 @@ pub mod held;
 /// about its health.
 pub use polar_health::{HealthReason, HealthReport, HoldReason, ReportStatus};
 pub mod infrastructure;
+pub mod lock;
 pub use infrastructure::{InfrastructureSupervisor, InfrastructureSupervisorMessage};
 pub mod message;
 pub use message::{Encrypted, Outbound, Plaintext};
