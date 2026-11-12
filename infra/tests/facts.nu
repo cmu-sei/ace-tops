@@ -54,12 +54,15 @@ def main [] {
             assert equal ($local | where workload == "kube-consumer" | get package) ["kube-consumer"]
         }
 
-        # The values in effect, not the entries': custody the entry turns off, the CA's pod with neither polar-init nor the
-        # daemon, and many instances only where the credentials agent issues them.
+        # The values in effect, not the entries': custody and polar-init as the kind gives them (the scheduler observer has
+        # run on the custody daemon since no agent holds a key file, runtime-attestation.md, slice C, C2, O3; an entry that
+        # turns custody off is tested in resolve.nu), the CA's pod with neither polar-init nor the daemon, and many instances
+        # only where the credentials agent issues them.
         "each fact is the one in effect": {
             let local = ($all | where target == "sandbox-local")
             let one = {|w| $local | where workload == $w | first }
-            assert equal (do $one "polar-scheduler-observer").custody false
+            let observer = (do $one "polar-scheduler-observer")
+            assert equal [$observer.custody $observer.polar_init] [true true]
             assert equal (do $one "kube-observer").custody true
             let ca = (do $one "cert-issuer")
             assert equal [$ca.kind $ca.polar_init $ca.custody] ["ca" false false]
