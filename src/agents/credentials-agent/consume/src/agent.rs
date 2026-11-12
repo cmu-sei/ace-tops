@@ -282,9 +282,16 @@ impl PolarAgent for CredentialsConsumer {
         // copied here, once, if there is no ledger yet; the ledger actor opens it again.
         let settings = crate::settings::ConsumerSettings::read(configured.config())
             .map_err(|e| e.to_string())?;
+        // The ledger key and the checkpoint kept beside the ledger are read only once the ledger has been read
+        // without a refusal ("L2, checkpoints"): a ledger that no longer holds that checkpoint is refused the same way.
+        let key = crate::ledger::LedgerKey {
+            path: settings.ledger_key_path.clone(),
+            identity: crate::ledger::own_identity(&settings.own_cert_path)?,
+        };
         match crate::ledger::open_ledger(
             &settings.ledger_path,
             Some(&settings.event_log_path),
+            &key,
             crate::ledger::LEDGER_LOCK_WAIT,
             Duration::from_secs(1),
         )

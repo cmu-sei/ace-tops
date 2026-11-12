@@ -73,6 +73,16 @@ pub static ESCROW_KEY_PATH: Defaulted<String> = Defaulted::path(
     CREDENTIALS_ESCROW_KEY_PATH_DEFAULT,
 );
 
+/// Where the ledger key is kept when nothing else is said: beside the ledger, on the agent's persistent volume.
+pub const CREDENTIALS_LEDGER_KEY_PATH_DEFAULT: &str = "/var/lib/credentials-agent/ledger-key.pem";
+
+pub static LEDGER_KEY_PATH: Defaulted<String> = Defaulted::path(
+    "CREDENTIALS_LEDGER_KEY_PATH",
+    polar_env::Access::WriteFile,
+    "where the ledger key is kept (P-256; it signs the ledger's checkpoints and nothing else), its certificate beside it as .crt; generated on first start, so keep it on a persistent volume",
+    CREDENTIALS_LEDGER_KEY_PATH_DEFAULT,
+);
+
 pub static BOOTSTRAP_IDENTITY: Defaulted<String> = Defaulted::text(
     "CREDENTIALS_AGENT_BOOTSTRAP_IDENTITY",
     "the one Kubernetes identity (the sub claim of a service account token) allowed to bootstrap",
@@ -119,6 +129,7 @@ static VARIABLES: &[&dyn Described] = &[
     &LEDGER_PATH,
     &EVENT_LOG_PATH,
     &ESCROW_KEY_PATH,
+    &LEDGER_KEY_PATH,
     &BOOTSTRAP_IDENTITY,
     &KUBERNETES_ISSUERS,
     &INTROSPECTION_ENDPOINT,
@@ -183,6 +194,7 @@ pub struct ConsumerSettings {
     pub ledger_path: String,
     pub event_log_path: String,
     pub escrow_key_path: String,
+    pub ledger_key_path: String,
     pub bootstrap_identity: String,
     pub kubernetes_issuers: Vec<String>,
     /// Introspection is optional at the deployment level: a cluster that never has identity
@@ -217,6 +229,7 @@ impl ConsumerSettings {
             ledger_path: config.read(&LEDGER_PATH)?,
             event_log_path: config.read(&EVENT_LOG_PATH)?,
             escrow_key_path: config.read(&ESCROW_KEY_PATH)?,
+            ledger_key_path: config.read(&LEDGER_KEY_PATH)?,
             bootstrap_identity: config.read(&BOOTSTRAP_IDENTITY)?,
             kubernetes_issuers: config.read(&KUBERNETES_ISSUERS)?,
             introspection,
@@ -301,6 +314,10 @@ mod tests {
         assert_eq!(settings.cert_issuer_url, "https://cert-issuer");
         assert_eq!(settings.ca_cert, None);
         assert_eq!(settings.ledger_path, CREDENTIALS_LEDGER_PATH_DEFAULT);
+        assert_eq!(
+            settings.ledger_key_path,
+            CREDENTIALS_LEDGER_KEY_PATH_DEFAULT
+        );
         assert_eq!(settings.event_log_path, CREDENTIALS_EVENT_LOG_PATH_DEFAULT);
         assert_eq!(
             settings.escrow_key_path,

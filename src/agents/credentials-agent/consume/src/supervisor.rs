@@ -951,6 +951,13 @@ impl Actor for ConsumerSupervisor {
             ConsumerSettings::read(configured.config()).map_err(ActorProcessingErr::from)?;
         let log_path = settings.ledger_path.clone();
         let copy_from = Some(settings.event_log_path.clone());
+        // Its session offers, its keys' certificates and its ledger's checkpoints name it.
+        let own_cert_identity = crate::ledger::own_identity(&settings.own_cert_path)
+            .map_err(ActorProcessingErr::from)?;
+        let ledger_key = crate::ledger::LedgerKey {
+            path: settings.ledger_key_path.clone(),
+            identity: own_cert_identity.clone(),
+        };
         let authority_model = settings.authority_model.take().map(std::sync::Arc::new);
         if authority_model.is_none() {
             warn!(
@@ -994,6 +1001,7 @@ impl Actor for ConsumerSupervisor {
             LedgerActorArgs {
                 log_path,
                 copy_from,
+                key: ledger_key.clone(),
                 projection_actor: projection_actor.clone(),
             },
             myself.get_cell(),
@@ -1081,15 +1089,6 @@ impl Actor for ConsumerSupervisor {
         .await
         .map_err(ActorProcessingErr::from)?;
 
-        // Its session offers are signed for the identity cert-issuer reads off this agent's connection, which is
-        // the first DNS name of its own certificate.
-        let own_cert_identity = std::fs::read_to_string(&settings.own_cert_path)
-            .map_err(|e| format!("cannot read this agent's certificate: {e}"))
-            .and_then(|pem| {
-                cert_issuer_common::permission::extract_own_identity(&pem)
-                    .map_err(|e| format!("this agent's certificate names no identity: {e}"))
-            })
-            .map_err(ActorProcessingErr::from)?;
         let (_workload_issuance_actor, _) = WorkloadIssuanceActor::spawn_linked(
             Some(WORKLOAD_ISSUANCE_ACTOR_NAME.to_string()),
             WorkloadIssuanceActor,
@@ -1358,20 +1357,51 @@ impl Actor for ConsumerSupervisor {
         .map_err(ActorProcessingErr::from)?;
         // The signing key certified, so that leaves pin it under the CA they pin (docs/architecture/
         // authority-distribution.md, "Pinning the key to the CA"): the publisher publishes no snapshot until then.
-        let (_authority_certifier, _) =
+        // The key authority updates are signed with, as PKCS#8 for its CSR.
+        let signing_key_pem = {
+            use rsa::pkcs8::EncodePrivateKey;
+            escrow_keypair
+                .private_key()
+                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+                .map_err(|e| {
+                    ActorProcessingErr::from(format!("the signing key does not encode: {e}"))
+                })?
+        };
+        // The ledger key certified as a checkpoint key, and as nothing else, so that its checkpoints are believed where
+        // they are checked and it can never stand for the signing key (docs/architecture/record-store.md, "L2,
+        // checkpoints"). The ledger made it when it opened.
+        let ledger_key_pem = crate::ledger_key::pkcs8_pem(
+            &crate::ledger_key::load_or_generate(&ledger_key.path)
+                .map_err(ActorProcessingErr::from)?,
+        )
+        .map_err(ActorProcessingErr::from)?;
+        for (key_pem, cert_type, certified) in [
+            (
+                signing_key_pem,
+                cert_issuer_common::CertType::Signing,
+                crate::authority_certificate::Certified::Publisher(publisher.clone()),
+            ),
+            (
+                ledger_key_pem,
+                cert_issuer_common::CertType::Checkpoint,
+                crate::authority_certificate::Certified::Ledger(ledger.clone()),
+            ),
+        ] {
             crate::authority_certificate::AuthorityCertifier::spawn_linked(
                 None,
                 crate::authority_certificate::AuthorityCertifier,
                 crate::authority_certificate::AuthorityCertifierArgs {
                     cert_issuer: make_cert_issuer_client().await?,
                     identity: own_cert_identity.clone(),
-                    key: escrow_keypair.private_key().clone(),
-                    publisher: publisher.clone(),
+                    key_pem,
+                    cert_type,
+                    certified,
                 },
                 myself.get_cell(),
             )
             .await
             .map_err(ActorProcessingErr::from)?;
+        }
         match ractor::call!(ledger, LedgerMessage::RevocationChanges) {
             Ok(port) => port.subscribe(publisher.clone(), |_| {
                 Some(PublisherMessage::RevocationsChanged)
@@ -1873,6 +1903,7 @@ mod tests {
                 copy_from: None,
                 log_path: log_path.to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(log_path),
             },
         )
         .await
@@ -2047,6 +2078,7 @@ mod issuance_wiring_tests {
                 copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&log_path),
             },
         )
         .await
@@ -2224,6 +2256,7 @@ mod issuance_wiring_tests {
                 copy_from: None,
                 log_path: dir.path().join("ledger.log").to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(dir.path().join("ledger.log")),
             },
         )
         .await
@@ -2410,6 +2443,7 @@ mod agent_escrow_wiring_tests {
                 copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&log_path),
             },
         )
         .await
@@ -2548,6 +2582,7 @@ mod agent_escrow_wiring_tests {
                 copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&log_path),
             },
         )
         .await
@@ -2718,6 +2753,7 @@ mod retrieve_secret_wiring_tests {
                 copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&log_path),
             },
         )
         .await
@@ -2868,6 +2904,7 @@ mod agent_escrow_keypair_bootstrap_wiring_tests {
                 copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&log_path),
             },
         )
         .await
@@ -3136,6 +3173,7 @@ mod decrypt_on_behalf_of_wiring_tests {
                 copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&log_path),
             },
         )
         .await

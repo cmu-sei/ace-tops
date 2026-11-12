@@ -579,7 +579,7 @@ building, for review:*
 - *Found:* `polar-ledger` prints a certificate's PEM with its line breaks, so an entry holding one spans several lines.
   It is cosmetic, and left as it is.
 
-**L2, checkpoints: the plan (2026-11-12, for the maintainer to clear).** Read for it: `authority_certificate.rs`,
+**L2, checkpoints: the plan (2026-11-12, cleared by the maintainer the same day, as written).** Read for it: `authority_certificate.rs`,
 `authority_key.rs`, `polar-signing/src/verify.rs` (`verify_authority_certificate`, `believed_leaf`,
 `for_signing_documents`), cert-issuer's `CertType`, `ca.rs` (the usages by type) and `handler.rs` (steps 1.2 and 1.5),
 `polar-log`'s `checkpoint.rs`, and the store's `logs.rs` (its key and its kept checkpoint).
@@ -648,6 +648,37 @@ so it could sign snapshots a leaf believes. One key, one purpose needs a certifi
 - `polar-ledger` verifies copies taken from the pod against the CA.
 - The rollback hold is checked as L1's was: the deployed binary, started here against an older copy of u7c's ledger
   beside its newer checkpoint.
+
+*L2 built* (cert-issuer's `CertType::Checkpoint`; `polar_signing::verify_checkpoint_certificate`; the ledger's
+`certificates-reported` v2; `consume/src/ledger_checkpoint.rs`, the ledger actor and `polar-ledger`). *Decided while
+building, for review:*
+- *The OID is written by hand.* Its arc is 128 bits wide, and rcgen writes OID arcs as `u64`, so cert-issuer writes the
+  extended key usage extension whole (`cert_issuer_common::log_checkpoint_extended_key_usage`), and the check compares
+  the OID's bytes. *Found:* Go's `crypto/x509` refuses to parse any certificate whose extended key usage has an arc
+  over 31 bits (`cryptobyte`'s `readBase128Int`, read in Go 1.26's source), so no Go tool can read a checkpoint
+  certificate. Polar's code, rustls and OpenSSL can. The certificates last hours, so moving to another arc (a
+  registered enterprise number) costs one constant and a renewal.
+- *cert-issuer signs a checkpoint certificate* only on `/internal/issue`, only for the caller's own identity, with no
+  instance binding and no other name (a name beside its own is `InvalidCsr`), for the server lifetime, as the
+  authority key's is. It is refused on `/issue` whatever the floor says.
+- *Version 1 of `certificates-reported` holding a checkpoint certificate is malformed*: version 1 never had that value.
+  The copy from a JSON ledger now writes each event at its kind's current version, so a reported certificate is
+  copied at version 2; the copy's check that every event reads back as it was is unchanged.
+- *The rollback check computes the tree at the checkpoint's size from the ledger itself*, rather than taking a
+  consistency proof: the agent holds every leaf, so this checks the same and more.
+- *A checkpoint kept whose key is gone* is refused, and no key is made in its place. A version hold still reads no
+  key; a rollback hold reads the ledger key, to check the checkpoint, and signs nothing.
+- *The agent's start reads its own certificate* before it opens the ledger, since the checkpoint's origin names it. An
+  unreadable certificate is an error at start, as it was in the supervisor, not a hold.
+- *The certifier is told whom to give each certificate* (`authority_certificate::Certified`): the publisher, for the
+  authority and escrow keys; the ledger, for its key. `ledger-key.crt` holds the certificate alone; the CA is the one
+  every pod pins.
+- *A checkpoint that cannot be kept* is said as an error and tried again a second later; the ledger itself is whole.
+- *`polar-ledger` takes the identity from the checkpoint*: its origin is `<identity>/ledger`, and the certificate must
+  be that identity's checkpoint certificate.
+- *Found, L1's:* `polar-ledger` was built without declaring Scudo as its allocator, which `polar-scudo`'s
+  `every_binary` test refuses. L1's test runs did not catch it; L2's whole-workspace run did. It declares Scudo now.
+  Cargo stops at the first failing test binary unless told not to, so the workspace is run with `--no-fail-fast`.
 
 **L3, checkpoints into the store, outlined.** A `ledger` log in the store. A checkpoint is admitted over Cassini
 when its note verifies under the ledger key's certificate and a consistency proof from the last one admitted holds.

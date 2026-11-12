@@ -389,6 +389,14 @@ fn issuance_through_held_requests_survives_the_broker_restarting_again_and_again
                     .to_string_lossy()
                     .into_owned(),
                 copy_from: None,
+                key: credentials_agent_consumer::ledger::LedgerKey {
+                    path: ledger_dir
+                        .path()
+                        .join("ledger-key.pem")
+                        .to_string_lossy()
+                        .into_owned(),
+                    identity: "credentials-agent.polar.serviceaccount.cluster.local".to_string(),
+                },
                 projection_actor: graph,
             },
         )

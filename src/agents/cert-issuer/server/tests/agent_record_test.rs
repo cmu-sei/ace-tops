@@ -136,6 +136,14 @@ fn the_credentials_agent_asks_over_cassini_and_its_ledger_learns_what_cert_issue
                     .to_string_lossy()
                     .into_owned(),
                 copy_from: None,
+                key: credentials_agent_consumer::ledger::LedgerKey {
+                    path: ledger_dir
+                        .path()
+                        .join("ledger-key.pem")
+                        .to_string_lossy()
+                        .into_owned(),
+                    identity: "credentials-agent.polar.serviceaccount.cluster.local".to_string(),
+                },
                 projection_actor: graph,
             },
         )

@@ -49,6 +49,7 @@
 //! about graph availability, checkpoints, or anything else
 //! graph-related.
 
+use crate::ledger_checkpoint::{Checkpoints, Kept};
 use crate::projection::ProjectionMessage;
 use crate::state::{CertificateRecord, CredentialsState, GrantRecord};
 use credentials_agent_common::events::CredentialsEvent;
@@ -113,6 +114,17 @@ pub async fn open_log(
     .map_err(|e| format!("Failed to open event log at {path}: {e}"))
 }
 
+/// This agent's identity as cert-issuer reads it off its connection: the first DNS name of its own certificate, at
+/// `cert_path`. Its session offers, its keys' certificates and its ledger's checkpoints name it.
+pub fn own_identity(cert_path: &str) -> Result<String, String> {
+    std::fs::read_to_string(cert_path)
+        .map_err(|e| format!("cannot read this agent's certificate: {e}"))
+        .and_then(|pem| {
+            cert_issuer_common::permission::extract_own_identity(&pem)
+                .map_err(|e| format!("this agent's certificate names no identity: {e}"))
+        })
+}
+
 /// The writer this agent names in the entries it makes: its platform version, as the store names its own.
 pub fn writer() -> String {
     format!("{} {}", polar_version::PLATFORM, polar_version::TARGET)
@@ -126,7 +138,7 @@ fn now_ms() -> u64 {
 }
 
 /// The leaf `event` is appended as, by `writer`, admitted at `admitted_at_ms`: this agent brings every entry itself.
-fn leaf_of(event: &CredentialsEvent, writer: &str, admitted_at_ms: u64) -> Leaf {
+pub(crate) fn leaf_of(event: &CredentialsEvent, writer: &str, admitted_at_ms: u64) -> Leaf {
     Leaf {
         entry: credentials_agent_common::ledger::entry_of(event, writer).encode(),
         admitted_at_ms,
@@ -134,14 +146,27 @@ fn leaf_of(event: &CredentialsEvent, writer: &str, admitted_at_ms: u64) -> Leaf 
     }
 }
 
+/// The ledger key (`CREDENTIALS_LEDGER_KEY_PATH`) and whose it is: what signs the ledger's checkpoints, and the identity
+/// they name (docs/architecture/record-store.md, "L2, checkpoints").
+#[derive(Debug, Clone)]
+pub struct LedgerKey {
+    pub path: String,
+    /// This agent's identity, as its certificate names it.
+    pub identity: String,
+}
+
 /// What opening the ledger found.
+// It is made twice at a start, and taken apart at once, so boxing the ledger is not worth it.
+#[allow(clippy::large_enum_variant)]
 pub enum Opening {
-    /// Every event it holds, by its sequence number, and the log to append to.
+    /// Every event it holds, by its sequence number, the log to append to, and what signs its checkpoints.
     Ready {
         log: FileLog,
         events: Vec<(u64, CredentialsEvent)>,
+        checkpoints: Checkpoints,
     },
-    /// Why the agent serves nothing, in one line: an entry it must understand and cannot, or a ledger that is damaged.
+    /// Why the agent serves nothing, in one line: an entry it must understand and cannot, a ledger that is damaged, or
+    /// one that is not the ledger it signed.
     Refused(String),
 }
 
@@ -279,10 +304,13 @@ async fn copy_json_ledger(
 /// replays it (docs/architecture/record-store.md, "The credentials ledger on the log"). When there is none yet and
 /// `json` names a JSON ledger, that is copied into it first. An entry this agent must understand and cannot, one not
 /// written as its kind says, or a damaged ledger, is a refusal: the agent stays up and serves nothing, since a restart
-/// would find the same. An entry of a kind it may pass over is counted and said.
+/// would find the same. An entry of a kind it may pass over is counted and said. Only then is the ledger `key` read,
+/// made if this is the first start, and the checkpoint kept beside the ledger checked: a ledger that no longer holds
+/// it is a refusal too ("L2, checkpoints").
 pub async fn open_ledger(
     path: &str,
     json: Option<&str>,
+    key: &LedgerKey,
     wait: Duration,
     every: Duration,
 ) -> Result<Opening, String> {
@@ -334,9 +362,14 @@ pub async fn open_ledger(
             "the ledger holds entries of a kind this agent does not know and may pass over; passed over"
         );
     }
+    let checkpoints = match Checkpoints::open(std::path::Path::new(path), &opened.log, key)? {
+        Kept::Ready(checkpoints) => checkpoints,
+        Kept::Refused(why) => return Ok(Opening::Refused(why)),
+    };
     Ok(Opening::Ready {
         log: opened.log,
         events,
+        checkpoints,
     })
 }
 
@@ -345,11 +378,21 @@ pub struct LedgerActorArgs {
     pub log_path: String,
     /// The JSON ledger kept before 2026-11-11 (`CREDENTIALS_EVENT_LOG_PATH`), copied into the ledger if it has none yet.
     pub copy_from: Option<String>,
+    /// What signs the ledger's checkpoints.
+    pub key: LedgerKey,
     pub projection_actor: ActorRef<ProjectionMessage>,
 }
 
+/// How often at most the ledger's checkpoint is signed while entries are appended, as the store signs its logs'.
+pub const CHECKPOINT_EVERY: Duration = Duration::from_secs(1);
+
 pub struct LedgerActorState {
     log: FileLog,
+    checkpoints: Checkpoints,
+    /// Whether a checkpoint is to be signed at the next tick, already asked for.
+    checkpoint_due: bool,
+    /// Where the ledger key's latest certificate is kept.
+    key_certificate: std::path::PathBuf,
     /// The platform version this agent names as the writer of what it appends.
     writer: String,
     credentials_state: CredentialsState,
@@ -379,6 +422,10 @@ pub struct RevokedChanged {
 }
 
 pub enum LedgerMessage {
+    /// Signs the ledger's checkpoint, if it grew since the last: at most once every [`CHECKPOINT_EVERY`].
+    Checkpoint,
+    /// The ledger key's certificate, renewed: kept beside the key, for whoever checks its checkpoints.
+    KeyCertified(Vec<String>),
     /// Appends `event` to the log, then folds it into derived state --
     /// in that order, so a reader can never observe a state change
     /// that isn't yet durable. Replies with an error string on a
@@ -586,18 +633,37 @@ impl Actor for LedgerActor {
     ) -> Result<Self::State, ActorProcessingErr> {
         // The agent's start has already refused to serve a ledger it cannot read (`agent.rs`); one found so now is
         // an error, not a hold.
-        let (log, events) = match open_ledger(
+        let (log, events, mut checkpoints) = match open_ledger(
             &args.log_path,
             args.copy_from.as_deref(),
+            &args.key,
             LEDGER_LOCK_WAIT,
             Duration::from_secs(1),
         )
         .await
         .map_err(ActorProcessingErr::from)?
         {
-            Opening::Ready { log, events } => (log, events),
+            Opening::Ready {
+                log,
+                events,
+                checkpoints,
+            } => (log, events, checkpoints),
             Opening::Refused(why) => return Err(ActorProcessingErr::from(why)),
         };
+        // A checkpoint at the start, unless the one kept is of this tree already.
+        let kept = checkpoints.signed();
+        if let Some(size) = checkpoints.sign(&log).map_err(ActorProcessingErr::from)? {
+            match kept {
+                None => tracing::info!(
+                    size,
+                    key = checkpoints.verifier_key(),
+                    "the ledger had no checkpoint kept; signed its first"
+                ),
+                Some(kept) => {
+                    tracing::info!(size, kept, "signed the ledger's checkpoint at its start")
+                }
+            }
+        }
 
         let event_count = events.len();
         let events: Vec<CredentialsEvent> = events.into_iter().map(|(_, e)| e).collect();
@@ -609,6 +675,11 @@ impl Actor for LedgerActor {
 
         Ok(LedgerActorState {
             log,
+            checkpoints,
+            checkpoint_due: false,
+            key_certificate: crate::ledger_checkpoint::certificate_path(std::path::Path::new(
+                &args.key.path,
+            )),
             writer: writer(),
             credentials_state,
             projection_actor: args.projection_actor,
@@ -619,11 +690,30 @@ impl Actor for LedgerActor {
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
+            LedgerMessage::Checkpoint => {
+                state.checkpoint_due = false;
+                if let Err(e) = state.checkpoints.sign(&state.log) {
+                    // Tried again a second later; the ledger itself is whole.
+                    tracing::error!("the ledger's checkpoint was not kept: {e}");
+                }
+            }
+            LedgerMessage::KeyCertified(chain) => {
+                match crate::ledger_checkpoint::write_whole(
+                    &state.key_certificate,
+                    chain.concat().as_bytes(),
+                ) {
+                    Ok(()) => tracing::info!(
+                        "the ledger key's certificate is kept at {}",
+                        state.key_certificate.display()
+                    ),
+                    Err(e) => tracing::error!("the ledger key's certificate was not kept: {e}"),
+                }
+            }
             LedgerMessage::StoreSecret { event, reply } => {
                 let result = match &event {
                     CredentialsEvent::SecretStored {
@@ -855,6 +945,11 @@ impl Actor for LedgerActor {
                 let _ = reply.send(history(&state.log));
             }
         }
+        // Whatever was appended is signed within a second: one tick for every append until then.
+        if !state.checkpoint_due && state.checkpoints.signed() != Some(state.log.size()) {
+            state.checkpoint_due = true;
+            drop(myself.send_after(CHECKPOINT_EVERY, || LedgerMessage::Checkpoint));
+        }
         Ok(())
     }
 }
@@ -995,10 +1090,23 @@ pub(crate) mod tests {
         }
     }
 
+    /// The ledger key beside the ledger at `ledger`, as this agent's: for a test's ledger.
+    pub(crate) fn key_beside(ledger: impl AsRef<std::path::Path>) -> LedgerKey {
+        LedgerKey {
+            path: ledger
+                .as_ref()
+                .with_file_name("ledger-key.pem")
+                .display()
+                .to_string(),
+            identity: "credentials-agent.polar.serviceaccount.cluster.local".to_string(),
+        }
+    }
+
     async fn opened(path: &std::path::Path, json: Option<&std::path::Path>) -> Opening {
         open_ledger(
             path.to_str().unwrap(),
             json.map(|j| j.to_str().unwrap()),
+            &key_beside(path),
             Duration::from_secs(5),
             Duration::from_millis(20),
         )
@@ -1008,7 +1116,7 @@ pub(crate) mod tests {
 
     fn ready(opening: Opening) -> (FileLog, Vec<(u64, CredentialsEvent)>) {
         match opening {
-            Opening::Ready { log, events } => (log, events),
+            Opening::Ready { log, events, .. } => (log, events),
             Opening::Refused(why) => panic!("refused: {why}"),
         }
     }
@@ -1171,6 +1279,131 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_held_agent_makes_no_ledger_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        FileLog::open(&path)
+            .unwrap()
+            .log
+            .append(&leaf_holding(polar_log::entry::Entry {
+                kind: "credentials.something-new".into(),
+                version: 1,
+                critical: true,
+                writer: "9.0.0 x86_64-unknown-linux-musl".into(),
+                event: vec![0xa0],
+            }))
+            .unwrap();
+        refused(opened(&path, None).await);
+        assert!(!dir.path().join("ledger-key.pem").exists());
+        assert!(!dir.path().join("ledger.checkpoint").exists());
+    }
+
+    /// The size of the checkpoint kept beside the ledger at `path`, if one is.
+    fn kept_size(path: &std::path::Path) -> Option<u64> {
+        let note = std::fs::read_to_string(crate::ledger_checkpoint::kept_path(path)).ok()?;
+        note.lines().nth(1)?.parse().ok()
+    }
+
+    async fn spawned(path: &std::path::Path) -> ActorRef<LedgerMessage> {
+        Actor::spawn(
+            None,
+            LedgerActor,
+            LedgerActorArgs {
+                log_path: path.to_str().unwrap().to_string(),
+                copy_from: None,
+                key: key_beside(path),
+                projection_actor: crate::projection::tests::fake_projection_actor().await,
+            },
+        )
+        .await
+        .unwrap()
+        .0
+    }
+
+    #[tokio::test]
+    async fn the_ledger_signs_a_checkpoint_at_its_start_and_at_most_once_a_second_while_it_is_appended_to()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        {
+            let mut log = FileLog::open(&path).unwrap().log;
+            log.append(&leaf_of(&grant(1), &writer(), 1)).unwrap();
+        }
+        let ledger = spawned(&path).await;
+        assert_eq!(kept_size(&path), Some(1), "at its start");
+        for n in 2..=6 {
+            append(&ledger, grant(n)).await.unwrap();
+        }
+        assert_eq!(kept_size(&path), Some(1), "not at every append");
+        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(300)).await;
+        assert_eq!(kept_size(&path), Some(6), "within a second, all of them");
+        ledger.stop(None);
+
+        // Started again, the kept checkpoint is the ledger's, and nothing new is signed.
+        let note = std::fs::read(crate::ledger_checkpoint::kept_path(&path)).unwrap();
+        let ledger = spawned(&path).await;
+        assert!(check_grant(&ledger, "agent-6").await.is_some());
+        assert_eq!(
+            std::fs::read(crate::ledger_checkpoint::kept_path(&path)).unwrap(),
+            note
+        );
+        ledger.stop(None);
+    }
+
+    #[tokio::test]
+    async fn a_ledger_put_back_behind_its_checkpoint_is_refused_and_accepted_once_a_person_removes_the_checkpoint()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        let older = dir.path().join("older.log");
+        let ledger = spawned(&path).await;
+        append(&ledger, grant(1)).await.unwrap();
+        std::fs::copy(&path, &older).unwrap();
+        append(&ledger, grant(2)).await.unwrap();
+        tokio::time::sleep(CHECKPOINT_EVERY + Duration::from_millis(300)).await;
+        ledger.stop(None);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        std::fs::copy(&older, &path).unwrap();
+        let why = refused(opened(&path, None).await);
+        assert!(
+            why.contains("the ledger holds 1 entries, and its last checkpoint was signed at 2"),
+            "{why}"
+        );
+        assert!(
+            why.contains("it is not the ledger this agent signed"),
+            "{why}"
+        );
+        assert!(!why.contains('\n'));
+
+        std::fs::remove_file(crate::ledger_checkpoint::kept_path(&path)).unwrap();
+        let (_, events) = ready(opened(&path, None).await);
+        assert_eq!(events, vec![(0, grant(1))]);
+    }
+
+    #[tokio::test]
+    async fn the_ledger_keeps_its_key_s_certificate_beside_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        let ledger = spawned(&path).await;
+        ledger
+            .cast(LedgerMessage::KeyCertified(vec![
+                "first".into(),
+                "\nchain".into(),
+            ]))
+            .unwrap();
+        ledger
+            .cast(LedgerMessage::KeyCertified(vec!["renewed".into()]))
+            .unwrap();
+        let _ = check_grant(&ledger, "nobody").await;
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("ledger-key.crt")).unwrap(),
+            "renewed"
+        );
+        ledger.stop(None);
+    }
+
+    #[tokio::test]
     async fn an_entry_not_as_its_writer_should_have_made_it_refuses_the_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.log");
@@ -1224,6 +1457,7 @@ pub(crate) mod tests {
                 log_path: path.to_str().unwrap().to_string(),
                 copy_from: Some(json.to_str().unwrap().to_string()),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&path),
             },
         )
         .await
@@ -1272,6 +1506,7 @@ pub(crate) mod tests {
                 copy_from: None,
                 log_path: log_path.to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(log_path),
             },
         )
         .await

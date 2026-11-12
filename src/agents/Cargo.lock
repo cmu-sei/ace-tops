@@ -1781,6 +1781,7 @@ dependencies = [
  "jwt_utils",
  "minicbor 2.3.1",
  "neo4rs",
+ "p256 0.14.0",
  "polar",
  "polar-agent-builder",
  "polar-env",
@@ -1808,6 +1809,7 @@ dependencies = [
  "uuid",
  "wiremock",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

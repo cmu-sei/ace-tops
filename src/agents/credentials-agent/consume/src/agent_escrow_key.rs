@@ -116,6 +116,7 @@ mod tests {
                 copy_from: None,
                 log_path: path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
+                key: crate::ledger::tests::key_beside(&path),
             },
         )
         .await

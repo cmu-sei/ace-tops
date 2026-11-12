@@ -50,6 +50,11 @@ rand.workspace = true
 reqwest.workspace = true
 rkyv.workspace = true
 rsa.workspace = true
+# The ledger key, P-256, which signs the ledger's checkpoints (src/ledger_key.rs).
+p256 = { workspace = true, features = ["pem"] }
+zeroize = { version = "1.9.0", features = ["aarch64"] }
+# polar-ledger checks a ledger's checkpoint certificate (src/ledger_reader.rs).
+polar-signing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
