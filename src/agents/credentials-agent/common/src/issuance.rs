@@ -59,6 +59,8 @@ pub struct IssuanceRequest {
 /// is the mTLS identity it connects with; a server certificate is the one a listener presents (Cassini, Neo4j,
 /// the git server). Each pod instance may be issued one of each, and not a second of either.
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -73,13 +75,17 @@ pub struct IssuanceRequest {
     SerdeSerialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cbor(index_only)]
 pub enum WorkloadCertType {
     #[default]
+    #[n(0)]
     Client,
+    #[n(1)]
     Server,
     /// The custody daemon's own certificate (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian"):
     /// what the pod's token buys, once per pod instance, named `custody.<X>`. Its names are the custody permissions it
     /// asks for (`p:custody:client`, `server`, `escrow`).
+    #[n(2)]
     Custody,
 }
 

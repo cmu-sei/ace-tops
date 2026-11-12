@@ -46,6 +46,7 @@ pub mod events;
 pub mod graph;
 pub mod identity;
 pub mod issuance;
+pub mod ledger;
 pub mod observer;
 pub mod retrieve_secret;
 pub mod routes;

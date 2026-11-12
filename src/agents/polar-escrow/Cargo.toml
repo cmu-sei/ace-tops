@@ -27,6 +27,7 @@ license.workspace = true
 # EscrowedSecret and the context a secret is bound to, in a crate light enough for the author's tool
 # (`polar-sign`): credentials_agent_common re-exports it, and carries the graph libraries this does not need.
 [dependencies]
+minicbor.workspace = true
 aes-gcm = "0.11.1"
 base64.workspace = true
 # HPKE (RFC 9180) wraps a secret's key to a P-256 recipient (docs/architecture/key-custody.md, "The crypto change").

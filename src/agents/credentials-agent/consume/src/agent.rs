@@ -27,7 +27,9 @@
 //! Its settings are a section of its own (`settings.rs`), read from the snapshot the builder took.
 
 use crate::supervisor::{ConsumerSupervisor, SHUTDOWN_BUDGET};
-use polar_agent_builder::{Capability, Cause, Configured, PolarAgent, Role, StartError, TopicDecl};
+use polar_agent_builder::{
+    Capability, Cause, Configured, HoldReason, PolarAgent, Role, StartError, TopicDecl,
+};
 use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
@@ -272,6 +274,34 @@ impl PolarAgent for CredentialsConsumer {
 
     async fn start(configured: Configured) -> Result<(), StartError> {
         configured.init_logging(crate::supervisor::SERVICE_NAME);
+
+        // A ledger this agent cannot read (an entry it must understand, written by a newer version, or one not as its
+        // writer should have made it) is not fixed by starting again: the agent stays up with its infrastructure only,
+        // says why when it is asked about its health, loads no key and serves nothing, until a version that can read
+        // it is deployed (docs/architecture/record-store.md, "The credentials ledger on the log"). The JSON ledger is
+        // copied here, once, if there is no ledger yet; the ledger actor opens it again.
+        let settings = crate::settings::ConsumerSettings::read(configured.config())
+            .map_err(|e| e.to_string())?;
+        match crate::ledger::open_ledger(
+            &settings.ledger_path,
+            Some(&settings.event_log_path),
+            crate::ledger::LEDGER_LOCK_WAIT,
+            Duration::from_secs(1),
+        )
+        .await?
+        {
+            crate::ledger::Opening::Ready { .. } => {}
+            crate::ledger::Opening::Refused(why) => {
+                return polar_agent_builder::held::stay_up(
+                    configured,
+                    crate::supervisor::SERVICE_NAME,
+                    HoldReason::Version,
+                    why,
+                    polar_agent_builder::held::never(),
+                )
+                .await;
+            }
+        }
         let (_agent, handle) = Actor::spawn(
             Some(format!("{}.supervisor", crate::supervisor::SERVICE_NAME)),
             ConsumerSupervisor,

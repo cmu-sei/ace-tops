@@ -487,7 +487,7 @@ pub(crate) mod tests {
     async fn logged_ledger_with_custodian(
         dir: &tempfile::TempDir,
     ) -> (ActorRef<LedgerMessage>, std::path::PathBuf) {
-        let log = dir.path().join("events.jsonl");
+        let log = dir.path().join("ledger.log");
         let ledger = crate::ledger::tests::spawn_ledger(log.to_str().unwrap()).await;
         call_append(
             &ledger,
@@ -529,11 +529,7 @@ pub(crate) mod tests {
             }]
         );
         assert!(server.received_requests().await.unwrap().is_empty());
-        assert!(
-            std::fs::read_to_string(&log)
-                .unwrap()
-                .contains("InstanceRefused")
-        );
+        assert!(crate::ledger::tests::events_in(&log).contains("InstanceRefused"));
 
         handler.instance_asker = Some(
             attestation_common::asker::testing::answering(attestation_common::Verdict::Genuine)
@@ -542,11 +538,7 @@ pub(crate) mod tests {
         );
         let reply = handler.handle(ask(), Some(CUSTODIAN.to_string())).await;
         assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
-        assert!(
-            !std::fs::read_to_string(&log)
-                .unwrap()
-                .contains("IssuedUnattested")
-        );
+        assert!(!crate::ledger::tests::events_in(&log).contains("IssuedUnattested"));
     }
 
     #[tokio::test]
@@ -567,7 +559,7 @@ pub(crate) mod tests {
             )
             .await;
         assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
-        let events = std::fs::read_to_string(&log).unwrap();
+        let events = crate::ledger::tests::events_in(&log);
         assert!(events.contains("IssuedUnattested"), "{events}");
     }
 

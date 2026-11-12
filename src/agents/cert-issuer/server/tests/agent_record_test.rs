@@ -132,9 +132,10 @@ fn the_credentials_agent_asks_over_cassini_and_its_ledger_learns_what_cert_issue
             LedgerActorArgs {
                 log_path: ledger_dir
                     .path()
-                    .join("events.jsonl")
+                    .join("ledger.log")
                     .to_string_lossy()
                     .into_owned(),
+                copy_from: None,
                 projection_actor: graph,
             },
         )

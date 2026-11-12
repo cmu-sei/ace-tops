@@ -73,14 +73,27 @@ pub struct AdminActionBody {
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Deserialize, Serialize, Archive, SerdeDeserialize, SerdeSerialize,
+    minicbor::Encode,
+    minicbor::Decode,
+    Debug,
+    Clone,
+    PartialEq,
+    Deserialize,
+    Serialize,
+    Archive,
+    SerdeDeserialize,
+    SerdeSerialize,
 )]
+#[cbor(map)]
 pub struct SignedAdminAction {
     /// rkyv bytes of an `AdminActionBody`. Kept as raw bytes so the
     /// signature never depends on re-serialization.
+    #[cbor(n(0), with = "minicbor::bytes")]
     pub payload: Vec<u8>,
     /// Serial of the author's certificate, looked up in the ledger.
+    #[n(1)]
     pub author_serial: String,
+    #[cbor(n(2), with = "minicbor::bytes")]
     pub signature: Vec<u8>,
 }
 

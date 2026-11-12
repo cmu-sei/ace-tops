@@ -385,9 +385,10 @@ fn issuance_through_held_requests_survives_the_broker_restarting_again_and_again
             LedgerActorArgs {
                 log_path: ledger_dir
                     .path()
-                    .join("events.jsonl")
+                    .join("ledger.log")
                     .to_string_lossy()
                     .into_owned(),
+                copy_from: None,
                 projection_actor: graph,
             },
         )

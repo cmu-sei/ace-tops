@@ -39,6 +39,8 @@ use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 /// IssuedInError has no clean RFC 5280 equivalent at all -- noted
 /// honestly rather than forcing a strained mapping.
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -51,11 +53,13 @@ use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
     SerdeSerialize,
     clap::ValueEnum,
 )]
+#[cbor(index_only)]
 pub enum RevocationReason {
     /// The private key or certificate is suspected or confirmed
     /// compromised -- includes a lost or stolen device carrying the
     /// key, even with no direct evidence of misuse yet; "suspected"
     /// is enough. Corresponds directly to RFC 5280's keyCompromise.
+    #[n(0)]
     Compromised,
 
     /// System-generated only -- never an admin's own choice via
@@ -64,6 +68,7 @@ pub enum RevocationReason {
     /// certificate (see CredentialsState::apply's own
     /// IssuanceCompleted handling). Corresponds directly to RFC
     /// 5280's superseded.
+    #[n(1)]
     Superseded,
 
     /// The workload/service this credential was issued to has been
@@ -74,6 +79,7 @@ pub enum RevocationReason {
     /// deliberately splits what that one RFC category covers into
     /// this and UserOffboarded below, for better operational
     /// granularity than the RFC itself needs.
+    #[n(2)]
     Decommissioned,
 
     /// The human user this credential was issued to has left the
@@ -83,6 +89,7 @@ pub enum RevocationReason {
     /// history should be able to tell these apart. Also a
     /// Polar-specific refinement of RFC 5280's cessationOfOperation,
     /// scoped specifically to human identities.
+    #[n(3)]
     UserOffboarded,
 
     /// A legitimate, non-punitive routine removal -- a project ended,
@@ -94,12 +101,14 @@ pub enum RevocationReason {
     /// reason to believe the certificate will be misused") --
     /// Decommissioned and UserOffboarded above are Polar's own,
     /// more specific splits of that same broad RFC category.
+    #[n(4)]
     AccessNoLongerRequired,
 
     /// Revoked for a policy reason not covered by the other variants
     /// -- an admin's own deliberate judgment call, distinct from
     /// AccessNoLongerRequired's routine, no-wrongdoing framing.
     /// Corresponds directly to RFC 5280's privilegeWithdrawn.
+    #[n(5)]
     PolicyViolation,
 
     /// The certificate itself was wrong from the start -- bad
@@ -109,6 +118,7 @@ pub enum RevocationReason {
     /// PolicyViolation (this isn't a policy problem, it's a
     /// correctness problem). Genuinely has no clean RFC 5280
     /// equivalent -- noted here rather than forcing one.
+    #[n(6)]
     IssuedInError,
 }
 
@@ -125,6 +135,8 @@ impl RevocationReason {
 /// RFC to anchor against -- genuinely Polar-specific, but held to the
 /// same discipline: a deliberately closed set, not free text.
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -137,28 +149,35 @@ impl RevocationReason {
     SerdeSerialize,
     clap::ValueEnum,
 )]
+#[cbor(index_only)]
 pub enum GrantReason {
     /// A new human user being set up for the first time.
+    #[n(0)]
     UserOnboarding,
     /// A new workload/service being stood up for the first time.
+    #[n(1)]
     ServiceOnboarding,
     /// An existing, already-known identity's responsibilities
     /// changed, requiring different or additional permissions than it
     /// previously held.
+    #[n(2)]
     RoleChange,
     /// Short-term, incident-response or debugging-driven elevated
     /// access -- expected to be revoked again soon. Names the reason
     /// category now, even though auto-expiring, time-bounded grants
     /// aren't a built feature yet -- that's real, separate future
     /// work this doesn't attempt to solve.
+    #[n(3)]
     TemporaryElevation,
     /// A prior grant was mistakenly missing or denied -- this grant
     /// corrects that. The positive-direction mirror of
     /// RevocationReason::IssuedInError.
+    #[n(4)]
     CorrectionOfError,
     /// Granted to satisfy a policy or compliance requirement not
     /// covered by the other, more specific categories -- the positive
     /// mirror of RevocationReason::PolicyViolation.
+    #[n(5)]
     PolicyRequirement,
 }
 
@@ -166,6 +185,8 @@ pub enum GrantReason {
 /// round trip that began or stopped closing (`workload entry sent`), and the groups document's keys that name no identity
 /// the authority knows. Names only, never a value.
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Default,
@@ -176,11 +197,17 @@ pub enum GrantReason {
     SerdeDeserialize,
     SerdeSerialize,
 )]
+#[cbor(map)]
 pub struct AuthorityEffect {
+    #[n(0)]
     pub gained: Vec<String>,
+    #[n(1)]
     pub lost: Vec<String>,
+    #[n(2)]
     pub began_closing: Vec<String>,
+    #[n(3)]
     pub stopped_closing: Vec<String>,
+    #[n(4)]
     pub unknown_keys: Vec<String>,
 }
 
@@ -465,33 +492,69 @@ pub enum CredentialsEvent {
 
 /// A successor ticket cert-issuer took and reported: the pod it admitted, and for how long.
 #[derive(
-    Debug, Clone, PartialEq, Deserialize, Serialize, Archive, SerdeDeserialize, SerdeSerialize,
+    minicbor::Encode,
+    minicbor::Decode,
+    Debug,
+    Clone,
+    PartialEq,
+    Deserialize,
+    Serialize,
+    Archive,
+    SerdeDeserialize,
+    SerdeSerialize,
 )]
+#[cbor(map)]
 pub struct ReportedTicket {
+    #[n(0)]
     pub seq: u64,
+    #[n(1)]
     pub identity: String,
+    #[n(2)]
     pub instance_binding: String,
+    #[n(3)]
     pub taken_at: i64,
+    #[n(4)]
     pub expires_at: i64,
+    #[n(5)]
     pub issued_at: i64,
 }
 
 /// A certificate cert-issuer signed and reported, that the ledger did not already hold.
 #[derive(
-    Debug, Clone, PartialEq, Deserialize, Serialize, Archive, SerdeDeserialize, SerdeSerialize,
+    minicbor::Encode,
+    minicbor::Decode,
+    Debug,
+    Clone,
+    PartialEq,
+    Deserialize,
+    Serialize,
+    Archive,
+    SerdeDeserialize,
+    SerdeSerialize,
 )]
+#[cbor(map)]
 pub struct ReportedCertificate {
+    #[n(0)]
     pub seq: u64,
+    #[n(1)]
     pub identity: String,
+    #[n(2)]
     pub instance_binding: Option<String>,
+    #[n(3)]
     pub cert_type: cert_issuer_common::CertType,
+    #[n(4)]
     pub path: cert_issuer_common::record::IssuePath,
+    #[n(5)]
     pub serial: String,
+    #[n(6)]
     pub signed_at: i64,
+    #[n(7)]
     pub not_after: i64,
+    #[n(8)]
     pub certificate_pem: String,
     /// Signed on a token alone for an identity the authority model does not call a bootstrap service: on a target that
     /// enforces the floor it should not exist.
+    #[n(9)]
     pub unexpected: bool,
 }
 

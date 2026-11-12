@@ -58,6 +58,7 @@ pub mod issuance;
 pub mod issuance_actor;
 pub mod ledger;
 pub mod ledger_call;
+pub mod ledger_reader;
 pub mod projection;
 pub mod record_asker;
 pub mod renewal;

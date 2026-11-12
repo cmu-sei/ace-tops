@@ -25,6 +25,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+minicbor.workspace = true
+polar-log.workspace = true
 rkyv.workspace = true
 polar-escrow.workspace = true
 serde_json.workspace = true

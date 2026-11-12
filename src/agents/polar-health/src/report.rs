@@ -115,6 +115,10 @@ pub enum HealthReason {
     Configuration,
     /// Its credentials are refused. A restart does not help: the agent stays up, reports and stops retrying.
     Credentials,
+    /// What it keeps is not what this version can read: an entry it must understand, written by a newer version, or
+    /// one not as its writer should have made it. A restart does not help: the agent stays up, reports and serves
+    /// nothing until a version that can read it is deployed, or what it keeps is looked at.
+    Version,
 }
 
 impl HealthReason {
@@ -122,7 +126,7 @@ impl HealthReason {
     pub fn restart_helps(self) -> bool {
         !matches!(
             self,
-            HealthReason::Configuration | HealthReason::Credentials
+            HealthReason::Configuration | HealthReason::Credentials | HealthReason::Version
         )
     }
 
@@ -134,6 +138,7 @@ impl HealthReason {
             HealthReason::Internal => "internal",
             HealthReason::Configuration => "configuration",
             HealthReason::Credentials => "credentials",
+            HealthReason::Version => "version",
         }
     }
 }
@@ -146,6 +151,9 @@ pub enum HoldReason {
     Configuration,
     /// Its credentials are refused (a token the site rejects).
     Credentials,
+    /// What it keeps is not what this version can read (written by a newer version, or not as its writer should have
+    /// made it).
+    Version,
 }
 
 impl From<HoldReason> for HealthReason {
@@ -153,6 +161,7 @@ impl From<HoldReason> for HealthReason {
         match reason {
             HoldReason::Configuration => HealthReason::Configuration,
             HoldReason::Credentials => HealthReason::Credentials,
+            HoldReason::Version => HealthReason::Version,
         }
     }
 }
@@ -467,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn only_configuration_and_credentials_are_problems_a_restart_does_not_help() {
+    fn only_a_hold_is_a_problem_a_restart_does_not_help() {
         for reason in [
             HealthReason::Broker,
             HealthReason::Graph,
@@ -476,7 +485,11 @@ mod tests {
         ] {
             assert!(reason.restart_helps(), "{reason:?}");
         }
-        for hold in [HoldReason::Configuration, HoldReason::Credentials] {
+        for hold in [
+            HoldReason::Configuration,
+            HoldReason::Credentials,
+            HoldReason::Version,
+        ] {
             assert!(!HealthReason::from(hold).restart_helps(), "{hold:?}");
         }
     }

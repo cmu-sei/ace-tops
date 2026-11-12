@@ -331,7 +331,7 @@ mod tests {
 
     async fn spawn_test_ledger() -> ActorRef<LedgerMessage> {
         let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("events.jsonl");
+        let log = dir.path().join("ledger.log");
         // Leak the tempdir so it isn't cleaned up while the actor is still
         // using it -- fine for a short-lived test process.
         std::mem::forget(dir);
@@ -339,6 +339,7 @@ mod tests {
             None,
             crate::ledger::LedgerActor,
             crate::ledger::LedgerActorArgs {
+                copy_from: None,
                 log_path: log.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },

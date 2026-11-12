@@ -127,6 +127,14 @@ fn compute_hash(prev_hash: &str, timestamp: &DateTime<Utc>, event_json: &str) ->
 }
 
 /// A local, append-only, hash-chained event log.
+/// An entry as it was read back: when it was appended, its hash, and its event.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replayed<E> {
+    pub timestamp: DateTime<Utc>,
+    pub hash: String,
+    pub event: E,
+}
+
 pub struct EventLog<E> {
     file: File,
     last_hash: String,
@@ -152,7 +160,7 @@ where
     /// own entry's hash (not just the final one) plus the final hash
     /// itself. Both `open` and `events_since` build on this rather
     /// than duplicating the same parse-and-verify loop.
-    fn replay_file(path: &Path) -> Result<(Vec<(String, E)>, String), EventLogError> {
+    fn replay_file(path: &Path) -> Result<(Vec<Replayed<E>>, String), EventLogError> {
         let mut events = Vec::new();
         let mut last_hash = GENESIS_HASH.to_string();
 
@@ -193,7 +201,11 @@ where
                     .map_err(|source| EventLogError::EventDeserialize { line: i, source })?;
 
                 last_hash = entry.hash.clone();
-                events.push((entry.hash.clone(), event));
+                events.push(Replayed {
+                    timestamp: entry.timestamp,
+                    hash: entry.hash.clone(),
+                    event,
+                });
             }
         }
 
@@ -225,7 +237,7 @@ where
                 path: path.to_path_buf(),
                 _marker: PhantomData,
             },
-            events.into_iter().map(|(_, e)| e).collect(),
+            events.into_iter().map(|r| r.event).collect(),
         ))
     }
 
@@ -248,12 +260,12 @@ where
         let (events, _) = Self::replay_file(&self.path)?;
 
         if since_hash == GENESIS_HASH {
-            return Ok(events.into_iter().map(|(_, e)| e).collect());
+            return Ok(events.into_iter().map(|r| r.event).collect());
         }
 
-        match events.iter().position(|(hash, _)| hash == since_hash) {
-            Some(idx) => Ok(events.into_iter().skip(idx + 1).map(|(_, e)| e).collect()),
-            None => Ok(events.into_iter().map(|(_, e)| e).collect()),
+        match events.iter().position(|r| r.hash == since_hash) {
+            Some(idx) => Ok(events.into_iter().skip(idx + 1).map(|r| r.event).collect()),
+            None => Ok(events.into_iter().map(|r| r.event).collect()),
         }
     }
 
@@ -265,7 +277,12 @@ where
     /// X" taken in isolation.
     pub fn replay_with_hashes(&self) -> Result<Vec<(String, E)>, EventLogError> {
         let (events, _) = Self::replay_file(&self.path)?;
-        Ok(events)
+        Ok(events.into_iter().map(|r| (r.hash, r.event)).collect())
+    }
+
+    /// Every entry, re-read from disk with its time and hash: what a copy of the log into another format keeps.
+    pub fn entries(&self) -> Result<Vec<Replayed<E>>, EventLogError> {
+        Ok(Self::replay_file(&self.path)?.0)
     }
 
     /// Appends a new event, `fsync`'d before returning -- the write is
@@ -341,6 +358,35 @@ mod tests {
         drop(first);
         let (_, events) = EventLog::<TestEvent>::open(&path).unwrap();
         assert_eq!(events.len(), 1, "the first holder's entry, and no fork");
+    }
+
+    #[test]
+    fn every_entry_is_read_back_with_its_time_and_hash_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let (mut log, _) = EventLog::<TestEvent>::open(&path).unwrap();
+        let before = Utc::now();
+        for _ in 0..3 {
+            log.append(&TestEvent::Revoke {
+                serial: "x".into(),
+                reason: "y".into(),
+            })
+            .unwrap();
+        }
+        let entries = log.entries().unwrap();
+        let hashes: Vec<String> = log
+            .replay_with_hashes()
+            .unwrap()
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        assert_eq!(
+            entries.iter().map(|r| r.hash.clone()).collect::<Vec<_>>(),
+            hashes
+        );
+        assert_eq!(entries.last().unwrap().hash, log.current_hash());
+        assert!(entries.windows(2).all(|w| w[0].timestamp <= w[1].timestamp));
+        assert!(entries[0].timestamp >= before);
     }
 
     #[test]

@@ -37,6 +37,10 @@ credentials-agent-model.workspace = true
 jwt_utils.workspace = true
 neo4rs.workspace = true
 polar.workspace = true
+polar-log.workspace = true
+minicbor.workspace = true
+polar-version.workspace = true
+hex.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true
 polar-permissions.workspace = true
@@ -69,3 +73,7 @@ x25519-dalek = { version = "3.0.0", features = ["getrandom"] }
 [[bin]]
 name = "credentials-agent-consumer"
 path = "src/main.rs"
+
+[[bin]]
+name = "polar-ledger"
+path = "src/bin/polar-ledger.rs"

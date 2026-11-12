@@ -82,12 +82,12 @@ pub struct ProjectionActorState {
 pub enum ProjectionMessage {
     /// Fire-and-forget: project one event's effect, best-effort --
     /// the steady-state path, sent by LedgerActor after each
-    /// successful append+fold. `hash` is that event's own resulting
-    /// hash (EventLog::current_hash() at the moment it was appended),
+    /// successful append+fold. `seq` is that event's own sequence
+    /// number in the ledger (what FileLog::append gave),
     /// carried along so this actor can keep the checkpoint accurate
     /// without needing to ask the ledger for it separately.
     ProjectEvent {
-        hash: String,
+        seq: u64,
         event: CredentialsEvent,
         /// Serial numbers of any certificates superseded as a side
         /// effect of folding this event -- CredentialsState::apply's
@@ -142,7 +142,7 @@ impl Actor for ProjectionActor {
     ) -> Result<(), ActorProcessingErr> {
         match message {
             ProjectionMessage::ProjectEvent {
-                hash,
+                seq,
                 event,
                 superseded_serials,
             } => {
@@ -152,7 +152,7 @@ impl Actor for ProjectionActor {
                 };
                 project_single_event(
                     &state.graph_controller,
-                    &hash,
+                    seq,
                     &event,
                     &superseded_serials,
                     ledger,
@@ -504,13 +504,16 @@ fn graph_ops_for_event(event: &CredentialsEvent, grant_existed: bool) -> Vec<Gra
     }
 }
 
-fn checkpoint_op(last_hash: &str) -> GraphOp {
+/// The checkpoint: the sequence number of the last event projected. A graph projected before the ledger moved onto
+/// its log holds the JSON ledger's hash instead (`last_hash`), which no sequence number matches: it is projected again
+/// from the start, once.
+fn checkpoint_op(last_seq: u64) -> GraphOp {
     GraphOp::UpsertNodes {
         items: vec![(
             CredentialsNodeKey::ProjectionCheckpoint.into_key(),
             vec![Property(
-                "last_hash".to_string(),
-                GraphValue::String(last_hash.to_string()),
+                "last_seq".to_string(),
+                GraphValue::I64(last_seq as i64),
             )],
         )],
     }
@@ -527,7 +530,7 @@ fn checkpoint_op(last_hash: &str) -> GraphOp {
 /// its own to check it against.
 async fn project_single_event(
     graph_controller: &GraphController,
-    hash: &str,
+    seq: u64,
     event: &CredentialsEvent,
     superseded_serials: &[String],
     ledger: &ActorRef<LedgerMessage>,
@@ -563,7 +566,7 @@ async fn project_single_event(
         ops.push(supersession_op(serial, timestamp));
     }
 
-    ops.push(checkpoint_op(hash));
+    ops.push(checkpoint_op(seq));
 
     if let Err(e) = graph_controller.cast(GraphControllerMsg::Op(GraphOp::Transaction { ops })) {
         warn!(
@@ -614,28 +617,43 @@ fn supersession_op(serial: &str, timestamp: i64) -> GraphOp {
     }
 }
 
-/// Pure: given the full (hash, event) history and the last
-/// successfully-projected checkpoint hash (`None` if nothing has ever
+/// Pure: given the full (sequence number, event) history and the
+/// last successfully-projected checkpoint (`None` if nothing has ever
 /// been projected), returns the graph ops that still need to run,
 /// plus the new checkpoint value to record. Replays and folds
 /// sequentially through *all* of history so historical context (like
 /// whether a grant existed at the moment a specific past event
 /// happened) is reconstructed correctly, but only emits ops for
 /// events after the checkpoint -- everything before it already
-/// succeeded, so there's nothing to redo there.
+/// succeeded, so there's nothing to redo there. A checkpoint the
+/// history does not hold (a graph projected from another ledger, or
+/// from the JSON ledger before the copy) is projected again from the
+/// start, and said: before 2026-11-11 it stopped the projection for
+/// good, silently. The ops are MERGEs, so a second pass gives the same
+/// graph.
 fn ops_for_catch_up(
-    history: &[(String, CredentialsEvent)],
-    checkpoint_hash: Option<&str>,
-) -> (Vec<GraphOp>, Option<String>) {
+    history: &[(u64, CredentialsEvent)],
+    checkpoint: Option<u64>,
+) -> (Vec<GraphOp>, Option<u64>) {
+    let checkpoint = match checkpoint {
+        Some(seq) if !history.iter().any(|(s, _)| *s == seq) => {
+            warn!(
+                checkpoint = seq,
+                "the graph's projection checkpoint is not in the ledger; projecting it again from the start"
+            );
+            None
+        }
+        other => other,
+    };
     let mut state = CredentialsState::new();
-    let mut past_checkpoint = checkpoint_hash.is_none();
+    let mut past_checkpoint = checkpoint.is_none();
     let mut ops = Vec::new();
-    let mut latest_hash = None;
+    let mut latest = None;
 
-    for (hash, event) in history {
+    for (seq, event) in history {
         if !past_checkpoint {
             state.apply(event);
-            if Some(hash.as_str()) == checkpoint_hash {
+            if Some(*seq) == checkpoint {
                 past_checkpoint = true;
             }
             continue;
@@ -650,15 +668,15 @@ fn ops_for_catch_up(
         for serial in &superseded_serials {
             ops.push(supersession_op(serial, event_timestamp(event)));
         }
-        latest_hash = Some(hash.clone());
+        latest = Some(*seq);
     }
 
-    (ops, latest_hash)
+    (ops, latest)
 }
 
-async fn read_checkpoint(graph_controller: &GraphController) -> Result<Option<String>, String> {
+async fn read_checkpoint(graph_controller: &GraphController) -> Result<Option<u64>, String> {
     let query = neo4rs::Query::new(
-        "MATCH (n:CredentialsProjectionCheckpoint) RETURN n.last_hash AS last_hash".to_string(),
+        "MATCH (n:CredentialsProjectionCheckpoint) RETURN n.last_seq AS last_seq".to_string(),
     );
 
     let rows = match ractor::rpc::call(
@@ -678,9 +696,10 @@ async fn read_checkpoint(graph_controller: &GraphController) -> Result<Option<St
     };
 
     match rows.first() {
+        // A checkpoint written before the move holds only `last_hash`: none, so the graph is projected from the start.
         Some(row) => row
-            .get::<String>("last_hash")
-            .map(Some)
+            .get::<Option<i64>>("last_seq")
+            .map(|seq| seq.map(|s| s as u64))
             .map_err(|e| e.to_string()),
         None => Ok(None),
     }
@@ -688,7 +707,7 @@ async fn read_checkpoint(graph_controller: &GraphController) -> Result<Option<St
 
 async fn get_full_history(
     ledger: &ActorRef<LedgerMessage>,
-) -> Result<Vec<(String, CredentialsEvent)>, String> {
+) -> Result<Vec<(u64, CredentialsEvent)>, String> {
     match ractor::rpc::call(
         ledger,
         |reply| LedgerMessage::GetFullHistory { reply },
@@ -702,8 +721,8 @@ async fn get_full_history(
 }
 
 async fn catch_up(ledger: &ActorRef<LedgerMessage>, graph_controller: &GraphController) {
-    let checkpoint_hash = match read_checkpoint(graph_controller).await {
-        Ok(hash) => hash,
+    let checkpoint = match read_checkpoint(graph_controller).await {
+        Ok(seq) => seq,
         Err(e) => {
             warn!("Failed to read projection checkpoint, skipping catch-up: {e}");
             return;
@@ -718,14 +737,14 @@ async fn catch_up(ledger: &ActorRef<LedgerMessage>, graph_controller: &GraphCont
         }
     };
 
-    let (mut ops, latest_hash) = ops_for_catch_up(&history, checkpoint_hash.as_deref());
+    let (mut ops, latest) = ops_for_catch_up(&history, checkpoint);
 
-    let Some(latest_hash) = latest_hash else {
+    let Some(latest) = latest else {
         // Nothing new since the checkpoint -- already fully caught up.
         return;
     };
 
-    ops.push(checkpoint_op(&latest_hash));
+    ops.push(checkpoint_op(latest));
 
     if let Err(e) = graph_controller.cast(GraphControllerMsg::Op(GraphOp::Transaction { ops })) {
         error!("Failed to run catch-up projection: {e}");
@@ -956,5 +975,43 @@ pub(crate) mod tests {
         let from_derived = graph_ops_for_event(&derived, false);
         assert!(!from_recorded.is_empty());
         assert_eq!(from_recorded.len(), from_derived.len());
+    }
+
+    fn grant(n: i64) -> CredentialsEvent {
+        CredentialsEvent::Grant {
+            target_identity: format!("agent-{n}"),
+            permissions: vec![],
+            granted_by: "admin".into(),
+            timestamp: n,
+            reason: GrantReason::ServiceOnboarding,
+        }
+    }
+
+    // The ledger's sequence numbers begin at 1 after the copy's first entry, which is no event.
+    fn history() -> Vec<(u64, CredentialsEvent)> {
+        (1..=3).map(|n| (n as u64, grant(n))).collect()
+    }
+
+    #[test]
+    fn catch_up_projects_what_follows_the_checkpoint_and_records_the_last() {
+        let (ops, latest) = ops_for_catch_up(&history(), Some(2));
+        assert_eq!(ops.len(), graph_ops_for_event(&grant(3), false).len());
+        assert_eq!(latest, Some(3));
+        let (ops, latest) = ops_for_catch_up(&history(), Some(3));
+        assert!(ops.is_empty());
+        assert_eq!(latest, None);
+    }
+
+    #[test]
+    fn a_checkpoint_the_ledger_does_not_hold_is_projected_again_from_the_start() {
+        let (all, latest) = ops_for_catch_up(&history(), None);
+        assert_eq!(latest, Some(3));
+        assert_eq!(all.len(), 3 * graph_ops_for_event(&grant(1), false).len());
+        // A graph projected before the ledger moved onto its log has no sequence number; one projected from another
+        // ledger has one this ledger does not hold. Both are projected again, rather than never again.
+        for unknown in [99, 0] {
+            let (ops, latest) = ops_for_catch_up(&history(), Some(unknown));
+            assert_eq!((ops.len(), latest), (all.len(), Some(3)));
+        }
     }
 }

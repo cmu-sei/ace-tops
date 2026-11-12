@@ -367,12 +367,8 @@ mod tests {
             None,
             LedgerActor,
             LedgerActorArgs {
-                log_path: dir
-                    .path()
-                    .join("events.jsonl")
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
+                copy_from: None,
+                log_path: dir.path().join("ledger.log").to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
         )

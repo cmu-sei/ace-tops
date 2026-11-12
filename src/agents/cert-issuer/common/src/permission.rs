@@ -39,6 +39,8 @@ use rkyv::{Archive, Deserialize, Serialize};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -50,17 +52,34 @@ use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
     SerdeDeserialize,
     SerdeSerialize,
 )]
+#[cbor(index_only)]
 pub enum PermissionScope {
+    #[n(0)]
     ServiceToService,
+    #[n(1)]
     ServiceToUser,
+    #[n(2)]
     UserToService,
+    #[n(3)]
     UserToUser,
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Archive, SerdeDeserialize, SerdeSerialize,
+    minicbor::Encode,
+    minicbor::Decode,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    Archive,
+    SerdeDeserialize,
+    SerdeSerialize,
 )]
+#[cbor(map)]
 pub struct Permission {
+    #[n(0)]
     pub scope: PermissionScope,
     /// A specific FQDN this permission is scoped to (e.g.
     /// "cassini.cluster.local"), narrowing it from "any target within
@@ -68,6 +87,7 @@ pub struct Permission {
     /// scoping (letting a certificate say "service-to-service,
     /// specifically with cassini") is real, deliberately deferred
     /// future work, not a rejected idea.
+    #[n(1)]
     pub target: Option<String>,
 }
 

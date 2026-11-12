@@ -37,6 +37,7 @@ use cassini_client::environment::{TLS_CLIENT_CERT, read_client_key};
 use polar_env::{Config, ConfigError, Defaulted, Described, Env, Optional, Required, Section};
 
 pub const CREDENTIALS_EVENT_LOG_PATH_DEFAULT: &str = "/var/lib/credentials-agent/events.jsonl";
+pub const CREDENTIALS_LEDGER_PATH_DEFAULT: &str = "/var/lib/credentials-agent/ledger.log";
 
 pub static CERT_ISSUER_URL: Required<String> = Required::text(
     "CREDENTIALS_AGENT_CERT_ISSUER_URL",
@@ -51,10 +52,17 @@ pub static CA_CERT: Optional<String> = Optional::path(
      a path that is set but unreadable stops the agent",
 );
 
+pub static LEDGER_PATH: Defaulted<String> = Defaulted::path(
+    "CREDENTIALS_LEDGER_PATH",
+    polar_env::Access::WriteFile,
+    "the ledger, the source of truth; keep it on a persistent volume",
+    CREDENTIALS_LEDGER_PATH_DEFAULT,
+);
+
 pub static EVENT_LOG_PATH: Defaulted<String> = Defaulted::path(
     "CREDENTIALS_EVENT_LOG_PATH",
     polar_env::Access::WriteFile,
-    "the ledger's event log, the source of truth; keep it on a persistent volume",
+    "the JSON ledger kept before 2026-11-11: copied into the ledger once, if it has none yet, then kept read-only",
     CREDENTIALS_EVENT_LOG_PATH_DEFAULT,
 );
 
@@ -108,6 +116,7 @@ pub static AUTHORITY_MODEL: Defaulted<String> = Defaulted::text(
 static VARIABLES: &[&dyn Described] = &[
     &CERT_ISSUER_URL,
     &CA_CERT,
+    &LEDGER_PATH,
     &EVENT_LOG_PATH,
     &ESCROW_KEY_PATH,
     &BOOTSTRAP_IDENTITY,
@@ -171,6 +180,7 @@ pub struct IntrospectionSettings {
 pub struct ConsumerSettings {
     pub cert_issuer_url: String,
     pub ca_cert: Option<String>,
+    pub ledger_path: String,
     pub event_log_path: String,
     pub escrow_key_path: String,
     pub bootstrap_identity: String,
@@ -204,6 +214,7 @@ impl ConsumerSettings {
         Ok(Self {
             cert_issuer_url: config.read(&CERT_ISSUER_URL)?,
             ca_cert: config.read(&CA_CERT)?,
+            ledger_path: config.read(&LEDGER_PATH)?,
             event_log_path: config.read(&EVENT_LOG_PATH)?,
             escrow_key_path: config.read(&ESCROW_KEY_PATH)?,
             bootstrap_identity: config.read(&BOOTSTRAP_IDENTITY)?,
@@ -289,6 +300,7 @@ mod tests {
         let settings = ConsumerSettings::read(&config(MINIMUM)).unwrap();
         assert_eq!(settings.cert_issuer_url, "https://cert-issuer");
         assert_eq!(settings.ca_cert, None);
+        assert_eq!(settings.ledger_path, CREDENTIALS_LEDGER_PATH_DEFAULT);
         assert_eq!(settings.event_log_path, CREDENTIALS_EVENT_LOG_PATH_DEFAULT);
         assert_eq!(
             settings.escrow_key_path,
@@ -341,6 +353,7 @@ mod tests {
     fn what_is_set_overrides_the_defaults() {
         let settings = ConsumerSettings::read(&config(&with(&[
             ("CREDENTIALS_AGENT_CA_CERT", "/etc/polar-ca/ca.pem"),
+            ("CREDENTIALS_LEDGER_PATH", "/data/ledger.log"),
             ("CREDENTIALS_EVENT_LOG_PATH", "/data/events.jsonl"),
             ("CREDENTIALS_ESCROW_KEY_PATH", "/data/escrow.pem"),
             (
@@ -354,6 +367,7 @@ mod tests {
         ])))
         .unwrap();
         assert_eq!(settings.ca_cert.as_deref(), Some("/etc/polar-ca/ca.pem"));
+        assert_eq!(settings.ledger_path, "/data/ledger.log");
         assert_eq!(settings.event_log_path, "/data/events.jsonl");
         assert_eq!(settings.escrow_key_path, "/data/escrow.pem");
         assert_eq!(settings.bootstrap_identity, "system:serviceaccount:x:y");

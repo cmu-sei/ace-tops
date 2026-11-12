@@ -53,7 +53,10 @@ use crate::projection::ProjectionMessage;
 use crate::state::{CertificateRecord, CredentialsState, GrantRecord};
 use credentials_agent_common::events::CredentialsEvent;
 use credentials_agent_common::issuance::WorkloadCertType;
+use credentials_agent_common::ledger::Read;
 use polar::event_log::EventLog;
+use polar_log::entry::{CONTINUATION, Continuation, Leaf};
+use polar_log::file::{FileLog, LogError, Replayed};
 use ractor::{Actor, ActorProcessingErr, ActorRef, OutputPort, RpcReplyPort, async_trait};
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,40 +67,291 @@ pub struct LedgerActor;
 /// grace period (50 s and 60 s), after which its process has ended and the operating system has let go of its lock.
 pub const LEDGER_LOCK_WAIT: Duration = Duration::from_secs(90);
 
-/// Opens the event log at `path`, waiting up to `wait` (asking again every `every`) while another holder has it: a
-/// replaced credentials agent still draining, whose appends would fork the log's chain if this one appended too.
-pub async fn open_log(
+/// Asks `open` again every `every`, for up to `wait`, while another holder has what it opens: a replaced credentials
+/// agent still draining, whose appends would fork the ledger if this one appended too.
+async fn waiting_for<T, E>(
     path: &str,
     wait: Duration,
     every: Duration,
-) -> Result<(EventLog<CredentialsEvent>, Vec<CredentialsEvent>), String> {
+    held: impl Fn(&E) -> bool,
+    open: impl Fn() -> Result<T, E>,
+) -> Result<T, E> {
     let since = std::time::Instant::now();
     let mut said = false;
     loop {
-        match EventLog::open(path) {
+        match open() {
             Ok(opened) => return Ok(opened),
-            Err(polar::event_log::EventLogError::Held { .. }) if since.elapsed() < wait => {
+            Err(e) if held(&e) && since.elapsed() < wait => {
                 if !said {
                     tracing::warn!(
-                        "the event log at {path} is held by another process (a credentials agent still draining?); \
+                        "the ledger at {path} is held by another process (a credentials agent still draining?); \
                          waiting up to {wait:?} for it to be let go of"
                     );
                     said = true;
                 }
                 tokio::time::sleep(every).await;
             }
-            Err(e) => return Err(format!("Failed to open event log at {path}: {e}")),
+            Err(e) => return Err(e),
         }
     }
 }
 
+/// Opens the JSON ledger at `path`, kept before 2026-11-11, waiting while another holder has it.
+pub async fn open_log(
+    path: &str,
+    wait: Duration,
+    every: Duration,
+) -> Result<(EventLog<CredentialsEvent>, Vec<CredentialsEvent>), String> {
+    waiting_for(
+        path,
+        wait,
+        every,
+        |e| matches!(e, polar::event_log::EventLogError::Held { .. }),
+        || EventLog::open(path),
+    )
+    .await
+    .map_err(|e| format!("Failed to open event log at {path}: {e}"))
+}
+
+/// The writer this agent names in the entries it makes: its platform version, as the store names its own.
+pub fn writer() -> String {
+    format!("{} {}", polar_version::PLATFORM, polar_version::TARGET)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The leaf `event` is appended as, by `writer`, admitted at `admitted_at_ms`: this agent brings every entry itself.
+fn leaf_of(event: &CredentialsEvent, writer: &str, admitted_at_ms: u64) -> Leaf {
+    Leaf {
+        entry: credentials_agent_common::ledger::entry_of(event, writer).encode(),
+        admitted_at_ms,
+        submitter: crate::supervisor::SERVICE_NAME.to_string(),
+    }
+}
+
+/// What opening the ledger found.
+pub enum Opening {
+    /// Every event it holds, by its sequence number, and the log to append to.
+    Ready {
+        log: FileLog,
+        events: Vec<(u64, CredentialsEvent)>,
+    },
+    /// Why the agent serves nothing, in one line: an entry it must understand and cannot, or a ledger that is damaged.
+    Refused(String),
+}
+
+/// What one replayed frame is to this agent: an event, the first entry carrying on the JSON ledger, one it passes
+/// over, or why it may not go on.
+// Each is made once per frame and its event moved on at once, so boxing the event is not worth it.
+#[allow(clippy::large_enum_variant)]
+enum Replay {
+    Event(CredentialsEvent),
+    Continues,
+    PassedOver { kind: String, version: u64 },
+    Refused(String),
+}
+
+fn replay(seq: u64, replayed: Replayed) -> Replay {
+    let entry = match replayed {
+        Replayed::Entry { entry, .. } => entry,
+        Replayed::Malformed { why, .. } => {
+            return Replay::Refused(format!(
+                "the ledger's entry {seq} is not an entry ({why}): it serves nothing until the ledger is looked at"
+            ));
+        }
+    };
+    if entry.kind == CONTINUATION {
+        return if seq == 0 {
+            Replay::Continues
+        } else {
+            Replay::Refused(format!(
+                "the ledger's entry {seq} says the ledger carries on another, which only its first may: it serves \
+                 nothing until the ledger is looked at"
+            ))
+        };
+    }
+    match credentials_agent_common::ledger::read(&entry) {
+        Read::Decoded(event) => Replay::Event(event),
+        Read::Unknown if entry.critical => Replay::Refused(format!(
+            "the ledger holds {} v{} (entry {seq}), written by {}, which this agent ({}) cannot read: it serves \
+             nothing until a version that can is deployed",
+            entry.kind,
+            entry.version,
+            entry.writer,
+            writer()
+        )),
+        Read::Unknown => Replay::PassedOver {
+            kind: entry.kind,
+            version: entry.version,
+        },
+        Read::Malformed(why) => Replay::Refused(format!(
+            "the ledger's entry {seq} ({} v{}, written by {}) is not what its writer should have written ({why}): it \
+             serves nothing until the ledger is looked at",
+            entry.kind, entry.version, entry.writer
+        )),
+    }
+}
+
+/// Copies the JSON ledger at `json` into a new ledger at `path`, once (docs/architecture/record-store.md, "The
+/// credentials ledger on the log", 7): a first entry carrying on the JSON ledger (its last hash and how many it held),
+/// then every event as the current version of its kind, admitted when the JSON ledger appended it. It is written
+/// beside, as `<path>.copying`, and renamed when whole, so a copy cut short is made again; the JSON ledger is checked
+/// as it is read, and kept read-only. Every event is read back as it was before anything is renamed.
+async fn copy_json_ledger(
+    json: &str,
+    path: &str,
+    wait: Duration,
+    every: Duration,
+) -> Result<(), String> {
+    let (old, _) = open_log(json, wait, every).await?;
+    let entries = old
+        .entries()
+        .map_err(|e| format!("reading the JSON ledger at {json}: {e}"))?;
+    let digest = hex::decode(old.current_hash())
+        .map_err(|e| format!("the JSON ledger's last hash is not hex: {e}"))?;
+    let writer = writer();
+    let continuation = Continuation {
+        old_kind: "jsonl".to_string(),
+        alg: "sha256".to_string(),
+        digest,
+        count: entries.len() as u64,
+    };
+    let mut leaves = vec![Leaf {
+        entry: continuation.entry(&writer).encode(),
+        admitted_at_ms: now_ms(),
+        submitter: crate::supervisor::SERVICE_NAME.to_string(),
+    }];
+    for (n, replayed) in entries.iter().enumerate() {
+        let leaf = leaf_of(
+            &replayed.event,
+            &writer,
+            replayed.timestamp.timestamp_millis().max(0) as u64,
+        );
+        let entry = polar_log::entry::Entry::decode(&leaf.entry).map_err(|e| e.to_string())?;
+        if credentials_agent_common::ledger::read(&entry) != Read::Decoded(replayed.event.clone()) {
+            return Err(format!(
+                "the JSON ledger's entry {n} does not read back as it was: nothing is copied"
+            ));
+        }
+        leaves.push(leaf);
+    }
+    let copying = format!("{path}.copying");
+    match std::fs::remove_file(&copying) {
+        Ok(()) => tracing::warn!(
+            "a copy of the JSON ledger that did not finish was found at {copying}, and is made again"
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("removing {copying}: {e}")),
+    }
+    let mut log = FileLog::open(std::path::Path::new(&copying))
+        .map_err(|e| e.to_string())?
+        .log;
+    log.append_all(&leaves).map_err(|e| e.to_string())?;
+    drop(log);
+    std::fs::rename(&copying, path).map_err(|e| format!("renaming {copying} to {path}: {e}"))?;
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        std::fs::File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| format!("syncing {}: {e}", dir.display()))?;
+    }
+    // An older agent given this volume again opens the JSON ledger to append, and is refused: it cannot fork it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(json, std::fs::Permissions::from_mode(0o400))
+            .map_err(|e| format!("making {json} read-only: {e}"))?;
+    }
+    tracing::info!(
+        "copied the JSON ledger at {json} ({} entries, its last hash {}) into the ledger at {path}; the JSON ledger is \
+         kept, read-only",
+        entries.len(),
+        old.current_hash()
+    );
+    Ok(())
+}
+
+/// Opens the ledger at `path`, waiting up to `wait` (asking again every `every`) while another holder has it, and
+/// replays it (docs/architecture/record-store.md, "The credentials ledger on the log"). When there is none yet and
+/// `json` names a JSON ledger, that is copied into it first. An entry this agent must understand and cannot, one not
+/// written as its kind says, or a damaged ledger, is a refusal: the agent stays up and serves nothing, since a restart
+/// would find the same. An entry of a kind it may pass over is counted and said.
+pub async fn open_ledger(
+    path: &str,
+    json: Option<&str>,
+    wait: Duration,
+    every: Duration,
+) -> Result<Opening, String> {
+    if let Some(json) = json
+        && !std::path::Path::new(path).exists()
+        && std::path::Path::new(json).exists()
+    {
+        copy_json_ledger(json, path, wait, every).await?;
+    }
+    let opened = match waiting_for(
+        path,
+        wait,
+        every,
+        |e| matches!(e, LogError::Held { .. }),
+        || FileLog::open(std::path::Path::new(path)),
+    )
+    .await
+    {
+        Ok(opened) => opened,
+        Err(e @ LogError::Damaged { .. }) => {
+            return Ok(Opening::Refused(format!(
+                "{e}: it serves nothing until the ledger is looked at"
+            )));
+        }
+        Err(e) => return Err(format!("Failed to open the ledger at {path}: {e}")),
+    };
+    if let Some(bytes) = opened.torn {
+        tracing::warn!(
+            "the ledger's last entry was cut short ({bytes} bytes), by a write that did not finish, and was cut back"
+        );
+    }
+    let mut events = Vec::with_capacity(opened.replayed.len());
+    let mut passed_over: std::collections::BTreeMap<(String, u64), usize> = Default::default();
+    for (seq, replayed) in opened.replayed.into_iter().enumerate() {
+        match replay(seq as u64, replayed) {
+            Replay::Event(event) => events.push((seq as u64, event)),
+            Replay::Continues => {}
+            Replay::PassedOver { kind, version } => {
+                *passed_over.entry((kind, version)).or_default() += 1
+            }
+            Replay::Refused(why) => return Ok(Opening::Refused(why)),
+        }
+    }
+    for ((kind, version), count) in passed_over {
+        tracing::warn!(
+            kind,
+            version,
+            count,
+            "the ledger holds entries of a kind this agent does not know and may pass over; passed over"
+        );
+    }
+    Ok(Opening::Ready {
+        log: opened.log,
+        events,
+    })
+}
+
 pub struct LedgerActorArgs {
+    /// The ledger (`CREDENTIALS_LEDGER_PATH`).
     pub log_path: String,
+    /// The JSON ledger kept before 2026-11-11 (`CREDENTIALS_EVENT_LOG_PATH`), copied into the ledger if it has none yet.
+    pub copy_from: Option<String>,
     pub projection_actor: ActorRef<ProjectionMessage>,
 }
 
 pub struct LedgerActorState {
-    event_log: EventLog<CredentialsEvent>,
+    log: FileLog,
+    /// The platform version this agent names as the writer of what it appends.
+    writer: String,
     credentials_state: CredentialsState,
     projection_actor: ActorRef<ProjectionMessage>,
     /// Told when an event adds a revoked serial, for whoever publishes the set to the agents.
@@ -308,14 +562,14 @@ pub enum LedgerMessage {
         name: String,
         reply: RpcReplyPort<Option<crate::state::StoredSecret>>,
     },
-    /// Full (hash, event) history, re-read from the log -- used by
+    /// Full (sequence number, event) history, re-read from the log -- used by
     /// ProjectionActor for catch-up: replaying and re-folding through
     /// history to reconstruct correct historical context at each
     /// point (e.g. whether a grant existed at the moment a specific
     /// past event happened), not just "everything after X" taken in
     /// isolation.
     GetFullHistory {
-        reply: RpcReplyPort<Result<Vec<(String, CredentialsEvent)>, String>>,
+        reply: RpcReplyPort<Result<Vec<(u64, CredentialsEvent)>, String>>,
     },
 }
 
@@ -330,12 +584,23 @@ impl Actor for LedgerActor {
         _myself: ActorRef<Self::Msg>,
         args: LedgerActorArgs,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let (event_log, events) =
-            open_log(&args.log_path, LEDGER_LOCK_WAIT, Duration::from_secs(1))
-                .await
-                .map_err(ActorProcessingErr::from)?;
+        // The agent's start has already refused to serve a ledger it cannot read (`agent.rs`); one found so now is
+        // an error, not a hold.
+        let (log, events) = match open_ledger(
+            &args.log_path,
+            args.copy_from.as_deref(),
+            LEDGER_LOCK_WAIT,
+            Duration::from_secs(1),
+        )
+        .await
+        .map_err(ActorProcessingErr::from)?
+        {
+            Opening::Ready { log, events } => (log, events),
+            Opening::Refused(why) => return Err(ActorProcessingErr::from(why)),
+        };
 
         let event_count = events.len();
+        let events: Vec<CredentialsEvent> = events.into_iter().map(|(_, e)| e).collect();
         let credentials_state = CredentialsState::from_events(&events);
         tracing::info!(
             "LedgerActor: replayed {event_count} event(s) from {} into current state",
@@ -343,7 +608,8 @@ impl Actor for LedgerActor {
         );
 
         Ok(LedgerActorState {
-            event_log,
+            log,
+            writer: writer(),
             credentials_state,
             projection_actor: args.projection_actor,
             revocation_changes: Arc::new(OutputPort::default()),
@@ -586,15 +852,36 @@ impl Actor for LedgerActor {
                 let _ = reply.send(secret);
             }
             LedgerMessage::GetFullHistory { reply } => {
-                let result = state
-                    .event_log
-                    .replay_with_hashes()
-                    .map_err(|e| e.to_string());
-                let _ = reply.send(result);
+                let _ = reply.send(history(&state.log));
             }
         }
         Ok(())
     }
+}
+
+/// Every event the ledger holds, by its sequence number, read back from the file: what was replayed at start, and
+/// appended since.
+fn history(log: &FileLog) -> Result<Vec<(u64, CredentialsEvent)>, String> {
+    let mut events = Vec::new();
+    for seq in 0..log.size() {
+        let leaf = log
+            .leaf(seq)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("the ledger's entry {seq} is gone"))?;
+        let replayed = match polar_log::entry::Entry::decode(&leaf.entry) {
+            Ok(entry) => Replayed::Entry { seq, leaf, entry },
+            Err(e) => Replayed::Malformed {
+                seq,
+                why: e.to_string(),
+            },
+        };
+        match replay(seq, replayed) {
+            Replay::Event(event) => events.push((seq, event)),
+            Replay::Continues | Replay::PassedOver { .. } => {}
+            Replay::Refused(why) => return Err(why),
+        }
+    }
+    Ok(events)
 }
 
 /// Appends `event` durably, folds it into derived state, and notifies
@@ -604,7 +891,10 @@ fn append_and_project(
     state: &mut LedgerActorState,
     event: &CredentialsEvent,
 ) -> Result<(), String> {
-    state.event_log.append(event).map_err(|e| e.to_string())?;
+    let seq = state
+        .log
+        .append(&leaf_of(event, &state.writer, now_ms()))
+        .map_err(|e| e.to_string())?;
     let revoked_before = state.credentials_state.revoked_serials().len();
     let superseded_serials = state.credentials_state.apply(event);
     let revoked_after = state.credentials_state.revoked_serials().len();
@@ -613,11 +903,10 @@ fn append_and_project(
             count: revoked_after,
         });
     }
-    let hash = state.event_log.current_hash().to_string();
     let _ = state
         .projection_actor
         .cast(ProjectionMessage::ProjectEvent {
-            hash,
+            seq,
             event: event.clone(),
             superseded_serials,
         });
@@ -630,7 +919,7 @@ pub(crate) mod tests {
     use credentials_agent_common::events::GrantReason;
 
     #[tokio::test]
-    async fn a_starting_ledger_waits_for_the_log_to_be_let_go_of_and_then_opens_it() {
+    async fn a_json_ledger_is_waited_for_until_it_is_let_go_of_and_then_opened() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir
             .path()
@@ -652,7 +941,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_ledger_whose_log_is_never_let_go_of_does_not_start() {
+    async fn a_json_ledger_never_let_go_of_is_not_opened() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir
             .path()
@@ -667,6 +956,285 @@ pub(crate) mod tests {
             Ok(_) => panic!("opened a log another holder has open"),
         };
         assert!(why.contains("held"), "{why}");
+    }
+
+    /// The events in the ledger at `path`, one to a line as their Debug form says them, read from a copy so a ledger
+    /// actor may hold it meanwhile; empty when there is no ledger.
+    pub(crate) fn events_in(path: impl AsRef<std::path::Path>) -> String {
+        let Ok(bytes) = std::fs::read(path) else {
+            return String::new();
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let copy = dir.path().join("ledger.log");
+        std::fs::write(&copy, bytes).unwrap();
+        let log = FileLog::open(&copy).unwrap().log;
+        history(&log)
+            .unwrap()
+            .into_iter()
+            .map(|(_, e)| format!("{e:?}\n"))
+            .collect()
+    }
+
+    fn grant(n: i64) -> CredentialsEvent {
+        CredentialsEvent::Grant {
+            target_identity: format!("agent-{n}"),
+            permissions: vec![],
+            granted_by: "admin".into(),
+            timestamp: n,
+            reason: GrantReason::ServiceOnboarding,
+        }
+    }
+
+    fn unattested(n: i64) -> CredentialsEvent {
+        CredentialsEvent::IssuedUnattested {
+            identity: format!("agent-{n}"),
+            instance_binding: "pod-uid".into(),
+            serial: None,
+            why: "the attestor did not answer".into(),
+            timestamp: n,
+        }
+    }
+
+    async fn opened(path: &std::path::Path, json: Option<&std::path::Path>) -> Opening {
+        open_ledger(
+            path.to_str().unwrap(),
+            json.map(|j| j.to_str().unwrap()),
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn ready(opening: Opening) -> (FileLog, Vec<(u64, CredentialsEvent)>) {
+        match opening {
+            Opening::Ready { log, events } => (log, events),
+            Opening::Refused(why) => panic!("refused: {why}"),
+        }
+    }
+
+    fn refused(opening: Opening) -> String {
+        match opening {
+            Opening::Refused(why) => why,
+            Opening::Ready { events, .. } => panic!("served {} events", events.len()),
+        }
+    }
+
+    /// A leaf holding `entry` as this agent would admit it.
+    fn leaf_holding(entry: polar_log::entry::Entry) -> Leaf {
+        Leaf {
+            entry: entry.encode(),
+            admitted_at_ms: 1,
+            submitter: crate::supervisor::SERVICE_NAME.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ledger_held_by_another_is_waited_for_and_then_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        let held = FileLog::open(&path).unwrap();
+        let letting_go = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(held);
+        });
+        let since = std::time::Instant::now();
+        ready(opened(&path, None).await);
+        assert!(since.elapsed() >= Duration::from_millis(300), "it waited");
+        letting_go.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_json_ledger_is_copied_once_every_event_kept_and_it_is_left_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, json) = (
+            dir.path().join("ledger.log"),
+            dir.path().join("events.jsonl"),
+        );
+        let events = vec![grant(1), unattested(2), grant(3)];
+        let (last_hash, times) = {
+            let (mut old, _) = EventLog::<CredentialsEvent>::open(&json).unwrap();
+            for e in &events {
+                old.append(e).unwrap();
+            }
+            let times: Vec<u64> = old
+                .entries()
+                .unwrap()
+                .iter()
+                .map(|r| r.timestamp.timestamp_millis() as u64)
+                .collect();
+            (old.current_hash().to_string(), times)
+        };
+
+        let (log, read) = ready(opened(&path, Some(&json)).await);
+        // The first entry carries on the JSON ledger; every event follows it, in order, admitted when it was.
+        assert_eq!(
+            read,
+            events
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(n, e)| (n as u64 + 1, e))
+                .collect::<Vec<_>>()
+        );
+        let first = polar_log::entry::Entry::decode(&log.leaf(0).unwrap().unwrap().entry).unwrap();
+        assert_eq!(first.kind, CONTINUATION);
+        assert_eq!(
+            Continuation::decode(&first.event).unwrap(),
+            Continuation {
+                old_kind: "jsonl".into(),
+                alg: "sha256".into(),
+                digest: hex::decode(&last_hash).unwrap(),
+                count: 3,
+            }
+        );
+        for (n, at) in times.iter().enumerate() {
+            assert_eq!(log.leaf(n as u64 + 1).unwrap().unwrap().admitted_at_ms, *at);
+        }
+        drop(log);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&json).unwrap().permissions().mode() & 0o777,
+                0o400
+            );
+        }
+        assert!(!dir.path().join("ledger.log.copying").exists());
+
+        // Once there is a ledger, the JSON ledger is not copied again: what is appended stays.
+        let (mut log, _) = ready(opened(&path, Some(&json)).await);
+        log.append(&leaf_of(&grant(4), &writer(), 4)).unwrap();
+        drop(log);
+        let (_, read) = ready(opened(&path, Some(&json)).await);
+        assert_eq!(read.len(), 4);
+        assert_eq!(read.last().unwrap(), &(4, grant(4)));
+    }
+
+    #[tokio::test]
+    async fn a_copy_cut_short_is_made_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, json) = (
+            dir.path().join("ledger.log"),
+            dir.path().join("events.jsonl"),
+        );
+        {
+            let (mut old, _) = EventLog::<CredentialsEvent>::open(&json).unwrap();
+            old.append(&grant(1)).unwrap();
+        }
+        std::fs::write(
+            dir.path().join("ledger.log.copying"),
+            b"a copy that stopped",
+        )
+        .unwrap();
+        let (_, read) = ready(opened(&path, Some(&json)).await);
+        assert_eq!(read, vec![(1, grant(1))]);
+        assert!(!dir.path().join("ledger.log.copying").exists());
+    }
+
+    #[tokio::test]
+    async fn an_entry_it_may_pass_over_is_passed_over_and_one_it_must_understand_refuses_the_ledger()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        let newer = |critical| polar_log::entry::Entry {
+            kind: "credentials.something-new".into(),
+            version: 1,
+            critical,
+            writer: "9.0.0 x86_64-unknown-linux-musl".into(),
+            event: vec![0xa0],
+        };
+        {
+            let mut log = FileLog::open(&path).unwrap().log;
+            log.append(&leaf_of(&grant(1), &writer(), 1)).unwrap();
+            log.append(&leaf_holding(newer(false))).unwrap();
+            log.append(&leaf_of(&grant(2), &writer(), 2)).unwrap();
+        }
+        let (log, read) = ready(opened(&path, None).await);
+        assert_eq!(read, vec![(0, grant(1)), (2, grant(2))]);
+        assert_eq!(history(&log).unwrap(), read);
+        drop(log);
+
+        FileLog::open(&path)
+            .unwrap()
+            .log
+            .append(&leaf_holding(newer(true)))
+            .unwrap();
+        let why = refused(opened(&path, None).await);
+        assert!(why.contains("credentials.something-new v1"), "{why}");
+        assert!(why.contains("9.0.0 x86_64-unknown-linux-musl"), "{why}");
+        assert!(
+            why.contains("until a version that can is deployed"),
+            "{why}"
+        );
+        assert!(!why.contains('\n'));
+    }
+
+    #[tokio::test]
+    async fn an_entry_not_as_its_writer_should_have_made_it_refuses_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        let mut entry = credentials_agent_common::ledger::entry_of(&grant(1), &writer());
+        entry.event.push(0);
+        FileLog::open(&path)
+            .unwrap()
+            .log
+            .append(&leaf_holding(entry))
+            .unwrap();
+        let why = refused(opened(&path, None).await);
+        assert!(why.contains("credentials.grant v1"), "{why}");
+        assert!(
+            why.contains("not what its writer should have written"),
+            "{why}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_damaged_ledger_is_refused_and_not_cut() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.log");
+        {
+            let mut log = FileLog::open(&path).unwrap().log;
+            log.append(&leaf_of(&grant(1), &writer(), 1)).unwrap();
+            log.append(&leaf_of(&grant(2), &writer(), 2)).unwrap();
+        }
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[12] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+        let why = refused(opened(&path, None).await);
+        assert!(why.contains("damaged"), "{why}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn the_actor_carries_on_a_copied_ledger_and_its_history_is_by_sequence_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, json) = (
+            dir.path().join("ledger.log"),
+            dir.path().join("events.jsonl"),
+        );
+        {
+            let (mut old, _) = EventLog::<CredentialsEvent>::open(&json).unwrap();
+            old.append(&grant(1)).unwrap();
+        }
+        let (ledger, _) = Actor::spawn(
+            None,
+            LedgerActor,
+            LedgerActorArgs {
+                log_path: path.to_str().unwrap().to_string(),
+                copy_from: Some(json.to_str().unwrap().to_string()),
+                projection_actor: crate::projection::tests::fake_projection_actor().await,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(check_grant(&ledger, "agent-1").await.is_some());
+        append(&ledger, grant(2)).await.unwrap();
+        let history = ractor::call!(ledger, |reply| LedgerMessage::GetFullHistory { reply })
+            .unwrap()
+            .unwrap();
+        assert_eq!(history, vec![(1, grant(1)), (2, grant(2))]);
+        ledger.stop(None);
     }
 
     /// The ledger records `username`'s account certificate, whose first DNS name is `account_id`: a person the
@@ -701,6 +1269,7 @@ pub(crate) mod tests {
             None,
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -818,7 +1387,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_ledger_admits_one_ask_of_two_at_once_and_lifts_one_given_back() {
         let dir = tempfile::tempdir().unwrap();
-        let ledger = spawn_ledger(dir.path().join("events.jsonl").to_str().unwrap()).await;
+        let ledger = spawn_ledger(dir.path().join("ledger.log").to_str().unwrap()).await;
         let (a, b) = tokio::join!(
             admit(&ledger, "alice", "pod-1", 1000),
             admit(&ledger, "alice", "pod-1", 1000)
@@ -841,7 +1410,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_ledger_admits_the_same_key_twice_at_once_and_one_of_two_keys() {
         let dir = tempfile::tempdir().unwrap();
-        let ledger = spawn_ledger(dir.path().join("events.jsonl").to_str().unwrap()).await;
+        let ledger = spawn_ledger(dir.path().join("ledger.log").to_str().unwrap()).await;
         let (same, other) = (b"one key".as_slice(), b"another key".as_slice());
         let (a, b) = tokio::join!(
             admit_for(&ledger, "alice", "pod-1", Some(same), 1000),
@@ -931,7 +1500,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn authority_sequences_are_assigned_in_order_and_go_on_rising_across_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
         assert_eq!(last_authority_sequence(&ledger).await, 0);
         assert_eq!(publish_authority(&ledger, "policy", 1).await, Ok(1));
@@ -950,7 +1519,7 @@ pub(crate) mod tests {
     async fn the_revoked_serials_are_asked_of_the_ledger_and_a_change_is_announced() {
         use ractor::OutputPort;
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
 
         let port: std::sync::Arc<OutputPort<RevokedChanged>> =
@@ -1053,7 +1622,7 @@ pub(crate) mod tests {
     async fn a_page_of_cert_issuer_s_record_is_recorded_durably_and_found_after_a_restart() {
         use cert_issuer_common::record::{IssuePath, RecordEntry, RecordReply};
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
         assert_eq!(record_cursor(&ledger).await, None);
         let page = RecordReply {
@@ -1079,16 +1648,13 @@ pub(crate) mod tests {
             take_page(&ledger, page.clone()).await,
             Ok(Some(("log-1".to_string(), 3)))
         );
-        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        let size = std::fs::metadata(&path).unwrap().len();
         // The same page again appends nothing.
         assert_eq!(
             take_page(&ledger, page).await,
             Ok(Some(("log-1".to_string(), 3)))
         );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap().lines().count(),
-            lines
-        );
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), size);
         ledger.stop(None);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1107,7 +1673,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn append_then_check_grant_round_trips_through_real_actor_messages() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
 
         assert!(check_grant(&ledger, "alice").await.is_none());
@@ -1138,7 +1704,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn issuance_consumes_grant_and_enables_renewal_check_through_real_actor() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
 
         append(
@@ -1191,7 +1757,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn agent_escrow_issuance_is_visible_through_the_real_actor() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
 
         assert!(!check_agent_escrow_renewal(&ledger, "git-observer").await);
@@ -1235,7 +1801,7 @@ pub(crate) mod tests {
         // against the same file rebuilds correct, queryable state
         // through the real actor message-passing path.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
 
         {
             let ledger = spawn_ledger(path.to_str().unwrap()).await;
@@ -1333,7 +1899,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_recorded_admin_action_takes_effect_once_and_a_replay_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger(path.to_str().unwrap()).await;
 
         assert_eq!(

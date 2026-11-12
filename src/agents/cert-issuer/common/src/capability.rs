@@ -36,6 +36,8 @@ use rkyv::{Archive, Deserialize, Serialize};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -48,38 +50,48 @@ use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
     SerdeDeserialize,
     SerdeSerialize,
 )]
+#[cbor(index_only)]
 pub enum Capability {
     /// Provision a new Polar account (with any permissions and capabilities).
+    #[n(0)]
     ProvisionAccount,
     /// Grant permissions to an existing identity.
+    #[n(1)]
     Grant,
     /// Revoke a certificate.
+    #[n(2)]
     Revoke,
     /// Submit a policy update.
+    #[n(3)]
     UpdatePolicy,
     /// Run a signed command on an agent (docs/architecture/commands.md).
+    #[n(4)]
     RunCommand,
     /// Change the configuration of agents, by a signed configuration document
     /// (docs/architecture/signed-configuration.md). Not needed to change Cedar policy: that is
     /// `UpdatePolicy`, and a repository holds both only if it holds both kinds of content. Appended, so that
     /// what was archived with the earlier ones keeps its meaning.
+    #[n(5)]
     UpdateConfiguration,
     /// Change what an agent works on, by a signed runtime document (docs/architecture/git-controller.md):
     /// which repositories it observes, under what admission rules. Not `UpdateConfiguration`, which changes
     /// how the agent runs, and not `UpdatePolicy`. Appended, so that what was archived with the earlier ones
     /// keeps its meaning; a consumer built before it rejects a certificate that carries it as malformed, so
     /// the consumers are redeployed before any certificate does.
+    #[n(6)]
     UpdateRuntime,
     /// Change who is in which group, by a signed membership document
     /// (docs/architecture/authority-distribution.md). Not `Grant`, which gives an identity permissions, and
     /// not `UpdatePolicy`, which writes the rules that refer to groups. Appended; consumers are redeployed
     /// before any certificate carries it.
+    #[n(7)]
     UpdateGroups,
     /// Sign evidence records of any type: the bare `c:record-evidence` of `crate::evidence`, for a person (an
     /// administrator, or someone who runs collectors). What decides is policy first (`Action::"record-evidence"` on
     /// `Evidence::"<type>"`, `polar_policy::evidence`); this is the certificate's answer where policy says nothing.
     /// A workload's scoped names (`c:record-evidence:<type>`) are not capabilities: they are computed from its
     /// scaffold. Appended; consumers are redeployed before any certificate carries it.
+    #[n(8)]
     RecordEvidence,
 }
 

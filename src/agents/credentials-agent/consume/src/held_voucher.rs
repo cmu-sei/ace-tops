@@ -458,7 +458,7 @@ mod tests {
     ) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let ledger =
-            crate::ledger::tests::spawn_ledger(dir.path().join("events.jsonl").to_str().unwrap())
+            crate::ledger::tests::spawn_ledger(dir.path().join("ledger.log").to_str().unwrap())
                 .await;
         let published = Arc::new(Mutex::new(Vec::new()));
         let (client, _) = Actor::spawn(None, Client(published.clone()), ())
@@ -603,8 +603,9 @@ mod tests {
             .unwrap();
         settle().await;
         assert_eq!(decisions(&rig), [HeldDecision::Vouch]);
-        let events = std::fs::read_to_string(rig._dir.path().join("events.jsonl")).unwrap();
-        assert!(events.contains("IssuedUnattested"), "{events}");
+        let ledger = std::fs::read(rig._dir.path().join("ledger.log")).unwrap();
+        let kind = b"credentials.issued-unattested";
+        assert!(ledger.windows(kind.len()).any(|w| w == kind));
     }
 
     #[tokio::test]

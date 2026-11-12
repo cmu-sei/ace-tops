@@ -82,6 +82,8 @@ pub enum EscrowError {
 
 /// How a secret's AES key is wrapped to its recipient. The recipient's public key decides it.
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -93,10 +95,13 @@ pub enum EscrowError {
     SerdeDeserialize,
     SerdeSerialize,
 )]
+#[cbor(index_only)]
 pub enum Suite {
     /// RSA-OAEP with SHA-256, for an RSA key.
+    #[n(0)]
     RsaOaep,
     /// HPKE, base mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM, for a P-256 key.
+    #[n(1)]
     HpkeP256,
 }
 
@@ -159,19 +164,34 @@ pub fn unwrap_p256(
 }
 
 #[derive(
-    Debug, Clone, PartialEq, Deserialize, Serialize, Archive, SerdeDeserialize, SerdeSerialize,
+    minicbor::Encode,
+    minicbor::Decode,
+    Debug,
+    Clone,
+    PartialEq,
+    Deserialize,
+    Serialize,
+    Archive,
+    SerdeDeserialize,
+    SerdeSerialize,
 )]
+#[cbor(map)]
 pub struct EscrowedSecret {
     /// How `encrypted_key` is wrapped.
+    #[n(0)]
     suite: Suite,
+    #[cbor(n(1), with = "minicbor::bytes")]
     ciphertext: Vec<u8>,
+    #[cbor(n(2), with = "minicbor::bytes")]
     nonce: [u8; 12],
     /// The AES-256 key, wrapped to `encrypted_to_pem` by `suite`.
+    #[cbor(n(3), with = "minicbor::bytes")]
     encrypted_key: Vec<u8>,
     /// The PEM-encoded public key this secret is encrypted to --
     /// metadata, not itself sensitive. Lets a holder confirm they
     /// have the matching private key before attempting decryption,
     /// without guessing.
+    #[n(4)]
     encrypted_to_pem: String,
 }
 

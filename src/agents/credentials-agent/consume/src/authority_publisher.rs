@@ -431,6 +431,7 @@ mod tests {
             None,
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: path.to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -442,12 +443,7 @@ mod tests {
 
     async fn rig() -> Rig {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join("events.jsonl")
-            .to_str()
-            .unwrap()
-            .to_string();
+        let path = dir.path().join("ledger.log").to_str().unwrap().to_string();
         let rig = rig_at(&path, true).await;
         // alice, whom the tests' documents name, has an account.
         crate::ledger::tests::holds_account(&rig.ledger, "alice", ALICE).await;
@@ -893,12 +889,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn no_snapshot_goes_out_until_the_key_is_certified_and_one_goes_out_when_it_is() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join("events.jsonl")
-            .to_str()
-            .unwrap()
-            .to_string();
+        let path = dir.path().join("ledger.log").to_str().unwrap().to_string();
         let rig = rig_at(&path, false).await;
         settle().await;
         rig.publisher

@@ -188,13 +188,13 @@ mod tests {
     #[tokio::test]
     async fn a_report_is_recorded_once_however_often_it_is_sent_and_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let path = path.to_str().unwrap();
         let ledger = ledger_at(path).await;
         let bytes = encode_report(&crash());
         assert!(take_report(&ledger, &bytes, Some(AGENT), AGENT).await);
         assert!(!take_report(&ledger, &bytes, Some(AGENT), AGENT).await);
-        let events = std::fs::read_to_string(path).unwrap();
+        let events = crate::ledger::tests::events_in(path);
         assert_eq!(events.matches("AttestationReported").count(), 1, "{events}");
         assert!(events.contains("crashed"), "{events}");
         assert!(events.contains("Segv"), "{events}");
@@ -204,14 +204,14 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let again = ledger_at(path).await;
         assert!(!take_report(&again, &bytes, Some(AGENT), AGENT).await);
-        let events = std::fs::read_to_string(path).unwrap();
+        let events = crate::ledger::tests::events_in(path);
         assert_eq!(events.matches("AttestationReported").count(), 1, "{events}");
     }
 
     #[tokio::test]
     async fn another_finding_about_the_same_pod_is_another_report() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = ledger_at(path.to_str().unwrap()).await;
         let mut altered = crash();
         altered.finding = Finding::Altered(NotGenuine::EphemeralContainer {
@@ -224,14 +224,14 @@ mod tests {
     #[tokio::test]
     async fn only_the_attestation_agent_as_the_broker_stamped_it_is_believed() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let path = path.to_str().unwrap();
         let ledger = ledger_at(path).await;
         let bytes = encode_report(&crash());
         assert!(!take_report(&ledger, &bytes, Some("intruder"), AGENT).await);
         assert!(!take_report(&ledger, &bytes, None, AGENT).await);
         assert!(!take_report(&ledger, b"nonsense", Some(AGENT), AGENT).await);
-        let events = std::fs::read_to_string(path).unwrap_or_default();
+        let events = crate::ledger::tests::events_in(path);
         assert!(!events.contains("AttestationReported"), "{events}");
     }
 }

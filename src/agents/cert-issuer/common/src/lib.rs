@@ -49,6 +49,8 @@ pub mod ticket;
 
 // cert_issuer_common/src/lib.rs — add to IssueRequest
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Default,
@@ -65,9 +67,12 @@ pub mod ticket;
     rkyv::Deserialize,
 )]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[cbor(index_only)]
 pub enum CertType {
     #[default]
+    #[n(0)]
     Client,
+    #[n(1)]
     Server,
     /// A service's own durable, agent-to-agent encryption identity --
     /// not a client/server TLS role at all, and deliberately never
@@ -79,16 +84,19 @@ pub enum CertType {
     /// it alongside its private key). It is the application layer's certificate (whom a secret is encrypted to) and
     /// the mTLS certificate the transport layer's (who may hold a connection), so it carries the one extended key
     /// usage `emailProtection`, which no TLS stack takes for a client or a server.
+    #[n(2)]
     Service,
     /// A key the holder signs its own statements with, never a TLS role: `digitalSignature` and the one extended key
     /// usage `id-kp-documentSigning` ([`OID_DOCUMENT_SIGNING`]), which no TLS stack takes for a client or a server.
     /// Signed only on `/internal/issue`, for the internal caller's own identity: the credentials agent's session
     /// offers are signed with one (docs/architecture/core-restarts.md, "1c in detail").
+    #[n(3)]
     Signing,
     /// The custody daemon's own certificate (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian"):
     /// client authentication, for its own Cassini session, named `custody.<X>` for the workload X its pod's token
     /// proves ([`custody::custodian_identity`]). Its `p:custody:` names say what it may ask the credentials agent for
     /// on X's behalf. Signed only on a token, never on `/internal/issue`: it is what the pod proves itself for.
+    #[n(4)]
     Custody,
 }
 

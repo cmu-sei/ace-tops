@@ -68,6 +68,7 @@ members = [
     "polar-git-server/common",
     "polar-git-server/server",
     "polar-health",
+    "polar-log",
     "polar-scudo",
     "polar-version",
     "polar-healthcheck",
@@ -182,6 +183,8 @@ tar = "0.4"                                                # unpacks a build's s
 flate2 = "1.1"                                             # the archive's gzip, as tar's companion
 ed25519-dalek = { version = "2.2", features = ["pkcs8"] }
 p256 = { version = "0.14", features = ["ecdsa", "pkcs8"] }
+# The credentials ledger's events, as index-keyed CBOR (docs/architecture/record-store.md, "The credentials ledger on the log").
+minicbor = { version = "2.3.1", features = ["derive", "std", "half"] }
 socket2 = "0.5"                                            # used in cassini/client
 sysinfo = "0.36"
 tcp-stream = { version = "0.34", default-features = false, features = ["rustls-platform-verifier", "rustls--ring", "tokio"] }
@@ -229,6 +232,7 @@ libc = "0.2"
 polar-crypto = { path = "polar-crypto" }
 polar-escrow = { path = "polar-escrow" }
 polar-signing = { path = "polar-signing" }
+polar-log = { path = "polar-log" }
 polar-cypher = { path = "polar-cypher" }
 polar-projection = { path = "polar-projection" }
 polar-http-observer = { path = "polar-http-observer" }

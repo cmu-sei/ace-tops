@@ -216,7 +216,7 @@ mod tests {
     async fn rig() -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let ledger =
-            crate::ledger::tests::spawn_ledger(dir.path().join("events.jsonl").to_str().unwrap())
+            crate::ledger::tests::spawn_ledger(dir.path().join("ledger.log").to_str().unwrap())
                 .await;
         let asked = Arc::new(Mutex::new(Vec::new()));
         let (client, _) = Actor::spawn(None, Client(asked.clone()), ()).await.unwrap();

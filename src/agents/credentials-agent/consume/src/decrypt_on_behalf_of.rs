@@ -164,12 +164,13 @@ pub(crate) mod tests {
 
     async fn spawn_test_ledger() -> ActorRef<LedgerMessage> {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         std::mem::forget(dir);
         let (ledger, _) = ractor::Actor::spawn(
             None,
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },

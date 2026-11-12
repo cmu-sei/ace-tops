@@ -555,7 +555,7 @@ pub(crate) mod tests {
 
     pub(crate) async fn spawn_test_ledger() -> ActorRef<LedgerMessage> {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         // Leak the tempdir so it isn't cleaned up while the actor's
         // still using it -- fine for a short-lived test process.
         std::mem::forget(dir);
@@ -563,6 +563,7 @@ pub(crate) mod tests {
             None,
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -1585,7 +1586,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(fake_issue_response()))
             .mount(server)
             .await;
-        let log = dir.path().join("events.jsonl");
+        let log = dir.path().join("ledger.log");
         let ledger = crate::ledger::tests::spawn_ledger(log.to_str().unwrap()).await;
         (handler_for(server, ledger).await, log)
     }
@@ -1627,7 +1628,7 @@ pub(crate) mod tests {
             .filter(|r| r.url.path() == "/issue")
             .count();
         assert_eq!(signed, 0, "nothing is signed for it");
-        let events = std::fs::read_to_string(&log).unwrap();
+        let events = crate::ledger::tests::events_in(&log);
         assert!(events.contains("InstanceRefused"), "{events}");
         assert!(events.contains("NoOwner"), "{events}");
     }
@@ -1667,7 +1668,7 @@ pub(crate) mod tests {
         );
         let reply = handler.handle(request_for(Client, &[])).await;
         assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
-        let events = std::fs::read_to_string(&log).unwrap();
+        let events = crate::ledger::tests::events_in(&log);
         assert!(!events.contains("IssuedUnattested"), "{events}");
     }
 
@@ -1684,7 +1685,7 @@ pub(crate) mod tests {
         );
         let reply = handler.handle(request_for(Client, &[])).await;
         assert!(matches!(reply, IssuanceReply::Issued { .. }), "{reply:?}");
-        let events = std::fs::read_to_string(&log).unwrap();
+        let events = crate::ledger::tests::events_in(&log);
         let unattested: Vec<&str> = events
             .lines()
             .filter(|l| l.contains("IssuedUnattested"))

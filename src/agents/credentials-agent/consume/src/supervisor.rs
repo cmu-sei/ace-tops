@@ -949,7 +949,8 @@ impl Actor for ConsumerSupervisor {
 
         let mut settings =
             ConsumerSettings::read(configured.config()).map_err(ActorProcessingErr::from)?;
-        let log_path = settings.event_log_path.clone();
+        let log_path = settings.ledger_path.clone();
+        let copy_from = Some(settings.event_log_path.clone());
         let authority_model = settings.authority_model.take().map(std::sync::Arc::new);
         if authority_model.is_none() {
             warn!(
@@ -992,6 +993,7 @@ impl Actor for ConsumerSupervisor {
             LedgerActor,
             LedgerActorArgs {
                 log_path,
+                copy_from,
                 projection_actor: projection_actor.clone(),
             },
             myself.get_cell(),
@@ -1868,6 +1870,7 @@ mod tests {
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -1898,7 +1901,7 @@ mod tests {
     async fn a_raw_ledger_event_is_appended_from_no_topic() {
         let _guard = super::NAMED_ACTOR_TEST_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
+        let path = dir.path().join("ledger.log");
         let ledger = spawn_ledger_registered(path.to_str().unwrap()).await;
 
         let grant = CredentialsEvent::Grant {
@@ -1929,7 +1932,7 @@ mod tests {
         // A call returns only after every earlier message to the ledger has been handled.
         assert!(check_grant(&ledger, "alice").await.is_none());
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap_or_default(),
+            crate::ledger::tests::events_in(&path),
             "",
             "nothing was appended"
         );
@@ -2036,11 +2039,12 @@ mod issuance_wiring_tests {
             .await;
 
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("ledger.log");
         let (ledger, _) = LedgerActor::spawn(
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -2217,12 +2221,8 @@ mod issuance_wiring_tests {
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
-                log_path: dir
-                    .path()
-                    .join("events.jsonl")
-                    .to_str()
-                    .unwrap()
-                    .to_string(),
+                copy_from: None,
+                log_path: dir.path().join("ledger.log").to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
         )
@@ -2402,11 +2402,12 @@ mod agent_escrow_wiring_tests {
             .await;
 
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("ledger.log");
         let (ledger, _) = LedgerActor::spawn(
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -2539,11 +2540,12 @@ mod agent_escrow_wiring_tests {
         .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("ledger.log");
         let (ledger, _) = LedgerActor::spawn(
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -2708,11 +2710,12 @@ mod retrieve_secret_wiring_tests {
         .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("ledger.log");
         let (ledger, _) = LedgerActor::spawn(
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -2857,11 +2860,12 @@ mod agent_escrow_keypair_bootstrap_wiring_tests {
         .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("ledger.log");
         let (ledger, _) = LedgerActor::spawn(
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },
@@ -3124,11 +3128,12 @@ mod decrypt_on_behalf_of_wiring_tests {
         .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("events.jsonl");
+        let log_path = dir.path().join("ledger.log");
         let (ledger, _) = LedgerActor::spawn(
             Some(LEDGER_ACTOR_NAME.to_string()),
             LedgerActor,
             LedgerActorArgs {
+                copy_from: None,
                 log_path: log_path.to_str().unwrap().to_string(),
                 projection_actor: crate::projection::tests::fake_projection_actor().await,
             },

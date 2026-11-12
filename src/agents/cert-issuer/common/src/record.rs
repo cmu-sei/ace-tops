@@ -37,6 +37,8 @@ pub const RECORD_PAGE: usize = 100;
 
 /// How a certificate came to be signed.
 #[derive(
+    minicbor::Encode,
+    minicbor::Decode,
     Debug,
     Clone,
     Copy,
@@ -50,16 +52,22 @@ pub const RECORD_PAGE: usize = 100;
     rkyv::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
+#[cbor(index_only)]
 pub enum IssuePath {
     /// On a token alone, by the floor: a bootstrap service's, cert-issuer's own client certificate among them.
+    #[n(0)]
     TokenOnly,
     /// Vouched for by the credentials agent, by its verified mTLS certificate.
+    #[n(1)]
     Vouched,
     /// On `/internal/issue`: an account's, asked for by the credentials agent.
+    #[n(2)]
     Internal,
     /// cert-issuer's own TLS server certificate, which it signs for itself at start.
+    #[n(3)]
     Own,
     /// On a token alone, against the credentials agent's successor ticket (`crate::ticket`): its own successor's.
+    #[n(4)]
     Ticketed,
 }
 

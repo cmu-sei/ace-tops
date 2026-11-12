@@ -458,7 +458,7 @@ Bite 6 takes both kinds of change as the repository does.
 - the observer restarted;
 - a configuration under test removed.
 
-## The credentials ledger on the log: the plan (2026-11-11, for review)
+## The credentials ledger on the log: the plan (2026-11-11, cleared as written by the maintainer the same day)
 
 The ledger work from `ledger-evolution.md` (main) and bite 10. *Decided (the maintainer, 2026-11-11):* the
 checkpoints' key and the events' criticality (above, "The credentials ledger's checkpoints"), and the events are CBOR
@@ -525,6 +525,34 @@ a malformed event and a torn end; the hold, with no key loaded; the copy from a 
 again after a crash mid-copy; the lock; the projection from an unknown checkpoint. *Live, on u7c:* the agent copies
 u7c's ledger (about 13,000 entries), with the time it took, and keeps serving. An image built with one event's critical
 version raised past what the deployed agent knows makes the deployed agent hold. The way back is the newer image.
+
+*L1 built* (`credentials-agent/common/src/ledger.rs` and `tests/ledger.rs` with `tests/ledger-samples`;
+`consume/src/ledger.rs`, `ledger_reader.rs` and the `polar-ledger` binary; `polar-log`'s `FileLog`). *Decided while
+building, for review:*
+- *Kinds* are named `credentials.<the variant in kebab case>`, at version 1. The v1 structs carry today's field names
+  in today's order, indexed from 0.
+- *An entry whose critical mark is not its kind's is malformed.* The mark goes with the kind and version. A writer
+  that sets another has not followed this code's rule.
+- *Every refusal holds under `HoldReason::Version`*: an unknown critical entry, a malformed one, a continuation that
+  is not first, and a ledger damaged before its end. `Version`'s doc says what these share: what the agent keeps is not
+  what this version can read. A restart helps none of them.
+- *The refusal is decided before anything is spawned.* `PolarAgent::start` opens the ledger, copying the JSON ledger
+  if need be, and on a refusal goes to `held::stay_up` with `held::never()`, the builder's agent that stays up to say
+  why. So no key is loaded and nothing subscribes. The ledger actor opens the ledger again, so it is replayed twice at
+  start; that keeps the actor's arguments as they were.
+- *`FileLog::append_all`* appends many leaves and syncs once, so the copy is not one `fsync` per entry. A write that
+  stops part way leaves a prefix, as for any append.
+- *The copy* admits its first entry at the time of the copy, and every copied entry at the JSON ledger's time for it.
+  Before anything is renamed, it checks that every event reads back as it was. Then the JSON ledger is made read-only:
+  an older agent given the volume again cannot open it to append, so it cannot fork the history. It fails loudly
+  instead, since released agents know none of this.
+- *The projection's checkpoint* is `last_seq`. A graph holding only `last_hash` (the JSON ledger's) is projected once
+  more from the start.
+- *Tests that read the log as text* now read its events (`ledger::tests::events_in`). One of them,
+  `instance_check`'s "only the attestation agent … is believed", checked that the file did *not* contain an event's
+  name. It would have passed vacuously against a binary file, and now reads the events too.
+- *`polar-ledger`* reads copies of both files, so it neither locks nor changes them. Its copy of a read-only JSON
+  ledger is made writable for opening, as `EventLog` opens. CBOR's diagnostic notation needs minicbor's `half` feature.
 
 **L2, checkpoints, outlined.** The ledger key, P-256 and generated at first start beside the authority key
 (`CREDENTIALS_LEDGER_KEY_PATH`), is certified through `authority_certificate::certify` like the agent's other keys.
