@@ -38,7 +38,8 @@
 //! - A secret's labels are its tags (`resource.hasTag("kind") && resource.getTag("kind") == "token"`), free-form; its
 //!   owner, namespace and `frozen` are attributes, each optional.
 //! - A topic request carries in its context whether the topic is in the requester's declared set (family topics
-//!   included) or its implied one.
+//!   included) or its implied one, and, for a topic whose name ends with a person's identity, that person
+//!   (`context.addressed`), so a rule can let a person hear what is addressed to them.
 //! - A request to the credentials agent is `Action::"request"` on `Request::"<its topic's exact name>"`, and carries in
 //!   its context whether the requester publishes that topic and how, as a topic request does
 //!   (docs/architecture/authority-model.md, slice 9).
@@ -48,6 +49,10 @@
 //! - Signing an evidence record is `Action::"record-evidence"` on `Evidence::"<its type>"`, asked of each record's
 //!   signer by every reader of records, the certificate's evidence names deciding where policy is silent
 //!   ([`crate::evidence`]).
+//! - What a person does with source code on polar-git is one of `git-read`, `git-push`, `git-force-push`, `git-delete`,
+//!   `git-tag` and `git-create` on `Repository::"<its name>"`, the repository's owner (who made it) its attribute `owner`;
+//!   where policy is silent nothing is allowed. Main has no polar-git and asks none of these: they are here so a policy
+//!   written where it does (agentic-control-plane) speaks main's schema too.
 
 use cedar_policy::{PolicySet, Schema, ValidationMode, Validator};
 use std::sync::OnceLock;
@@ -67,6 +72,9 @@ entity Secret = {
   "frozen"?: Bool,
 } tags String;
 entity KubeSecret, Topic, Request, Label, Variable, Section, Agent, Command, Evidence;
+entity Repository = {
+  "owner"?: Identity,
+} tags String;
 
 action "retrieve", "store" appliesTo {
   principal: Identity,
@@ -81,7 +89,7 @@ action "decrypt" appliesTo {
 action "publish", "subscribe" appliesTo {
   principal: Identity,
   resource: Topic,
-  context: { "now_secs": Long, "declared": Bool, "implied": Bool },
+  context: { "now_secs": Long, "declared": Bool, "implied": Bool, "addressed"?: Identity },
 };
 action "request" appliesTo {
   principal: Identity,
@@ -116,6 +124,11 @@ action "run-command" appliesTo {
 action "record-evidence" appliesTo {
   principal: Identity,
   resource: Evidence,
+  context: { "now_secs": Long },
+};
+action "git-read", "git-push", "git-force-push", "git-delete", "git-tag", "git-create" appliesTo {
+  principal: Identity,
+  resource: Repository,
   context: { "now_secs": Long },
 };
 "#;
@@ -153,6 +166,27 @@ mod tests {
 
     fn check(source: &str) -> Result<(), Vec<String>> {
         validate(&source.parse::<PolicySet>().expect("it parses"))
+    }
+
+    /// The rules agentic-control-plane's signed policy adds (infra/seeds/signed/policy.cedar on that branch), verbatim:
+    /// a policy it signs is in force on both branches' agents, so main's schema must speak it.
+    #[test]
+    fn the_other_branch_s_git_and_addressed_rules_speak_this_schema() {
+        let rules = r#"
+permit (principal in Group::"repo-developers", action in [Action::"git-create", Action::"git-read", Action::"git-push", Action::"git-tag"], resource);
+permit (principal, action in [Action::"git-read", Action::"git-push", Action::"git-tag", Action::"git-force-push", Action::"git-delete"], resource)
+when { resource has owner && resource.owner == principal };
+permit (principal, action == Action::"subscribe", resource)
+when { context has addressed && context.addressed == principal };
+permit (principal, action == Action::"publish", resource)
+when { context has addressed && principal has workload && principal.workload == "polar-git-server" };
+"#;
+        assert_eq!(check(rules), Ok(()));
+        // Still strict: `addressed` may be absent, so a rule must ask `has` first.
+        assert!(
+            check(r#"permit (principal, action == Action::"subscribe", resource) when { context.addressed == principal };"#)
+                .is_err()
+        );
     }
 
     #[test]
