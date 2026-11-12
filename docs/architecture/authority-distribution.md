@@ -64,6 +64,10 @@ authoritative update is accepted, an **event is raised** to every consumer of it
    (`polar-authority-update-v1`), so that nothing signed for another purpose can be replayed as an update and the
    decryption (OAEP) and signing (PSS) uses are kept apart in the message. The update carries the fingerprint of the
    key that signed it, so a key that ever changed would be noticed.
+   *Revised (the maintainer, 2026-11-10):* two keys, both P-256. Updates are signed with an authority key of their
+   own, ECDSA P-256 SHA-256 over the same domain line, and the escrow key only receives what is sealed to the agent.
+   An RSA key cannot sign a `polar-signing` document, and the credentials agent is to sign records of its own
+   (`key-custody.md`, "The credentials agent's keys, P-256").
 5. **Cedar overrides the certificate; the certificate is the fallback.** Once a policy is loaded, a request goes to
    the policy first. A `permit` admits a signer whatever the certificate says, and a `forbid` refuses one
    whatever it says. If the policy does not speak to the request (no rule mentions it), the capabilities in the
@@ -147,9 +151,10 @@ A snapshot is the credentials agent's whole current authority in one message. Li
 (`polar-authority-updates`); a snapshot is how an agent that has just started, or has fallen behind, catches up.
 
 - *What it carries* (`AuthoritySnapshot`, `credentials-agent/common/src/authority_update.rs`): the public half of the
-  key the credentials agent signs with (its escrow key, decision 4), the key's certificate (since 2026-10-27, below,
+  key the credentials agent signs with (its authority key, decision 4 as revised), the key's certificate (since 2026-10-27, below,
   "Pinning the key to the CA"), and the latest signed update of each kind (policy, groups, revoked serials), oldest
-  sequence first. Each update keeps its own signature: a snapshot is a bundle of
+  sequence first, and since 2026-11-10 the escrow key's certificate, which leaves pin the escrow key from. Each update
+  keeps its own signature: a snapshot is a bundle of
   signed updates, not a document signed whole.
 - *Its topics:* a request (`AuthoritySnapshotRequest`, empty) on `polar-authority-snapshot-requests`, and the snapshot on
   `polar-authority-snapshot-replies`. They are topics of their own because the router allows one handler per topic and

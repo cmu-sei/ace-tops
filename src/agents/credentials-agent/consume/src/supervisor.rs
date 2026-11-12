@@ -1042,12 +1042,21 @@ impl Actor for ConsumerSupervisor {
             })
         };
 
-        let escrow_keypair = {
-            std::sync::Arc::new(
-                crate::escrow::EscrowKeypair::load_or_generate(&settings.escrow_key_path)
-                    .map_err(ActorProcessingErr::from)?,
-            )
-        };
+        // The escrow key, P-256. Found as the RSA key of before, it is replaced: what is sealed to the RSA key is
+        // sealed again to the new one before any request is taken, and only then is the RSA key set aside
+        // (docs/architecture/key-custody.md, "The credentials agent's keys, P-256", K2).
+        let escrow_keypair =
+            match crate::escrow::EscrowKeypair::load_or_generate(&settings.escrow_key_path)
+                .map_err(ActorProcessingErr::from)?
+            {
+                crate::escrow::Loaded::Current(keypair) => keypair,
+                crate::escrow::Loaded::Replacing(replacing) => {
+                    crate::escrow_reseal::replace(&ledger, replacing, polar::time::now_millis())
+                        .await
+                        .map_err(ActorProcessingErr::from)?
+                }
+            };
+        let escrow_keypair = std::sync::Arc::new(escrow_keypair);
 
         // Two actors issue: the one for requests that arrive with a clear credential (the admin tool and
         // people) and the one for a workload's, whose token arrives sealed. Each owns its own handler, so each
@@ -1325,13 +1334,19 @@ impl Actor for ConsumerSupervisor {
         // revoked.
         let own_identity = configured_authority_publisher;
         let broker = BROKER_CLIENT_NAME.to_string();
+        // The key authority updates are signed with, P-256 and kept apart from the escrow key (docs/architecture/
+        // key-custody.md, "The credentials agent's keys, P-256").
+        let authority_key = crate::authority_key::load_or_generate(&settings.authority_key_path)
+            .map_err(ActorProcessingErr::from)?;
+        let authority_key_pem =
+            crate::authority_key::pkcs8_pem(&authority_key).map_err(ActorProcessingErr::from)?;
         let (publisher, _) = AuthorityPublisher::spawn_linked(
             None,
             AuthorityPublisher,
             PublisherArgs {
                 ledger: ledger.clone(),
                 acceptances,
-                key: escrow_keypair.private_key().clone(),
+                key: authority_key,
                 publish: std::sync::Arc::new(move |topic: &str, payload: Vec<u8>| {
                     match where_is(broker.clone()) {
                         Some(client) => {
@@ -1355,35 +1370,44 @@ impl Actor for ConsumerSupervisor {
         )
         .await
         .map_err(ActorProcessingErr::from)?;
-        // The signing key certified, so that leaves pin it under the CA they pin (docs/architecture/
+        // The authority key certified, so that leaves pin it under the CA they pin (docs/architecture/
         // authority-distribution.md, "Pinning the key to the CA"): the publisher publishes no snapshot until then.
-        // The key authority updates are signed with, as PKCS#8 for its CSR.
-        let signing_key_pem = {
-            use rsa::pkcs8::EncodePrivateKey;
-            escrow_keypair
-                .private_key()
-                .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
-                .map_err(|e| {
-                    ActorProcessingErr::from(format!("the signing key does not encode: {e}"))
-                })?
-        };
+        // The escrow key certified beside it, so that what is sealed to this agent is sealed to the key the CA says is
+        // its own (docs/architecture/key-custody.md, "The credentials agent's keys, P-256").
+        let escrow_key_pem = escrow_keypair
+            .private_key_pem()
+            .map_err(ActorProcessingErr::from)?;
         // The ledger key certified as a checkpoint key, and as nothing else, so that its checkpoints are believed where
-        // they are checked and it can never stand for the signing key (docs/architecture/record-store.md, "L2,
+        // they are checked and it can never stand for the authority key (docs/architecture/record-store.md, "L2,
         // checkpoints"). The ledger made it when it opened.
-        let ledger_key_pem = crate::ledger_key::pkcs8_pem(
-            &crate::ledger_key::load_or_generate(&ledger_key.path)
+        let ledger_key_pem = crate::authority_key::pkcs8_pem(
+            &crate::authority_key::load_or_generate(&ledger_key.path)
                 .map_err(ActorProcessingErr::from)?,
         )
         .map_err(ActorProcessingErr::from)?;
-        for (key_pem, cert_type, certified) in [
+        for (key_pem, cert_type, extra_sans, certified) in [
             (
-                signing_key_pem,
+                authority_key_pem,
                 cert_issuer_common::CertType::Signing,
-                crate::authority_certificate::Certified::Publisher(publisher.clone()),
+                Vec::new(),
+                crate::authority_certificate::Certified::Publisher {
+                    publisher: publisher.clone(),
+                    message: PublisherMessage::Certified,
+                },
+            ),
+            (
+                escrow_key_pem,
+                cert_issuer_common::CertType::Service,
+                Vec::new(),
+                crate::authority_certificate::Certified::Publisher {
+                    publisher: publisher.clone(),
+                    message: PublisherMessage::EscrowCertified,
+                },
             ),
             (
                 ledger_key_pem,
                 cert_issuer_common::CertType::Checkpoint,
+                Vec::new(),
                 crate::authority_certificate::Certified::Ledger(ledger.clone()),
             ),
         ] {
@@ -1395,6 +1419,7 @@ impl Actor for ConsumerSupervisor {
                     identity: own_cert_identity.clone(),
                     key_pem,
                     cert_type,
+                    extra_sans,
                     certified,
                 },
                 myself.get_cell(),

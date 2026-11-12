@@ -650,6 +650,9 @@ pub enum LedgerMessage {
         name: String,
         reply: RpcReplyPort<Option<crate::state::StoredSecret>>,
     },
+    /// Every secret currently stored, by name: what is sealed again when the escrow key is replaced
+    /// (`escrow_reseal`).
+    StoredSecrets(RpcReplyPort<Vec<(String, crate::state::StoredSecret)>>),
     /// Full (sequence number, event) history, re-read from the log -- used by
     /// ProjectionActor for catch-up: replaying and re-folding through
     /// history to reconstruct correct historical context at each
@@ -981,6 +984,9 @@ impl Actor for LedgerActor {
             LedgerMessage::CheckSecret { name, reply } => {
                 let secret = state.credentials_state.secret_for(&name).cloned();
                 let _ = reply.send(secret);
+            }
+            LedgerMessage::StoredSecrets(reply) => {
+                let _ = reply.send(state.credentials_state.stored_secrets());
             }
             LedgerMessage::GetFullHistory { reply } => {
                 let _ = reply.send(history(&state.log));

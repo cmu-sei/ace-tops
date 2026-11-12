@@ -25,6 +25,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# The authority key, P-256 (src/authority_key.rs).
+p256 = { workspace = true, features = ["pem"] }
+zeroize = { version = "1.9.0", features = ["aarch64"] }
 polar-scudo.workspace = true
 attestation-common.workspace = true
 cassini-backoff.workspace = true
@@ -50,9 +53,6 @@ rand.workspace = true
 reqwest.workspace = true
 rkyv.workspace = true
 rsa.workspace = true
-# The ledger key, P-256, which signs the ledger's checkpoints (src/ledger_key.rs).
-p256 = { workspace = true, features = ["pem"] }
-zeroize = { version = "1.9.0", features = ["aarch64"] }
 # polar-ledger checks a ledger's checkpoint certificate (src/ledger_reader.rs).
 polar-signing.workspace = true
 serde.workspace = true

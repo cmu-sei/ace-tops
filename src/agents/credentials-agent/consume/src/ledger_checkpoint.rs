@@ -114,7 +114,7 @@ impl Checkpoints {
                 key.path
             ));
         }
-        let signing_key = crate::ledger_key::load_or_generate(&key.path)?;
+        let signing_key = crate::authority_key::load_or_generate(&key.path)?;
         let signer = NoteSigner::new(&key_name(&key.identity), signing_key)
             .map_err(|e| format!("the ledger key's name: {e}"))?;
         let origin = origin(&key.identity);
@@ -326,7 +326,7 @@ mod tests {
         );
 
         let another = key(elsewhere.path());
-        crate::ledger_key::load_or_generate(&another.path).unwrap();
+        crate::authority_key::load_or_generate(&another.path).unwrap();
         let why = refused(Checkpoints::open(&path, &log, &another).unwrap());
         assert!(why.contains("not one the ledger key signed"), "{why}");
 

@@ -1951,15 +1951,14 @@ mod tests {
     /// A snapshot the credentials agent signed with `key`, under its signing certificate from `ca`.
     fn authority_snapshot(
         ca: &polar_signing::testing::Authority,
-        key: &rsa::RsaPrivateKey,
+        key: &credentials_agent_common::authority_update::AuthorityKey,
         payloads: &[credentials_agent_common::authority_update::AuthorityPayload],
     ) -> credentials_agent_common::authority_update::AuthoritySnapshot {
-        use rsa::pkcs8::EncodePublicKey;
-        let public_key_pem = key
-            .to_public_key()
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .unwrap();
+        let public_key_pem =
+            credentials_agent_common::authority_update::public_key_pem(key.verifying_key())
+                .unwrap();
         credentials_agent_common::authority_update::AuthoritySnapshot {
+            escrow_certificate_chain_pem: Vec::new(),
             certificate_chain_pem: vec![polar_signing::testing::escrow_certificate_for(
                 ca,
                 polar_signing::testing::authority_spec(CREDENTIALS),
@@ -2081,7 +2080,7 @@ mod tests {
         use credentials_agent_common::authority_update::{AuthorityBody, AuthorityPayload};
         let (rig, ca, _dir) = Rig::pinning("infra-refusal-judge").await;
         assert_eq!(rig.spawner.judged.load(Ordering::SeqCst), 0);
-        let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let key = credentials_agent_common::authority_update::generate_key().unwrap();
         let snapshot = authority_snapshot(
             &ca,
             &key,
@@ -2105,7 +2104,7 @@ mod tests {
             AuthorityBody, AuthorityKind, AuthorityPayload,
         };
         let (rig, ca, _dir) = Rig::pinning("infra-authority-snapshot").await;
-        let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let key = credentials_agent_common::authority_update::generate_key().unwrap();
         let snapshot = authority_snapshot(
             &ca,
             &key,
@@ -2205,7 +2204,7 @@ mod tests {
             .to_string();
 
         // The credentials agent says that certificate is revoked.
-        let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let key = credentials_agent_common::authority_update::generate_key().unwrap();
         deliver_snapshot(
             &rig,
             &authority_snapshot(
@@ -2293,7 +2292,7 @@ mod tests {
         );
 
         // The credentials agent sends a policy that lets alice change that section.
-        let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let key = credentials_agent_common::authority_update::generate_key().unwrap();
         deliver_snapshot(
             &rig,
             &authority_snapshot(
@@ -2986,7 +2985,7 @@ mod tests {
             "the certificate alone does not admit her"
         );
 
-        let key = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let key = credentials_agent_common::authority_update::generate_key().unwrap();
         deliver_snapshot(
             &rig,
             &authority_snapshot(

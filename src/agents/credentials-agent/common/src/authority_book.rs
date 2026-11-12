@@ -30,11 +30,9 @@
 //! the latest of each kind, and builds the snapshot an agent is answered with.
 
 use crate::authority_update::{
-    AuthorityBody, AuthorityKind, AuthorityPayload, AuthoritySnapshot, AuthorityUpdate,
-    AuthorityUpdateError, sign,
+    AuthorityBody, AuthorityKey, AuthorityKind, AuthorityPayload, AuthoritySnapshot,
+    AuthorityUpdate, AuthorityUpdateError, public_key_from_pem, public_key_pem, sign,
 };
-use rsa::RsaPrivateKey;
-use rsa::pkcs8::EncodePublicKey;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -56,20 +54,24 @@ pub enum BookError {
 }
 
 pub struct AuthorityBook {
-    key: RsaPrivateKey,
+    key: AuthorityKey,
     /// The key's certificate and what leads to the CA, once cert-issuer has issued one
     /// (docs/architecture/authority-distribution.md, "Pinning the key to the CA").
     certificate_chain_pem: Option<Vec<String>>,
+    /// The escrow key's certificate and what leads to the CA, once cert-issuer has issued one: carried in every
+    /// snapshot, so leaves pin the key what is sealed to the credentials agent is sealed to.
+    escrow_certificate_chain_pem: Vec<String>,
     last_sequence: u64,
     latest: HashMap<AuthorityKind, (u64, AuthorityUpdate)>,
 }
 
 impl AuthorityBook {
     /// `last_sequence` is the highest the ledger has assigned, so that the next is above it.
-    pub fn new(key: RsaPrivateKey, last_sequence: u64) -> Self {
+    pub fn new(key: AuthorityKey, last_sequence: u64) -> Self {
         Self {
             key,
             certificate_chain_pem: None,
+            escrow_certificate_chain_pem: Vec::new(),
             last_sequence,
             latest: HashMap::new(),
         }
@@ -78,19 +80,23 @@ impl AuthorityBook {
     /// Holds `chain` as the signing key's certificate from now on, in place of any before it: refused, and the one
     /// held kept, if its first certificate is not for the key.
     pub fn certify(&mut self, chain: Vec<String>) -> Result<(), BookError> {
-        use rsa::pkcs8::DecodePublicKey;
         let leaf = chain
             .first()
             .ok_or_else(|| BookError::NotForTheKey("no certificate".to_string()))?;
-        let certified = cert_issuer_common::public_key::extract_public_key_pem(leaf)
+        let certified = cert_issuer_common::public_key::extract_p256_or_rsa_public_key_pem(leaf)
             .map_err(|e| BookError::NotForTheKey(e.to_string()))?;
-        let certified = rsa::RsaPublicKey::from_public_key_pem(&certified)
-            .map_err(|e| BookError::NotForTheKey(format!("not an RSA key: {e}")))?;
-        if certified != self.key.to_public_key() {
+        let certified = public_key_from_pem(&certified).map_err(BookError::NotForTheKey)?;
+        if &certified != self.key.verifying_key() {
             return Err(BookError::NotForTheKey("it is for another key".to_string()));
         }
         self.certificate_chain_pem = Some(chain);
         Ok(())
+    }
+
+    /// Holds `chain` as the escrow key's certificate from now on: what every snapshot carries for leaves to pin it by.
+    /// Whose key it is the leaves judge, under the CA they pin.
+    pub fn certify_escrow(&mut self, chain: Vec<String>) {
+        self.escrow_certificate_chain_pem = chain;
     }
 
     /// Whether a certificate for the key is held.
@@ -155,17 +161,14 @@ impl AuthorityBook {
             .certificate_chain_pem
             .clone()
             .ok_or(BookError::NotCertified)?;
-        let public_key_pem = self
-            .key
-            .to_public_key()
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .map_err(|e| AuthorityUpdateError::Encoding(e.to_string()))?;
+        let public_key_pem = public_key_pem(self.key.verifying_key())?;
         let mut held: Vec<_> = self.latest.values().collect();
         // Held updates are signed bytes; order by the sequence they were signed with.
         held.sort_by_key(|(_, update)| sequence_of(update));
         Ok(AuthoritySnapshot {
             public_key_pem,
             certificate_chain_pem,
+            escrow_certificate_chain_pem: self.escrow_certificate_chain_pem.clone(),
             updates: held.into_iter().map(|(_, u)| u.clone()).collect(),
         })
     }
@@ -181,13 +184,13 @@ fn sequence_of(update: &AuthorityUpdate) -> u64 {
 mod tests {
     use super::*;
     use crate::authority_state::{Applied, AuthorityState};
+    use crate::authority_update::generate_key;
     use crate::authority_update::verify;
 
-    fn key() -> RsaPrivateKey {
+    fn key() -> AuthorityKey {
         use std::sync::OnceLock;
-        static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
-        KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap())
-            .clone()
+        static KEY: OnceLock<AuthorityKey> = OnceLock::new();
+        KEY.get_or_init(|| generate_key().unwrap()).clone()
     }
 
     const CREDENTIALS: &str = "credentials-agent.polar.serviceaccount.cluster.local";
@@ -199,11 +202,8 @@ mod tests {
     }
 
     /// What cert-issuer issues the credentials agent for `key`: its signing certificate.
-    fn certificate_for(key: &RsaPrivateKey) -> Vec<String> {
-        let public = key
-            .to_public_key()
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .unwrap();
+    fn certificate_for(key: &AuthorityKey) -> Vec<String> {
+        let public = public_key_pem(key.verifying_key()).unwrap();
         vec![polar_signing::testing::escrow_certificate_for(
             ca(),
             polar_signing::testing::authority_spec(CREDENTIALS),
@@ -236,7 +236,7 @@ mod tests {
         let update = book
             .publish(policy("// v1"), 1, 1, Some("alice".into()))
             .unwrap();
-        let payload = verify(&update, &key().to_public_key()).unwrap();
+        let payload = verify(&update, &key().verifying_key().clone()).unwrap();
         assert_eq!(payload.sequence, 1);
         assert_eq!(payload.version, 1);
         assert_eq!(payload.authored_by.as_deref(), Some("alice"));
@@ -290,7 +290,7 @@ mod tests {
         let trust = polar_signing::Trust::from_pem(&[ca().pem.clone()]).unwrap();
         assert_eq!(
             snapshot.certified_key(&trust, CREDENTIALS, polar_signing::testing::now()),
-            Ok(key().to_public_key())
+            Ok(*key().verifying_key())
         );
     }
 
@@ -298,7 +298,7 @@ mod tests {
     fn a_certificate_for_another_key_is_refused_and_the_one_held_kept() {
         let mut book = certified_book(0);
         let held = book.snapshot().unwrap().certificate_chain_pem;
-        let other = RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let other = generate_key().unwrap();
         assert!(matches!(
             book.certify(certificate_for(&other)),
             Err(BookError::NotForTheKey(_))
@@ -315,7 +315,7 @@ mod tests {
         let mut book = certified_book(0);
         let empty = book.snapshot().unwrap();
         assert!(empty.updates.is_empty());
-        assert_eq!(empty.public_key().unwrap(), key().to_public_key());
+        assert_eq!(empty.public_key().unwrap(), key().verifying_key().clone());
 
         book.publish(policy("// v1"), 1, 1, None).unwrap();
         book.publish(groups(), 1, 2, None).unwrap();
@@ -324,7 +324,7 @@ mod tests {
         let payloads: Vec<AuthorityPayload> = snapshot
             .updates
             .iter()
-            .map(|u| verify(u, &key().to_public_key()).unwrap())
+            .map(|u| verify(u, &key().verifying_key().clone()).unwrap())
             .collect();
         // Policy v1 was replaced by v2, so what remains is groups (2) then policy v2 (3).
         assert_eq!(

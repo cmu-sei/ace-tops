@@ -408,10 +408,7 @@ impl Custody {
 
     /// The new escrow key, sealed to `recipient`, the credentials agent's key the daemon pinned under the CA: the one
     /// way the key leaves. Never to a key a caller names.
-    pub fn sealed_escrow(
-        &self,
-        recipient: &rsa::RsaPublicKey,
-    ) -> Result<polar_escrow::EscrowedSecret, Refusal> {
+    pub fn sealed_escrow(&self, recipient: &str) -> Result<polar_escrow::EscrowedSecret, Refusal> {
         if self.revoked {
             return Err(Refusal::Revoked);
         }
@@ -1411,7 +1408,13 @@ mod custodian_tests {
         );
         let credentials_agent = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
         let sealed = custody
-            .sealed_escrow(&credentials_agent.to_public_key())
+            .sealed_escrow(&{
+                use rsa::pkcs8::EncodePublicKey as _;
+                credentials_agent
+                    .to_public_key()
+                    .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+                    .unwrap()
+            })
             .unwrap();
         // Before it is escrowed it unwraps nothing.
         assert_eq!(

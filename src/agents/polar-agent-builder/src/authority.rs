@@ -583,17 +583,16 @@ mod actor_tests {
     use super::*;
     use credentials_agent_common::authority_update::{AuthorityBody, AuthorityPayload, sign};
     use ractor::{Actor, ActorRef};
-    use rsa::RsaPrivateKey;
-    use rsa::pkcs8::EncodePublicKey;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     const CREDENTIALS: &str = "credentials-agent.polar.serviceaccount.cluster.local";
 
-    fn key() -> RsaPrivateKey {
+    fn key() -> credentials_agent_common::authority_update::AuthorityKey {
         use std::sync::OnceLock;
-        static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
-        KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap())
+        static KEY: OnceLock<credentials_agent_common::authority_update::AuthorityKey> =
+            OnceLock::new();
+        KEY.get_or_init(|| credentials_agent_common::authority_update::generate_key().unwrap())
             .clone()
     }
 
@@ -609,20 +608,20 @@ mod actor_tests {
     }
 
     fn snapshot(payloads: &[AuthorityPayload]) -> AuthoritySnapshot {
-        let public_key_pem = key()
-            .to_public_key()
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .unwrap();
+        let public_key_pem =
+            credentials_agent_common::authority_update::public_key_pem(key().verifying_key())
+                .unwrap();
         AuthoritySnapshot {
+            escrow_certificate_chain_pem: Vec::new(),
             certificate_chain_pem: vec![polar_signing::testing::escrow_certificate_for(
                 ca(),
                 polar_signing::testing::authority_spec(CREDENTIALS),
                 &public_key_pem,
             )],
-            public_key_pem: key()
-                .to_public_key()
-                .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-                .unwrap(),
+            public_key_pem: credentials_agent_common::authority_update::public_key_pem(
+                key().verifying_key(),
+            )
+            .unwrap(),
             updates: payloads.iter().map(|p| sign(p, &key()).unwrap()).collect(),
         }
     }

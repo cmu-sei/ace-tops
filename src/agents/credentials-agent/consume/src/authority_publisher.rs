@@ -36,12 +36,12 @@
 
 use crate::ledger::LedgerMessage;
 use credentials_agent_common::authority_book::{AuthorityBook, BookError};
+use credentials_agent_common::authority_update::AuthorityKey;
 use credentials_agent_common::authority_update::{
     AUTHORITY_SNAPSHOT_REPLIES_TOPIC, AUTHORITY_UPDATES_TOPIC, AuthorityBody, AuthorityKind,
 };
 use polar_agent_builder::authority::AuthorityHandle;
 use ractor::{Actor, ActorProcessingErr, ActorRef};
-use rsa::RsaPrivateKey;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -78,6 +78,10 @@ pub enum PublisherMessage {
     /// cert-issuer certified the signing key: its certificate and what leads to the CA, which every snapshot carries
     /// from now on (docs/architecture/authority-distribution.md, "Pinning the key to the CA").
     Certified(Vec<String>),
+    /// cert-issuer certified the escrow key: its certificate, which every snapshot carries from now on, so that leaves
+    /// pin the key what is sealed to this agent is sealed to (docs/architecture/key-custody.md, "The credentials agent's
+    /// keys, P-256").
+    EscrowCertified(Vec<String>),
     /// The quiet period may be over (internal; ignored if an update went out since it was set).
     Republish { generation: u64 },
 }
@@ -86,7 +90,7 @@ pub struct AuthorityPublisher;
 
 pub struct PublisherArgs {
     pub ledger: ActorRef<LedgerMessage>,
-    pub key: RsaPrivateKey,
+    pub key: AuthorityKey,
     pub publish: Publish,
     /// This agent's own policy and permissions actors, kept current by what it publishes.
     pub local: AuthorityHandle,
@@ -334,6 +338,14 @@ impl Actor for AuthorityPublisher {
                 state.last_snapshot = Some(Instant::now());
                 state.publish_snapshot();
             }
+            PublisherMessage::EscrowCertified(chain) => {
+                state.book.certify_escrow(chain);
+                // Published at once when there is a snapshot to publish, so a leaf waiting to seal pins it.
+                if state.book.is_certified() {
+                    state.last_snapshot = Some(Instant::now());
+                    state.publish_snapshot();
+                }
+            }
             PublisherMessage::Certified(chain) => {
                 let first = !state.book.is_certified();
                 match state.book.certify(chain) {
@@ -458,9 +470,8 @@ mod tests {
     }
 
     /// The signing certificate cert-issuer issues for `key`, as the credentials agent's.
-    fn certificate_for(key: &rsa::RsaPrivateKey) -> Vec<String> {
-        use rsa::pkcs8::EncodePrivateKey;
-        let pem = key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+    fn certificate_for(key: &AuthorityKey) -> Vec<String> {
+        let pem = crate::authority_key::pkcs8_pem(key).unwrap();
         let csr = cert_issuer_common::keypair::csr_for_private_key_pem(OWN, &[], &pem).unwrap();
         vec![crate::workload_issuance::tests::certify(
             crate::workload_issuance::tests::the_ca(),
@@ -477,8 +488,10 @@ mod tests {
             .as_secs() as i64
     }
 
-    fn the_key() -> rsa::RsaPrivateKey {
-        crate::escrow::tests::test_keypair().private_key().clone()
+    fn the_key() -> AuthorityKey {
+        static KEY: std::sync::OnceLock<AuthorityKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(|| credentials_agent_common::authority_update::generate_key().unwrap())
+            .clone()
     }
 
     /// A publisher started, its signing key certified when `certified` says.
@@ -506,7 +519,7 @@ mod tests {
             AuthorityPublisher,
             PublisherArgs {
                 ledger: ledger.clone(),
-                key: crate::escrow::tests::test_keypair().private_key().clone(),
+                key: the_key(),
                 publish: Arc::new(move |topic, bytes| {
                     sink.lock().unwrap().push((topic.to_string(), bytes))
                 }),
@@ -572,10 +585,8 @@ mod tests {
                 .unwrap();
         }
 
-        fn public_key(&self) -> rsa::RsaPublicKey {
-            crate::escrow::tests::test_keypair()
-                .private_key()
-                .to_public_key()
+        fn public_key(&self) -> credentials_agent_common::authority_update::AuthorityPublicKey {
+            *the_key().verifying_key()
         }
     }
 
@@ -904,7 +915,7 @@ mod tests {
         assert!(rig.local.versions().await.unwrap().is_empty());
 
         // A certificate for another key is not taken.
-        let other = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+        let other = credentials_agent_common::authority_update::generate_key().unwrap();
         rig.publisher
             .cast(PublisherMessage::Certified(certificate_for(&other)))
             .unwrap();
@@ -927,6 +938,52 @@ mod tests {
             .unwrap();
         settle().await;
         assert_eq!(rig.snapshots().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_escrow_certificate_is_carried_by_the_first_snapshot_and_a_renewal_goes_out_at_once()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("events.jsonl")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let rig = rig_at(&path, false).await;
+        settle().await;
+        // Kept while the authority key is not yet certified: no snapshot goes out without it.
+        rig.publisher
+            .cast(PublisherMessage::EscrowCertified(vec![
+                "escrow".to_string(),
+            ]))
+            .unwrap();
+        settle().await;
+        assert!(rig.snapshots().is_empty());
+
+        rig.publisher
+            .cast(PublisherMessage::Certified(certificate_for(&the_key())))
+            .unwrap();
+        settle().await;
+        let snapshots = rig.snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].escrow_certificate_chain_pem, ["escrow"]);
+
+        // A renewed escrow certificate goes out at once, for a custodian waiting to seal.
+        rig.publisher
+            .cast(PublisherMessage::EscrowCertified(vec![
+                "renewed".to_string(),
+            ]))
+            .unwrap();
+        settle().await;
+        let snapshots = rig.snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[1].escrow_certificate_chain_pem, ["renewed"]);
+        assert_eq!(
+            snapshots[1].certified_key(&trust(), OWN, real_now()),
+            Ok(rig.public_key()),
+            "still signed with the authority key"
+        );
     }
 
     #[tokio::test(start_paused = true)]

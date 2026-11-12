@@ -240,7 +240,7 @@ pub fn verify_authority_certificate(
         }
     })
     .and_then(|leaf| {
-        cert_issuer_common::public_key::extract_public_key_pem(&leaf)
+        cert_issuer_common::public_key::extract_p256_or_rsa_public_key_pem(&leaf)
             .map_err(|e| VerifyError::NoUsableKey(e.to_string()))
     })
 }

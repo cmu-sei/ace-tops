@@ -85,9 +85,9 @@ impl Watch {
         self.core.has_key()
     }
 
-    /// The credentials agent's key, once pinned under the CA.
-    pub fn pinned_key(&self) -> Option<&rsa::RsaPublicKey> {
-        self.core.pinned_key()
+    /// The credentials agent's escrow key (PEM), once pinned under the CA: what a pod's escrow key is sealed to.
+    pub fn pinned_escrow_key(&self) -> Option<&str> {
+        self.core.pinned_escrow_key()
     }
 
     /// What `payload`, published on `topic` by `published_by`, means for `custody` at `now` (Unix seconds); a revoked
@@ -291,7 +291,7 @@ impl WatcherState {
                 match (&mut self.bootstrap, ready_to_ask) {
                     (Some(bootstrap), true) if !bootstrap.is_finished() => bootstrap.next(
                         &self.args.custody,
-                        self.watch.pinned_key(),
+                        self.watch.pinned_escrow_key(),
                         Instant::now().into_std(),
                     ),
                     _ => return,
@@ -406,7 +406,7 @@ impl Actor for Watcher {
                         &topic,
                         &payload,
                         &state.args.custody,
-                        state.watch.pinned_key(),
+                        state.watch.pinned_escrow_key(),
                         Instant::now().into_std(),
                     )
                 });
@@ -489,23 +489,16 @@ impl Actor for Watcher {
 mod tests {
     use super::*;
     use credentials_agent_common::authority_update::{AuthorityBody, AuthorityPayload, sign};
+    use credentials_agent_common::authority_update::{AuthorityKey, generate_key, public_key_pem};
     use polar_custody::custody::Roles;
     use polar_custody::protocol::{Reply, Request};
-    use rsa::RsaPrivateKey;
-    use rsa::pkcs8::EncodePublicKey;
 
     pub(crate) const CREDENTIALS: &str = "credentials-agent.polar.serviceaccount.cluster.local";
     const POD: &str = "git-repo-observer.polar.serviceaccount.cluster.local";
 
-    fn key(n: usize) -> RsaPrivateKey {
-        static KEYS: std::sync::OnceLock<[RsaPrivateKey; 2]> = std::sync::OnceLock::new();
-        KEYS.get_or_init(|| {
-            [
-                RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap(),
-                RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap(),
-            ]
-        })[n]
-            .clone()
+    fn key(n: usize) -> AuthorityKey {
+        static KEYS: std::sync::OnceLock<[AuthorityKey; 2]> = std::sync::OnceLock::new();
+        KEYS.get_or_init(|| [generate_key().unwrap(), generate_key().unwrap()])[n].clone()
     }
 
     fn revoked(sequence: u64, serials: &[String]) -> AuthorityPayload {
@@ -521,11 +514,8 @@ mod tests {
     }
 
     /// A snapshot signed by `signer`, under the signing certificate the pod's CA issued it as the credentials agent's.
-    fn snapshot(signer: &RsaPrivateKey, payloads: &[AuthorityPayload]) -> Vec<u8> {
-        let public_key_pem = signer
-            .to_public_key()
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .unwrap();
+    fn snapshot(signer: &AuthorityKey, payloads: &[AuthorityPayload]) -> Vec<u8> {
+        let public_key_pem = public_key_pem(signer.verifying_key()).unwrap();
         let mut params = rcgen::CertificateParams::new(vec![CREDENTIALS.to_string()]).unwrap();
         params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::Other(
@@ -535,6 +525,7 @@ mod tests {
         let certificate = params.signed_by(&subject, &ca().0).unwrap().pem();
         let snapshot = AuthoritySnapshot {
             certificate_chain_pem: vec![certificate],
+            escrow_certificate_chain_pem: Vec::new(),
             public_key_pem,
             updates: payloads.iter().map(|p| sign(p, signer).unwrap()).collect(),
         };
@@ -543,7 +534,7 @@ mod tests {
             .to_vec()
     }
 
-    fn update(signer: &RsaPrivateKey, payload: &AuthorityPayload) -> Vec<u8> {
+    fn update(signer: &AuthorityKey, payload: &AuthorityPayload) -> Vec<u8> {
         rkyv::to_bytes::<rkyv::rancor::Error>(&sign(payload, signer).unwrap())
             .unwrap()
             .to_vec()

@@ -21,43 +21,38 @@
    DM26-0670
 */
 
-//! The ledger key (docs/architecture/record-store.md, "L2, checkpoints"): a P-256 key that signs the ledger's checkpoints
-//! and nothing else. Made once and kept beside the ledger: a key made anew on every start would sign checkpoints no
-//! earlier one could be checked against.
+//! The credentials agent's authority key (docs/architecture/key-custody.md, "The credentials agent's keys, P-256"): a
+//! P-256 key that signs its authority updates and its evidence records, and nothing else. Its own, not the escrow key:
+//! one key, one purpose. Made once and kept, as the escrow key is (`crate::escrow`): a key made anew on every start would
+//! be a new key under a running system, which every leaf refuses.
 
-use p256::ecdsa::SigningKey;
+use credentials_agent_common::authority_update::{AuthorityKey, generate_key};
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding};
 use zeroize::Zeroizing;
 
-/// A new key, from 32 random bytes that are a valid scalar.
-fn generate() -> SigningKey {
-    loop {
-        let bytes = Zeroizing::new(rand::random::<[u8; 32]>());
-        if let Ok(key) = SigningKey::from_slice(bytes.as_ref()) {
-            return key;
-        }
-    }
-}
+/// Where the authority key is kept when nothing else is said: beside the escrow key, on the agent's persistent volume.
+pub const CREDENTIALS_AUTHORITY_KEY_PATH_DEFAULT: &str =
+    "/var/lib/credentials-agent/authority-key.pem";
 
 /// The key at `path`, or a new one made and kept there (mode 0600) if there is none. A file that is not a P-256 key is
 /// refused, never replaced.
-pub fn load_or_generate(path: &str) -> Result<SigningKey, String> {
+pub fn load_or_generate(path: &str) -> Result<AuthorityKey, String> {
     let file = std::path::Path::new(path);
     if file.exists() {
         let pem = Zeroizing::new(
             std::fs::read_to_string(file).map_err(|e| format!("cannot read {path}: {e}"))?,
         );
-        return SigningKey::from_pkcs8_pem(&pem)
+        return AuthorityKey::from_pkcs8_pem(&pem)
             .map_err(|e| format!("{path} is not a P-256 private key: {e}"));
     }
-    let key = generate();
+    let key = generate_key()?;
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot make {}: {e}", parent.display()))?;
     }
     let pem = key
         .to_pkcs8_pem(LineEnding::LF)
-        .map_err(|e| format!("the ledger key does not encode: {e}"))?;
+        .map_err(|e| format!("the authority key does not encode: {e}"))?;
     // Made private from the start, never readable by others for a moment, and never over a file that appeared meanwhile.
     let mut open = std::fs::OpenOptions::new();
     open.write(true).create_new(true);
@@ -74,10 +69,10 @@ pub fn load_or_generate(path: &str) -> Result<SigningKey, String> {
 }
 
 /// The key as PKCS#8 PEM, wiped when dropped: for its certificate's CSR.
-pub fn pkcs8_pem(key: &SigningKey) -> Result<Zeroizing<String>, String> {
+pub fn pkcs8_pem(key: &AuthorityKey) -> Result<Zeroizing<String>, String> {
     key.to_pkcs8_pem(LineEnding::LF)
         .map(|pem| Zeroizing::new(pem.to_string()))
-        .map_err(|e| format!("the ledger key does not encode: {e}"))
+        .map_err(|e| format!("the authority key does not encode: {e}"))
 }
 
 #[cfg(test)]
@@ -87,7 +82,7 @@ mod tests {
     #[test]
     fn the_key_is_made_once_kept_private_and_read_back_as_itself() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keys/ledger-key.pem");
+        let path = dir.path().join("keys/authority-key.pem");
         let path = path.to_str().unwrap();
         let made = load_or_generate(path).unwrap();
         let again = load_or_generate(path).unwrap();
@@ -103,7 +98,7 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
         let other = tempfile::tempdir().unwrap();
-        let elsewhere = other.path().join("ledger-key.pem");
+        let elsewhere = other.path().join("authority-key.pem");
         assert_ne!(
             load_or_generate(elsewhere.to_str().unwrap())
                 .unwrap()
@@ -111,11 +106,19 @@ mod tests {
             made.verifying_key(),
             "a key of its own where there was none"
         );
-        std::fs::write(&elsewhere, "not a key").unwrap();
-        assert!(load_or_generate(elsewhere.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_p256_key_is_refused_and_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("authority-key.pem");
+        let pem = crate::escrow::tests::rsa_key_pem();
+        std::fs::write(&path, pem.as_bytes()).unwrap();
+        let why = load_or_generate(path.to_str().unwrap()).unwrap_err();
+        assert!(why.contains("not a P-256"), "{why}");
         assert_eq!(
-            std::fs::read_to_string(&elsewhere).unwrap(),
-            "not a key",
+            std::fs::read_to_string(&path).unwrap(),
+            pem,
             "never replaced"
         );
     }

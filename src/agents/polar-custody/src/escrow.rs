@@ -93,21 +93,11 @@ impl EscrowKey {
     }
 
     /// The key sealed to `recipient` (the credentials agent's, as the daemon pinned it): the one way it leaves.
-    pub fn sealed_to(
-        &self,
-        recipient: &rsa::RsaPublicKey,
-    ) -> Result<polar_escrow::EscrowedSecret, String> {
-        use rsa::pkcs8::EncodePublicKey as _;
-        let recipient_pem = recipient
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .map_err(|e| format!("the credentials agent's key does not encode: {e}"))?;
+    pub fn sealed_to(&self, recipient_pem: &str) -> Result<polar_escrow::EscrowedSecret, String> {
         let pem = self.pkcs8_pem()?;
-        polar_escrow::EscrowedSecret::encrypt_to_parsed_key(
-            pem.as_bytes(),
-            recipient,
-            &recipient_pem,
-        )
-        .map_err(|e| format!("cannot seal the escrow key: {e}"))
+        // The recipient's key decides the suite (polar-escrow's `Suite`): HPKE to a P-256 key, OAEP to an RSA one.
+        polar_escrow::EscrowedSecret::encrypt(pem.as_bytes(), recipient_pem)
+            .map_err(|e| format!("cannot seal the escrow key: {e}"))
     }
 
     /// The AES key `wrapped` opens to under this key.
@@ -168,13 +158,28 @@ mod tests {
     #[test]
     fn sealed_for_escrow_it_opens_to_the_key_under_the_recipient_s_key_only() {
         let key = EscrowKey::generate().unwrap();
-        let recipient = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
-        let sealed = key.sealed_to(&recipient.to_public_key()).unwrap();
-        let opened = sealed.decrypt(&recipient).unwrap();
+        // The credentials agent's escrow key is P-256 (docs/architecture/key-custody.md, "The credentials agent's keys,
+        // P-256"), so what is sealed to it is sealed by HPKE.
+        let p256_key = || loop {
+            if let Ok(key) = p256::SecretKey::from_slice(&rand::random::<[u8; 32]>()) {
+                break key;
+            }
+        };
+        let recipient = p256_key();
+        let sealed = key
+            .sealed_to(&{
+                use p256::pkcs8::EncodePublicKey as _;
+                recipient
+                    .public_key()
+                    .to_public_key_pem(p256::pkcs8::LineEnding::LF)
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(sealed.suite(), polar_escrow::Suite::HpkeP256);
+        let opened = sealed.decrypt_p256(&recipient).unwrap();
         let again = EscrowKey::from_pkcs8_pem(std::str::from_utf8(&opened).unwrap()).unwrap();
         assert_eq!(again.secret_bytes(), key.secret_bytes());
-        let stranger = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
-        assert!(sealed.decrypt(&stranger).is_err());
+        assert!(sealed.decrypt_p256(&p256_key()).is_err());
     }
 
     #[test]

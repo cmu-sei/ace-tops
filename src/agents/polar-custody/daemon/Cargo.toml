@@ -50,8 +50,6 @@ polar.workspace = true
 polar-signing.workspace = true
 ractor.workspace = true
 rkyv.workspace = true
-# The credentials agent's key, as pinned, which a new escrow key is sealed to.
-rsa.workspace = true
 rustls.workspace = true
 uuid.workspace = true
 tokio.workspace = true
@@ -68,4 +66,5 @@ polar-env.workspace = true
 proptest.workspace = true
 rand.workspace = true
 rcgen.workspace = true
-rsa.workspace = true
+# The credentials agent's escrow key, P-256, which a test opens what was sealed to it with.
+p256 = { workspace = true, features = ["pem"] }

@@ -451,8 +451,9 @@ mod tests {
     /// The ledger key in `dir` certified as `spec` says, kept beside it.
     fn certify(dir: &Path, spec: polar_signing::testing::EscrowSpec) {
         use p256::pkcs8::EncodePublicKey;
-        let key = crate::ledger_key::load_or_generate(dir.join("ledger-key.pem").to_str().unwrap())
-            .unwrap();
+        let key =
+            crate::authority_key::load_or_generate(dir.join("ledger-key.pem").to_str().unwrap())
+                .unwrap();
         let public = key
             .verifying_key()
             .to_public_key_pem(p256::pkcs8::LineEnding::LF)

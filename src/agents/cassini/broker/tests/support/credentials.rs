@@ -35,7 +35,7 @@ pub const CREDENTIALS: &str = "credentials-agent.polar.serviceaccount.cluster.lo
 /// the authority topics.
 pub struct CredentialsAgent {
     pub client: TestClient,
-    signer: rsa::RsaPrivateKey,
+    signer: credentials_agent_common::authority_update::AuthorityKey,
     /// Its signing certificate for `signer`, from the broker's CA, as cert-issuer issues it.
     chain: Vec<String>,
     /// The last snapshot it published: what it answers a request for the current authority with.
@@ -69,16 +69,16 @@ impl CredentialsAgent {
                 "g:cassini-client".to_string(),
             ],
         );
-        // One key for the whole test binary: each broker pins it afresh, and an RSA key is slow to make.
-        static SIGNER: std::sync::OnceLock<rsa::RsaPrivateKey> = std::sync::OnceLock::new();
+        // One key for the whole test binary: each broker pins it afresh.
+        static SIGNER: std::sync::OnceLock<
+            credentials_agent_common::authority_update::AuthorityKey,
+        > = std::sync::OnceLock::new();
         let signer = SIGNER
-            .get_or_init(|| rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap())
+            .get_or_init(|| credentials_agent_common::authority_update::generate_key().unwrap())
             .clone();
-        let public_key_pem = rsa::pkcs8::EncodePublicKey::to_public_key_pem(
-            &signer.to_public_key(),
-            rsa::pkcs8::LineEnding::LF,
-        )
-        .unwrap();
+        let public_key_pem =
+            credentials_agent_common::authority_update::public_key_pem(signer.verifying_key())
+                .unwrap();
         Self {
             client: TestClient::connect(broker, CREDENTIALS).await,
             chain: vec![broker.pki.certify_authority(CREDENTIALS, &public_key_pem)],
@@ -140,11 +140,14 @@ impl CredentialsAgent {
     }
 
     /// A snapshot saying `serials` are revoked, signed by `signer` and carrying its key.
-    pub fn revoked_snapshot(&self, serials: &[String], signer: &rsa::RsaPrivateKey) -> Vec<u8> {
+    pub fn revoked_snapshot(
+        &self,
+        serials: &[String],
+        signer: &credentials_agent_common::authority_update::AuthorityKey,
+    ) -> Vec<u8> {
         use credentials_agent_common::authority_update::{
             AuthorityBody, AuthorityPayload, AuthoritySnapshot, sign,
         };
-        use rsa::pkcs8::EncodePublicKey;
         // One count for the whole test binary, as the credentials agent's versions only rise: a stand-in that comes
         // back after a broker's restart is not heard as older.
         static VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -159,11 +162,12 @@ impl CredentialsAgent {
             authored_by: None,
         };
         let snapshot = AuthoritySnapshot {
+            escrow_certificate_chain_pem: Vec::new(),
             certificate_chain_pem: self.chain.clone(),
-            public_key_pem: signer
-                .to_public_key()
-                .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-                .unwrap(),
+            public_key_pem: credentials_agent_common::authority_update::public_key_pem(
+                signer.verifying_key(),
+            )
+            .unwrap(),
             updates: vec![sign(&revoked, signer).unwrap()],
         };
         rkyv::to_bytes::<rkyv::rancor::Error>(&snapshot)

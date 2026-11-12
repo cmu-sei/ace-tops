@@ -189,7 +189,7 @@ impl Bootstrap {
     pub fn next(
         &mut self,
         custody: &RwLock<Custody>,
-        pinned: Option<&rsa::RsaPublicKey>,
+        pinned: Option<&str>,
         now: Instant,
     ) -> Progress {
         if self.finished {
@@ -351,7 +351,7 @@ impl Bootstrap {
         topic: &str,
         payload: &[u8],
         custody: &RwLock<Custody>,
-        pinned: Option<&rsa::RsaPublicKey>,
+        pinned: Option<&str>,
         now: Instant,
     ) -> Progress {
         let Some(waiting) = &self.waiting else {
@@ -610,9 +610,25 @@ mod tests {
         encode(correlation_id, payload).unwrap()
     }
 
-    fn credentials_agent_key() -> &'static rsa::RsaPrivateKey {
-        static KEY: std::sync::OnceLock<rsa::RsaPrivateKey> = std::sync::OnceLock::new();
-        KEY.get_or_init(|| rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap())
+    /// The credentials agent's escrow key's public half as PEM, as its escrow certificate names it.
+    fn public_pem(key: &p256::SecretKey) -> String {
+        use p256::pkcs8::EncodePublicKey as _;
+        key.public_key()
+            .to_public_key_pem(p256::pkcs8::LineEnding::LF)
+            .unwrap()
+    }
+
+    /// The credentials agent's escrow key, P-256 (docs/architecture/key-custody.md, "The credentials agent's keys,
+    /// P-256").
+    fn credentials_agent_key() -> &'static p256::SecretKey {
+        static KEY: std::sync::OnceLock<p256::SecretKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(|| {
+            loop {
+                if let Ok(key) = p256::SecretKey::from_slice(&rand::random::<[u8; 32]>()) {
+                    break key;
+                }
+            }
+        })
     }
 
     fn issued(certificate_pem: String) -> IssuanceReply {
@@ -761,9 +777,12 @@ mod tests {
         let escrowed = polar_custody::escrow::EscrowKey::generate().unwrap();
         let pem = {
             let sealed = escrowed
-                .sealed_to(&credentials_agent_key().to_public_key())
+                .sealed_to(&public_pem(credentials_agent_key()))
                 .unwrap();
-            sealed.decrypt(credentials_agent_key()).unwrap().to_vec()
+            sealed
+                .decrypt_p256(credentials_agent_key())
+                .unwrap()
+                .to_vec()
         };
         let found = RetrieveAgentEscrowKeypairReply::Found {
             payload: EphemeralEncryptedPayload::encrypt(
@@ -807,7 +826,7 @@ mod tests {
         let plan = read(&custody).plan().unwrap();
         let mut bootstrap = Bootstrap::new(&plan);
         let now = Instant::now();
-        let pinned = credentials_agent_key().to_public_key();
+        let pinned = public_pem(credentials_agent_key());
         let asked = sent(bootstrap.next(&custody, None, now));
         let envelope = request::<RetrieveAgentEscrowKeypairRequest>(&asked);
         let asked = sent(bootstrap.on_reply(
@@ -845,7 +864,7 @@ mod tests {
             ),
             Progress::Wait
         );
-        let asked = sent(bootstrap.next(&custody, Some(&pinned), now));
+        let asked = sent(bootstrap.next(&custody, Some(pinned.as_str()), now));
         assert_eq!(asked.topic, CREDENTIALS_STORE_SECRET_REQUESTS_TOPIC);
         let envelope = request::<StoreSecretRequest>(&asked);
         assert_eq!(envelope.payload.name, agent_escrow_keypair_secret_name(X));
@@ -853,7 +872,7 @@ mod tests {
         let opened = envelope
             .payload
             .secret
-            .decrypt(credentials_agent_key())
+            .decrypt_p256(credentials_agent_key())
             .unwrap();
         let escrowed =
             polar_custody::escrow::EscrowKey::from_pkcs8_pem(std::str::from_utf8(&opened).unwrap())
@@ -863,7 +882,7 @@ mod tests {
                 CREDENTIALS_STORE_SECRET_REPLIES_TOPIC,
                 &reply(&envelope.correlation_id, StoreSecretReply::Stored),
                 &custody,
-                Some(&pinned),
+                Some(pinned.as_str()),
                 now,
             ),
             Progress::Done
@@ -978,10 +997,10 @@ mod tests {
         let plan = read(&custody).plan().unwrap();
         let mut bootstrap = Bootstrap::new(&plan);
         let now = Instant::now();
-        let pinned = credentials_agent_key().to_public_key();
+        let pinned = public_pem(credentials_agent_key());
         let retrieve = request::<RetrieveAgentEscrowKeypairRequest>(&sent(bootstrap.next(
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         let first = request::<AgentEscrowIssuanceRequest>(&sent(bootstrap.on_reply(
@@ -991,13 +1010,13 @@ mod tests {
                 RetrieveAgentEscrowKeypairReply::NotFound,
             ),
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         let later = now + REPLY_TIMEOUT + Duration::from_secs(1);
         let again = request::<AgentEscrowIssuanceRequest>(&sent(bootstrap.next(
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             later,
         )));
         assert_ne!(again.correlation_id, first.correlation_id);
@@ -1013,14 +1032,14 @@ mod tests {
                 },
             ),
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             later,
         )));
         // What is stored is the key both requests asked for.
         let stored = store
             .payload
             .secret
-            .decrypt(credentials_agent_key())
+            .decrypt_p256(credentials_agent_key())
             .unwrap();
         let stored =
             polar_custody::escrow::EscrowKey::from_pkcs8_pem(std::str::from_utf8(&stored).unwrap())
@@ -1037,10 +1056,10 @@ mod tests {
         let plan = read(&custody).plan().unwrap();
         let mut bootstrap = Bootstrap::new(&plan);
         let now = Instant::now();
-        let pinned = credentials_agent_key().to_public_key();
+        let pinned = public_pem(credentials_agent_key());
         let retrieve = request::<RetrieveAgentEscrowKeypairRequest>(&sent(bootstrap.next(
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         let issue = request::<AgentEscrowIssuanceRequest>(&sent(bootstrap.on_reply(
@@ -1050,7 +1069,7 @@ mod tests {
                 RetrieveAgentEscrowKeypairReply::NotFound,
             ),
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         let store = request::<StoreSecretRequest>(&sent(bootstrap.on_reply(
@@ -1064,7 +1083,7 @@ mod tests {
                 },
             ),
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         let asked = sent(bootstrap.on_reply(
@@ -1076,7 +1095,7 @@ mod tests {
                 },
             ),
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         ));
         assert_eq!(
@@ -1094,10 +1113,10 @@ mod tests {
         let plan = read(&custody).plan().unwrap();
         let mut bootstrap = Bootstrap::new(&plan);
         let now = Instant::now();
-        let pinned = credentials_agent_key().to_public_key();
+        let pinned = public_pem(credentials_agent_key());
         let retrieve = request::<RetrieveAgentEscrowKeypairRequest>(&sent(bootstrap.next(
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         let issue = request::<AgentEscrowIssuanceRequest>(&sent(bootstrap.on_reply(
@@ -1107,7 +1126,7 @@ mod tests {
                 RetrieveAgentEscrowKeypairReply::NotFound,
             ),
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             now,
         )));
         // Told so: nothing asked at once, nothing failed.
@@ -1121,28 +1140,28 @@ mod tests {
                     },
                 ),
                 &custody,
-                Some(&pinned),
+                Some(pinned.as_str()),
                 now,
             ),
             Progress::Wait
         );
         assert!(!bootstrap.is_finished());
         assert_eq!(
-            bootstrap.next(&custody, Some(&pinned), now + BEING_ISSUED_WAIT / 2),
+            bootstrap.next(&custody, Some(pinned.as_str()), now + BEING_ISSUED_WAIT / 2),
             Progress::Wait
         );
         // Then it asks for the key again, and holds the one the other pod escrowed.
         let later = now + BEING_ISSUED_WAIT;
         let again = request::<RetrieveAgentEscrowKeypairRequest>(&sent(bootstrap.next(
             &custody,
-            Some(&pinned),
+            Some(pinned.as_str()),
             later,
         )));
         let escrowed = polar_custody::escrow::EscrowKey::generate().unwrap();
         let pem = escrowed
             .sealed_to(&pinned)
             .unwrap()
-            .decrypt(credentials_agent_key())
+            .decrypt_p256(credentials_agent_key())
             .unwrap()
             .to_vec();
         let found = RetrieveAgentEscrowKeypairReply::Found {
@@ -1154,7 +1173,7 @@ mod tests {
                 CREDENTIALS_RETRIEVE_AGENT_ESCROW_KEYPAIR_REPLIES_TOPIC,
                 &reply(&again.correlation_id, found),
                 &custody,
-                Some(&pinned),
+                Some(pinned.as_str()),
                 later,
             ),
             Progress::Done

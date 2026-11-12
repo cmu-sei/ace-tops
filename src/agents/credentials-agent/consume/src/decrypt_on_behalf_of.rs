@@ -125,10 +125,7 @@ impl DecryptOnBehalfOfHandler {
         // requester's own public key. Mirrors
         // RetrieveSecretHandler::handle's own, real Zeroizing
         // discipline exactly.
-        let plaintext = match request
-            .ciphertext
-            .decrypt(self.escrow_keypair.private_key())
-        {
+        let plaintext = match self.escrow_keypair.open(&request.ciphertext) {
             Ok(p) => p,
             Err(e) => {
                 error!("Failed to decrypt on behalf of {requested_by}: {e}");

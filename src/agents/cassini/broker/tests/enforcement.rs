@@ -30,8 +30,6 @@ mod support;
 use credentials_agent_common::authority_update::{
     AUTHORITY_SNAPSHOT_REPLIES_TOPIC, AuthorityBody, AuthorityPayload, AuthoritySnapshot, sign,
 };
-use rsa::RsaPrivateKey;
-use rsa::pkcs8::EncodePublicKey;
 use std::time::Duration;
 use support::{TestBroker, TestClient, serial};
 
@@ -162,7 +160,10 @@ async fn cedar_forbids_a_declared_topic_and_permits_an_undeclared_one() {
     broker.stop().await;
 }
 
-fn snapshot_forbidding_the_producer_news(pki: &support::Pki, signer: &RsaPrivateKey) -> Vec<u8> {
+fn snapshot_forbidding_the_producer_news(
+    pki: &support::Pki,
+    signer: &credentials_agent_common::authority_update::AuthorityKey,
+) -> Vec<u8> {
     snapshot_of_policy(
         pki,
         signer,
@@ -174,7 +175,11 @@ fn snapshot_forbidding_the_producer_news(pki: &support::Pki, signer: &RsaPrivate
 
 /// The credentials agent's snapshot carrying `source` as the policy, signed by `signer`, under its signing certificate
 /// from `pki`'s CA.
-fn snapshot_of_policy(pki: &support::Pki, signer: &RsaPrivateKey, source: &str) -> Vec<u8> {
+fn snapshot_of_policy(
+    pki: &support::Pki,
+    signer: &credentials_agent_common::authority_update::AuthorityKey,
+    source: &str,
+) -> Vec<u8> {
     let policy = AuthorityPayload {
         sequence: 1,
         version: 1,
@@ -183,11 +188,10 @@ fn snapshot_of_policy(pki: &support::Pki, signer: &RsaPrivateKey, source: &str) 
         },
         authored_by: None,
     };
-    let public_key_pem = signer
-        .to_public_key()
-        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-        .unwrap();
+    let public_key_pem =
+        credentials_agent_common::authority_update::public_key_pem(signer.verifying_key()).unwrap();
     let snapshot = AuthoritySnapshot {
+        escrow_certificate_chain_pem: Vec::new(),
         certificate_chain_pem: vec![pki.certify_authority(CREDENTIALS, &public_key_pem)],
         public_key_pem,
         updates: vec![sign(&policy, signer).unwrap()],
@@ -211,7 +215,7 @@ async fn the_broker_keeps_the_credentials_agent_s_authority_and_no_one_else_s() 
     broker
         .pki
         .issue_client_carrying(impostor, &[replies, "g:cassini-client".to_string()]);
-    let signer = RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+    let signer = credentials_agent_common::authority_update::generate_key().unwrap();
     let snapshot = snapshot_forbidding_the_producer_news(&broker.pki, &signer);
     let producer = TestClient::connect(&broker, PRODUCER).await;
     let sink = TestClient::connect(&broker, SINK).await;
@@ -300,7 +304,7 @@ async fn a_change_of_authority_ends_every_kept_decision_at_once() {
         ],
     );
     let (producer, _sink) = decided_once(&broker).await;
-    let signer = RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+    let signer = credentials_agent_common::authority_update::generate_key().unwrap();
     let credentials = TestClient::connect(&broker, CREDENTIALS).await;
     credentials.publish(
         AUTHORITY_SNAPSHOT_REPLIES_TOPIC,
@@ -356,7 +360,7 @@ async fn a_held_subscription_a_new_forbid_refuses_is_dropped_and_the_client_told
     let _serial = serial().await;
     let broker = broker_with_two_workloads().await;
     let (producer, sink, credentials) = sink_subscribed_to_news(&broker).await;
-    let signer = RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+    let signer = credentials_agent_common::authority_update::generate_key().unwrap();
     credentials.publish(
         AUTHORITY_SNAPSHOT_REPLIES_TOPIC,
         &snapshot_of_policy(
@@ -390,7 +394,7 @@ async fn a_held_subscription_the_new_authority_still_admits_is_kept() {
     let _serial = serial().await;
     let broker = broker_with_two_workloads().await;
     let (producer, sink, credentials) = sink_subscribed_to_news(&broker).await;
-    let signer = RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+    let signer = credentials_agent_common::authority_update::generate_key().unwrap();
     credentials.publish(
         AUTHORITY_SNAPSHOT_REPLIES_TOPIC,
         &snapshot_of_policy(
@@ -756,7 +760,7 @@ async fn an_agent_sends_a_refused_subscription_again_once_a_permit_arrives() {
 
     let producer = TestClient::connect(&broker, PRODUCER).await;
     let credentials = TestClient::connect(&broker, CREDENTIALS).await;
-    let signer = RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
+    let signer = credentials_agent_common::authority_update::generate_key().unwrap();
     let permit = snapshot_of_policy(
         &broker.pki,
         &signer,

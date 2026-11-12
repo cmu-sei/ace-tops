@@ -177,7 +177,7 @@ impl RetrieveSecretHandler {
 
         // The decrypted plaintext is Zeroizing: wiped the instant re-encryption completes, never left
         // to an ordinary drop.
-        let plaintext = match stored_secret.decrypt(self.escrow_keypair.private_key()) {
+        let plaintext = match self.escrow_keypair.open(&stored_secret) {
             Ok(p) => p,
             Err(e) => {
                 error!("Failed to decrypt stored secret {}: {e}", request.name);

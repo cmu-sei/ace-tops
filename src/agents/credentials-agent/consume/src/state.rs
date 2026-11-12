@@ -970,6 +970,17 @@ impl CredentialsState {
         self.stored_secrets.get(name)
     }
 
+    /// Every secret currently stored, by name, in name order.
+    pub fn stored_secrets(&self) -> Vec<(String, StoredSecret)> {
+        let mut all: Vec<_> = self
+            .stored_secrets
+            .iter()
+            .map(|(name, stored)| (name.clone(), stored.clone()))
+            .collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all
+    }
+
     /// True if `identity` already holds a currently-issued agent
     /// escrow-identity certificate -- the check
     /// AgentEscrowIssuanceHandler uses in place of the pod-instance-

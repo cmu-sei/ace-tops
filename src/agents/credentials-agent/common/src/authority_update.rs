@@ -24,20 +24,20 @@
 //! What the credentials agent publishes when its policy or the data about principals changes, and how a
 //! leaf believes it (docs/architecture/authority-distribution.md).
 //!
-//! The credentials agent signs each update with its escrow key, RSASSA-PSS with SHA-256, over the payload
+//! The credentials agent signs each update with its authority key, ECDSA over P-256 with SHA-256, over the payload
 //! bytes prefixed with a fixed domain line, so a signature made for any other purpose cannot be replayed as an
-//! update. The update carries the **bytes** that were signed, not a structure to be re-encoded: what is verified
+//! update. The authority key is its own, used for nothing but the credentials agent's signed statements, and not the
+//! escrow key that what is sealed to the credentials agent is opened with (docs/architecture/key-custody.md, "The
+//! credentials agent's keys, P-256", 2026-11-10). The update carries the **bytes** that were signed, not a structure to be re-encoded: what is verified
 //! is exactly what the signer wrote, and only then is it read. It also carries the fingerprint of the key that
 //! signed it, so a leaf that pins a key notices at once if it is ever a different one.
 //!
 //! Each payload is the whole of its kind (the whole policy, the whole membership, the whole set of revoked
 //! serials), never a delta, so an update that was missed is repaired by the next of its kind.
 
+use p256::ecdsa::signature::{Signer, Verifier};
+use p256::pkcs8::{DecodePublicKey, EncodePublicKey, LineEnding};
 use rkyv::{Archive, Deserialize, Serialize};
-use rsa::pkcs8::EncodePublicKey;
-use rsa::pss::{BlindedSigningKey, Signature, VerifyingKey};
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
-use rsa::{RsaPrivateKey, RsaPublicKey};
 use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
 
@@ -49,6 +49,32 @@ pub const AUTHORITY_UPDATES_TOPIC: &str = "polar-authority-updates";
 /// hour, so a leaf that missed everything is repaired by the next one.
 pub const AUTHORITY_SNAPSHOT_REQUESTS_TOPIC: &str = "polar-authority-snapshot-requests";
 pub const AUTHORITY_SNAPSHOT_REPLIES_TOPIC: &str = "polar-authority-snapshot-replies";
+
+/// The credentials agent's authority key: P-256, signing its authority updates and nothing it did not write.
+pub type AuthorityKey = p256::ecdsa::SigningKey;
+/// Its public half, which a leaf pins.
+pub type AuthorityPublicKey = p256::ecdsa::VerifyingKey;
+
+/// A new authority key, from the operating system's randomness.
+pub fn generate_key() -> Result<AuthorityKey, String> {
+    loop {
+        let bytes = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
+        if let Ok(key) = AuthorityKey::from_slice(bytes.as_ref()) {
+            return Ok(key);
+        }
+    }
+}
+
+/// A public key as PEM (SubjectPublicKeyInfo): what a snapshot carries.
+pub fn public_key_pem(key: &AuthorityPublicKey) -> Result<String, AuthorityUpdateError> {
+    key.to_public_key_pem(LineEnding::LF)
+        .map_err(|e| AuthorityUpdateError::Encoding(e.to_string()))
+}
+
+/// A public key read from PEM: a P-256 key, or an error.
+pub fn public_key_from_pem(pem: &str) -> Result<AuthorityPublicKey, String> {
+    AuthorityPublicKey::from_public_key_pem(pem).map_err(|e| format!("not a P-256 public key: {e}"))
+}
 
 /// The line every signed update's bytes begin with.
 const DOMAIN: &[u8] = b"polar-authority-update-v1\n";
@@ -173,7 +199,7 @@ pub struct AuthorityUpdate {
     pub key_fingerprint: String,
     /// The signed bytes: a JSON `AuthorityPayload`.
     pub payload: Vec<u8>,
-    /// RSASSA-PSS over the domain line and `payload`.
+    /// ECDSA P-256 with SHA-256 over the domain line and `payload`, in its fixed 64-byte form (r || s).
     pub signature: Vec<u8>,
 }
 
@@ -197,15 +223,19 @@ pub struct AuthoritySnapshot {
     /// agent's identity, over this key, from the CA every pod pins. A leaf pins the key only under it.
     #[serde(default)]
     pub certificate_chain_pem: Vec<String>,
+    /// The credentials agent's escrow certificate, then whatever leads to the CA: what is sealed to the credentials agent
+    /// is sealed to its key, which a leaf pins only under it (docs/architecture/key-custody.md, "The credentials agent's
+    /// keys, P-256"). Empty until it is certified.
+    #[serde(default)]
+    pub escrow_certificate_chain_pem: Vec<String>,
     /// The latest signed update of each kind, oldest sequence first.
     pub updates: Vec<AuthorityUpdate>,
 }
 
 impl AuthoritySnapshot {
     /// The key it carries, parsed.
-    pub fn public_key(&self) -> Result<RsaPublicKey, AuthorityUpdateError> {
-        use rsa::pkcs8::DecodePublicKey;
-        RsaPublicKey::from_public_key_pem(&self.public_key_pem)
+    pub fn public_key(&self) -> Result<AuthorityPublicKey, AuthorityUpdateError> {
+        public_key_from_pem(&self.public_key_pem)
             .map_err(|e| AuthorityUpdateError::Encoding(format!("the snapshot's key: {e}")))
     }
 
@@ -216,8 +246,7 @@ impl AuthoritySnapshot {
         trust: &polar_signing::Trust,
         publisher: &str,
         now: i64,
-    ) -> Result<RsaPublicKey, AuthorityUpdateError> {
-        use rsa::pkcs8::DecodePublicKey;
+    ) -> Result<AuthorityPublicKey, AuthorityUpdateError> {
         if self.certificate_chain_pem.is_empty() {
             return Err(AuthorityUpdateError::Uncertified(
                 "it carries no certificate".to_string(),
@@ -230,10 +259,8 @@ impl AuthoritySnapshot {
             publisher,
         )
         .map_err(|e| AuthorityUpdateError::Uncertified(e.to_string()))?;
-        let certified = RsaPublicKey::from_public_key_pem(&certified).map_err(|e| {
-            AuthorityUpdateError::Uncertified(format!(
-                "the certificate's key is not an RSA key: {e}"
-            ))
+        let certified = public_key_from_pem(&certified).map_err(|e| {
+            AuthorityUpdateError::Uncertified(format!("the certificate's key: {e}"))
         })?;
         if certified != self.public_key()? {
             return Err(AuthorityUpdateError::Uncertified(
@@ -246,7 +273,7 @@ impl AuthoritySnapshot {
 
 /// The fingerprint of a public key: what an update says signed it, and what a leaf compares with the key it
 /// pinned.
-pub fn fingerprint(key: &RsaPublicKey) -> Result<String, AuthorityUpdateError> {
+pub fn fingerprint(key: &AuthorityPublicKey) -> Result<String, AuthorityUpdateError> {
     use sha2::{Digest, Sha256};
     let der = key
         .to_public_key_der()
@@ -264,20 +291,19 @@ fn signed_bytes(payload: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// Signs `payload` with the credentials agent's key. The signing is blinded, so it does not leak the key
-/// through how long it takes.
+/// Signs `payload` with the credentials agent's authority key. The nonce is derived from the key and the message
+/// (RFC 6979), so signing needs no randomness and repeats none.
 pub fn sign(
     payload: &AuthorityPayload,
-    key: &RsaPrivateKey,
+    key: &AuthorityKey,
 ) -> Result<AuthorityUpdate, AuthorityUpdateError> {
     let bytes =
         serde_json::to_vec(payload).map_err(|e| AuthorityUpdateError::Encoding(e.to_string()))?;
-    let signing = BlindedSigningKey::<sha2_011::Sha256>::new(key.clone());
-    let signature: Signature = signing.sign_with_rng(&mut rand::rng(), &signed_bytes(&bytes));
+    let signature: p256::ecdsa::Signature = key.sign(&signed_bytes(&bytes));
     Ok(AuthorityUpdate {
-        key_fingerprint: fingerprint(&key.to_public_key())?,
+        key_fingerprint: fingerprint(key.verifying_key())?,
         payload: bytes,
-        signature: signature.to_vec(),
+        signature: signature.to_bytes().to_vec(),
     })
 }
 
@@ -286,7 +312,7 @@ pub fn sign(
 /// and only then, the bytes are read, strictly.
 pub fn verify(
     update: &AuthorityUpdate,
-    pinned: &RsaPublicKey,
+    pinned: &AuthorityPublicKey,
 ) -> Result<AuthorityPayload, AuthorityUpdateError> {
     let expected = fingerprint(pinned)?;
     if update.key_fingerprint != expected {
@@ -295,9 +321,9 @@ pub fn verify(
             got: update.key_fingerprint.clone(),
         });
     }
-    let signature = Signature::try_from(update.signature.as_slice())
+    let signature = p256::ecdsa::Signature::from_slice(&update.signature)
         .map_err(|_| AuthorityUpdateError::BadSignature)?;
-    VerifyingKey::<sha2_011::Sha256>::new(pinned.clone())
+    pinned
         .verify(&signed_bytes(&update.payload), &signature)
         .map_err(|_| AuthorityUpdateError::BadSignature)?;
     serde_json::from_slice(&update.payload)
@@ -344,18 +370,16 @@ mod tests {
         assert_eq!(read, body);
     }
 
-    fn key() -> RsaPrivateKey {
+    fn key() -> AuthorityKey {
         use std::sync::OnceLock;
-        static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
-        KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap())
-            .clone()
+        static KEY: OnceLock<AuthorityKey> = OnceLock::new();
+        KEY.get_or_init(|| generate_key().unwrap()).clone()
     }
 
-    fn another_key() -> RsaPrivateKey {
+    fn another_key() -> AuthorityKey {
         use std::sync::OnceLock;
-        static KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
-        KEY.get_or_init(|| RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap())
-            .clone()
+        static KEY: OnceLock<AuthorityKey> = OnceLock::new();
+        KEY.get_or_init(|| generate_key().unwrap()).clone()
     }
 
     fn payload() -> AuthorityPayload {
@@ -376,9 +400,9 @@ mod tests {
         let update = sign(&payload(), &key).unwrap();
         assert_eq!(
             update.key_fingerprint,
-            fingerprint(&key.to_public_key()).unwrap()
+            fingerprint(&key.verifying_key().clone()).unwrap()
         );
-        assert_eq!(verify(&update, &key.to_public_key()), Ok(payload()));
+        assert_eq!(verify(&update, &key.verifying_key().clone()), Ok(payload()));
     }
 
     #[test]
@@ -413,7 +437,7 @@ mod tests {
                 authored_by: None,
             };
             let update = sign(&sent, &key).unwrap();
-            assert_eq!(verify(&update, &key.to_public_key()).unwrap(), sent);
+            assert_eq!(verify(&update, &key.verifying_key().clone()).unwrap(), sent);
         }
     }
 
@@ -421,7 +445,7 @@ mod tests {
     fn a_payload_or_a_signature_that_was_touched_does_not_verify() {
         let key = key();
         let update = sign(&payload(), &key).unwrap();
-        let public = key.to_public_key();
+        let public = *key.verifying_key();
 
         let mut altered = update.clone();
         let at = altered.payload.len() / 2;
@@ -449,7 +473,7 @@ mod tests {
     #[test]
     fn an_update_from_another_key_is_refused_by_its_fingerprint_before_anything_else() {
         let update = sign(&payload(), &another_key()).unwrap();
-        let pinned = key().to_public_key();
+        let pinned = *key().verifying_key();
         match verify(&update, &pinned) {
             Err(AuthorityUpdateError::UnknownKey { expected, got }) => {
                 assert_eq!(expected, fingerprint(&pinned).unwrap());
@@ -464,7 +488,7 @@ mod tests {
         // Signed by another key, but says it is the pinned one: the signature is checked against the pinned
         // key and fails.
         let mut update = sign(&payload(), &another_key()).unwrap();
-        let pinned = key().to_public_key();
+        let pinned = *key().verifying_key();
         update.key_fingerprint = fingerprint(&pinned).unwrap();
         assert_eq!(
             verify(&update, &pinned),
@@ -477,15 +501,14 @@ mod tests {
         // The same key, the same payload bytes, signed without the domain line.
         let key = key();
         let bytes = serde_json::to_vec(&payload()).unwrap();
-        let signing = BlindedSigningKey::<sha2_011::Sha256>::new(key.clone());
-        let bare: Signature = signing.sign_with_rng(&mut rand::rng(), &bytes);
+        let bare: p256::ecdsa::Signature = key.sign(&bytes);
         let update = AuthorityUpdate {
-            key_fingerprint: fingerprint(&key.to_public_key()).unwrap(),
+            key_fingerprint: fingerprint(&key.verifying_key().clone()).unwrap(),
             payload: bytes,
-            signature: bare.to_vec(),
+            signature: bare.to_bytes().to_vec(),
         };
         assert_eq!(
-            verify(&update, &key.to_public_key()),
+            verify(&update, &key.verifying_key().clone()),
             Err(AuthorityUpdateError::BadSignature)
         );
     }
@@ -499,16 +522,15 @@ mod tests {
             br#"{"sequence":1,"version":1,"body":{"kind":"nothing"},"authored_by":null}"#.to_vec(),
             b"not json".to_vec(),
         ] {
-            let signing = BlindedSigningKey::<sha2_011::Sha256>::new(key.clone());
-            let signed: Signature = signing.sign_with_rng(&mut rand::rng(), &signed_bytes(&bytes));
+            let signed: p256::ecdsa::Signature = key.sign(&signed_bytes(&bytes));
             let update = AuthorityUpdate {
-                key_fingerprint: fingerprint(&key.to_public_key()).unwrap(),
+                key_fingerprint: fingerprint(&key.verifying_key().clone()).unwrap(),
                 payload: bytes,
-                signature: signed.to_vec(),
+                signature: signed.to_bytes().to_vec(),
             };
             assert!(
                 matches!(
-                    verify(&update, &key.to_public_key()),
+                    verify(&update, &key.verifying_key().clone()),
                     Err(AuthorityUpdateError::Malformed(_))
                 ),
                 "{:?}",
@@ -522,11 +544,8 @@ mod tests {
         let key = key();
         let snapshot = AuthoritySnapshot {
             certificate_chain_pem: vec![],
-            public_key_pem: rsa::pkcs8::EncodePublicKey::to_public_key_pem(
-                &key.to_public_key(),
-                rsa::pkcs8::LineEnding::LF,
-            )
-            .unwrap(),
+            escrow_certificate_chain_pem: vec![],
+            public_key_pem: public_key_pem(key.verifying_key()).unwrap(),
             updates: vec![sign(&payload(), &key).unwrap()],
         };
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&snapshot).unwrap();
@@ -534,7 +553,7 @@ mod tests {
         assert_eq!(back, snapshot);
         // The key it carries is the key that signed what it carries.
         let carried = back.public_key().unwrap();
-        assert_eq!(carried, key.to_public_key());
+        assert_eq!(carried, key.verifying_key().clone());
         assert_eq!(verify(&back.updates[0], &carried), Ok(payload()));
 
         let request = rkyv::to_bytes::<rkyv::rancor::Error>(&AuthoritySnapshotRequest).unwrap();
@@ -545,6 +564,7 @@ mod tests {
     fn a_snapshot_whose_key_is_not_a_key_says_so() {
         let snapshot = AuthoritySnapshot {
             certificate_chain_pem: vec![],
+            escrow_certificate_chain_pem: vec![],
             public_key_pem: "not a key".into(),
             updates: vec![],
         };
@@ -562,6 +582,6 @@ mod tests {
         let back: AuthorityUpdate =
             rkyv::from_bytes::<AuthorityUpdate, rkyv::rancor::Error>(&bytes).unwrap();
         assert_eq!(back, update);
-        assert_eq!(verify(&back, &key.to_public_key()), Ok(payload()));
+        assert_eq!(verify(&back, &key.verifying_key().clone()), Ok(payload()));
     }
 }

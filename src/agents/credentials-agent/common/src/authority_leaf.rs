@@ -41,7 +41,6 @@ use crate::authority_update::{
     AuthorityBody, AuthorityKind, AuthoritySnapshot, AuthorityUpdate, AuthorityUpdateError,
     fingerprint, verify,
 };
-use rsa::RsaPublicKey;
 use std::collections::BTreeMap;
 
 /// What to do about an update that was believed. The actor carries these out, in order.
@@ -78,6 +77,8 @@ pub enum Refusal {
     BadKey(String),
     /// The snapshot's key is not certified as the credentials agent's: nothing in it is believed, nothing is pinned.
     Uncertified(String),
+    /// The snapshot's escrow key is not the one pinned: a key that changes under a running system is an incident.
+    EscrowKeyChanged { pinned: String, got: String },
     /// An update did not verify.
     Update(AuthorityUpdateError),
 }
@@ -88,13 +89,18 @@ pub struct Handled {
     pub effects: Vec<Effect>,
     /// Updates inside a snapshot that did not verify; the others were applied.
     pub refused: Vec<AuthorityUpdateError>,
+    /// Why the snapshot's escrow certificate was not believed, if it carried one: nothing of it was pinned, and the
+    /// rest was taken.
+    pub escrow_refused: Option<String>,
 }
 
 pub struct AuthorityCore {
     publisher: String,
     /// The CA the leaf pins, under which the credentials agent's key is certified.
     trust: polar_signing::Trust,
-    key: Option<RsaPublicKey>,
+    key: Option<crate::authority_update::AuthorityPublicKey>,
+    /// The credentials agent's escrow key, PEM, as its escrow certificate in a snapshot names it under the CA.
+    escrow_key: Option<String>,
     state: AuthorityState,
 }
 
@@ -105,6 +111,7 @@ impl AuthorityCore {
             publisher: publisher.into(),
             trust,
             key: None,
+            escrow_key: None,
             state: AuthorityState::default(),
         }
     }
@@ -113,11 +120,16 @@ impl AuthorityCore {
         self.key.is_some()
     }
 
-    /// The credentials agent's key, as pinned from its first snapshot under the CA: what the custody daemon seals a
-    /// new escrow key to, and nothing a caller names (docs/architecture/key-custody.md, "Part A's bootstrap: the
-    /// custodian").
-    pub fn pinned_key(&self) -> Option<&RsaPublicKey> {
+    /// The credentials agent's authority key, as pinned from its first snapshot under the CA.
+    pub fn pinned_key(&self) -> Option<&crate::authority_update::AuthorityPublicKey> {
         self.key.as_ref()
+    }
+
+    /// The credentials agent's escrow key (PEM), as pinned from a snapshot's escrow certificate under the CA: what the
+    /// custody daemon seals a new escrow key to, and nothing a caller names (docs/architecture/key-custody.md, "Part A's
+    /// bootstrap: the custodian"; "The credentials agent's keys, P-256").
+    pub fn pinned_escrow_key(&self) -> Option<&str> {
+        self.escrow_key.as_deref()
     }
 
     pub fn state(&self) -> &AuthorityState {
@@ -183,6 +195,26 @@ impl AuthorityCore {
         let key = self.key.as_ref().expect("pinned just above");
 
         let mut handled = Handled::default();
+        if !snapshot.escrow_certificate_chain_pem.is_empty() {
+            match polar_signing::verify_escrow_certificate(
+                &snapshot.escrow_certificate_chain_pem.concat(),
+                &self.trust,
+                now,
+                &self.publisher,
+            ) {
+                Ok(carried) => match &self.escrow_key {
+                    Some(pinned) if pinned != &carried => {
+                        return Err(Refusal::EscrowKeyChanged {
+                            pinned: pinned.clone(),
+                            got: carried,
+                        });
+                    }
+                    Some(_) => {}
+                    None => self.escrow_key = Some(carried),
+                },
+                Err(e) => handled.escrow_refused = Some(e.to_string()),
+            }
+        }
         for update in &snapshot.updates {
             match verify(update, key) {
                 Err(e) => handled.refused.push(e),
@@ -223,28 +255,19 @@ impl AuthorityCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authority_update::{AuthorityKey, generate_key, public_key_pem};
     use crate::authority_update::{AuthorityPayload, sign};
-    use rsa::RsaPrivateKey;
-    use rsa::pkcs8::EncodePublicKey;
 
     const CREDENTIALS: &str = "credentials-agent.polar.serviceaccount.cluster.local";
 
-    fn key(n: usize) -> RsaPrivateKey {
+    fn key(n: usize) -> AuthorityKey {
         use std::sync::OnceLock;
-        static KEYS: OnceLock<[RsaPrivateKey; 2]> = OnceLock::new();
-        KEYS.get_or_init(|| {
-            [
-                RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap(),
-                RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap(),
-            ]
-        })[n]
-            .clone()
+        static KEYS: OnceLock<[AuthorityKey; 2]> = OnceLock::new();
+        KEYS.get_or_init(|| [generate_key().unwrap(), generate_key().unwrap()])[n].clone()
     }
 
-    fn pem(key: &RsaPrivateKey) -> String {
-        key.to_public_key()
-            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-            .unwrap()
+    fn pem(key: &AuthorityKey) -> String {
+        public_key_pem(key.verifying_key()).unwrap()
     }
 
     fn policy(sequence: u64, version: u64) -> AuthorityPayload {
@@ -289,7 +312,7 @@ mod tests {
     }
 
     /// A signing certificate for `key`, naming `identity`, as cert-issuer issues the credentials agent's.
-    fn certificate_for(key: &RsaPrivateKey, identity: &'static str) -> Vec<String> {
+    fn certificate_for(key: &AuthorityKey, identity: &'static str) -> Vec<String> {
         vec![polar_signing::testing::escrow_certificate_for(
             ca(),
             polar_signing::testing::authority_spec(identity),
@@ -298,12 +321,67 @@ mod tests {
     }
 
     /// A snapshot signed by `signer`, under its certificate as the credentials agent's.
-    fn snapshot(signer: &RsaPrivateKey, payloads: &[AuthorityPayload]) -> AuthoritySnapshot {
+    fn snapshot(signer: &AuthorityKey, payloads: &[AuthorityPayload]) -> AuthoritySnapshot {
         AuthoritySnapshot {
             public_key_pem: pem(signer),
             certificate_chain_pem: certificate_for(signer, CREDENTIALS),
+            escrow_certificate_chain_pem: Vec::new(),
             updates: payloads.iter().map(|p| sign(p, signer).unwrap()).collect(),
         }
+    }
+
+    /// The credentials agent's escrow certificate, for `key_pem` (a P-256 or RSA public key), naming `identity`, as
+    /// cert-issuer issues an escrow certificate.
+    fn escrow_certificate(key_pem: &str, identity: &'static str) -> Vec<String> {
+        vec![polar_signing::testing::escrow_certificate_for(
+            ca(),
+            polar_signing::testing::EscrowSpec {
+                identity,
+                // A P-256 key is sealed to by key agreement.
+                key_usages: vec![rcgen::KeyUsagePurpose::KeyAgreement],
+                ..polar_signing::testing::EscrowSpec::default()
+            },
+            key_pem,
+        )]
+    }
+
+    // docs/architecture/key-custody.md, "The credentials agent's keys, P-256": the escrow key is the credentials agent's
+    // own, beside the authority key, certified as an agent's escrow key is; a leaf pins it from the snapshot under the CA,
+    // and never takes another while it runs. What the custody daemon seals a pod's escrow key to.
+    #[test]
+    fn a_snapshot_pins_the_escrow_key_its_certificate_names_and_never_another() {
+        let escrow = polar_signing::testing::p256_public_key_pem();
+        let mut core = core();
+        assert_eq!(core.pinned_escrow_key(), None);
+        let mut first = snapshot(&key(0), &[policy(1, 1)]);
+        first.escrow_certificate_chain_pem = escrow_certificate(&escrow, CREDENTIALS);
+        let handled = core.on_snapshot(&first, Some(CREDENTIALS), now()).unwrap();
+        assert_eq!(handled.escrow_refused, None);
+        assert_eq!(core.pinned_escrow_key(), Some(escrow.as_str()));
+
+        let mut other = snapshot(&key(0), &[]);
+        other.escrow_certificate_chain_pem =
+            escrow_certificate(&polar_signing::testing::p256_public_key_pem(), CREDENTIALS);
+        assert!(matches!(
+            core.on_snapshot(&other, Some(CREDENTIALS), now()),
+            Err(Refusal::EscrowKeyChanged { .. })
+        ));
+        assert_eq!(core.pinned_escrow_key(), Some(escrow.as_str()));
+    }
+
+    #[test]
+    fn an_escrow_certificate_that_is_not_the_credentials_agent_s_pins_nothing_and_the_rest_is_applied()
+     {
+        let mut core = core();
+        let mut snap = snapshot(&key(0), &[policy(1, 1)]);
+        snap.escrow_certificate_chain_pem = escrow_certificate(
+            &polar_signing::testing::p256_public_key_pem(),
+            "someone-else.polar.serviceaccount.cluster.local",
+        );
+        let handled = core.on_snapshot(&snap, Some(CREDENTIALS), now()).unwrap();
+        assert!(handled.escrow_refused.is_some(), "{handled:?}");
+        assert_eq!(core.pinned_escrow_key(), None);
+        assert!(handled.effects.contains(&Effect::SetPolicy("// v1".into())));
     }
 
     fn pinned(core: &mut AuthorityCore) {
@@ -488,8 +566,11 @@ mod tests {
         let other = snapshot(&key(1), &[policy(1, 9)]);
         match core.on_snapshot(&other, Some(CREDENTIALS), now()) {
             Err(Refusal::KeyChanged { pinned, got }) => {
-                assert_eq!(pinned, fingerprint(&key(0).to_public_key()).unwrap());
-                assert_eq!(got, fingerprint(&key(1).to_public_key()).unwrap());
+                assert_eq!(
+                    pinned,
+                    fingerprint(&key(0).verifying_key().clone()).unwrap()
+                );
+                assert_eq!(got, fingerprint(&key(1).verifying_key().clone()).unwrap());
             }
             other => panic!("{other:?}"),
         }
@@ -523,6 +604,7 @@ mod tests {
         let snap = AuthoritySnapshot {
             public_key_pem: "nope".into(),
             certificate_chain_pem: certificate_for(&key(0), CREDENTIALS),
+            escrow_certificate_chain_pem: vec![],
             updates: vec![],
         };
         assert!(matches!(

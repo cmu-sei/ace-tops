@@ -73,6 +73,13 @@ pub static ESCROW_KEY_PATH: Defaulted<String> = Defaulted::path(
     CREDENTIALS_ESCROW_KEY_PATH_DEFAULT,
 );
 
+pub static AUTHORITY_KEY_PATH: Defaulted<String> = Defaulted::path(
+    "CREDENTIALS_AUTHORITY_KEY_PATH",
+    polar_env::Access::WriteFile,
+    "where the authority key is kept (P-256; it signs authority updates and evidence records); generated on first start, so keep it on a persistent volume",
+    crate::authority_key::CREDENTIALS_AUTHORITY_KEY_PATH_DEFAULT,
+);
+
 /// Where the ledger key is kept when nothing else is said: beside the ledger, on the agent's persistent volume.
 pub const CREDENTIALS_LEDGER_KEY_PATH_DEFAULT: &str = "/var/lib/credentials-agent/ledger-key.pem";
 
@@ -129,6 +136,7 @@ static VARIABLES: &[&dyn Described] = &[
     &LEDGER_PATH,
     &EVENT_LOG_PATH,
     &ESCROW_KEY_PATH,
+    &AUTHORITY_KEY_PATH,
     &LEDGER_KEY_PATH,
     &BOOTSTRAP_IDENTITY,
     &KUBERNETES_ISSUERS,
@@ -194,6 +202,7 @@ pub struct ConsumerSettings {
     pub ledger_path: String,
     pub event_log_path: String,
     pub escrow_key_path: String,
+    pub authority_key_path: String,
     pub ledger_key_path: String,
     pub bootstrap_identity: String,
     pub kubernetes_issuers: Vec<String>,
@@ -229,6 +238,7 @@ impl ConsumerSettings {
             ledger_path: config.read(&LEDGER_PATH)?,
             event_log_path: config.read(&EVENT_LOG_PATH)?,
             escrow_key_path: config.read(&ESCROW_KEY_PATH)?,
+            authority_key_path: config.read(&AUTHORITY_KEY_PATH)?,
             ledger_key_path: config.read(&LEDGER_KEY_PATH)?,
             bootstrap_identity: config.read(&BOOTSTRAP_IDENTITY)?,
             kubernetes_issuers: config.read(&KUBERNETES_ISSUERS)?,
@@ -322,6 +332,10 @@ mod tests {
         assert_eq!(
             settings.escrow_key_path,
             CREDENTIALS_ESCROW_KEY_PATH_DEFAULT
+        );
+        assert_eq!(
+            settings.authority_key_path,
+            crate::authority_key::CREDENTIALS_AUTHORITY_KEY_PATH_DEFAULT
         );
         assert_eq!(settings.bootstrap_identity, DEFAULT_BOOTSTRAP_IDENTITY);
         assert_eq!(

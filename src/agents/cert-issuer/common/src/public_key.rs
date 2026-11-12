@@ -99,6 +99,15 @@ pub fn extract_escrow_public_key_pem(
     extract_public_key_pem(certificate_pem)
 }
 
+/// A certificate's own key, P-256 or RSA, as a standalone public-key PEM: as [`extract_escrow_public_key_pem`], for any
+/// certificate whose key may be P-256. The credentials agent's authority key is P-256 since 2026-11-10
+/// (docs/architecture/key-custody.md, "The credentials agent's keys, P-256").
+pub fn extract_p256_or_rsa_public_key_pem(
+    certificate_pem: &str,
+) -> Result<String, PublicKeyExtractionError> {
+    extract_escrow_public_key_pem(certificate_pem)
+}
+
 /// The key a certificate signing request asks to be certified, as its SubjectPublicKeyInfo (DER); none when `csr_pem`
 /// is not a CSR. What makes a request asked again the same request: the same key, whatever else it carries
 /// (docs/architecture/deployments.md, "A retry is not a second request").

@@ -113,7 +113,7 @@ impl AgentEscrowKeypairBootstrapHandler {
         // decrypted plaintext (Zeroizing<Vec<u8>>) is genuinely wiped
         // the instant the ephemeral re-encryption below completes,
         // never left to Rust's ordinary Drop.
-        let plaintext = match stored_secret.decrypt(self.escrow_keypair.private_key()) {
+        let plaintext = match self.escrow_keypair.open(&stored_secret) {
             Ok(p) => p,
             Err(e) => {
                 error!("Failed to decrypt stored agent escrow keypair for {requested_by}: {e}");

@@ -327,6 +327,14 @@ async fn polar_init_gives_the_plan_waits_for_ready_and_the_workload_unwraps_thro
 fn as_a_retrieval_opens_it(key: &polar_custody::escrow::EscrowKey) -> String {
     // Sealed for escrow and opened again, as the credentials agent and the custodian do.
     let recipient = rsa::RsaPrivateKey::new(&mut rand::rng(), 2048).unwrap();
-    let sealed = key.sealed_to(&recipient.to_public_key()).unwrap();
+    let sealed = key
+        .sealed_to(&{
+            use rsa::pkcs8::EncodePublicKey as _;
+            recipient
+                .to_public_key()
+                .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+                .unwrap()
+        })
+        .unwrap();
     String::from_utf8(sealed.decrypt(&recipient).unwrap().to_vec()).unwrap()
 }

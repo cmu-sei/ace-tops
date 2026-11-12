@@ -21,15 +21,14 @@
    DM26-0670
 */
 
-//! The credentials agent's authority key certified (docs/architecture/authority-distribution.md, "Pinning the key to
-//! the CA"). The escrow key, which signs every authority update (decision 4: one key), is given a `CertType::Signing`
-//! certificate for this agent's own identity on cert-issuer's `/internal/issue`, and the publisher carries it in every
-//! snapshot, so that a leaf pins the key because the CA it pins says it is the credentials agent's, and not merely
-//! because the broker said who published it. The ledger key is given a `CertType::Checkpoint` certificate the same way,
-//! which the ledger keeps beside it for whoever checks its checkpoints (docs/architecture/record-store.md, "L2,
-//! checkpoints"). Renewed at half its life; tried again every few seconds while cert-issuer cannot answer, the publisher
-//! publishing no snapshot until the first.
-
+//! The credentials agent's keys certified (docs/architecture/authority-distribution.md, "Pinning the key to the CA";
+//! docs/architecture/key-custody.md, "The credentials agent's keys, P-256"). Each is given a certificate for this agent's
+//! own identity on cert-issuer's `/internal/issue`: the authority key a `CertType::Signing` one, the escrow key a
+//! `CertType::Service` (escrow) one. The publisher carries both in every snapshot, so that a leaf pins each key because
+//! the CA it pins says it is the credentials agent's, and not merely because the broker said who published it. The ledger
+//! key a `CertType::Checkpoint` one, kept beside it by the ledger for whoever checks its checkpoints
+//! (docs/architecture/record-store.md, "L2, checkpoints"). Renewed at half its life; tried again every few seconds while
+//! cert-issuer cannot answer, the publisher publishing no snapshot until the authority key's first.
 use crate::authority_publisher::PublisherMessage;
 use crate::workload_issuance::{SIGNER_RETRY, renewal_delay};
 use cert_client::handshake::HandshakeClient;
@@ -46,13 +45,14 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Asks cert-issuer to certify the key `key_pem` (PKCS#8) as `identity`'s, a certificate of `cert_type`: its
-/// certificate as a chain, and how long until it is to be renewed.
+/// Asks cert-issuer to certify the key `key_pem` (PKCS#8) as `identity`'s, a certificate of `cert_type` naming
+/// `extra_sans` besides: its certificate as a chain, and how long until it is to be renewed.
 pub async fn certify(
     cert_issuer: &HandshakeClient,
     identity: &str,
     key_pem: &str,
     cert_type: CertType,
+    extra_sans: &[String],
 ) -> Result<(Vec<String>, Duration), String> {
     let csr = cert_issuer_common::keypair::csr_for_private_key_pem(identity, &[], key_pem)
         .map_err(|e| format!("cannot make the key's CSR: {e}"))?;
@@ -63,7 +63,7 @@ pub async fn certify(
             csr_pem: csr,
             identity: identity.to_string(),
             cert_type,
-            extra_sans: vec![],
+            extra_sans: extra_sans.to_vec(),
             subject_dn_defaults: None,
             account_subject: None,
         })
@@ -79,8 +79,12 @@ pub struct AuthorityCertifier;
 
 /// Who is given each certificate.
 pub enum Certified {
-    /// The publisher, for the key authority updates are signed with.
-    Publisher(ActorRef<PublisherMessage>),
+    /// The publisher, told with `message`: `PublisherMessage::Certified` for the authority key,
+    /// `PublisherMessage::EscrowCertified` for the escrow key.
+    Publisher {
+        publisher: ActorRef<PublisherMessage>,
+        message: fn(Vec<String>) -> PublisherMessage,
+    },
     /// The ledger, for its key.
     Ledger(ActorRef<crate::ledger::LedgerMessage>),
 }
@@ -88,9 +92,7 @@ pub enum Certified {
 impl Certified {
     fn tell(&self, chain: Vec<String>) -> Result<(), ActorProcessingErr> {
         match self {
-            Certified::Publisher(publisher) => {
-                publisher.cast(PublisherMessage::Certified(chain))?
-            }
+            Certified::Publisher { publisher, message } => publisher.cast(message(chain))?,
             Certified::Ledger(ledger) => {
                 ledger.cast(crate::ledger::LedgerMessage::KeyCertified(chain))?
             }
@@ -106,6 +108,7 @@ pub struct AuthorityCertifierArgs {
     /// The key to certify, PKCS#8 PEM, wiped when the certifier ends.
     pub key_pem: Zeroizing<String>,
     pub cert_type: CertType,
+    pub extra_sans: Vec<String>,
     pub certified: Certified,
 }
 
@@ -139,6 +142,7 @@ impl Actor for AuthorityCertifier {
             &state.identity,
             &state.key_pem,
             state.cert_type.clone(),
+            &state.extra_sans,
         )
         .await
         {
@@ -161,17 +165,54 @@ impl Actor for AuthorityCertifier {
 mod tests {
     use super::*;
     use crate::workload_issuance::tests::{CertifiesSigning, OWN_IDENTITY, the_ca};
+    use credentials_agent_common::authority_update::AuthorityKey;
     use std::sync::{Arc, Mutex};
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn key() -> rsa::RsaPrivateKey {
-        crate::escrow::tests::test_keypair().private_key().clone()
+    fn key() -> AuthorityKey {
+        static KEY: std::sync::OnceLock<AuthorityKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(|| credentials_agent_common::authority_update::generate_key().unwrap())
+            .clone()
     }
 
     fn key_pem() -> Zeroizing<String> {
-        use rsa::pkcs8::EncodePrivateKey;
-        key().to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap()
+        crate::authority_key::pkcs8_pem(&key()).unwrap()
+    }
+
+    fn escrow_key_pem() -> Zeroizing<String> {
+        crate::escrow::tests::test_keypair()
+            .private_key_pem()
+            .unwrap()
+    }
+
+    /// A cert-issuer that signs an escrow certificate on `/internal/issue` as the real one does: the key's own usage, by key
+    /// agreement for P-256 and by wrapping for RSA, and the one extended key usage `emailProtection`.
+    struct CertifiesEscrow;
+
+    impl wiremock::Respond for CertifiesEscrow {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let asked: InternalIssueRequest = request.body_json().unwrap();
+            let mut csr = rcgen::CertificateSigningRequestParams::from_pem(&asked.csr_pem).unwrap();
+            let now = time::OffsetDateTime::now_utc();
+            csr.params.not_before = now - time::Duration::minutes(1);
+            csr.params.not_after = now + time::Duration::days(30);
+            csr.params.key_usages = vec![if csr.public_key.algorithm()
+                == &rcgen::PKCS_ECDSA_P256_SHA256
+            {
+                rcgen::KeyUsagePurpose::KeyAgreement
+            } else {
+                rcgen::KeyUsagePurpose::KeyEncipherment
+            }];
+            csr.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::EmailProtection];
+            ResponseTemplate::new(200).set_body_json(cert_issuer_common::IssueResponse {
+                certificate_pem: csr.signed_by(&the_ca().issuer).unwrap().pem(),
+                ca_chain_pem: the_ca().pem.clone(),
+                serial_number: "escrow-1".to_string(),
+                session_id: "00000000-0000-0000-0000-000000000002".to_string(),
+                expires_at: now + time::Duration::days(30),
+            })
+        }
     }
 
     /// A cert-issuer that signs a checkpoint certificate on `/internal/issue` as the real one does: digital signature,
@@ -235,15 +276,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let ledger_key = crate::ledger_key::load_or_generate(&key.path).unwrap();
+        let ledger_key = crate::authority_key::load_or_generate(&key.path).unwrap();
         let (certifier, _) = Actor::spawn(
             None,
             AuthorityCertifier,
             AuthorityCertifierArgs {
                 cert_issuer: HandshakeClient::new(server.uri()),
                 identity: OWN_IDENTITY.to_string(),
-                key_pem: crate::ledger_key::pkcs8_pem(&ledger_key).unwrap(),
+                key_pem: crate::authority_key::pkcs8_pem(&ledger_key).unwrap(),
                 cert_type: CertType::Checkpoint,
+                extra_sans: Vec::new(),
                 certified: Certified::Ledger(ledger.clone()),
             },
         )
@@ -295,7 +337,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_escrow_key_is_certified_as_this_agent_s_signing_key_and_a_leaf_believes_it() {
+    async fn the_authority_key_is_certified_as_this_agent_s_signing_key_and_a_leaf_believes_it() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/internal/issue"))
@@ -313,6 +355,7 @@ mod tests {
             OWN_IDENTITY,
             &key_pem(),
             CertType::Signing,
+            &[],
         )
         .await
         .unwrap();
@@ -321,7 +364,7 @@ mod tests {
             (Duration::from_secs(1800 - 5)..=Duration::from_secs(1800 + 5)).contains(&delay),
             "{delay:?}"
         );
-        // The publisher takes it, and a leaf that pins the CA pins the escrow key under it.
+        // The publisher takes it, and a leaf that pins the CA pins the authority key under it.
         let mut book = credentials_agent_common::authority_book::AuthorityBook::new(key(), 0);
         book.certify(chain).unwrap();
         let trust = polar_signing::Trust::from_pem(&[the_ca().pem.clone()]).unwrap();
@@ -329,12 +372,51 @@ mod tests {
             book.snapshot()
                 .unwrap()
                 .certified_key(&trust, OWN_IDENTITY, unix_now()),
-            Ok(key().to_public_key())
+            Ok(*key().verifying_key())
         );
     }
 
-    /// Notes each `Certified` the publisher is sent.
-    struct Publisher(Arc<Mutex<Vec<Vec<String>>>>);
+    #[tokio::test]
+    async fn the_escrow_key_is_certified_as_this_agent_s_escrow_key_and_a_leaf_seals_to_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/issue"))
+            .and(body_partial_json(serde_json::json!({
+                "identity": OWN_IDENTITY,
+                "cert_type": "SERVICE",
+                "extra_sans": [],
+            })))
+            .respond_with(CertifiesEscrow)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (chain, _) = certify(
+            &HandshakeClient::new(server.uri()),
+            OWN_IDENTITY,
+            &escrow_key_pem(),
+            CertType::Service,
+            &[],
+        )
+        .await
+        .unwrap();
+        let trust = polar_signing::Trust::from_pem(&[the_ca().pem.clone()]).unwrap();
+        assert_eq!(
+            polar_signing::verify_escrow_certificate(
+                &chain.concat(),
+                &trust,
+                unix_now(),
+                OWN_IDENTITY
+            )
+            .as_deref(),
+            Ok(crate::escrow::tests::test_keypair().public_key_pem())
+        );
+    }
+
+    /// Each certificate the publisher was sent, with which key it was for.
+    type Sent = Arc<Mutex<Vec<(&'static str, Vec<String>)>>>;
+
+    /// Notes each certificate the publisher is sent.
+    struct Publisher(Sent);
 
     #[ractor::async_trait]
     impl Actor for Publisher {
@@ -350,15 +432,21 @@ mod tests {
             message: Self::Msg,
             _: &mut (),
         ) -> Result<(), ActorProcessingErr> {
-            if let PublisherMessage::Certified(chain) = message {
-                self.0.lock().unwrap().push(chain);
+            match message {
+                PublisherMessage::Certified(chain) => {
+                    self.0.lock().unwrap().push(("authority", chain))
+                }
+                PublisherMessage::EscrowCertified(chain) => {
+                    self.0.lock().unwrap().push(("escrow", chain))
+                }
+                _ => {}
             }
             Ok(())
         }
     }
 
     #[tokio::test]
-    async fn while_cert_issuer_cannot_answer_it_tries_again_and_hands_the_publisher_the_first_it_gets()
+    async fn while_cert_issuer_cannot_answer_it_tries_again_and_tells_the_publisher_the_first_it_gets()
      {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -369,7 +457,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/internal/issue"))
-            .respond_with(CertifiesSigning)
+            .respond_with(CertifiesEscrow)
             .mount(&server)
             .await;
         let certified = Arc::new(Mutex::new(Vec::new()));
@@ -382,9 +470,13 @@ mod tests {
             AuthorityCertifierArgs {
                 cert_issuer: HandshakeClient::new(server.uri()),
                 identity: OWN_IDENTITY.to_string(),
-                key_pem: key_pem(),
-                cert_type: CertType::Signing,
-                certified: Certified::Publisher(publisher),
+                key_pem: escrow_key_pem(),
+                cert_type: CertType::Service,
+                extra_sans: Vec::new(),
+                certified: Certified::Publisher {
+                    publisher,
+                    message: PublisherMessage::EscrowCertified,
+                },
             },
         )
         .await
@@ -395,7 +487,9 @@ mod tests {
             "nothing yet: cert-issuer was down"
         );
         tokio::time::sleep(SIGNER_RETRY + Duration::from_secs(1)).await;
-        assert_eq!(certified.lock().unwrap().len(), 1, "the second try's");
+        let certified = certified.lock().unwrap();
+        assert_eq!(certified.len(), 1, "the second try's");
+        assert_eq!(certified[0].0, "escrow", "as the message it was given says");
         certifier.stop(None);
     }
 }
