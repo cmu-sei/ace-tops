@@ -188,6 +188,29 @@ review:*
 - The one other message that names the flag stays as it is: a record that belongs to another cluster
   (`restore_inputs_from_record`). That case is not a broken build.
 
+*Live on u7c (2026-11-11, agentic-control-plane 92f1c09a):*
+1. *The break.* A local branch, never pushed (`db25b593`), was published as `44fd00a1`. Its cert issuer died at
+   every start with "cannot write /etc/tls/certs/cert.pem", and every agent's pod waited at its start for a
+   certificate, the git server's among them.
+2. *A plain run from the fixed tree.* Stage 8 passed without the observer. The publish stopped with: "cannot read
+   the deployment repository: … Flux reports what the deployment broke: polar-cassini: HealthCheckFailed … publish it
+   through a bootstrap server from this machine's mirror: nu infra/up.nu sandbox-local --bootstrap-again".
+3. *`--bootstrap-again`.* The bootstrap server took the mirror's history at `44fd00a1`, and the fix was published on
+   top as `11d6fb20`. All 7 layers became Ready, and the seed copied the fix to Polar's git server. The signed
+   settings and the seed documents were left as they were.
+4. *A plain run.* It handed off again: `10570835` was published to `deployment`, all 7 layers became Ready from
+   Polar's git server, and `polar-deploy` was removed. The mirror's history has one root, with the bad commit under
+   the fix. Then all 27 pods were running.
+
+*Found, for review:*
+- **Flux named Cassini, not the cert issuer.** The cert issuer restarts in place: its container restarted 1,214
+  times inside a pod that stayed `Running` (`functions.dhall`, "restarts in place"). So its Deployment stayed
+  `Available` and its layer Ready, and the first Deployment to fail was Cassini's, waiting for its certificate. The
+  message still points the right way, but it names a symptom. Naming the cause would mean reading pods' restarts
+  as well as Flux, and that is not done here.
+- nu prints the error a `catch` caught below the message made from it, so the cause line shows twice. Cosmetic, left
+  as it is.
+
 **A machine without a cluster's inputs takes them from the cluster's record.** Moving between clusters discards `cluster-inputs.nuon`, and a publish without it took the cluster's administrators away, among them the person publishing: found on u7s, where it left only `--bootstrap-again`. So on a handed-off cluster a run with no inputs reads `cluster_inputs` from the verified head's `provenance.json` (`inputs_from_record`), and refuses if that is another cluster's. The topology comes back the same way, so `--topology` is only for a change. Before the handoff the pipeline pushes, so nothing is locked out, and the seed puts the administrator back.
 
 **What was settled before it was built:**
