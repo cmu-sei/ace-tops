@@ -21,15 +21,16 @@
    DM26-0670
 */
 
-//! Keeping the schedules checkout in step with its remote, with the `git` command.
+//! The deployment copy's git, with the `git` command, until up.nu makes the copy and the observer runs
+//! no program (docs/architecture/runtime-attestation.md, slice C, C2, O3). Everything else it reads
+//! from Polar's git server over Cassini (src/reads.rs).
 //!
-//! The command, not libgit2: the Polar git server knows who is asking from the client
-//! certificate, and libgit2 cannot present one.
+//! The command, not libgit2: the servers know who is asking from the client certificate, and libgit2
+//! cannot present one.
 
 use anyhow::{Context, anyhow};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tracing::info;
 
 /// The certificates git uses to reach the remote. All unset: git's usual trust, no client
 /// certificate.
@@ -74,19 +75,6 @@ fn run(mut cmd: Command, what: &str) -> Result<String, anyhow::Error> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Leaves a checkout of `remote_url` at `local_path`: an existing one is used as it is, a missing
-/// one is cloned.
-pub fn ensure_repo(local_path: &Path, remote_url: &str, tls: &GitTls) -> Result<(), anyhow::Error> {
-    if local_path.join(".git").exists() {
-        info!("Opening existing repo at {}", local_path.display());
-        return Ok(());
-    }
-    info!("Cloning {} into {}", remote_url, local_path.display());
-    let mut cmd = tls.command();
-    cmd.arg("clone").arg(remote_url).arg(local_path);
-    run(cmd, "clone").map(|_| ())
-}
-
 /// A git remote and how to reach it.
 #[derive(Debug, Clone)]
 pub struct Remote {
@@ -127,104 +115,4 @@ pub fn copy_main(source: &Remote, target: &Remote, work: &Path) -> Result<String
     let mut held = in_work(&GitTls::default());
     held.args(["rev-parse", HELD]);
     Ok(run(held, "rev-parse")?.trim().to_string())
-}
-
-/// The text of the file at `path` at the head of `remote`'s `main`, through a bare repository at `work`: None if the head does
-/// not hold it. Nothing here is believed for having been read: what reads it checks what it is.
-pub fn file_at_main(
-    remote: &Remote,
-    path: &str,
-    work: &Path,
-) -> Result<Option<String>, anyhow::Error> {
-    const HELD: &str = "refs/polar/read";
-    let in_work = |tls: &GitTls| {
-        let mut cmd = tls.command();
-        cmd.current_dir(work);
-        cmd
-    };
-    std::fs::create_dir_all(work).with_context(|| format!("cannot make {}", work.display()))?;
-    let mut init = in_work(&GitTls::default());
-    init.args(["init", "--quiet", "--bare", "."]);
-    run(init, "init")?;
-    let mut fetch = in_work(&remote.tls);
-    fetch.args([
-        "fetch",
-        "--quiet",
-        "--force",
-        &remote.url,
-        &format!("refs/heads/main:{HELD}"),
-    ]);
-    run(fetch, "fetch")?;
-    let object = format!("{HELD}:{path}");
-    let mut holds = in_work(&GitTls::default());
-    holds.args(["cat-file", "-e", &object]);
-    let held = holds
-        .status()
-        .with_context(|| "cannot run git cat-file".to_string())?;
-    if !held.success() {
-        return Ok(None);
-    }
-    let mut show = in_work(&GitTls::default());
-    show.args(["show", &object]);
-    run(show, "show").map(Some)
-}
-
-/// Whether a failed clone is the server refusing this identity, which trying again cannot change,
-/// rather than a server that does not answer yet (it is starting, or its pod was just replaced).
-pub fn clone_refused(error: &str) -> bool {
-    error.contains("403") || error.contains("401")
-}
-
-/// Brings the checkout up to its remote when that is a fast-forward. A history that has diverged
-/// is an error and is left alone.
-pub fn pull_repo(local_path: &Path, tls: &GitTls) -> Result<(), anyhow::Error> {
-    info!("Pulling latest changes...");
-    let mut cmd = tls.command();
-    cmd.current_dir(local_path).args(["pull", "--ff-only"]);
-    run(cmd, "pull").map(|_| ())
-}
-
-/// The repository a remote URL names: its last path segment without `.git`. A change announced
-/// for any other repository is not about this checkout.
-pub fn repo_name(remote_url: &str) -> Option<&str> {
-    let last = remote_url.trim_end_matches('/').rsplit(['/', ':']).next()?;
-    let name = last.strip_suffix(".git").unwrap_or(last);
-    (!name.is_empty()).then_some(name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_refusal_is_final_and_a_server_that_does_not_answer_is_tried_again() {
-        assert!(clone_refused(
-            "git clone failed: fatal: unable to access '...': The requested URL returned error: 403"
-        ));
-        assert!(clone_refused("The requested URL returned error: 401"));
-        assert!(!clone_refused(
-            "fatal: unable to access '...': TLS connect error: error:0A000126:SSL routines::unexpected eof while reading"
-        ));
-        assert!(!clone_refused(
-            "Failed to connect to polar-git-server.polar.svc.cluster.local port 8443: Connection refused"
-        ));
-    }
-
-    #[test]
-    fn the_repository_is_the_last_path_segment() {
-        assert_eq!(
-            repo_name("https://polar-git-server.polar.svc.cluster.local:8443/polar-schedules.git"),
-            Some("polar-schedules")
-        );
-        assert_eq!(
-            repo_name("https://github.com/x/polar-schedules"),
-            Some("polar-schedules")
-        );
-        assert_eq!(
-            repo_name("git@github.com:x/polar-schedules.git"),
-            Some("polar-schedules")
-        );
-        assert_eq!(repo_name("file:///tmp/r/"), Some("r"));
-        assert_eq!(repo_name(""), None);
-    }
 }

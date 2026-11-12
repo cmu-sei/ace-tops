@@ -852,7 +852,7 @@ def main [] {
                 target_file $t "cluster-inputs.nuon" ({ cluster: null, handed_off: true, workloads: {} } | to nuon)
                 let observer = (resolve_for $t "polar-scheduler-observer")
                 assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_SOURCE_URL" $t) null
-                assert (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_URL" $t | str ends-with "/deployment.git") "it still delivers the signed record"
+                assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_REPO" $t) "deployment" "it still delivers the signed record"
                 assert equal (env_value $observer "POLAR_SCHEDULER_DEPLOYMENT_TARGET_URL" $t) null
                 assert ($observer.volumes | where name == "deployment-reader" | is-empty)
                 let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)

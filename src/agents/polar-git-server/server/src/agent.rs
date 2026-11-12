@@ -27,9 +27,6 @@ use polar_env::Section;
 use ractor::Actor;
 use std::time::Duration;
 
-/// Why nothing in the catalog is on the other side of the read topics yet.
-const READS_WAIT: &str = "the scheduler observer reads through them once it no longer runs git (runtime-attestation.md, slice C, C2, O2)";
-
 pub struct GitServer;
 
 impl PolarAgent for GitServer {
@@ -50,14 +47,12 @@ impl PolarAgent for GitServer {
         TopicDecl::subscribe(
             polar_git_server_common::READ_REQUESTS_TOPIC,
             "a request for what a repository's main holds, from an agent that may read it",
-        )
-        .waiting(READS_WAIT),
+        ),
         TopicDecl::publish(
             polar_git_server_common::SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
             "what a repository's main holds, for the scheduler observer, on its own topic",
         )
-        .because(&[Cause::Topic(polar_git_server_common::READ_REQUESTS_TOPIC)])
-        .waiting(READS_WAIT),
+        .because(&[Cause::Topic(polar_git_server_common::READ_REQUESTS_TOPIC)]),
     ];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(

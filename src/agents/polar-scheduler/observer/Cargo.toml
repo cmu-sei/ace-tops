@@ -41,6 +41,8 @@ notify.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true
 polar-git-server-common.workspace = true
+# The request/reply correlation its reads of the git server over Cassini wait on (src/reads.rs).
+polar.workspace = true
 polar-router.workspace = true
 polar-scheduler-common = { path = "../common" }
 ractor.workspace = true

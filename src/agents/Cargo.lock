@@ -7513,6 +7513,7 @@ dependencies = [
  "cassini-types",
  "git2",
  "notify",
+ "polar",
  "polar-agent-builder",
  "polar-env",
  "polar-git-server-common",

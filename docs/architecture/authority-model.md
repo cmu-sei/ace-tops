@@ -61,8 +61,8 @@ What has to stay open for the system to be governable. Read from the code, 2026-
   and hears `polar-authority-snapshot-requests`; every Cassini client hears the first two and publishes the third, all
   implied by `cassini-client` (`topics.rs:234`). The broker hears them in process (`cassini/broker/src/authority.rs`).
 - **Correcting policy.** An administrator signs a `policy` or `groups` document and commits it to the schedules
-  repository on the Polar git server. The scheduler observer pulls it (on the git server's announcement on Cassini, or
-  on an interval) and publishes it on `scheduler.in`. The scheduler processor publishes it on
+  repository on the Polar git server. The scheduler observer reads it from the server over Cassini (on the server's
+  announcement of the push, when it joins Cassini, or on an interval) and publishes it on `scheduler.in`. The scheduler processor publishes it on
   `agent.credentials-agent.configuration` (its family, `polar-scheduler/processor/src/agent.rs:52`; the credentials
   agent is among the served workloads, `infra/topics.nu:32`). The credentials agent hears its configuration topic
   (implied), accepts the document, and publishes it as authority. A credentials agent that starts asks for what is held
@@ -184,7 +184,7 @@ places: the default `POLAR_AUTHORITY_PUBLISHER`, cert-issuer's internal callers,
   | `Topic(name)` | a message arrived on a topic | the consumer answering a request; the scheduler processor forwarding `scheduler.in` |
   | `Http(route)` | a request on a route this agent serves | the observer's six routes; the git server's push |
   | `Registered` | the agent registered with Cassini (again) | the authority ask, the configuration replay |
-  | `Timer(name)` | its own interval | polling observers; the scheduler observer's pull |
+  | `Timer(name)` | its own interval | polling observers; the scheduler observer's read |
   | `Outside(source)` | something it watches outside Polar | kube-observer (the Kubernetes API), the Jira, GitLab and OpenAPI observers |
   | none | of its own accord | rare, and the exception that gives a reason, as `waits` does now |
 

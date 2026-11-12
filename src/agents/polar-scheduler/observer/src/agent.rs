@@ -34,14 +34,34 @@ pub struct SchedulerObserver;
 impl PolarAgent for SchedulerObserver {
     const NAME: &'static str = SERVICE_NAME;
     const ROLE: Role = Role::Observer;
-    const PURPOSE: &'static str = "Keeps a checkout of the schedules repository current and publishes each schedule change on Cassini";
+    const PURPOSE: &'static str = "Keeps a checkout of the schedules repository current, read from Polar's git server over Cassini, and publishes each schedule change on Cassini";
     const NEEDS: &'static [Capability] = &[];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
             polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC,
-            "a push to the schedules repository, which starts a sync",
+            "a push to the schedules repository, which starts a read",
         ),
+        TopicDecl::publish(
+            polar_git_server_common::READ_REQUESTS_TOPIC,
+            "a read of the schedules repository's main, or of the deployment record, from Polar's git server",
+        )
+        .because(&[
+            Cause::Topic(polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC),
+            Cause::Registered,
+            Cause::Timer("read"),
+            Cause::Timer("reading the deployment repository"),
+        ]),
+        TopicDecl::subscribe(
+            polar_git_server_common::SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
+            "the git server's answer to a read, on this observer's own topic",
+        )
+        // A read a push announcement started answers that announcement's own entry, not a topic of its own.
+        .answers(&[
+            Cause::Registered,
+            Cause::Timer("read"),
+            Cause::Timer("reading the deployment repository"),
+        ]),
         TopicDecl::subscribe(
             polar_scheduler_common::CONFIGURATION_REPLAY_TOPIC,
             "an agent asking for the documents held for it",
@@ -52,7 +72,8 @@ impl PolarAgent for SchedulerObserver {
         )
         .because(&[
             Cause::Topic(polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC),
-            Cause::Timer("pull"),
+            Cause::Registered,
+            Cause::Timer("read"),
         ]),
         TopicDecl::publish(
             polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC,
@@ -69,12 +90,12 @@ impl PolarAgent for SchedulerObserver {
     )])];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
-        "The observer clones the schedules repository from its remote, watches the checkout, \
-         evaluates each changed Dhall schedule and publishes the change to the scheduler. It \
-         pulls when the Polar git server announces a change to that repository on Cassini, and \
-         on an interval if one is set (a remote that is not the Polar git server announces \
-         nothing). To a Polar git server it presents the certificate it is given, which is how \
-         the server decides it may read.",
+        "The observer reads the schedules repository's main from Polar's git server over Cassini \
+         into its checkout, watches the checkout, evaluates each changed Dhall schedule and \
+         publishes the change to the scheduler. It reads when it joins Cassini, when the git server \
+         announces a change to that repository, and on an interval if one is set; the server answers \
+         on this observer's own topic, judging by the identity the broker stamped whether it may \
+         read. It runs git only to copy the deployment to Polar's git server until the handoff.",
     );
 
     async fn start(configured: Configured) -> Result<(), StartError> {
@@ -110,5 +131,32 @@ mod tests {
             }
         }
         assert_eq!(SchedulerObserver::TOPIC_FAMILIES.len(), 1);
+    }
+
+    // runtime-attestation.md, slice C, C2, O2: it reads Polar's git server over Cassini, and is answered on its own topic,
+    // the one the server publishes it on.
+    #[test]
+    fn it_asks_the_git_server_for_reads_and_is_answered_on_its_own_topic() {
+        use polar_agent_builder::Access;
+        let scaffold = polar_agent_builder::agent::scaffold_document::<SchedulerObserver>();
+        let has = |name: &str, access: Access| {
+            scaffold
+                .topics
+                .iter()
+                .any(|t| t.name == name && t.access == access)
+        };
+        assert!(has(
+            polar_git_server_common::READ_REQUESTS_TOPIC,
+            Access::Publish
+        ));
+        assert!(has(
+            polar_git_server_common::SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
+            Access::Subscribe
+        ));
+        assert_eq!(
+            polar_git_server_common::read_replies_topic(SERVICE_NAME),
+            polar_git_server_common::SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
+            "the server answers it on the topic named for this workload"
+        );
     }
 }

@@ -24,13 +24,14 @@
 //! Supervisor for the scheduler observer, on the agent builder: health check, router and the
 //! Cassini client come from `AgentBuilder`.
 //!
-//! Children: the sync actor (when there is a remote), which pulls on an interval and whenever the
-//! Polar git server announces a change to this repository; and the watcher, which publishes each
-//! schedule change in the checkout. Both are linked, so a failure of either ends the process and
-//! the Job starts a fresh one.
+//! Children: the sync actor (when there is a repository to read), which reads it from Polar's git
+//! server over Cassini on an interval, whenever the server announces a change to it, and when the
+//! observer joins Cassini; and the watcher, which publishes each schedule change in the checkout,
+//! started once the first read is answered. Both are linked, so a failure of either ends the process
+//! and the Job starts a fresh one.
 //!
-//! `Registered` fires on every registration, a reconnect included, so it only reports health and
-//! starts the watcher if there is none.
+//! `Registered` fires on every registration, a reconnect included, so it only reports health, asks
+//! for a read, and with no repository to read starts the watcher if there is none.
 //!
 //! Shutdown, in order, when the health check ends the pod's life:
 //!
@@ -42,20 +43,23 @@
 
 use crate::deployment_copy::{DeploymentCopyActor, DeploymentCopyArgs};
 use crate::deployment_record::{DeploymentRecordActor, DeploymentRecordArgs};
-use crate::git_ops::{GitTls, Remote, clone_refused, ensure_repo, repo_name};
+use crate::git_ops::{GitTls, Remote};
+use crate::reads::{READ_TIMEOUT, ReadsMain, ServerReads, replies_subscription};
 use crate::settings::ObserverSettings;
 use crate::sync_actor::{GitSyncActor, GitSyncArgs, SyncMessage};
 use crate::watcher::{GitWatcherActor, GitWatcherMsg};
 use cassini_client::TcpClientMessage;
 use cassini_types::ClientEvent;
+use polar::request_reply::ReplyRouter;
 use polar_agent_builder::{
     AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
     Subscription,
 };
-use polar_git_server_common::{POLAR_GIT_REPO_CHANGED_TOPIC, RepoChangedEvent};
+use polar_git_server_common::{MainRead, POLAR_GIT_REPO_CHANGED_TOPIC, RepoChangedEvent};
 use polar_scheduler_common::{CONFIGURATION_REPLAY_TOPIC, ConfigurationReplayRequest};
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
@@ -63,10 +67,6 @@ pub const SERVICE_NAME: &str = "polar-scheduler-observer";
 
 /// Stopping two small actors is all there is to drain; the rest is margin.
 pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(10);
-
-/// How long the first clone of the schedules repository is tried for while the git server does not answer: under the
-/// liveness probe's initial delay (infra/config/kinds.nuon, 150 s), so the probe does not end the pod first.
-const FIRST_CLONE_PATIENCE: Duration = Duration::from_secs(120);
 
 pub enum SchedulerObserverMessage {
     ClientEvent {
@@ -76,7 +76,7 @@ pub enum SchedulerObserverMessage {
     RepoChanged(RepoChangedEvent),
     /// An agent that has just registered asks for the signed configuration held for it.
     ReplayRequested(String),
-    /// A pull brought the checkout up to date: what changed is read and published.
+    /// A read brought the checkout up to date: what changed is read and published.
     Pulled,
     PrepareShutdown,
 }
@@ -121,6 +121,27 @@ pub fn replay_request_subscription(supervisor: ActorRef<SchedulerObserverMessage
 
 pub struct SchedulerObserverSupervisor;
 
+/// Starts the watcher on the checkout, its first scan, and the replays asked for before it was there.
+async fn start_watcher(
+    myself: &ActorRef<SchedulerObserverMessage>,
+    state: &mut SchedulerObserverSupervisorState,
+) -> Result<(), ActorProcessingErr> {
+    let (watcher, _) = Actor::spawn_linked(
+        Some("git-watcher".to_string()),
+        GitWatcherActor,
+        (state.repo_path.clone(), state.tcp_client.clone()),
+        myself.get_cell(),
+    )
+    .await?;
+    info!("triggering the watcher's initial scan");
+    watcher.cast(GitWatcherMsg::PerformInitialScan)?;
+    for agent in std::mem::take(&mut state.waiting_replays) {
+        watcher.cast(GitWatcherMsg::Replay { agent })?;
+    }
+    state.watcher = Some(watcher);
+    Ok(())
+}
+
 pub struct SchedulerObserverSupervisorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
@@ -148,55 +169,35 @@ impl Actor for SchedulerObserverSupervisor {
         info!("{myself:?} starting");
 
         let settings = ObserverSettings::read(configured.config())?;
+        let read_router = Arc::new(ReplyRouter::<MainRead>::new());
         let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
             .with_lifecycle_handler(|event| Some(SchedulerObserverMessage::ClientEvent { event }))
             .with_subscription(repo_changed_subscription(myself.clone()))
             .with_subscription(replay_request_subscription(myself.clone()))
+            .with_subscription(replies_subscription(read_router.clone()))
             .with_drain(|| SchedulerObserverMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
             .await?;
+        // The git server, asked over Cassini: the schedules and the deployment's record are read through it.
+        let reads: Arc<dyn ReadsMain> = Arc::new(ServerReads::new(
+            resources.tcp_client.as_actor_ref().clone(),
+            read_router,
+            READ_TIMEOUT,
+        ));
 
-        let tls = GitTls {
+        // The deployment copy's push presents this certificate to Polar's git server, until up.nu makes the copy (O3).
+        let target_tls = GitTls {
             ca_cert: settings.git_ca_cert.map(PathBuf::from),
             client_cert: settings.git_client_cert.map(PathBuf::from),
             client_key: settings.git_client_key.map(PathBuf::from),
         };
 
-        let target_tls = tls.clone();
         let mut sync = None;
-        let mut watched_repo = None;
-        if let Some(remote_url) = &settings.remote_url {
-            // The first clone is blocking and the observer has nothing to watch without it. The git
-            // server may not answer yet: it starts in the same layer as this observer, and replaces its
-            // own pod every hour. So a transport failure is tried again, with a growing wait, for less
-            // than the liveness probe's initial delay; a refusal ends the observer at once.
-            let deadline = std::time::Instant::now() + FIRST_CLONE_PATIENCE;
-            let mut wait = Duration::from_secs(2);
-            loop {
-                let (path, url, clone_tls) = (
-                    PathBuf::from(&settings.local_path),
-                    remote_url.clone(),
-                    tls.clone(),
-                );
-                let cloned =
-                    tokio::task::spawn_blocking(move || ensure_repo(&path, &url, &clone_tls))
-                        .await
-                        .map_err(|e| format!("cloning the schedules repository panicked: {e}"))?;
-                let Err(e) = cloned else { break };
-                let why = format!("{e:#}");
-                if clone_refused(&why) || std::time::Instant::now() + wait > deadline {
-                    return Err(format!("cannot get the schedules repository: {why}").into());
-                }
-                warn!(
-                    "the schedules repository does not answer yet ({why}); trying again in {}s",
-                    wait.as_secs()
-                );
-                tokio::time::sleep(wait).await;
-                wait = (wait * 2).min(Duration::from_secs(30));
-            }
-
-            watched_repo = repo_name(remote_url).map(str::to_string);
+        let watched_repo = settings.schedules_repo.clone();
+        if let Some(repo) = &settings.schedules_repo {
+            // The first read is asked once the observer has joined Cassini (`Registered`), and the watcher starts once it
+            // is answered, so its first scan is the repository's word.
             let interval = settings
                 .sync_interval_secs
                 .filter(|secs| *secs > 0)
@@ -206,7 +207,8 @@ impl Actor for SchedulerObserverSupervisor {
                 GitSyncActor,
                 GitSyncArgs {
                     repo_path: PathBuf::from(&settings.local_path),
-                    tls,
+                    repo: repo.clone(),
+                    reads: reads.clone(),
                     interval,
                     pulled: Some({
                         let supervisor = myself.clone();
@@ -220,19 +222,16 @@ impl Actor for SchedulerObserverSupervisor {
             .await?;
             sync = Some(actor);
         } else {
-            info!("No remote URL configured; watching local directory only.");
+            info!("No repository configured; watching local directory only.");
         }
 
-        if let Some(url) = &settings.deployment_url {
+        if let Some(repo) = &settings.deployment_repo {
             Actor::spawn_linked(
                 Some(format!("{SERVICE_NAME}.deployment_record")),
                 DeploymentRecordActor,
                 DeploymentRecordArgs {
-                    repository: Remote {
-                        url: url.clone(),
-                        tls: target_tls.clone(),
-                    },
-                    work: PathBuf::from(&settings.local_path).with_extension("deployment-record"),
+                    repo: repo.clone(),
+                    reads: reads.clone(),
                     tcp_client: resources.tcp_client.as_actor_ref().clone(),
                     configuration: resources.configuration.clone(),
                 },
@@ -289,22 +288,14 @@ impl Actor for SchedulerObserverSupervisor {
             SchedulerObserverMessage::ClientEvent { event } => match event {
                 ClientEvent::Registered { .. } => {
                     let _ = state.healthcheck.cassini_connected();
-                    if state.watcher.is_none() {
-                        let (watcher, _) = Actor::spawn_linked(
-                            Some("git-watcher".to_string()),
-                            GitWatcherActor,
-                            (state.repo_path.clone(), state.tcp_client.clone()),
-                            myself.get_cell(),
-                        )
-                        .await?;
-                        info!("Client registered, triggering initial scan");
-                        watcher.cast(GitWatcherMsg::PerformInitialScan)?;
-                        for agent in std::mem::take(&mut state.waiting_replays) {
-                            watcher.cast(GitWatcherMsg::Replay { agent })?;
+                    match &state.sync {
+                        // Read now: the first read, or what a reconnect may have missed. The watcher starts once
+                        // the first is answered.
+                        Some(sync) => sync.cast(SyncMessage::Now)?,
+                        None if state.watcher.is_none() => start_watcher(&myself, state).await?,
+                        None => {
+                            debug!("Watcher already running; not starting another on reconnect")
                         }
-                        state.watcher = Some(watcher);
-                    } else {
-                        debug!("Watcher already running; not starting another on reconnect");
                     }
                 }
                 ClientEvent::TransportError { reason } => {
@@ -317,16 +308,16 @@ impl Actor for SchedulerObserverSupervisor {
                 if !concerns(&event, state.watched_repo.as_deref()) {
                     debug!(repo = %event.repo, "change is for another repository");
                 } else if let Some(sync) = &state.sync {
-                    info!(repo = %event.repo, refname = %event.refname, pusher = %event.pusher, "repository changed; pulling");
+                    info!(repo = %event.repo, refname = %event.refname, pusher = %event.pusher, "repository changed; reading it");
                     sync.cast(SyncMessage::Now)?;
                 }
             }
-            // The watcher reads the checkout again after each pull, and does not depend on noticing the files change.
-            SchedulerObserverMessage::Pulled => {
-                if let Some(watcher) = &state.watcher {
-                    watcher.cast(GitWatcherMsg::Rescan)?;
-                }
-            }
+            // The watcher reads the checkout again after each read, and does not depend on noticing the files change. The
+            // first read starts it.
+            SchedulerObserverMessage::Pulled => match &state.watcher {
+                Some(watcher) => watcher.cast(GitWatcherMsg::Rescan)?,
+                None => start_watcher(&myself, state).await?,
+            },
             SchedulerObserverMessage::ReplayRequested(agent) => match &state.watcher {
                 Some(watcher) => watcher.cast(GitWatcherMsg::Replay { agent })?,
                 None => state.waiting_replays.push(agent),

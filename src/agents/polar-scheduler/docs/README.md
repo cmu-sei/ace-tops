@@ -75,13 +75,13 @@ in the history before then.
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `POLAR_SCHEDULER_REMOTE_URL` | Git remote URL (required for tests) | `file:///tmp/test-repo` or `https://github.com/...` |
-| `POLAR_SCHEDULER_LOCAL_PATH` | Local directory for the working copy | `/tmp/polar-schedules-test` |
-| `POLAR_SCHEDULER_SYNC_INTERVAL` | Seconds between `git pull` (optional) | `30` |
-| `POLAR_SCHEDULER_GIT_USERNAME` | HTTPS username (if needed) | `user` |
-| `POLAR_SCHEDULER_GIT_PASSWORD` | HTTPS password or token | `token` |
+| `POLAR_SCHEDULER_SCHEDULES_REPO` | The repository on Polar's git server the checkout is kept as, read over Cassini; unset, the local directory is watched alone | `polar-schedules` |
+| `POLAR_SCHEDULER_LOCAL_PATH` | Local directory for the checkout | `/tmp/polar-schedules-test` |
+| `POLAR_SCHEDULER_SYNC_INTERVAL` | Seconds between reads (optional) | `30` |
+| `POLAR_SCHEDULER_DEPLOYMENT_REPO` | The deployment repository, whose signed record is delivered to the attestation agent | `deployment` |
 
-These variables are read by the observer; the processor only needs the standard Neo4j environment variables (`GRAPH_ENDPOINT`, `GRAPH_USER`, `GRAPH_PASSWORD`, `GRAPH_DB`).
+These are the main ones; `polar-scheduler-observer --scaffold` lists every variable the observer reads (the deployment
+copy's among them). They are read by the observer; the processor only needs the standard Neo4j environment variables (`GRAPH_ENDPOINT`, `GRAPH_USER`, `GRAPH_PASSWORD`, `GRAPH_DB`).
 
 ## Container Images
 

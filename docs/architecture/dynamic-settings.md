@@ -133,7 +133,7 @@ drain windows (the shutdown budget is computed from them), and `DRIFT_GRACE_SECS
 
 ### Static, by the maintainer's scope of 2026-11-02
 
-Paths, sockets and bind addresses. `BROKER_ADDR`, `CASSINI_SERVER_NAME`, `POLAR_SCHEDULER_REMOTE_URL`. `CERT_ISSUER_ISSUERS`,
+Paths, sockets and bind addresses. `BROKER_ADDR`, `CASSINI_SERVER_NAME`, `POLAR_SCHEDULER_SCHEDULES_REPO`. `CERT_ISSUER_ISSUERS`,
 `CERT_ISSUER_INTERNAL_CALLERS`, `POLAR_GIT_SERVER_ADMINS`, `CREDENTIALS_AGENT_BOOTSTRAP_IDENTITY`. Egress (jira.md, the cluster's
 setting).
 
