@@ -467,7 +467,10 @@ protection, and then a pod without it is refused its certificate. Probed on whit
      work (threads, a runtime, a connection, a name resolved, files, memory) goes on, with `Seccomp: 2` and
      `NoNewPrivs: 1` in its status.
 4. *C4, Canal and the node sensor*: a spike of Canal rootless, then enforcement on u7c, and the sensor (a DaemonSet, a kind
-   the catalog gains), its traffic limited by policy to Cassini.
+   the catalog gains), its traffic limited by policy to Cassini. *Kept as planned (the maintainer, 2026-11-11)*, when asked
+   whether Canal still belonged here given that Polar should take on no more dependencies on Kubernetes. The other option
+   was Landlock's port rules, which the builder could compute per agent with no Kubernetes involved but which say only
+   ports, not destinations.
 5. *N1 and N2*, the builds' policy and its canary.
 6. *C5, the session bound to the pod's address* through its certificate.
 
