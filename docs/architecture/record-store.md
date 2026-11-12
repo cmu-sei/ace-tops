@@ -206,7 +206,8 @@ crates").
 **The credentials ledger's checkpoints** are signed by the credentials agent, with a key of its own for that purpose
 (one key, one purpose: neither its authority key nor its escrow key), and published into the store as entries of their
 own, where the store's checkpoints and witnesses cover them. *Decided (the maintainer, 2026-11-11):* the key is one of
-its own, P-256, certified by the cert issuer for that purpose alone, as the store's is. The ledger's events are marked
+its own, P-256, certified for that purpose alone as the store's is (decision 5): through the credentials agent, the one
+workload that asks the cert issuer. The ledger's events are marked
 critical as `ledger-evolution.md` proposes ("A proposed classification"): an older agent refuses to serve on a critical
 type or version it does not know and passes over the rest, counting them; every type is critical unless declared
 otherwise, and the build fails on a type with no mark.
