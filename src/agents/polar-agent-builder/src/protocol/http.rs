@@ -2202,15 +2202,18 @@ mod tests {
 
     #[tokio::test]
     async fn the_probe_says_a_port_that_refuses_is_unreachable() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        // Bound and never listening, for the whole test: no other test can take the port meanwhile (a port released
+        // before the probe was taken by one, under the whole suite), and every connection to it is refused.
+        let held = tokio::net::TcpSocket::new_v4().unwrap();
+        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = held.local_addr().unwrap().port();
         let probed = probe_of(
             &format!("https://127.0.0.1:{port}/"),
             polar::egress::Egress::default(),
         )
         .await;
         assert_eq!(probed.reach, Reach::Unreachable, "{probed:?}");
+        drop(held);
     }
 
     #[tokio::test]
@@ -2249,9 +2252,10 @@ mod tests {
     async fn the_probe_says_a_proxy_that_will_not_open_the_way_or_is_not_there_is_the_proxy() {
         use polar::egress::testing::recording_proxy;
         let (refusing, _) = recording_proxy().await;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let gone = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        drop(listener);
+        // A proxy that is not there: a port held, bound and never listening, so no other test takes it meanwhile.
+        let held = tokio::net::TcpSocket::new_v4().unwrap();
+        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let gone = format!("http://127.0.0.1:{}", held.local_addr().unwrap().port());
         for proxy in [refusing, gone] {
             let egress = polar::egress::Egress {
                 proxy: Some(proxy.clone()),

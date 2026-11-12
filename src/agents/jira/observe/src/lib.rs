@@ -1467,10 +1467,11 @@ mod tests {
         assert!(message.contains("/rest/api/2/project"), "{message}");
         assert!(!message.contains(SITE_HOST), "{message}");
 
-        // Nothing listens on a port that was bound and let go, so the connection is refused.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let gone = format!("http://{}", listener.local_addr().unwrap());
-        drop(listener);
+        // Nothing listens on a port held bound and never listening, so the connection is refused, and no other test can
+        // take the port meanwhile, as one could take a port that was let go.
+        let held = tokio::net::TcpSocket::new_v4().unwrap();
+        held.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let gone = format!("http://{}", held.local_addr().unwrap());
         let s = state(gone.clone(), bearer()).await;
         let error = s
             .get_json::<Value>(&format!("{}/rest/api/2/project", s.jira_url))
