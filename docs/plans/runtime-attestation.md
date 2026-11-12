@@ -28,12 +28,11 @@
 > of one plan, and they are changed together.
 >
 > A **capability-level plan**: the intent, and every feature it needs, with where each stands. Each remaining feature
-> gets a plan of its own in [`runtime-attestation/`](runtime-attestation/). It describes Polar's `main` as it is on
-> 2026-11-12. The design's full history is in [`../architecture/runtime-attestation.md`](../architecture/runtime-attestation.md).
+> gets a plan of its own in [`runtime-attestation/`](runtime-attestation/). It describes Polar's `main` as it is. The
+> design's full history is in [`../architecture/runtime-attestation.md`](../architecture/runtime-attestation.md).
 
-**Status: partly built.** Slices A and B are done. Slice C is half done: the hardening, git out of every agent, and
-both of each agent's locks are on main. Network enforcement, the node sensor and the address binding are next. This
-is step 8 of main's order of work.
+**Status: partly built.** Judging pods and watching them are done. The hardening, taking git out of every agent, and
+each agent's locks are built. Network enforcement, the node sensor and binding sessions to a pod's address are next.
 
 ## 1. The need
 
@@ -53,43 +52,42 @@ agent and the node sensor are trusted. Polar does not defend against what is alr
 
 ## 2. How the need was found
 
-- **From the maintainer's design work, 2026-10-26 onward,** recorded in `runtime-attestation.md`: what an attacker
-  could do in a pod, and what would see it.
+- **From the design work** recorded in `runtime-attestation.md`: what an attacker could do in a pod, and what would
+  see it.
 - **From building the certificate path.** A pod's token proves only whose workload it is, not that the pod is the one
   that was signed for.
 - **From looking at the pods themselves on Polar's clusters.** No container ran read-only or under a seccomp profile,
-  and the attestation agent checked none of it (2026-11-10). That gap became the first part of slice C.
-- **From reviewing the build orchestrator, 2026-11-08.** A build pod running someone else's code could reach every
+  and the attestation agent checked none of it. Closing that gap became the hardening below.
+- **From reviewing the build orchestrator.** A build pod running someone else's code could reach every
   service in the cluster and the internet.
 
 ## 3. The plan
 
 An **attestation agent** judges every Polar pod against the **signed deployment record**, which says what should run
 and how. It watches for anything that drifts. Around it, each agent is made harder to subvert, and the cluster is made
-to enforce what each pod may reach. The work is in three slices.
+to enforce what each pod may reach.
 
 | Feature | What it gives | Status |
 |---|---|---|
-| **Slice A: the agent answers from what it sees** | the signed record; the credentials agent asks before issuing whether the pod is genuine, and refuses if not | done |
-| **Slice B: watching** | altered pods and crashes reported, acting on nothing | done |
-| **Hardening held to the record** (C1) | every Polar container read-only, no privilege escalation, under the runtime's seccomp profile, and held to it | done, seen live 2026-11-10 |
-| **No agent runs git or holds a key file** (C2) | git's protocol in the git server's own process; agents read through it over Cassini; up.nu copies the deployment; the egress probe | done; seen live from the other branch, not yet from main |
-| **Each agent locks itself** (C3) | at start, seccomp refuses new programs, debugging and executable memory; Landlock limits the files to what its build declares | done; seen live from the other branch, not yet from main |
-| **Network enforcement** (C4, with N1 and N2) | the cluster enforces what each pod may reach, starting with builds of foreign code, and proves it does | planned: [`runtime-attestation/network-enforcement.md`](runtime-attestation/network-enforcement.md) |
-| **The node sensor** (C4) | a read-only reporter on every node: processes in each Polar container that are not its agent, and each agent's locks, read from outside the process | outlined, plan not yet written |
-| **Sessions bound to the pod's address** (C5) | a certificate carries its pod's address, and Cassini refuses a session from anywhere else | outlined, plan not yet written |
+| **Judging each pod** | the signed record; the credentials agent asks before issuing whether the pod is genuine, and refuses if not | done |
+| **Watching** | altered pods and crashes reported, acting on nothing | done |
+| **Hardening held to the record** | every Polar container read-only, no privilege escalation, under the runtime's seccomp profile, and held to it | done, seen working on u7c |
+| **No agent runs git or holds a key file** | git's protocol in the git server's own process; agents read through it over Cassini; up.nu copies the deployment; the egress probe | built; not yet seen working on u7c from `main` |
+| **Each agent locks itself** | at start, seccomp refuses new programs, debugging and executable memory; Landlock limits the files to what its build declares | built; not yet seen working on u7c from `main` |
+| **Network enforcement** | the cluster enforces what each pod may reach, starting with builds of foreign code, and proves it does | planned: [`runtime-attestation/network-enforcement.md`](runtime-attestation/network-enforcement.md) |
+| **The node sensor** | a read-only reporter on every node: processes in each Polar container that are not its agent, and each agent's locks, read from outside the process | outlined, plan not yet written |
+| **Sessions bound to the pod's address** | a certificate carries its pod's address, and Cassini refuses a session from anywhere else | outlined, plan not yet written |
 
 ## 4. Alternatives considered
 
-- **Attesting by a challenge to the running process,** asking it to prove its code. The maintainer decided against it
-  (2026-11-10). A process that has been taken over answers whatever it likes, so the verdict comes from the API and the
-  sensor.
+- **Attesting by a challenge to the running process,** asking it to prove its code. Rejected: a process that has
+  been taken over answers whatever it likes, so the verdict comes from the API and the sensor.
 - **Reading process memory to hash running code.** That would make the sensor able to read any process's memory, the
   custody daemon's keys among them. It is set aside as a decision of its own, later.
 - **Kubernetes' own controls alone** (Pod Security admission, a cluster's own policies). Polar accepts Kubernetes'
   limits but does not hand its security decisions to a Kubernetes feature where it can make them better itself.
-- **Acting on what it finds.** The maintainer decided slice B reports and acts on nothing (2026-11-03), so that Polar
-  keeps operating through a compromise and shuts it down at its own choosing.
+- **Acting on what it finds.** Rejected: watching reports and acts on nothing, so that Polar keeps operating through
+  a compromise and shuts it down at its own choosing.
 
 ## 5. Why this plan
 
@@ -111,12 +109,12 @@ Not yet met:
   engine that enforces NetworkPolicy, and Polar renders no policy for its own namespaces.
 - **Processes in a pod.** Nothing sees a second process in a pod, such as a shell opened with `kubectl exec`.
 - **Where a session comes from.** Nothing ties a Cassini session to where it comes from.
-- **Seen from main.** The C2 and C3 work was seen live on u7c from the other branch. Main's port of it has not yet been
-  deployed; that happens in the shared-cluster proof now under way.
+- **Seen working from `main`.** Taking git out of the agents, and their locks, have been seen working on u7c, but not
+  yet as `main` builds them.
 
 ## 7. What is left before this is a capability
 
-- **Network enforcement,** the next feature: its plan is written and waiting for the maintainer.
+- **Network enforcement,** the next feature, with a plan of its own.
 - **The node sensor,** then **sessions bound to the pod's address,** each planned as it is reached.
 - **A capability document,** saying what runtime attestation is, why it exists and how it is used, once the last
-  feature is in. After it, lifecycle is next in main's order of work.
+  feature is in.

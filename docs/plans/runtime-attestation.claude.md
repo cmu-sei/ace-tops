@@ -24,6 +24,7 @@
 # runtime-attestation — Claude's side
 
 PAIR: `runtime-attestation.md` (people). Same plan, two forms; change together.
+SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 LEVEL: capability. Features: `runtime-attestation/<feature>.{md,claude.md}`. Design history:
 `docs/architecture/runtime-attestation.md` (main 512 lines; agentic-control-plane 879 lines — branch holds the C2/C3
 text, lines 1–424 identical in both).
@@ -34,6 +35,16 @@ ORDER: main's order of work step 8 (remaining-work.md:32-102); step 10 lifecycle
 each pod holding a Polar cert is the pod signed for: signed image, run as the signed record says, unaltered.
 threat = foothold (not exfiltration first): make hard, DETECT (crash by signal = gold), operate through, shut down at
 own choosing. Trust base: k8s control plane, cert-issuer CA key, signed deployment, attestation agent, node sensor.
+
+## FOUND (people part 2, dated)
+- design work 2026-10-26 onward (arch runtime-attestation.md).
+- cert path: token proves whose workload, not which pod.
+- 2026-11-10 pods inspected: none read-only/seccomp, agent checked none → C1.
+- 2026-11-08 build-orchestrator review: build pod reaches everything.
+
+## NAMES (people side → id)
+Judging each pod=A, Watching=B, Hardening held to the record=C1, No agent runs git…=C2, Each agent locks itself=C3,
+Network enforcement=C4-net (+N1,N2), The node sensor=C4-sensor, Sessions bound to the pod's address=C5.
 
 ## DECISIONS (maintainer, dated; arch doc line = both versions unless marked)
 - 2026-10-26 sensor read-only on every node; separate identity from attestation agent (:58-68).

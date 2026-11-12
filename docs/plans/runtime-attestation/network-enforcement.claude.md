@@ -24,9 +24,17 @@
 # C4-net network-enforcement — Claude's side
 
 PAIR: `network-enforcement.md` (people). Same plan, two forms; change together.
+SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../runtime-attestation.claude.md` (C4-net). Old names: C4 Canal, N1 policy, N2 canary, N3 engine
 (build-orchestrator.md:963-992). AS-OF main 355a8a22 + nix-usernetes 10f3bcd (2026-11-02). Re-verify lines.
 STATUS: planned; nothing built; Q-flannel DECIDED 2026-11-12 (Calico policy-only first). u7c busy (branch proof).
+
+## FOUND (people part 2, dated)
+- 2026-11-08 orchestrator review, verbatim: "No NetworkPolicy covers `polar-builds`, and u7c's network plugin enforces
+  none" (build-orchestrator.md:725).
+- 2026-10-13 cert-issuer isolation: dev cluster enforces nothing; maintainer: run on fallback, engine later.
+- 2026-11-12 nix-usernetes read (FACTS below).
+People side: Canal = "the engine chosen", terms = "unprivileged, on nftables, without IPv6" (unattributed there).
 
 ## INVARIANT
 build pod (polar-builds): ingress none; egress only registry pods:port; no DNS (hostAliases from orchestrator).
@@ -83,7 +91,8 @@ is kernel-specific; a throwaway nix-usernetes cluster there, not u7c, avoids the
 
 ## ALTERNATIVES
 Landlock ports (rejected 11-11) | no enforcement + refuse foreign builds (= fallback now) | kube-router policy-only |
-kube-network-policies (nftables) | Calico policy-only (Q-flannel) | Canal (decided).
+kube-network-policies (nftables) | full Canal from the start (= fallback). Calico policy-only = the plan's first try
+(Q-flannel), no longer listed as an alternative on the people side.
 
 ## NOT CHECKED
 whether Calico/Felix runs in a user namespace (spike); Felix nftables on a kernel without `inet` family (IPv6 absent) —

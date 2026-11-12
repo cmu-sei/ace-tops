@@ -28,18 +28,17 @@
 > they are changed together.
 >
 > This is a **capability-level plan**: the intent, and every feature it needs. Each feature has a plan of its own, in
-> [`deployer/`](deployer/). It describes Polar's `main` as it is on 2026-11-12.
+> [`deployer/`](deployer/). It describes Polar's `main` as it is.
 
-**Status: a proposal, not decided.** Nothing of the deployer is built. The maintainer has not yet said whether to
-build it, and the order of work puts it after the lifecycle work (part 5).
+**Status: a proposal, not decided.** Nothing of the deployer is built. Whether to build it is open, and the order of
+work puts it after the lifecycle work (part 5).
 
 ## 1. The need
 
 Polar is deployed from a signed description of what should run: one commit, signed by the deployment's own
 `pipeline` certificate. Something has to make the cluster match that description, keep it matching, and say when it
-does. Today that is Flux, an open-source GitOps tool. The maintainer put the need in one line (2026-11-02):
-
-> "Ultimately, what I want from a 'gitops' service is to reconcile a state, from desired -> to deployed."
+does. Today that is Flux, an open-source GitOps tool. In one line: the deployer reconciles a state, from desired to
+deployed.
 
 The need has several parts, each of which Flux falls short of:
 
@@ -49,7 +48,7 @@ The need has several parts, each of which Flux falls short of:
 - **The applier is an agent like any other:** it has a Polar identity, its key is held by the custody daemon, and the
   attestation agent checks it.
 - **Polar decides what may be deleted,** above all the storage that holds the ledger, the repositories and the graph.
-- **A rollout is fast.** The maintainer: "I find it horribly slow... that's something I'd like to work on."
+- **A rollout is fast.** Today it is slow (part 2).
 - **Order comes from what workloads declare they depend on,** not from layers kept by hand.
 - **A rollout is finished when Polar's own invariants hold,** not when Kubernetes reports Ready.
 
@@ -59,7 +58,7 @@ The need has several parts, each of which Flux falls short of:
   Polar's git server"). Once the deployment is hosted inside Polar, a compromised git server could serve a commit
   nobody signed, and Flux would apply it. The git server checks signatures when a commit is pushed, but Flux checks
   nothing when it applies.
-- **From the maintainer's own statements,** 2026-11-02, quoted in this plan and its features.
+- **From using Flux:** rollouts are slow, and what Polar wants is the reconciling, not Flux's generality.
 - **From a review of Flux's code** against what Polar renders: 112 edge cases, 74 of which apply to Polar
   ([`deployer/flux-review.md`](deployer/flux-review.md)). It found where Flux's generality costs Polar. For example,
   an object moved to a later layer is deleted and recreated, and an empty layer is pruned whole.
@@ -115,7 +114,7 @@ measurements.
 
 Two things bear on when:
 
-- The maintainer decided (`lifecycle.md`, decision 5) that the order is: lifecycle first, then the catalog's split,
+- The order is decided (`lifecycle.md`, decision 5): lifecycle first, then the catalog's split,
   then this controller, **reshaped around lifecycle phases**. This plan does not yet have phases.
 - Disaster recovery waits for the controller (`remaining-work.md`, the order of work, step 12).
 

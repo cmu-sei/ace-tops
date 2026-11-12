@@ -27,8 +27,7 @@
 > thing, written for Claude. This one is written for people. They are two sides of one plan, and they are changed
 > together.
 >
-> A **feature-level plan**, part of [the deployer](../deployer.md). It describes Polar's `main` as it is on
-> 2026-11-12.
+> A **feature-level plan**, part of [the deployer](../deployer.md). It describes Polar's `main` as it is.
 
 **Status: a proposal, not decided, nothing built.** It is the deployer's first feature, and useful on its own.
 
@@ -87,8 +86,8 @@ whole otherwise.
 8. **A refusal never makes things worse.** A commit that fails any check leaves the cluster on the last good one. It
    deletes nothing, restarts nothing, and reports what failed and how far behind the cluster now is.
 
-**How it gets the commits.** Polar's agents reach Polar's services only through Cassini, never by a direct connection
-(the maintainer, 2026-11-09). The git server already answers reads over Cassini, but a read gives back only the head's
+**How it gets the commits.** Polar's agents reach Polar's services only through Cassini, never by a direct connection.
+The git server already answers reads over Cassini, but a read gives back only the head's
 files and its commit name. So **the git server gains a second kind of read**: the raw, signed commits from one commit
 to the head, with the files of the head. The verifier trusts none of it until it has checked it.
 

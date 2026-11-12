@@ -24,6 +24,7 @@
 # deployer — Claude's side
 
 PAIR: `deployer.md` (people). Same plan, two forms; change together. This side: dense, for Claude's reload.
+SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 LEVEL: capability. Features: `deployer/<feature>.{md,claude.md}`.
 AS-OF: main 1dd68a49 (2026-11-12) + this doc. Re-verify `file:line` before relying; lines drift.
 STATUS: proposal; nothing built; maintainer has not decided build vs gateway vs keep-Flux.

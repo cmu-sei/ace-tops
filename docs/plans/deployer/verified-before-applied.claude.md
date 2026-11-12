@@ -24,6 +24,7 @@
 # F1 verified-before-applied — Claude's side
 
 PAIR: `verified-before-applied.md` (people). Same plan, two forms; change together.
+SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../deployer.claude.md` (F1). AS-OF main 1dd68a49, 2026-11-12. Re-verify lines.
 STATUS: proposal; nothing built; first feature; shadow-mode first.
 
