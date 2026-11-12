@@ -525,6 +525,10 @@ a malformed event and a torn end; the hold, with no key loaded; the copy from a 
 again after a crash mid-copy; the lock; the projection from an unknown checkpoint. *Live, on u7c:* the agent copies
 u7c's ledger (about 13,000 entries), with the time it took, and keeps serving. An image built with one event's critical
 version raised past what the deployed agent knows makes the deployed agent hold. The way back is the newer image.
+*Revised (the maintainer, 2026-11-11):* the hold is checked on a copy of u7c's ledger, not on u7c. Once an entry the
+deployed build cannot read is in a ledger, only a build that can read it serves that ledger again, so the planned test
+could be undone only by putting back a saved ledger, rewriting its history. Instead the deployed image's own binary is
+started here against a copy holding one unknown critical entry, and must say the refusal and load no key.
 
 *L1 built* (`credentials-agent/common/src/ledger.rs` and `tests/ledger.rs` with `tests/ledger-samples`;
 `consume/src/ledger.rs`, `ledger_reader.rs` and the `polar-ledger` binary; `polar-log`'s `FileLog`). *Decided while
@@ -553,6 +557,27 @@ building, for review:*
   name. It would have passed vacuously against a binary file, and now reads the events too.
 - *`polar-ledger`* reads copies of both files, so it neither locks nor changes them. Its copy of a read-only JSON
   ledger is made writable for opening, as `EventLog` opens. CBOR's diagnostic notation needs minicbor's `half` feature.
+
+*Live on u7c (2026-11-11, agentic-control-plane ae2c42fc):*
+- *The copy.* The new credentials agent copied u7c's JSON ledger at its first start: 20,135 entries, 26.5 MB. The
+  container started at 02:57:13 and the copy was done by 02:57:13.93, so the copy and the check that every event
+  reads back took under a second. It then replayed 20,135 events and served. `events.jsonl` is mode 0400, and
+  `ledger.log` was 21.2 MB. After the run all 27 pods were running, the credentials agent with no restart.
+- *Checked against its source.* `polar-ledger ledger.log --against events.jsonl`, on copies taken from the pod: 20,330
+  entries by then, with the tree root printed. It found "the copy holds the JSON ledger's 20135 entries, as they were
+  and when they were", and nothing that did not hold, in 1.5 seconds.
+- *The projection.* Neo4j was still starting for the agent's first 16 seconds. Once it answered, the graph's
+  checkpoint read `last_seq` 20,329, the last event, beside the old `last_hash`. So the graph was projected over the
+  new ledger without being told.
+- *The hold, on a copy.* The deployed image's own binary (`credentials-agent-consumer`, from its digest) was started
+  here against a copy of u7c's ledger with one entry added: `credentials.something-new` v1, critical, written by
+  "9.0.0". It said: "credentials-agent cannot start its work, and stays up to say so (a restart would not help): the
+  ledger holds credentials.something-new v1 (entry 20330), written by 9.0.0 x86_64-unknown-linux-musl, which this
+  agent (3.0.0+dev x86_64-unknown-linux-musl) cannot read: it serves nothing until a version that can is deployed".
+  It ran only its infrastructure (`credentials-agent.held`), its health file said unhealthy, and no key file was
+  written. It stayed up until it was stopped after 25 seconds. The copies were deleted afterwards.
+- *Found:* `polar-ledger` prints a certificate's PEM with its line breaks, so an entry holding one spans several lines.
+  It is cosmetic, and left as it is.
 
 **L2, checkpoints, outlined.** The ledger key, P-256 and generated at first start beside the authority key
 (`CREDENTIALS_LEDGER_KEY_PATH`), is certified through `authority_certificate::certify` like the agent's other keys.
