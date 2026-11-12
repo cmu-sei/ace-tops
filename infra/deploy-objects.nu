@@ -196,6 +196,27 @@ def configmap_hash [doc: record] {
 # template that is a fingerprint of those ConfigMaps. Flux recreates a Job only when its spec changes, and a changed
 # ConfigMap does not change it: with the fingerprint, it does, and the workload restarts to read the new content
 # (`apply.nu` does the same for the imperative path). A file with no such workload is returned as it was rendered.
+# Flux's mark that it never prunes an object, though it is no longer rendered.
+export const PRUNE_ANNOTATION = "kustomize.toolkit.fluxcd.io/prune"
+
+# Every PersistentVolumeClaim in `texts` (rendered files by name) marked so Flux never prunes it: a claim is its data, and
+# is deleted only by a person (the maintainer, 2026-11-02: deleting a claim or a namespace needs "explicit instruction";
+# docs/plans/deployer.claude.md, DECISIONS). So a claim a deploy does not render, another branch's on a shared cluster
+# among them, keeps its data. A file with no claim is returned exactly as rendered, so its digest is unchanged.
+export def protect_claims [texts: record] {
+    $texts | items {|f, text|
+        let docs = (documents $text)
+        if not ($docs | any {|d| ($d.kind? | default "") == "PersistentVolumeClaim" }) { return { f: $f, text: $text } }
+        let marked = ($docs | each {|d|
+            if ($d.kind? | default "") != "PersistentVolumeClaim" { $d } else {
+                let annotations = ($d | get -o metadata.annotations | default {} | upsert $PRUNE_ANNOTATION "disabled")
+                $d | upsert metadata.annotations $annotations
+            }
+        })
+        { f: $f, text: (yaml_docs $marked) }
+    } | reduce --fold {} {|r, acc| $acc | insert $r.f $r.text }
+}
+
 export def annotate_config_hashes [texts: record] {
     let maps = ($texts | items {|f, t| documents $t | where {|d| ($d.kind? | default "") == "ConfigMap" } }
         | flatten

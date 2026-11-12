@@ -25,7 +25,7 @@
 # wait for each, and the checks that keep an unpinned image out.
 
 use std/assert
-use ../deploy-objects.nu [annotate_config_hashes, CONFIG_HASH_ANNOTATION, documents, git_repository, has_job, health_check, kustomization, published_layers, unpinned_images, yaml_docs]
+use ../deploy-objects.nu [annotate_config_hashes, CONFIG_HASH_ANNOTATION, PRUNE_ANNOTATION, protect_claims, documents, git_repository, has_job, health_check, kustomization, published_layers, unpinned_images, yaml_docs]
 
 def fails_with [needle: string, body: closure] {
     let r = (try { do $body; "no error" } catch {|e| $e.msg })
@@ -150,6 +150,26 @@ def main [] {
                 # the labels stay, and the ConfigMap's own file is as it was rendered
                 assert equal (documents ($before | get "j.yaml") | first | get spec.template.metadata.labels.app) "j"
                 assert equal ($before | get "cm.yaml") (do $cm "a")
+            }
+        }
+        {
+            # A claim is deleted only by a person (the maintainer, 2026-11-02, "explicit instruction"): Flux leaves one
+            # alone once it is no longer rendered, so a branch's claim, and its data, outlive a deploy that does not render it.
+            name: "every claim is marked so Flux never prunes it, and a file with none is left exactly as rendered"
+            body: {
+                let pvc = {|name, ann| $"apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: ($name)\n  namespace: polar\n($ann)spec:\n  accessModes:\n  - ReadWriteOnce\n" }
+                let mixed = $"(do $pvc 'ledger' '')---\n($DEPLOY)---\n(do $pvc 'graph' "  annotations:\n    team: data\n")"
+                let out = (protect_claims { "data.yaml": $mixed, "d.yaml": $DEPLOY })
+                let docs = (documents ($out | get "data.yaml"))
+                let claims = ($docs | where kind == "PersistentVolumeClaim")
+                assert equal ($claims | length) 2
+                assert ($claims | all {|c| ($c.metadata.annotations | get $PRUNE_ANNOTATION) == "disabled" })
+                # what was there stays, and nothing else in the file changes
+                assert equal ($claims | where metadata.name == "graph" | first | get metadata.annotations.team) "data"
+                assert equal ($docs | where kind == "Deployment" | first) (documents $DEPLOY | first)
+                assert equal ($out | get "d.yaml") $DEPLOY
+                # marking twice marks once
+                assert equal (protect_claims $out) $out
             }
         }
         {

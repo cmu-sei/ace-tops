@@ -57,7 +57,7 @@ use cluster-inputs.nu
 use under-test.nu [LAYER_PREFIX]
 use way-back.nu [why_unreachable]
 use seed.nu [GIT_HOST, GIT_PORT, git_config]
-use deploy-objects.nu [AUTH_SECRET, FLUX_NS, deployment_facts, next_record, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
+use deploy-objects.nu [AUTH_SECRET, FLUX_NS, deployment_facts, next_record, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, protect_claims, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
 
 # The port of the server's Service, and of this machine's end of the forward to it unless --port says otherwise.
 export const DEFAULT_PORT = 9443
@@ -431,7 +431,8 @@ def digest_of [file: string] { open --raw $file | hash sha256 }
 export def tree_files [target: string, layers: list, texts: record, server: string, facts: record, --polar-host: string = ""] {
     let published = (published_layers $layers)
     let rendered = $texts
-    let texts = (annotate_config_hashes $rendered)
+    # A claim is never pruned by Flux (deploy-objects.nu, protect_claims).
+    let texts = (protect_claims (annotate_config_hashes $rendered))
     let layer_files = ($published | each {|l|
         $l.files | where {|f| $f in ($texts | columns) } | each {|f| { path: $"layers/($l.name)/($f)", text: ($texts | get $f) } }
     } | flatten)
