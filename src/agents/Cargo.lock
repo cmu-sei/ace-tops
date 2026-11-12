@@ -7238,6 +7238,7 @@ dependencies = [
  "bytes",
  "cassini-client",
  "cassini-types",
+ "cert-issuer-common",
  "flate2",
  "gix",
  "gix-serve",
@@ -7248,6 +7249,7 @@ dependencies = [
  "polar-git-server-common",
  "polar-scudo",
  "polar-signing",
+ "proptest",
  "ractor",
  "rcgen",
  "rkyv",
@@ -7267,6 +7269,8 @@ dependencies = [
 name = "polar-git-server-common"
 version = "1.0.0"
 dependencies = [
+ "polar",
+ "proptest",
  "rkyv",
  "serde",
 ]

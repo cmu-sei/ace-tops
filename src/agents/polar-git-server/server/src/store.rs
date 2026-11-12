@@ -25,10 +25,11 @@
 //! server's own (docs/architecture/git-server.md, "Inside the boundary": evidence records sent over Cassini). All of it in
 //! process, with gix, on a blocking thread: no program is run.
 
-use gix::bstr::BStr;
+use gix::bstr::{BStr, ByteSlice};
 use gix::object::tree::EntryKind;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 use gix::refs::{FullName, Target};
+use polar_git_server_common::{FileAt, FileKind};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -73,6 +74,19 @@ pub enum FileAdded {
     Committed { old: Option<String>, new: String },
     /// `main` has a file at that path already; it is left as it is.
     AlreadyThere,
+}
+
+/// What a read of `main` found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadOfMain {
+    /// `main` is `commit`, and these are its files under the paths asked for, by path.
+    Files { commit: String, files: Vec<FileAt> },
+    /// `main` is still the commit the reader has.
+    Unchanged { commit: String },
+    /// The repository has no `main` yet.
+    NoMain,
+    /// The files asked for are more than `limit` bytes, their paths counted; nothing was read past it.
+    TooLarge { limit: usize },
 }
 
 /// How many times an addition is tried again when `main` moved under it (a push in between).
@@ -278,10 +292,111 @@ impl RepoStore {
         .await
     }
 
+    /// The files `main` holds under `paths` (each a file, or a directory and all under it; none, every file), unless it is
+    /// still the commit `have`, or they are more than `limit` bytes, their paths counted. A submodule's commit is not a
+    /// file of this repository, and is passed over.
+    pub async fn read_main(
+        &self,
+        name: &str,
+        paths: Vec<String>,
+        have: Option<String>,
+        limit: usize,
+    ) -> Result<ReadOfMain, StoreError> {
+        if !self.exists(name) {
+            return Err(StoreError::Missing(name.to_string()));
+        }
+        let path = self.path(name)?;
+        blocking(move || {
+            let repo = open(&path)?;
+            let Some(main) = commit_of(&repo, MAIN) else {
+                return Ok(ReadOfMain::NoMain);
+            };
+            let commit = main.to_string();
+            if have.as_deref() == Some(commit.as_str()) {
+                return Ok(ReadOfMain::Unchanged { commit });
+            }
+            let root = repo
+                .find_commit(main)
+                .and_then(|commit| commit.tree())
+                .map_err(failed("read tree"))?
+                .id;
+            let mut files = Vec::new();
+            let mut size = 0usize;
+            let mut directories = vec![(String::new(), root)];
+            while let Some((directory, id)) = directories.pop() {
+                let tree = repo.find_tree(id).map_err(failed("read tree"))?;
+                for entry in tree.decode().map_err(failed("read tree"))?.entries {
+                    let name = entry.filename.to_str().map_err(|_| {
+                        StoreError::BadPath(format!("{directory}/{}", entry.filename))
+                    })?;
+                    let at = if directory.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{directory}/{name}")
+                    };
+                    let kind = if entry.mode.is_tree() {
+                        if leads_to(&at, &paths) {
+                            directories.push((at, entry.oid.to_owned()));
+                        }
+                        continue;
+                    } else if entry.mode.is_commit() {
+                        continue;
+                    } else if entry.mode.is_link() {
+                        FileKind::Link
+                    } else if entry.mode.is_executable() {
+                        FileKind::Executable
+                    } else {
+                        FileKind::Plain
+                    };
+                    if !under(&at, &paths) {
+                        continue;
+                    }
+                    let content = repo
+                        .find_blob(entry.oid)
+                        .map_err(failed("read blob"))?
+                        .detach()
+                        .data;
+                    size = size.saturating_add(at.len() + content.len());
+                    if size > limit {
+                        return Ok(ReadOfMain::TooLarge { limit });
+                    }
+                    files.push(FileAt {
+                        path: at,
+                        kind,
+                        content,
+                    });
+                }
+            }
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            Ok(ReadOfMain::Files { commit, files })
+        })
+        .await
+    }
+
     pub async fn has_history(&self, name: &str) -> Result<bool, StoreError> {
         let path = self.path(name)?;
         blocking(move || any_ref(&open(&path)?)).await
     }
+}
+
+/// Whether the file at `path` is under one of `paths`: it is one, or in a directory one names. None names every file.
+fn under(path: &str, paths: &[String]) -> bool {
+    paths.is_empty()
+        || paths.iter().any(|p| {
+            path == p
+                || path
+                    .strip_prefix(p.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+/// Whether the directory `directory` holds, or is under, one of `paths`.
+fn leads_to(directory: &str, paths: &[String]) -> bool {
+    under(directory, paths)
+        || paths.iter().any(|p| {
+            p.strip_prefix(directory)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
 }
 
 /// Each creation's own place to build in.
@@ -759,6 +874,120 @@ mod tests {
         }
     }
 
+    /// What `main` holds is read as files under the paths asked for: a path names a file or a directory, never a prefix of
+    /// a name; none names every file. Each file comes with what git records it as. A reader that has `main` already is told
+    /// so; a repository with no `main` says so; and what is more than the limit is not read.
+    #[tokio::test]
+    async fn main_is_read_as_the_files_under_the_paths_asked_for() {
+        use polar_git_server_common::{FileAt, FileKind};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tree = tempfile::tempdir().unwrap();
+        for (path, text) in [
+            ("a.dhall", "a"),
+            ("permanent/x.dhall", "x"),
+            ("permanent/y/z.dhall", "z"),
+            ("permanently.dhall", "p"),
+            ("run.sh", "#!/bin/sh\n"),
+        ] {
+            let at = tree.path().join(path);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(at, text).unwrap();
+        }
+        std::fs::set_permissions(
+            tree.path().join("run.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("a.dhall", tree.path().join("link")).unwrap();
+        let store = RepoStore::new(dir.path());
+        store.create("r").await.unwrap();
+        store.seed("r", tree.path()).await.unwrap();
+        let main = store.resolve_ref("r", "refs/heads/main").await.unwrap();
+        let plain = |path: &str, text: &str| FileAt {
+            path: path.into(),
+            kind: FileKind::Plain,
+            content: text.into(),
+        };
+        let read = |paths: &[&str], have: Option<&str>, limit: usize| {
+            let store = store.clone();
+            let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            let have = have.map(str::to_string);
+            async move { store.read_main("r", paths, have, limit).await.unwrap() }
+        };
+
+        assert_eq!(
+            read(&[], None, 1 << 20).await,
+            ReadOfMain::Files {
+                commit: main.clone(),
+                files: vec![
+                    plain("a.dhall", "a"),
+                    FileAt {
+                        path: "link".into(),
+                        kind: FileKind::Link,
+                        content: b"a.dhall".to_vec(),
+                    },
+                    plain("permanent/x.dhall", "x"),
+                    plain("permanent/y/z.dhall", "z"),
+                    plain("permanently.dhall", "p"),
+                    FileAt {
+                        path: "run.sh".into(),
+                        kind: FileKind::Executable,
+                        content: b"#!/bin/sh\n".to_vec(),
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            read(&["permanent"], None, 1 << 20).await,
+            ReadOfMain::Files {
+                commit: main.clone(),
+                files: vec![
+                    plain("permanent/x.dhall", "x"),
+                    plain("permanent/y/z.dhall", "z")
+                ],
+            }
+        );
+        assert_eq!(
+            read(&["permanent/x.dhall", "a.dhall"], None, 1 << 20).await,
+            ReadOfMain::Files {
+                commit: main.clone(),
+                files: vec![plain("a.dhall", "a"), plain("permanent/x.dhall", "x")],
+            }
+        );
+        assert_eq!(
+            read(&["perm"], None, 1 << 20).await,
+            ReadOfMain::Files {
+                commit: main.clone(),
+                files: vec![],
+            },
+            "a prefix of a name is not a path"
+        );
+        assert_eq!(
+            read(&[], Some(&main), 1 << 20).await,
+            ReadOfMain::Unchanged {
+                commit: main.clone()
+            }
+        );
+        assert_eq!(
+            read(&[], None, 3).await,
+            ReadOfMain::TooLarge { limit: 3 },
+            "five bytes and more of content is past three"
+        );
+        store.create("empty").await.unwrap();
+        assert_eq!(
+            store
+                .read_main("empty", vec![], None, 1 << 20)
+                .await
+                .unwrap(),
+            ReadOfMain::NoMain
+        );
+        assert!(matches!(
+            store.read_main("nope", vec![], None, 1 << 20).await,
+            Err(StoreError::Missing(_))
+        ));
+    }
+
     #[tokio::test]
     async fn seeding_a_missing_repository_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -767,5 +996,40 @@ mod tests {
             store.seed("nope", dir.path()).await,
             Err(StoreError::Missing(_))
         ));
+    }
+
+    mod props {
+        use super::super::{leads_to, under};
+        use proptest::prelude::*;
+
+        fn path() -> impl Strategy<Value = String> {
+            proptest::collection::vec("[ab]{1,2}", 1..4).prop_map(|segments| segments.join("/"))
+        }
+
+        proptest! {
+            /// A read never misses a file it was asked for: every directory above a wanted file is entered. And it takes
+            /// none it was not: a wanted file is one asked for or under a directory asked for, segment by segment.
+            #[test]
+            fn a_wanted_file_is_reached_and_only_a_wanted_file_is_taken(
+                file in path(),
+                paths in proptest::collection::vec(path(), 0..3),
+            ) {
+                let wanted = under(&file, &paths);
+                if wanted {
+                    let segments: Vec<&str> = file.split('/').collect();
+                    for depth in 1..segments.len() {
+                        let directory = segments[..depth].join("/");
+                        prop_assert!(leads_to(&directory, &paths), "{directory} is not entered for {file}");
+                    }
+                }
+                let asked = paths.is_empty()
+                    || paths.iter().any(|p| {
+                        let p: Vec<&str> = p.split('/').collect();
+                        let f: Vec<&str> = file.split('/').collect();
+                        f.len() >= p.len() && f[..p.len()] == p[..]
+                    });
+                prop_assert_eq!(wanted, asked);
+            }
+        }
     }
 }

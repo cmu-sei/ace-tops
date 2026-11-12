@@ -33,6 +33,7 @@ pub mod git;
 pub mod http;
 pub mod notify;
 pub mod pktline;
+pub mod read;
 pub mod settings;
 pub mod signed;
 pub mod store;

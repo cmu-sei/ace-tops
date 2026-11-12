@@ -26,5 +26,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# The request/reply envelope every agent pairs a question and its answer with (docs/architecture/cassini-request-reply-protocol.md).
+polar.workspace = true
 rkyv.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+# The wire types' round trip, for every request and answer (src/lib.rs).
+proptest.workspace = true

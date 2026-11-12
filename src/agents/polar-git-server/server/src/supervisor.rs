@@ -26,7 +26,7 @@
 //! the Cassini capability, health, the router and the Cassini client come from `AgentBuilder`
 //! and an accepted push is published on Cassini; otherwise `ServiceBuilder` gives it the health
 //! check and the shutdown handshake and a push is only logged. The mTLS listener runs under this
-//! supervisor either way.
+//! supervisor either way. With Cassini it also answers reads (`crate::read`).
 //!
 //! Shutdown, in order, when the health check ends the pod's life:
 //!
@@ -42,13 +42,14 @@ use crate::config::ServerFile;
 use crate::git::GitRunner;
 use crate::http::{ServerState, router};
 use crate::notify::{CassiniNotifier, Notifier, PushLog, Tee};
+use crate::read::{READ_LIMIT, ReadActor, ReadMessage, ReadState, Reader};
 use crate::settings::GitServerSettings;
 use crate::store::RepoStore;
 use crate::tls::{ClientIdentities, serve_tls, server_config};
 use cassini_types::ClientEvent;
 use polar_agent_builder::{
     AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
-    ServiceBuilder,
+    ServiceBuilder, Subscription,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::path::Path;
@@ -72,8 +73,15 @@ pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(DRAIN_TIMEOUT.as_secs(
 const MAX_BODY: usize = 256 * 1024 * 1024;
 
 pub enum GitServerSupervisorMessage {
-    ClientEvent { event: ClientEvent },
+    ClientEvent {
+        event: ClientEvent,
+    },
     PrepareShutdown,
+    /// A read sent on Cassini, for the reader.
+    Read {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
 }
 
 pub struct GitServerSupervisor;
@@ -88,6 +96,8 @@ pub struct GitServerSupervisorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     listener: Option<Listener>,
+    /// Answers reads; only with Cassini.
+    reader: Option<ractor::ActorRef<ReadMessage>>,
 }
 
 #[async_trait]
@@ -107,10 +117,23 @@ impl Actor for GitServerSupervisor {
         // In a cluster the deployment provides Cassini and the server is a client of the broker;
         // on its own it has the health check and the shutdown handshake and no broker.
         let (healthcheck, infrastructure, tcp_client) = if configured.cassini_enabled() {
+            let deliver_to = myself.clone();
+            let reads = Subscription::new(
+                polar_git_server_common::READ_REQUESTS_TOPIC,
+                move |incoming| {
+                    if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::Read {
+                        payload: incoming.payload,
+                        published_by: incoming.published_by,
+                    }) {
+                        warn!("failed to hand a read to the supervisor: {e}");
+                    }
+                },
+            );
             let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
                 .with_lifecycle_handler(|event| {
                     Some(GitServerSupervisorMessage::ClientEvent { event })
                 })
+                .with_subscription(reads)
                 .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
                 .into_configured(configured)
                 .build()
@@ -154,6 +177,27 @@ impl Actor for GitServerSupervisor {
             )));
         }
         let signed = crate::signed::SignedRepos::from_specs(&file.repos)?;
+        let reader = match &tcp_client {
+            Some(client) => {
+                let (reader, _) = Actor::spawn_linked(
+                    Some(format!("{SERVICE_NAME}.read")),
+                    ReadActor,
+                    ReadState {
+                        reader: Reader {
+                            store: store.clone(),
+                            authorizer: acl.clone(),
+                            limit: READ_LIMIT,
+                        },
+                        client: client.as_actor_ref().clone(),
+                    },
+                    myself.get_cell(),
+                )
+                .await
+                .map_err(|e| format!("the reader did not start: {e}"))?;
+                Some(reader)
+            }
+            None => None,
+        };
         let app = router(ServerState {
             store,
             authorizer: acl.clone(),
@@ -193,6 +237,7 @@ impl Actor for GitServerSupervisor {
             healthcheck,
             infrastructure,
             listener: Some(Listener { stop, active, task }),
+            reader,
         })
     }
 
@@ -235,6 +280,20 @@ impl Actor for GitServerSupervisor {
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
+            GitServerSupervisorMessage::Read {
+                payload,
+                published_by,
+            } => match &state.reader {
+                Some(reader) => {
+                    if let Err(e) = reader.cast(ReadMessage::Take {
+                        payload,
+                        published_by,
+                    }) {
+                        warn!("failed to hand a read to the reader: {e}");
+                    }
+                }
+                None => warn!("a read arrived with no reader to answer it"),
+            },
         }
         Ok(())
     }
