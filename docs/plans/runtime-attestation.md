@@ -74,7 +74,7 @@ to enforce what each pod may reach.
 | **Hardening held to the record** | every Polar container read-only, no privilege escalation, under the runtime's seccomp profile, and held to it | done, seen working on u7c |
 | **No agent runs git or holds a key file** | git's protocol in the git server's own process; agents read through it over Cassini; up.nu copies the deployment; the egress probe | built; not yet seen working on u7c from `main` |
 | **Each agent locks itself** | at start, seccomp refuses new programs, debugging and executable memory; Landlock limits the files to what its build declares | built; not yet seen working on u7c from `main` |
-| **Network enforcement** | Polar's own enforcer, on every node, enforces what each pod may reach, starting with builds of foreign code; a canary proves it does | planned: [`runtime-attestation/network-enforcement.md`](runtime-attestation/network-enforcement.md) |
+| **Network enforcement** | an enforcer on every node (kube-nftpolicy, a project of its own) enforces what each pod may reach, starting with builds of foreign code; a canary proves it does | planned: [`runtime-attestation/network-enforcement.md`](runtime-attestation/network-enforcement.md) |
 | **The node sensor** | a read-only reporter on every node: processes in each Polar container that are not its agent, and each agent's locks, read from outside the process | outlined, plan not yet written |
 | **Sessions bound to the pod's address** | a certificate carries its pod's address, and Cassini refuses a session from anywhere else | outlined, plan not yet written |
 

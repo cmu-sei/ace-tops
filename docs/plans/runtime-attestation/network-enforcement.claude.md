@@ -27,7 +27,7 @@ PAIR: `network-enforcement.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../runtime-attestation.claude.md` (C4-net). Old names: C4 Canal, N1 policy, N2 canary, N3 engine
 (build-orchestrator.md:963-992). AS-OF main 355a8a22 + nix-usernetes 10f3bcd (2026-11-02). Re-verify lines.
-STATUS: planned; nothing built. Spike done 2026-11-12 on u7n: Calico can't run on whitey. Q-engine DECIDED 2026-11-12:
+STATUS: enforcer built (kube-nftpolicy, own repo) + live on u7n; Polar side not built. Spike done 2026-11-12 on u7n: Calico can't run on whitey. Q-engine DECIDED 2026-11-12:
 Polar's own enforcer (maintainer picked it over patch-Felix, my recommendation, and kernel-with-IPv6).
 
 ## FOUND (people part 2, dated)
@@ -79,8 +79,8 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
 - egress probe = reachability of the way out, not denial (egress.md:121-146).
 
 ## GAPS (build order)
-G0 done (Q-flannel, spike, Q-engine). G1 enforcer: crate, DaemonSet catalog kind, rules vs upstream tests, on u7n first.
-G2 enforcer on u7c (no nix-usernetes change). G3 N1 render (catalog → policy for polar-builds; hostAliases in
+G0 done (Q-flannel, spike, Q-engine). G1 kube-nftpolicy built + live on u7n (done); upstream e2e netpol suite (todo).
+G2 nix-usernetes merge (branch ready) + u7c images rebuilt; check Flux/agent-pods policies first. G3 N1 render (catalog → policy for polar-builds; hostAliases in
 orchestrator Jobs). G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result).
 G5 admission refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini (enforcer no NAT).
 LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
@@ -113,28 +113,44 @@ stance (maintainer, same day): IPv6 has been half-adopted for two decades and ma
 design stance for Polar, not a workaround for whitey's kernel.
 also attack surface: many serious upstream kernel vulns in recent years centre on poorly tested IPv6 code (maintainer).
 
-## ENFORCER (my design, FOR REVIEW — decided by standing rules, not asked)
-- agent crate (name TBD, likely attestation/enforcer or kubernetes/…); DaemonSet = new catalog kind (sensor needs it too).
-- input: k8s API read-only watch NetworkPolicy+Pod+Namespace (rule: k8s is trust base; build pods aren't Polar agents,
-  so Polar's own records can't name them). Policies come from the signed deployment via Flux anyway.
-- semantics: full networking.k8s.io/v1 NetworkPolicy, IPv4: policyTypes, pod/ns selectors (matchLabels+Expressions),
-  ipBlock+except, ports (numeric, named → per-pod containerPort, endPort), default allow for unselected pods.
-  Check vs upstream e2e netpol suite (test/e2e/network/netpol) + proptests (decision follows rule for every input).
-- dataplane: one `table ip polar-netpol` in node netns; hooks forward (+input/output for node-local?) at priority after
-  kube-proxy DNAT (filter); ct state established,related accept; sets/vmaps per pod IP. No NAT, so C5 holds.
-- runs hostNetwork, cap NET_ADMIN only, in signed record (hardening schema must allow a declared cap — builder computes
-  facts from the build: capability declared by build, not hand). Landlock/seccomp lock: netlink sockets needed.
-- library: pure-Rust netlink nftables (one static musl artifact; no nft binary, no libnftnl). Candidates: rustables
-  0.9.0 (pure Rust), nftnl 0.9.4 (libnftnl C), nftables 0.6.3 (shells out to nft -j: ✗). Pick in build; dep needs reason.
-- reports over Cassini (status, ruleset generation); fails loud not open.
-- not deployed where the CNI enforces (cluster fact in catalog/target).
-OPEN (for later, not blocking plan): enforcer's own pool/tolerations (every node incl. tainted pools); what the
-  attestation agent's verdict says about hostNetwork+NET_ADMIN for this one workload (from signed record).
+## ENFORCER = kube-nftpolicy — DECIDED (maintainer, 2026-11-12, after my Polar-agent design)
+"its own project on my public github site; builds from a nix flake; applies cleanly as part of u7's own image build,
+as specified by its own nix flake; an independent piece of infrastructure Polar can offer others". Name kube-nftpolicy
+(my recommendation), license Apache-2.0 (maintainer's pick over MIT OR Apache-2.0).
+SUPERSEDED: enforcer as Polar agent/DaemonSet catalog kind/Cassini reporting/attested (my first design). Not a Polar
+agent: no Polar identity, no Cassini, not attested — node infra in the trust base, like kube-proxy; canary is Polar's check.
+- repo: ~/Documents/projects/kube-nftpolicy, github daveman1010221/kube-nftpolicy (public; created 2026-11-12).
+  commits ebd5811 (feat, all of it), 1d04a64 (share/kube-nftpolicy/{rbac,daemonset}.yaml in package).
+- crate (edition 2024, kube 3.1 rustls+ring, k8s-openapi 0.27 v1_35): model, selector, ranges (ipBlock−except),
+  compile (Ruleset: isolated sets + Allow{local,peer Range,Ports}), disjoint (non-overlapping elements: pipapo
+  concat sets), nft (script: add/delete/define table ip kube_nftpolicy; chains forward+input → egress/ingress, ct
+  established,related accept, counter drop), spec (oracle), kube (conversion; never widens: unreadable ports/peers →
+  rule dropped), run (reflectors, settle 200ms, apply via `nft -f -`, MAX_FAILURES 5 → exit), main (--node-name/NODE_NAME,
+  --kubeconfig, --table, --nft, --once, --print). Warns on IPv6 pod IPs (dual-stack not enforced).
+- tests: 22 unit; props (2000 cases): nodes' rules AND == spec::allows; order independence; block ranges; disjoint
+  cover+no overlap. Mutations (ignore except; ignore egress) caught. kernel.rs: unshare -rn nft -f, whitey kernel OK
+  (pipapo concat interval sets fine without ip6/inet).
+- flake: rustPlatform.buildRustPackage, wrapProgram PATH nftables; packages default/image (buildLayeredImage); checks.
+- nix-usernetes branch feat/kube-nftpolicy @ 91bafdc (LOCAL ONLY, not pushed, not merged): flake input
+  (follows nixpkgs/flake-utils); u7s-kube-nftpolicy wrapper (kube-nftpolicy.conf else admin.conf; NODE_NAME else
+  /etc/hostname); podScripts; service kubeNftpolicy in node-common.dhall, worker.dhall, node.dhall (after kube-apiserver);
+  rbac.yaml copied to /var/lib/cluster-bootstrap (runsControlPlane); cluster.sh nftpolicy_credentials (CN
+  system:kube-nftpolicy, pki/nodes/<w>/kube-nftpolicy.*; idempotent, also for already-joined workers); cmd_up hint.
+  `just render` done. Test images localhost/nix-usernetes-{worker,control-plane}:nftpolicy-test (1.37.1 tags untouched;
+  retag via skopeo docker-archive→docker-archive:<path>:<ref>, then podman load).
+- LIVE (u7n, 2026-11-12): DaemonSet and node-service runs both: build pod (builds ns, node a) → registry (reg, node b,
+  named port http 5000) OK, near (reg, node a) OK, other (reg) BLOCKED, API 10.96.0.1:443 BLOCKED, 1.1.1.1:443
+  BLOCKED, ingress to build BLOCKED, other→registry OK; policy removed → all OK. (agnhost 2.53 netexec/connect;
+  scenario/policy/probe.sh in scratchpad/spike.)
+OPEN for u7c step: Flux's stock policies (flux-controllers.yaml:39-96) and agent-pods.nu:80-87 deny-all become
+enforced — check before rebuilding u7c images. Upstream e2e netpol suite not yet run. Polar-side "offer" = target
+choice deploying the DaemonSet (not designed).
 
 ## ALTERNATIVES
 Calico/Canal (spike: v6 table) | patch Felix (not chosen) | kernel w/ IPv6 (rejected: host change, gives up no-IPv6) |
 kube-network-policies (inet) | kube-router (xt) | Cilium (eBPF) | Landlock ports (rejected 11-11) |
-no enforcement + refuse foreign builds (= fallback now).
+enforcer as Polar agent (my first design; superseded by own project) | no enforcement + refuse foreign builds
+(= fallback now).
 
 ## NOT CHECKED
 pod→own-node traffic path under ptp (input hook vs forward) for the enforcer; hostNetwork pods (exempt by standard);

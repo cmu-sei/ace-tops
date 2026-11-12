@@ -29,7 +29,7 @@
 > A **feature-level plan**, part of [runtime attestation](../runtime-attestation.md). It describes Polar's `main` as it
 > is.
 
-**Status: planned, not built.**
+**Status: the enforcer is built and seen working; Polar's side is not built.**
 
 ## 1. The need
 
@@ -69,28 +69,31 @@ The same enforcement then serves two later cases:
 
 ## 3. The plan
 
-Polar enforces NetworkPolicy itself, with a small **enforcer** of its own, on clusters that have no engine. Four steps,
-each seen working before the next.
+Where a cluster has no engine, NetworkPolicy is enforced by **kube-nftpolicy**, a small enforcer that is a project of
+its own (`github.com/daveman1010221/kube-nftpolicy`), not part of Polar. Polar offers it as one way to meet its network
+requirements, on Polar's own clusters and on anyone else's. Four steps, each seen working before the next.
 
-1. **The enforcer.** One on every node, built and run as a Polar agent.
-   - **What it reads.** NetworkPolicy, pods and namespaces, from the Kubernetes API, read-only.
+1. **The enforcer, kube-nftpolicy.** One on every node that runs pods.
+   - **What it reads.** NetworkPolicy, pods and namespaces, from the Kubernetes API, read-only, under a role that
+     allows nothing else.
    - **What it enforces.** Standard NetworkPolicy, with its standard meaning: ingress and egress; selection by pod and
-     namespace labels; address blocks with exceptions; ports, named or numbered, and port ranges. It is checked against
-     the Kubernetes project's own network policy tests, so what a policy means is upstream's meaning, not Polar's
-     reading of it.
+     namespace labels; address blocks with exceptions; ports, named or numbered, and port ranges. Its tests hold the
+     rules it computes to a direct statement of that meaning, for every generated cluster and packet.
    - **Where it acts.** Every pod's traffic passes through its node's network namespace: between pods on one node,
-     between nodes, and out of the cluster. The enforcer filters it there, in nftables, in the IPv4 (`ip`) table family
-     only, after Kubernetes has translated service addresses, so a policy speaks of the pods actually reached. Replies
-     to a permitted connection are let through.
-   - **What it needs.** No IPv6, no iptables, no eBPF, and no kernel module beyond nftables. It runs on the node's
-     network with one capability, the one to change it (`NET_ADMIN`). That is written in its signed record and held to
-     it, like every other Polar pod's hardening.
-   - **What it reports.** Over Cassini: what it enforces, and when that last changed. It fails loudly, not open, when
-     it cannot program its rules.
-   - **Where it does not run.** On a cluster whose network plugin enforces NetworkPolicy, the enforcer is not deployed,
-     and that cluster's engine enforces the same policies.
-2. **Enforcement on u7c.** The enforcer on every node, with Polar's pods still running as before. Nothing changes in
-   `nix-usernetes`.
+     between nodes, and out of the cluster. The enforcer filters it there, in one nftables table of the IPv4 (`ip`)
+     family, after Kubernetes has translated service addresses, so a policy speaks of the pods actually reached.
+     Replies to a permitted connection are let through.
+   - **What it needs.** No IPv6, no iptables, no eBPF, and no kernel module beyond nftables: only the capability to
+     change the node's tables (`NET_ADMIN`).
+   - **How it is deployed.** It is built from its own Nix flake. On Polar's development clusters it is part of the node
+     image (`nix-usernetes`), a service of the node like kube-proxy, with credentials of its own. On other clusters it
+     runs as a DaemonSet, from the image its flake builds. Where a cluster's network plugin already enforces
+     NetworkPolicy, it is not deployed.
+   - **What it does on failure.** It fails loudly, not open: a table it cannot write is retried, and after repeated
+     failures the enforcer exits for its supervisor to restart, with the last table still in force.
+2. **Enforcement on u7c.** u7c's node images rebuilt with the enforcer, with Polar's pods still running as before. The
+   policies already in the cluster then take effect: Flux's own, and Polar's deny-all for the namespace where it runs
+   check pods.
 3. **The builds' policy,** rendered from the catalog for `polar-builds`:
    - no ingress;
    - egress only to the registry's pods, on its port;
@@ -101,9 +104,8 @@ each seen working before the next.
    cluster. It runs when the orchestrator starts, and again before a build when the last proof is older than a set
    bound. Where enforcement is not proved, a build is refused with the reason, and the result is published.
 
-Polar writes only **standard NetworkPolicy**, so the policies and the canary carry to any cluster whose network plugin
-enforces them: Calico, Cilium, a cloud provider's, or k3s's. On Polar's own clusters the enforcer is the engine, and
-the canary checks it the same way it would check any other.
+Polar writes only **standard NetworkPolicy**, so the policies and the canary carry to any cluster that enforces them:
+with Calico, Cilium, a cloud provider's engine, k3s's, or kube-nftpolicy. The canary checks each the same way.
 
 Until the canary passes, the rule already in force holds: **no build names a repository Polar does not control.**
 
@@ -120,7 +122,10 @@ Until the canary passes, the rule already in force holds: **no build names a rep
    Cilium needs to load eBPF programs. None runs on the development host.
 5. **Landlock's port rules,** computed by the agent builder per agent, with no Kubernetes involved. Rejected: rules by
    port cannot say where traffic goes, only which ports.
-6. **No enforcement, and refuse foreign builds.** That is today's position, and it stays the fallback wherever
+6. **The enforcer as a Polar agent,** a Polar pod on every node, reporting over Cassini and attested like every other.
+   Not chosen: it would tie a piece of general infrastructure to Polar, and put a privileged pod on every node where a
+   node service does the same job.
+7. **No enforcement, and refuse foreign builds.** That is today's position, and it stays the fallback wherever
    enforcement is not proved. But it leaves the build orchestrator unable to do its job.
 
 ## 5. Why this plan
@@ -130,9 +135,10 @@ Until the canary passes, the rule already in force holds: **no build names a rep
   smaller target: the kernel's IPv6 code has been the site of serious vulnerabilities, and code left out cannot be
   attacked.
 - **It runs where nothing else does:** IPv4 nftables only, in a rootless cluster, with no change to the host.
-- **The privileged thing on every node is Polar's own.** The enforcer is hardened, locked, attested and reporting,
-  like every Polar agent. An outside engine would be the one privileged agent on each node that Polar could not hold to
-  its own checks.
+- **It is part of the node, not of Polar.** Like kube-proxy, it belongs to the node, which Kubernetes' trust base
+  already includes. Polar's own check of enforcement is the canary, which does not trust the enforcer's word.
+- **It stands on its own.** Anyone can run it on a cluster that needs it, with or without Polar, and Polar's
+  requirements do not bind it to Polar's release cycle.
 - **The job is small:** one table on one node, from a standard whose meaning is fixed and has upstream tests to check
   against.
 - **Standard policy keeps Polar off any one engine,** so what is proved here carries to a customer's cluster, with or
@@ -144,13 +150,15 @@ Until the canary passes, the rule already in force holds: **no build names a rep
 
 ## 6. How much of the need is met now
 
-None of it is enforced. What is settled is how: no existing engine runs on Polar's development host, so Polar
-enforces policy itself.
+The enforcer is built and seen working; nothing of Polar's is enforced yet.
 
-
-- **The clusters enforce no NetworkPolicy.**
+- **kube-nftpolicy works on a rootless cluster whose kernel has no IPv6.** On a throwaway three-node cluster, both
+  as a DaemonSet and as a node service in the node image, a policy limiting a pod to one server's named port let that
+  through, across nodes and within one, and blocked another pod, the Kubernetes API and the internet, and ingress to
+  the pod. Pods no policy selects were unaffected.
+- **u7c enforces nothing yet.** Its node images do not have the enforcer.
 - **Polar renders no policy for its own namespaces.** The one policy it does make is a deny-all for a throwaway
-  namespace where it runs check pods, and that too goes unenforced.
+  namespace where it runs check pods, and that too goes unenforced until u7c has the enforcer.
 - **The egress probe tests the other direction.** It checks that the way *out* works for an agent that needs it, so it
   proves nothing about denial.
 - **What holds the line is a rule,** not enforcement: no build names a repository Polar does not control. A build is
@@ -158,9 +166,11 @@ enforces policy itself.
 
 ## 7. What is left before this is met
 
-- **The enforcer:** its crate; one pod on every node, which the catalog has no kind for yet (the node sensor will need
-  it too); its rules, checked against upstream's network policy tests.
-- **Enforcement on u7c.**
+- **The enforcer in `nix-usernetes`' main,** and u7c's node images rebuilt with it, checking first that Flux's
+  policies and Polar's check pods still work once enforced.
+- **The enforcer against upstream's own network policy tests,** beside its property tests.
+- **Offering the enforcer from Polar** for clusters without an engine: a choice in a target's configuration that
+  deploys its DaemonSet.
 - **The builds' policy, and the canary,** in the orchestrator and the render.
 - **Refusing a build where enforcement is not proved.**
 - **Checking that pod addresses reach Cassini unchanged** under the enforcer. Binding sessions to a pod's address, a
