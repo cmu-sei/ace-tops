@@ -45,6 +45,12 @@ export def aside_path [dir: string, stamp: string, taken: list<string>] {
     $"($base)-($n)"
 }
 
+# What the admin step must ask the credentials agent's observer to issue, from the certificates stored in `dir`: the bootstrap
+# administrator's, `username`'s (provision and claim), or nothing, when the step does not need the observer at all.
+export def to_issue [dir: string, username: string] {
+    { bootstrap: (not ($dir | path join "bootstrap-admin.crt" | path exists)), person: (not ($dir | path join $"($username).crt" | path exists)) }
+}
+
 # Moves everything in `dir` into a new directory `aside`, leaving `dir` there and empty. It moves what is in it rather
 # than renaming it, because `dir` may be a mount point, which cannot be renamed (EBUSY): in the dev container in the
 # cluster, ~/.config/polar-admin is a subPath of the pod's state volume.

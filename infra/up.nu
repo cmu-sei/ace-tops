@@ -68,13 +68,14 @@ use secrets-lib.nu [decrypt_sops, existing_required_secrets, secrets_check]
 use jira-check.nu [settings_of_document]
 use retry.nu [with_retries]
 use attestation.nu [attestation_report]
-use admin.nu [aside_path, is_another_clusters, move_aside]
+use admin.nu [aside_path, is_another_clusters, move_aside, to_issue]
 use browser.nu [browser_expected, browser_found, browser_problems, neo4j_answer, neo4j_probe, nss_db, password_verdict, probe_until_answered]
 use forwards.nu [ensure_observer_forward, forward_live, stop_stale]
 use egress.nu [egress_report, kube_probe, probe_url]
 use seed.nu
 use cluster-inputs.nu
 use under-test.nu
+use way-back.nu [why_unreachable]
 use flux.nu [cluster_handed_off]
 use tools.nu
 use runtime.nu [container_runtime]
@@ -677,7 +678,7 @@ def restore_inputs_from_record [target: string, forwards: list] {
     if $cluster == null or (cluster-inputs read_inputs $path).cluster == $cluster { return }
     step_forwards ($forwards | where name == "git")
     let read = (do { ^$nu.current-exe infra/flux.nu recorded-inputs $target } | complete)
-    if $read.exit_code != 0 { fail $"this machine has no inputs for this cluster, and its record cannot be read: ($read.stderr | str trim). If Polar's git server cannot be brought back: nu infra/up.nu ($target) --bootstrap-again" }
+    if $read.exit_code != 0 { fail (why_unreachable $target $"this machine has no inputs for this cluster, and its record cannot be read: ($read.stderr | str trim)") }
     let restored = (cluster-inputs inputs_from_record ($read.stdout | lines | last | from json) $cluster)
     if $restored == null { fail $"this machine has no inputs for this cluster, and the record on its git server is another cluster's: nu infra/up.nu ($target) --bootstrap-again" }
     $restored | to nuon --indent 2 | save --force $path
@@ -746,7 +747,6 @@ def step_forwards [forwards: list] {
 }
 
 def step_admin [username: string, mail: string] {
-    ensure_observer_forward
     let dir = (admin_dir)
     let cluster_ca = (^kubectl -n $POLAR get configmap polar-ca -o "jsonpath={.data.ca\\.pem}" | str trim)
     let ca_file = ($dir | path join "ca.pem")
@@ -759,14 +759,18 @@ def step_admin [username: string, mail: string] {
         note $"($dir) held certificates from another cluster \(its CA is not this cluster's\); moved to ($aside), nothing deleted"
     }
 
-    if ($dir | path join "bootstrap-admin.crt" | path exists) {
+    # The observer issues; a run that has nothing to issue does not need it (cluster-bootstrap.md, "A build that stops what publishing needs").
+    let issue = (to_issue $dir $username)
+    if $issue.bootstrap or $issue.person { ensure_observer_forward }
+
+    if not $issue.bootstrap {
         ok "bootstrap admin already exists"
     } else {
         ^just admin-bootstrap
         if $env.LAST_EXIT_CODE != 0 { fail "just admin-bootstrap failed" }
     }
 
-    if ($dir | path join $"($username).crt" | path exists) {
+    if not $issue.person {
         ok $"($username) already has a certificate, skipping provision and claim"
     } else {
         ^just admin-provision $username $mail

@@ -77,6 +77,24 @@ def main [] {
                 assert equal $moved [".hidden" "ca.pem" "u.key"]
             }
         }
+        {
+            name: "the observer is asked only for what is not stored: the bootstrap administrator, the person, or nothing"
+            body: {
+                let dir = (^mktemp -d | str trim)
+                let empty = (to_issue $dir "alice")
+                "c" | save ($dir | path join "bootstrap-admin.crt")
+                let person_only = (to_issue $dir "alice")
+                "c" | save ($dir | path join "bob.crt")
+                let another_person = (to_issue $dir "alice")
+                "c" | save ($dir | path join "alice.crt")
+                let nothing = (to_issue $dir "alice")
+                rm -rf $dir
+                assert equal $empty { bootstrap: true, person: true }
+                assert equal $person_only { bootstrap: false, person: true }
+                assert equal $another_person { bootstrap: false, person: true }
+                assert equal $nothing { bootstrap: false, person: false }
+            }
+        }
     ]
 
     let results = ($tests | each {|t|

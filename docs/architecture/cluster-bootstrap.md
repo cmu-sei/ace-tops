@@ -136,6 +136,58 @@ From then on a run has no deployment git server to start. It starts the forwards
 - *The server lost its data* (the volume deleted). Flux brings the server back from the artifact it holds, empty. A plain `up.nu` gives it `mirror.git`'s history before anything goes on top (`restore_needed`), the same rule as a new bootstrap server's: otherwise the publish would start a new root and the mirror would follow it. `polar-schedules` has no such mirror: the seed puts back what it seeded, and what people signed later is gone (`remaining-work.md`).
 - *A signed commit stops the server* (an image that does not exist, under its `Recreate` strategy, so no old pod serves). A plain `up.nu` refuses and says what follows: `up.nu T --bootstrap-again` brings up the bootstrap server from the mirror, publishes the fix on top of the bad commit, and moves Flux back. The next plain run hands off again. History stays whole: the bad commit is in it, under the fix, on one root.
 
+### A build that stops what publishing needs: the plan (2026-11-11, cleared as written by the maintainer the same day)
+
+*The maintainer, 2026-11-11:* a broken build after the handoff gets a designed way back, not the manual one.
+
+**What happened** (u7c, C3b, `runtime-attestation.md`, "Found on the way"). A `--dev` build of the cert issuer could not
+write its own certificate. Every agent is a `Recreate` Deployment whose pod takes its certificate at start
+(`infra/schema/functions.dhall`), and `--dev` rolls them all, so the git server and the credentials agent's observer went
+down with it. The next run stopped at stage 8, in `ensure_observer_forward`, with "is the pod running?". I brought the
+cluster back by hand: the Kustomization suspended, the image set with `kubectl`, then a run, then the Kustomization
+resumed. The fixed build ended up in the record, but the step that brought it up never went through it.
+
+**Not a new mechanism.** This is the case above, a signed commit that stops the server, reached through another
+workload: the cert issuer took the server down with it. `--bootstrap-again` already handles that case, and it needs
+nothing the broken build holds. The bootstrap server, its certificate and Flux's credentials all come from the
+deployment PKI on this machine (`plan_secrets`), and the admin flow comes after `flux-wait`, once the fix is applied.
+Its cost is a second run that hands off again. One way back for every build that stops what publishing needs, rather
+than one per workload (AGENTS.md, "special cases").
+
+**The gaps, and what changes:**
+1. *The run did not say what was wrong.* A handed-off run reaches the git server only to publish. When that fails,
+   `up.nu` asks Flux which of the deployment's Kustomizations are failed or stalled. If any are, it stops with one
+   message: what Flux names (Kustomization, workload, reason) and `nu infra/up.nu T --bootstrap-again`. One function
+   writes that message, and the three places that suggest `--bootstrap-again` today (`restore_inputs_from_record`,
+   `deploy-repo.nu`'s restore and clone) call it. If Flux reports nothing failed, the run says the server does not
+   answer and does not suggest the flag. The run never switches to bootstrapping again by itself: moving Flux's
+   source stays a person's decision, as above.
+2. *The admin step asked a service it did not need.* `step_admin` reaches the observer before it knows whether there
+   is anything to issue, so on a cluster whose certificates are in place, a down observer stops the run before
+   publishing. It reaches the observer only when it must bootstrap, provision or claim. Even without this, the git
+   server stayed down, so the run still needed `--bootstrap-again`. With it, the run fails where the cause is.
+3. *Bringing up the bootstrap server again was tested only with a server image that does not exist* (u7s). Here it is
+   tested with a broken cert issuer, on u7c, with polar-cc's agreement:
+   1. on a branch of my own, publish a build whose cert issuer cannot write its certificate (C3b's bug, without
+      `Grant::variable`);
+   2. see the plain run stop with the message from gap 1;
+   3. run `--bootstrap-again` from the fixed tree; every pod comes back;
+   4. run plain again; it hands off. The bad commit stays in the history, under the fix.
+
+**Tests:** `nu` tests for the decision: given Flux's Kustomization status and the publish error, the message names what
+failed, or says nothing failed and does not suggest the flag. A test for the admin step: reaching the observer only when
+issuing.
+
+*Built* (`infra/way-back.nu`, `infra/tests/way-back.nu`; `to_issue` in `infra/admin.nu`). *Decided while building, for
+review:*
+- A layer counts as failed when its `Ready` is `False` for a reason other than waiting (`DependencyNotReady`,
+  `Progressing`). So the message names the cause, such as the cert issuer's `HealthCheckFailed`, and not the layers
+  waiting on it.
+- If Flux cannot be asked at all, the run says so, and names `--bootstrap-again` as the step to take if a build stopped
+  the server. This is the old hint for that case, which neither "failed" nor "nothing failed" covers.
+- The one other message that names the flag stays as it is: a record that belongs to another cluster
+  (`restore_inputs_from_record`). That case is not a broken build.
+
 **A machine without a cluster's inputs takes them from the cluster's record.** Moving between clusters discards `cluster-inputs.nuon`, and a publish without it took the cluster's administrators away, among them the person publishing: found on u7s, where it left only `--bootstrap-again`. So on a handed-off cluster a run with no inputs reads `cluster_inputs` from the verified head's `provenance.json` (`inputs_from_record`), and refuses if that is another cluster's. The topology comes back the same way, so `--topology` is only for a change. Before the handoff the pipeline pushes, so nothing is locked out, and the seed puts the administrator back.
 
 **What was settled before it was built:**

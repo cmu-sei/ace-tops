@@ -55,6 +55,7 @@ use tools.nu
 use layers.nu [layer_problems, to_apply]
 use cluster-inputs.nu
 use under-test.nu [LAYER_PREFIX]
+use way-back.nu [why_unreachable]
 use seed.nu [GIT_HOST, GIT_PORT, git_config]
 use deploy-objects.nu [AUTH_SECRET, FLUX_NS, deployment_facts, next_record, polar_git_repository, BOOTSTRAP_LAYERS, annotate_config_hashes, documents, git_repository, has_job, kustomization, provenance, published_layers, readme, unpinned_images, yaml_docs]
 
@@ -622,14 +623,19 @@ def "main publish" [
     let push_tls = if $to_polar { git_config $to_polar_as ($env.HOME | path join ".config" "polar-admin") } else { tls_config $pki $WRITER }
     # Polar's git server can lose its history as a new bootstrap server has none: the same rule as `ensure`'s.
     if $to_polar {
-        try { restore_from_mirror $pki $push_tls $url } catch {|e| error make --unspanned { msg: $"($e.msg). If Polar's git server cannot be brought back: nu infra/up.nu ($target) --bootstrap-again" } }
+        try { restore_from_mirror $pki $push_tls $url } catch {|e| error make --unspanned { msg: (why_unreachable $target $e.msg) } }
     }
     let work = (mktemp -d)
     let copy = ($work | path join "repo")
     let outcome = (try {
         let result = (with-env { GNUPGHOME: $signing.home } {
             let tls = $push_tls
-            run_ok (if $to_polar { $"cloning the deployment from Polar's git server \(is it running? if it cannot be brought back: nu infra/up.nu ($target) --bootstrap-again\)" } else { "cloning the deployment repository (is it running? nu infra/deploy-repo.nu ensure)" }) { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy }
+            if $to_polar {
+                let cloned = (do { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy } | complete)
+                if $cloned.exit_code != 0 { error make --unspanned { msg: (why_unreachable $target $"cloning the deployment from Polar's git server failed: ($cloned.stderr | str trim)") } }
+            } else {
+                run_ok "cloning the deployment repository (is it running? nu infra/deploy-repo.nu ensure)" { ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$tls clone -q $url $copy }
+            }
             let layered = ($files | where {|f| $f.path | str starts-with "layers/" })
             let tested = {|f| $f.path | str starts-with $"layers/($LAYER_PREFIX)" }
             let record = (record_text $pki $copy (deployment_facts ($layered | where {|f| not (do $tested $f) } | get text) ($layered | where {|f| do $tested $f } | get text)) $target)
