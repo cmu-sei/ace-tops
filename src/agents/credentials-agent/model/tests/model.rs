@@ -539,3 +539,112 @@ fn a_workload_is_one_instance_unless_the_model_says_many() {
     );
     assert!(several.is_err(), "{several:?}");
 }
+
+/// An allowance opens a step only where the workload really publishes or hears the topic: one given to a workload
+/// that does neither, on an ordinary topic and on a request topic, opens nothing.
+#[test]
+fn an_allowance_opens_no_step_for_a_workload_that_neither_publishes_nor_hears_the_topic() {
+    let m = model();
+    let topics = [
+        CREDENTIALS_WORKLOAD_ISSUANCE_REPLIES_TOPIC,
+        CREDENTIALS_WORKLOAD_ISSUANCE_REQUESTS_TOPIC,
+    ];
+    let outsider = m
+        .workloads
+        .iter()
+        .find(|w| !w.topics.iter().any(|t| topics.contains(&t.name.as_str())))
+        .expect("a workload that uses neither topic");
+    let mut allowed = allowed_under(&m, &pair(None), &[]).unwrap();
+    for topic in topics {
+        for action in [Action::Publish, Action::Subscribe, Action::Request] {
+            allowed.insert((outsider.identity.clone(), topic.to_string(), action));
+        }
+    }
+    let e = evaluate(&m, &allowed);
+    let touched: Vec<_> = e
+        .edges
+        .iter()
+        .filter(|(x, y)| [x, y].iter().any(|n| n.workload() == outsider.workload))
+        .filter(|(x, y)| [x, y].iter().any(|n| topics.contains(&n.topic())))
+        .collect();
+    assert!(touched.is_empty(), "{}: {touched:?}", outsider.workload);
+    // The topics' own users still have their steps.
+    assert!(e.edges.contains(&(
+        node_out(
+            "credentials-agent",
+            CREDENTIALS_WORKLOAD_ISSUANCE_REPLIES_TOPIC
+        ),
+        node_in(
+            "credentials-agent-observer",
+            CREDENTIALS_WORKLOAD_ISSUANCE_REPLIES_TOPIC
+        )
+    )));
+}
+
+/// A subscriber whose own subscribe is withdrawn hears nothing on the topic, an ordinary one or a request topic,
+/// however much its publisher is allowed.
+#[test]
+fn a_subscriber_whose_subscribe_is_withdrawn_hears_nothing_on_the_topic() {
+    let m = model();
+    let all = allowed_under(&m, &pair(None), &[]).unwrap();
+    for (publisher, subscriber, topic) in [
+        (
+            "credentials-agent",
+            "credentials-agent-observer",
+            CREDENTIALS_WORKLOAD_ISSUANCE_REPLIES_TOPIC,
+        ),
+        (
+            "credentials-agent-observer",
+            "credentials-agent",
+            CREDENTIALS_WORKLOAD_ISSUANCE_REQUESTS_TOPIC,
+        ),
+    ] {
+        let step = (node_out(publisher, topic), node_in(subscriber, topic));
+        assert!(evaluate(&m, &all).edges.contains(&step), "{step:?}");
+        let mut allowed = all.clone();
+        assert!(allowed.remove(&(id(subscriber), topic.to_string(), Action::Subscribe)));
+        let e = evaluate(&m, &allowed);
+        assert!(!e.edges.contains(&step), "{step:?}");
+    }
+}
+
+/// A workload issued by neither cert-issuer nor the credentials agent is never renewed, so it does not live, and no step
+/// to or from it is held, though the steps themselves are there and everyone else still lives.
+#[test]
+fn a_workload_no_issuer_renews_does_not_live_and_no_step_of_it_is_held() {
+    let mut m = model();
+    let observer = "credentials-agent-observer";
+    m.workloads
+        .iter_mut()
+        .find(|w| w.workload == observer)
+        .expect("the observer is in the model")
+        .issuer = "elsewhere".to_string();
+    let e = evaluate(&m, &allowed_under(&m, &pair(None), &[]).unwrap());
+    assert!(!e.lives.contains(observer), "{:?}", e.lives);
+    assert_eq!(e.lives.len(), m.workloads.len() - 1);
+    // Its steps both ways, to the credentials agent, which lives.
+    assert!(
+        e.edges
+            .iter()
+            .any(|(x, y)| x.workload() == observer && y.workload() == "credentials-agent")
+    );
+    assert!(
+        e.edges
+            .iter()
+            .any(|(x, y)| x.workload() == "credentials-agent" && y.workload() == observer)
+    );
+    let held: Vec<_> = e
+        .held
+        .iter()
+        .filter(|(x, y)| x.workload() == observer || y.workload() == observer)
+        .collect();
+    assert!(held.is_empty(), "{held:?}");
+    assert!(!e.held.is_empty());
+}
+
+#[test]
+fn a_point_is_its_workload_and_its_topic() {
+    for n in [node_out("w", "t"), node_in("w", "t")] {
+        assert_eq!((n.workload(), n.topic()), ("w", "t"));
+    }
+}

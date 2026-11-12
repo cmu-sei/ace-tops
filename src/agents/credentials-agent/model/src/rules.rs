@@ -95,6 +95,9 @@ ascent! {
         publishes(a, t), subscribes(b, t), if !is_request(t),
         allowed(a, t, Action::Publish), allowed(b, t, Action::Subscribe);
     // A request to the credentials agent passes its request gate too (docs/architecture/authority-model.md, slice 9).
+    // Its `if is_request(t)` changes no answer: on any other topic this rule needs the publish and the subscribe the rule
+    // above needs, so it derives only what that one does. A mutant that drops it is equivalent; it stays to say the rule
+    // is the request gate's.
     edge(Node::Out(a.clone(), t.clone()), Node::In(b.clone(), t.clone())) <--
         publishes(a, t), subscribes(b, t), if is_request(t),
         allowed(a, t, Action::Publish), allowed(a, t, Action::Request), allowed(b, t, Action::Subscribe);
@@ -136,6 +139,8 @@ ascent! {
         entry(a, e, s, r), reach_held(Node::Out(a.clone(), s.clone()), Node::In(a.clone(), r.clone()));
 
     // -- witnesses: the shortest path from each start, for a refusal's reason ----------------------------------------
+    // `start(x)` only limits which witnesses are made: every one read (`judge::evaluate`) is from a start, so a mutant
+    // that drops it changes no answer, only how much is computed. It is equivalent, here and in `witness_held`.
     lattice witness(Node, Node, Dual<(usize, Vec<Node>)>);
     witness(x.clone(), y.clone(), Dual((1, vec![x.clone(), y.clone()]))) <-- start(x), edge(x, y);
     witness(x.clone(), z.clone(), Dual((n + 1, extended(path, z)))) <-- witness(x, y, ?Dual((n, path))), edge(y, z);
