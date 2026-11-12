@@ -361,6 +361,55 @@ async fn a_writer_pushes_and_the_change_is_announced() {
     assert!(dest.join("new.dhall").exists());
 }
 
+/// A clone of depth one, as Flux's source-controller makes the deployment's (go-git, depth 1): the head alone, cut there,
+/// with its whole tree. Found on u7c, 2026-11-10: the server refused `deepen`, and Flux could fetch nothing from it.
+#[tokio::test]
+async fn a_clone_of_depth_one_has_the_head_alone_and_its_whole_tree() {
+    let h = Harness::start().await;
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "a").await;
+    assert!(ok, "{text}");
+    h.commit(&repo, "second.dhall", "2").await;
+    h.commit(&repo, "third.dhall", "3").await;
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+        .await;
+    assert!(ok, "{text}");
+    let (_, head) = h.git(&repo, None, &["rev-parse", "HEAD"]).await;
+
+    let obs = client(&h.ca, h.dir.path(), "polar-scheduler-observer");
+    let dest = h.dir.path().join("shallow");
+    let (ok, text) = h
+        .git(
+            h.dir.path(),
+            Some(&obs),
+            &["clone", "--depth", "1", &h.url(), dest.to_str().unwrap()],
+        )
+        .await;
+    assert!(ok, "{text}");
+    let (_, count) = h.git(&dest, None, &["rev-list", "--count", "HEAD"]).await;
+    assert_eq!(count.trim(), "1");
+    assert_eq!(
+        std::fs::read_to_string(dest.join(".git/shallow"))
+            .unwrap()
+            .trim(),
+        head.trim()
+    );
+    for (file, text) in [
+        ("credentials.dhall", "{ seeded = True }"),
+        ("second.dhall", "2"),
+        ("third.dhall", "3"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(dest.join(file)).unwrap(),
+            text,
+            "{file}"
+        );
+    }
+    let (ok, text) = h.git(&dest, None, &["fsck", "--strict"]).await;
+    assert!(ok, "{text}");
+}
+
 #[tokio::test]
 async fn a_reader_cannot_push_and_nothing_is_announced() {
     let h = Harness::start().await;
