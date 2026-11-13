@@ -49,18 +49,29 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   UNCOMPRESSED content (= NarHash for a NAR), STORED zstd. Write: stream in → decompress-check (hash + size of plain
   bytes must equal the name / NarHash) → zstd-compressed temp file → fsync → rename. Per blob keep the compressed
   file's sha256 + size (FileHash/FileSize). narinfo: URL `nar/<nix32 narhash>.nar.zst`, Compression zstd, FileHash/
-  FileSize of the stored file; served as stored, never recompressed per read. Upstream faults: decompress whatever
-  upstream sent (xz/zstd/bzip2/none), recompress zstd. zstd level, and whether other faces' blobs (OCI layers are
+  FileSize of the stored file; served as stored, never recompressed per read. Upstream faults: zstd kept AS RECEIVED (decoded
+  once to check); none encoded here; xz (older cache.nixos.org paths) decoded with pure-Rust `lzma-rust2` (Apache-2.0)
+  and encoded zstd, added when the first xz path faults, refused with a clear reason until then. zstd level, and whether other faces' blobs (OCI layers are
   already gzip/zstd) are stored as-is: decide in NC2 / the images feature.
-- zstd library: DECIDED 2026-11-12, maintainer: "not a fan of adding a C library. We did it for the allocator because
-  there's not any real option to it" → `ruzstd` (pure Rust, MIT, 0.9.1 of 2026-10-11). Rejected: `zstd` 0.14 (C
-  libzstd 1.5.7 via zstd-sys; would have built with workspace.nix's static musl CC). ruzstd 0.9.1: decoder complete
-  (1.4-3.5x slower than C, its README); encoder only Uncompressed and Fastest (~level 1; Default/Better/Best
-  UNIMPLEMENTED per docs.rs). So: an upstream's zstd bytes are stored AS RECEIVED (decoded once to check NarHash,
-  never re-encoded); only plain (or xz) upstreams are encoded, at Fastest. cache.nixos.org now serves zstd (sampled
-  2026-11-12: nix-2.34.8 4113736 → 1240540, glibc-2.44-25 35578272 → 10427318, both `.nar.zst`), so most content is
-  never encoded here. xz (older cache paths): pure-Rust `lzma-rs` (MIT, last release 2023-01) when the first xz path
-  faults; refuse with a clear reason until then.
+- zstd library: DECIDED 2026-11-12. First "not a fan of adding a C library. We did it for the allocator because
+  there's not any real option to it" (C `zstd` 0.14 rejected); then, shown measurements, "If that's the best library
+  in a rust crate for zstd, perhaps we should look at other compressions"; then "Let's try structured zstd".
+  Measured (scratchpad bench, release, 1 thread, x86_64; glibc-2.44-25 NAR 35.6 MB; nix NAR 4.1 MB ranked alike):
+  C zstd -3 3.47 / 567 MB/s / dec 1859; C zstd -19 4.34 / 8; structured-zstd 0.3.0 L3 3.47 / 577 / 2315, L9 3.80 /
+  163 / 2465, L19 4.27 / 10 / 1922; ruzstd 0.9.1 Fastest (only level) 2.21 / 154 / 698, its decoder on L3 628;
+  brotli 9.1.1 q5 3.80 / 74 / 717, q9 4.00 / 12 / 758, q11 4.55 / 1 / 669; lzma-rust2 0.25 xz6 4.75 / 7 / 137;
+  flate2+zlib-rs gzip9 2.95 / 35 / 856. cache.nixos.org's own zstd of glibc: 3.41. Nix 2.34 writes caches in br,
+  gzip, xz, zstd (lz4: "Using external lz4 program", refused).
+  CHOSEN `structured-zstd` =0.3.0 (Apache-2.0; github structured-world/structured-zstd; first published 2026-03-25,
+  0.3.0 on 2026-11-08, ~87k downloads vs ruzstd's ~21M; claims CI interop with C zstd both ways). I recommended
+  brotli (mature) + ruzstd decoder; maintainer chose to try structured-zstd. RISKS recorded: young; ~1374 `unsafe`
+  occurrences in src (encoder matchers, ringbuffer, SIMD copy; not only kernels). Features: default-features=false,
+  ["std", "hash", "kernel-scalar", "kernel-avx2", "kernel-neon"]: drops `legacy` (v0.5-0.7 frames: less decoder
+  surface for untrusted upstream bytes), `dict-builder` (and fastrand), `ldm`, sve/simd128. Same speed as default
+  (L9 166 / 2429); scalar-only costs ~10% decode. Deps then: twox-hash (MIT). Mitigations to build in: decoding
+  bounded by the narinfo's NarSize (refuse past it: no bomb), oracle tests both ways (Nix substitutes our .nar.zst;
+  we decode cache.nixos.org's and C zstd CLI's), property round trips and mutated-input-never-panics. Revisit with
+  age; brotli is the fallback. Encoding level for plain inputs: 9 by default (measured), a setting.
 - C already in the workspace (told the maintainer): git2 → libgit2-sys, libssh2-sys, libz-sys; static OpenSSL
   (workspace.nix OPENSSL_*); ring's C/asm. gitoxide is the way off libgit2.
 - Path records: per hashpart, a JSON record {store_path, nar_hash, nar_size, references, deriver?, ca?, upstream
