@@ -153,34 +153,6 @@ impl CustodyClient {
 
     /// What the custodian is to fetch for `identity` (docs/architecture/key-custody.md, "Part A's bootstrap: the
     /// custodian"): `polar-init`'s, once the custodian's certificate is installed.
-    /// `record` signed with the signer key, as the evidence record it is (docs/architecture/key-custody.md, "Workload
-    /// signing keys"): the daemon signs it in the evidence domain if its certificate names the record's `type`, and the
-    /// document carries the signature in the fixed form `polar-signing` reads and the signer slot's chain.
-    pub fn sign_record(
-        &self,
-        record: &serde_json::Value,
-    ) -> Result<polar_signing::Document, ClientError> {
-        let chain = self.certificate(Slot::Signer)?;
-        let der = match self.request(Request::SignRecord {
-            record: record.to_string(),
-        })? {
-            Reply::Signature(der) => der,
-            other => return Err(refused_or_unexpected(other)),
-        };
-        let fixed = p256::ecdsa::Signature::from_der(&der)
-            .map_err(|e| ClientError::NotASignature(e.to_string()))?
-            .to_bytes()
-            .to_vec();
-        Ok(polar_signing::Document {
-            payload: record.clone(),
-            signature: polar_signing::SignatureBlock {
-                algorithm: polar_signing::Algorithm::EcdsaP256Sha256,
-                value: fixed,
-                certificate_chain: chain,
-            },
-        })
-    }
-
     pub fn bootstrap(
         &self,
         identity: &str,

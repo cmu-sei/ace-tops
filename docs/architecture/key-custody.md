@@ -1591,6 +1591,15 @@ above already plans to split it, for the same reason.
    documentSigning one with no TLS purpose (`any`, client or server auth refused) that may record something.
    Revocation of its serial destroys every key, as any slot's. The client's call for the infrastructure's signer: item 4.
    Issuance: item 5.
+   *Simplified 2026-11-13 on main (the maintainer: "the point of the custodian is to hold keys in custody and perform
+   operations for an actor that can only be performed in custody, the only place that key is usable"):* `SignRecord`
+   and `Refusal::NotItsRecordType` are gone, and polar-custody no longer depends on polar-signing. The signer slot answers
+   `Sign` with its key over what the workload gives it; the builder's signer (item 4) makes the evidence-domain input and
+   refuses a type the certificate does not name, before it asks. What stays the daemon's: the key made and held there,
+   never escrowed, gone with the pod; `Sign` from the workload alone; and a certificate the slot takes only if no TLS
+   stack would (`judge_signer`: documentSigning, no TLS purpose), so nothing the key signs passes as a handshake. What it
+   may record is no longer judged at install; the credentials agent issues none that records nothing, and a reader holds
+   every record to its signer's certificate (item 8).
 4. **A signer in the infrastructure, never the domain's own.** Since 1218efd6 the infrastructure is the builder's, not
    the domain supervisor's child, so it can end a domain and still sign a record saying it did. The signer is spawned
    unnamed (as the `CryptoActor` is, `infrastructure.rs`), so `registry::where_is` cannot find it; the builder hands the

@@ -246,11 +246,20 @@ impl Custody {
                 slot: Slot::Custodian,
                 ..
             } => Reply::Refused(Refusal::NotPermitted),
-            // The signer key signs records, never a handshake.
+            // The signer key signs what the workload's signer gives it; its certificate is one no TLS stack takes
+            // (`judge_signer`), so nothing it signs passes as a handshake.
             Request::Sign {
-                slot: Slot::Signer, ..
-            } => Reply::Refused(Refusal::NotPermitted),
-            Request::SignRecord { record } if roles.workload => self.sign_record(&record),
+                slot: Slot::Signer,
+                message,
+            } if roles.workload => {
+                let Some(held) = self.slots.get(&Slot::Signer) else {
+                    return Reply::Refused(Refusal::NoKey);
+                };
+                if held.chain.is_none() {
+                    return Reply::Refused(Refusal::NoCertificate);
+                }
+                Reply::Signature(held.key.sign(&message))
+            }
             Request::Sign { slot, message } if roles.workload => {
                 let Some(held) = self.slots.get(&slot) else {
                     return Reply::Refused(Refusal::NoKey);
@@ -477,36 +486,6 @@ impl Custody {
         Ok(held.key.sign(message))
     }
 
-    /// A signature over `record` with the signer key: an object with a string `type` its certificate names, signed in
-    /// the evidence domain as `polar-signing` would sign it (docs/architecture/key-custody.md, "Workload signing keys",
-    /// item 3).
-    fn sign_record(&self, record: &str) -> Reply {
-        let Some(held) = self.slots.get(&Slot::Signer) else {
-            return Reply::Refused(Refusal::NoKey);
-        };
-        let Some(leaf) = held.chain.as_ref().and_then(|chain| chain.first()) else {
-            return Reply::Refused(Refusal::NoCertificate);
-        };
-        let bad = |why: &str| Reply::Refused(Refusal::BadRequest(why.to_string()));
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(record) else {
-            return bad("the record is not JSON");
-        };
-        let Some(record_type) = value.get("type").and_then(serde_json::Value::as_str) else {
-            return bad("the record is not an object with a string `type`");
-        };
-        match cert_issuer_common::evidence::may_record(leaf) {
-            Ok(may) if may.allows(record_type) => {}
-            _ => return Reply::Refused(Refusal::NotItsRecordType(record_type.to_string())),
-        }
-        match polar_signing::document::signing_input_in(
-            polar_signing::Domain::EVIDENCE_RECORD,
-            &value,
-        ) {
-            Ok(input) => Reply::Signature(held.key.sign(&input)),
-            Err(e) => bad(&format!("the record has no canonical form: {e}")),
-        }
-    }
-
     fn make_csr(&mut self, slot: Slot, identity: String, names: Vec<String>) -> Reply {
         let key = match SlotKey::generate() {
             Ok(key) => key,
@@ -591,8 +570,9 @@ fn judge(leaf_pem: &str, spki: &[u8], identity: &str, ca: &[u8], now: i64) -> Re
     Ok(())
 }
 
-/// Whether `leaf_pem` is for the signer slot: a documentSigning certificate no TLS stack would take, naming evidence it
-/// may record (docs/architecture/key-custody.md, "Workload signing keys", items 5 and 6).
+/// Whether `leaf_pem` is for the signer slot: a documentSigning certificate no TLS stack would take, so that what the key
+/// signs never passes as a handshake (docs/architecture/key-custody.md, "Workload signing keys", item 5). What it may
+/// record is the workload's signer's to hold it to.
 fn judge_signer(leaf_pem: &str) -> Result<(), String> {
     let leaf_der = der_of(leaf_pem)?;
     let (_, leaf) =
@@ -610,12 +590,7 @@ fn judge_signer(leaf_pem: &str) -> Result<(), String> {
     if !eku.other.contains(&document_signing) {
         return Err("it is not a documentSigning certificate".to_string());
     }
-    match cert_issuer_common::evidence::may_record(leaf_pem) {
-        Ok(cert_issuer_common::evidence::MayRecord::Nothing) | Err(_) => {
-            Err("it may record no evidence (`c:record-evidence`)".to_string())
-        }
-        Ok(_) => Ok(()),
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1102,7 +1077,6 @@ pub(crate) mod tests {
                     names: vec![]
                 }),
                 slot.clone().prop_map(|slot| Request::Certificate { slot }),
-                "[ -~]{0,60}".prop_map(|record| Request::SignRecord { record }),
                 (slot.clone(), prop::collection::vec(any::<u8>(), 0..160))
                     .prop_map(|(slot, message)| Request::Sign { slot, message }),
                 (slot, "[ -~]{0,40}").prop_map(|(slot, pem)| Request::Install {
@@ -1688,14 +1662,14 @@ mod custodian_tests {
 #[cfg(test)]
 mod signer_tests {
     //! The signer slot (docs/architecture/key-custody.md, "Workload signing keys", items 2 and 3): a key of the pod's own
-    //! that signs evidence records whole, of the types its certificate names, and nothing else; never a handshake, never
-    //! for polar-init, never another domain.
+    //! that signs what its workload gives it, under a certificate no TLS stack takes; never for polar-init. What a record
+    //! is, and which records it may sign, are the workload's signer's (`polar-agent-builder`'s `signer`).
     use super::tests::{IDENTITY, TestCa, test_ca, time_now};
     use super::*;
     use crate::tls::{CLIENT_CONTEXT, certificate_verify_input};
-    use polar_signing::{Algorithm, Document, Domain, SignatureBlock, Trust};
+    use p256::ecdsa::signature::Verifier as _;
+    use p256::ecdsa::{Signature, VerifyingKey};
     use proptest::prelude::*;
-    use serde_json::{Value, json};
 
     const INSTALLER: Roles = Roles {
         installer: true,
@@ -1791,33 +1765,20 @@ mod signer_tests {
         (custody, certificate)
     }
 
-    fn record(record_type: &str) -> Value {
-        json!({ "type": record_type, "subject": { "target": "u7c" }, "result": { "passed": true } })
-    }
-
-    fn sign_record(custody: &Custody, roles: Roles, record: &Value) -> Reply {
+    fn sign(custody: &Custody, roles: Roles, message: &[u8]) -> Reply {
         custody.handle_read(
             roles,
-            Request::SignRecord {
-                record: record.to_string(),
+            Request::Sign {
+                slot: Slot::Signer,
+                message: message.to_vec(),
             },
         )
     }
 
-    /// The record and its signature as `polar-signing` reads them: the signature in its fixed form, the chain as held.
-    fn document(record: Value, der: &[u8], certificate: &str) -> Document {
-        let fixed = p256::ecdsa::Signature::from_der(der)
-            .unwrap()
-            .to_bytes()
-            .to_vec();
-        Document {
-            payload: record,
-            signature: SignatureBlock {
-                algorithm: Algorithm::EcdsaP256Sha256,
-                value: fixed,
-                certificate_chain: vec![certificate.to_string()],
-            },
-        }
+    fn verifying_key_of(certificate_pem: &str) -> VerifyingKey {
+        let der = der_of(certificate_pem).unwrap();
+        let (_, cert) = X509Certificate::from_der(&der).unwrap();
+        VerifyingKey::from_sec1_bytes(&cert.public_key().subject_public_key.data).unwrap()
     }
 
     fn ca() -> &'static TestCa {
@@ -1826,22 +1787,22 @@ mod signer_tests {
     }
 
     #[test]
-    fn a_record_it_signs_verifies_as_evidence_under_its_certificate_and_as_nothing_else() {
+    fn the_signer_slot_signs_what_the_workload_gives_under_its_certificate() {
         let (custody, certificate) = with_signer(ca(), &["c:record-evidence:attestation"]);
-        let signed = record("attestation");
-        let Reply::Signature(der) = sign_record(&custody, WORKLOAD, &signed) else {
-            panic!("not signed");
-        };
-        let trust = Trust::from_pem(&[ca().pem.clone()]).unwrap();
-        let document = document(signed, &der, &certificate);
-        let signer =
-            polar_signing::verify_in(Domain::EVIDENCE_RECORD, &document, &trust, time_now())
-                .unwrap();
-        assert_eq!(signer.identity.as_deref(), Some(IDENTITY));
-        assert!(
-            polar_signing::verify_in(Domain::CONFIGURATION, &document, &trust, time_now()).is_err(),
-            "a record's signature is no configuration's"
-        );
+        // A handshake's input too: the key is the slot's, and its certificate no TLS stack takes.
+        for message in [
+            b"what the workload's signer made".to_vec(),
+            certificate_verify_input(CLIENT_CONTEXT, &[5; 32]),
+        ] {
+            let Reply::Signature(der) = sign(&custody, WORKLOAD, &message) else {
+                panic!("not signed");
+            };
+            assert!(
+                verifying_key_of(&certificate)
+                    .verify(&message, &Signature::from_der(&der).unwrap())
+                    .is_ok()
+            );
+        }
         assert_eq!(
             custody.handle_read(WORKLOAD, Request::Certificate { slot: Slot::Signer }),
             Reply::Certificate(vec![certificate])
@@ -1849,79 +1810,11 @@ mod signer_tests {
     }
 
     #[test]
-    fn a_record_of_a_type_its_certificate_does_not_name_is_refused() {
-        let (custody, _) = with_signer(
-            ca(),
-            &[
-                "c:record-evidence:attestation",
-                "c:record-evidence:attestation-report",
-            ],
-        );
-        for allowed in ["attestation", "attestation-report"] {
-            assert!(
-                matches!(
-                    sign_record(&custody, WORKLOAD, &record(allowed)),
-                    Reply::Signature(_)
-                ),
-                "{allowed}"
-            );
-        }
-        assert_eq!(
-            sign_record(&custody, WORKLOAD, &record("kani")),
-            Reply::Refused(Refusal::NotItsRecordType("kani".to_string()))
-        );
-        let (any, _) = with_signer(ca(), &["c:record-evidence"]);
-        assert!(
-            matches!(
-                sign_record(&any, WORKLOAD, &record("kani")),
-                Reply::Signature(_)
-            ),
-            "the bare name allows any type"
-        );
-    }
-
-    #[test]
-    fn what_is_not_a_record_is_refused() {
+    fn only_the_workload_asks_the_signer_slot_to_sign() {
         let (custody, _) = with_signer(ca(), &["c:record-evidence"]);
-        for text in [
-            "not json",
-            "[1,2]",
-            "\"attestation\"",
-            "{\"subject\":{}}",
-            "{\"type\":7}",
-        ] {
-            let reply = custody.handle_read(
-                WORKLOAD,
-                Request::SignRecord {
-                    record: text.to_string(),
-                },
-            );
-            assert!(
-                matches!(reply, Reply::Refused(Refusal::BadRequest(_))),
-                "{text}: {reply:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_signer_slot_signs_no_handshake_and_only_the_workload_asks_for_a_record() {
-        let (custody, _) = with_signer(ca(), &["c:record-evidence"]);
-        let handshake = certificate_verify_input(CLIENT_CONTEXT, &[5; 32]);
-        for roles in [WORKLOAD, INSTALLER] {
-            assert_eq!(
-                custody.handle_read(
-                    roles,
-                    Request::Sign {
-                        slot: Slot::Signer,
-                        message: handshake.clone()
-                    }
-                ),
-                Reply::Refused(Refusal::NotPermitted)
-            );
-        }
         for roles in [INSTALLER, Roles::default()] {
             assert_eq!(
-                sign_record(&custody, roles, &record("attestation")),
+                sign(&custody, roles, b"anything"),
                 Reply::Refused(Refusal::NotPermitted)
             );
         }
@@ -1931,12 +1824,12 @@ mod signer_tests {
     fn nothing_is_signed_before_its_certificate_and_nothing_without_a_signer_key() {
         let (custody, _) = with_signer_key(ca());
         assert_eq!(
-            sign_record(&custody, WORKLOAD, &record("attestation")),
+            sign(&custody, WORKLOAD, b"anything"),
             Reply::Refused(Refusal::NoCertificate)
         );
         let (bare, _) = super::tests::installed(ca());
         assert_eq!(
-            sign_record(&bare, WORKLOAD, &record("attestation")),
+            sign(&bare, WORKLOAD, b"anything"),
             Reply::Refused(Refusal::NoKey)
         );
     }
@@ -1972,10 +1865,10 @@ mod signer_tests {
         );
     }
 
-    /// Its certificate is a signing certificate that may record something: never one a TLS stack would take, and never one
-    /// that names no evidence it may record.
+    /// Its certificate is a signing certificate: never one a TLS stack would take, so nothing the key signs passes as a
+    /// handshake. What it may record is not the daemon's to judge.
     #[test]
-    fn the_signer_slot_takes_only_a_signing_certificate_that_may_record() {
+    fn the_signer_slot_takes_only_a_signing_certificate_no_tls_stack_takes() {
         let refused = |names: &[&str], eku: Vec<rcgen::ExtendedKeyUsagePurpose>, says: &str| {
             let (mut custody, csr) = with_signer_key(ca());
             let certificate = certify_signer(ca(), &csr, names, eku);
@@ -1994,8 +1887,13 @@ mod signer_tests {
         let mut both = document_signing();
         both.push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
         refused(&["c:record-evidence"], both, "TLS");
-        refused(&[], document_signing(), "may record");
-        refused(&["c:record-evidence:Bad"], document_signing(), "may record");
+        let (mut custody, csr) = with_signer_key(ca());
+        let records_nothing = certify_signer(ca(), &csr, &[], document_signing());
+        assert!(
+            custody
+                .install_workload(Slot::Signer, vec![records_nothing], time_now())
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2005,53 +1903,20 @@ mod signer_tests {
         assert_eq!(custody.revoke(&[serial]), vec![Slot::Signer]);
         assert!(custody.is_revoked());
         assert_eq!(
-            sign_record(&custody, WORKLOAD, &record("attestation")),
+            sign(&custody, WORKLOAD, b"anything"),
             Reply::Refused(Refusal::Revoked)
         );
     }
 
-    fn record_type() -> impl Strategy<Value = String> {
-        "[a-z0-9-]{1,10}"
-    }
-
     proptest! {
-        /// For any record type and any set its certificate names (or the bare name), the record is signed exactly when
-        /// the set allows its type, and every signature verifies as evidence under the certificate.
+        /// Whatever the workload gives the signer slot is signed, and the signature verifies under its certificate's key.
         #[test]
-        fn a_record_is_signed_exactly_when_its_certificate_names_its_type(
-            signed in record_type(),
-            named in prop::collection::btree_set(record_type(), 1..4),
-            bare in any::<bool>(),
-        ) {
-            let mut names: Vec<String> = named.iter().map(|t| format!("c:record-evidence:{t}")).collect();
-            if bare {
-                names.push("c:record-evidence".to_string());
-            }
-            let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            let (custody, certificate) = with_signer(ca(), &names);
-            let value = record(&signed);
-            let reply = sign_record(&custody, WORKLOAD, &value);
-            let allowed = bare || named.contains(&signed);
-            match reply {
-                Reply::Signature(der) => {
-                    prop_assert!(allowed, "{} signed, not named", signed);
-                    let trust = Trust::from_pem(&[ca().pem.clone()]).unwrap();
-                    let document = document(value, &der, &certificate);
-                    prop_assert!(polar_signing::verify_in(Domain::EVIDENCE_RECORD, &document, &trust, time_now()).is_ok());
-                }
-                other => {
-                    prop_assert!(!allowed, "{} named, yet {:?}", signed, other);
-                    prop_assert_eq!(other, Reply::Refused(Refusal::NotItsRecordType(signed.clone())));
-                }
-            }
-        }
-
-        /// Whatever a caller sends to be signed on the signer slot as a handshake, nothing is signed.
-        #[test]
-        fn nothing_sent_as_a_handshake_is_signed_on_the_signer_slot(message in prop::collection::vec(any::<u8>(), 0..200)) {
-            let (custody, _) = with_signer(ca(), &["c:record-evidence"]);
-            let reply = custody.handle_read(WORKLOAD, Request::Sign { slot: Slot::Signer, message });
-            prop_assert_eq!(reply, Reply::Refused(Refusal::NotPermitted));
+        fn whatever_the_workload_gives_is_signed_and_verifies(message in prop::collection::vec(any::<u8>(), 0..200)) {
+            let (custody, certificate) = with_signer(ca(), &["c:record-evidence"]);
+            let Reply::Signature(der) = sign(&custody, WORKLOAD, &message) else {
+                return Err(TestCaseError::fail("not signed"));
+            };
+            prop_assert!(verifying_key_of(&certificate).verify(&message, &Signature::from_der(&der).unwrap()).is_ok());
         }
     }
 }

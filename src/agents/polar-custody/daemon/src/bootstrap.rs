@@ -862,10 +862,10 @@ mod tests {
     // certificate the slot will not take (one that may record nothing) fails the bootstrap, and says why.
     #[test]
     fn it_fetches_the_client_certificate_then_the_signing_certificate_and_is_ready() {
-        for (names, takes) in [
-            (vec!["c:record-evidence:attestation"], true),
-            (vec![], false),
-        ] {
+        // A certificate the slot will not take, one a TLS stack would, fails the bootstrap; what it may record is not
+        // the daemon's to judge.
+        let names = ["c:record-evidence:attestation"];
+        for takes in [true, false] {
             let custody = custody_given(true, None, false, true);
             let plan = read(&custody).plan().unwrap();
             let mut bootstrap = Bootstrap::new(&plan);
@@ -895,7 +895,11 @@ mod tests {
                 cert_issuer_common::csr_san::csr_dns_sans(&envelope.payload.csr_pem).unwrap(),
                 vec![X.to_string()]
             );
-            let certificate = signed_for_signing(&envelope.payload.csr_pem, &names);
+            let certificate = if takes {
+                signed_for_signing(&envelope.payload.csr_pem, &names)
+            } else {
+                signed(&envelope.payload.csr_pem, &[names[0].to_string()])
+            };
             let progress = bootstrap.on_reply(
                 CREDENTIALS_CUSTODIAN_ISSUANCE_REPLIES_TOPIC,
                 &reply(&envelope.correlation_id, issued(certificate.clone())),
@@ -911,7 +915,10 @@ mod tests {
                 let Progress::Failed(why) = progress else {
                     panic!("expected a failure, got {progress:?}")
                 };
-                assert!(why.contains("record"), "{why}");
+                assert!(
+                    why.contains("documentSigning") || why.contains("TLS"),
+                    "{why}"
+                );
                 assert!(!read(&custody).is_ready());
             }
         }

@@ -28,8 +28,10 @@
 //! signer is an infrastructure actor, spawned unnamed (as the crypto actor is), so nothing finds it by name; it takes no
 //! topic, so nothing outside the process reaches it; and it outlives the domain, so the infrastructure can still sign a
 //! record saying it ended one. The domain has a [`SignerHandle`], which signs an [`EvidenceRecord`] and nothing else:
-//! never bytes, never a document of another kind. The daemon is the floor under it: it signs a record only in the
-//! evidence domain, and only of a type the slot's certificate names (`c:record-evidence:<type>`).
+//! never bytes, never a document of another kind. The signer makes the record's signing input, in the evidence domain,
+//! and signs only a record of a type the slot's certificate names (`c:record-evidence:<type>`); the daemon holds the key
+//! and signs what it is given. A reader holds every record to its signer's certificate as well, so a record signed
+//! outside its types is refused where it is read.
 //!
 //! A review rule the type cannot hold: what the domain asks to sign is built from its own observations, never from
 //! content it received. A record in the agent's name says the agent saw it; signing another's words would make the
@@ -61,6 +63,7 @@
 
 use async_trait::async_trait;
 use polar_custody::client::{ClientError, CustodyClient};
+use polar_custody::protocol::Slot;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -120,7 +123,7 @@ impl EvidenceRecord {
 /// Why a record was not signed.
 #[derive(Debug, thiserror::Error)]
 pub enum SignError {
-    /// The daemon refused it: a type its certificate does not name, no signing key yet, a revoked pod.
+    /// Refused: a type the certificate does not name (the signer's), no signing key yet, a revoked pod (the daemon's).
     #[error("the custody daemon refused to sign the record: {0}")]
     Refused(String),
     /// The daemon or the signer could not be asked.
@@ -173,18 +176,10 @@ impl Actor for SignerActor {
             SignerMessage::Sign { record, reply } => {
                 // The client blocks on the socket: off the runtime's workers.
                 let client = client.clone();
-                let signed =
-                    tokio::task::spawn_blocking(move || client.sign_record(record.payload()))
-                        .await
-                        .map_err(|e| SignError::Unavailable(e.to_string()))
-                        .and_then(|signed| {
-                            signed.map_err(|e| match e {
-                                ClientError::Refused(refusal) => {
-                                    SignError::Refused(refusal.to_string())
-                                }
-                                other => SignError::Unavailable(other.to_string()),
-                            })
-                        });
+                let signed = tokio::task::spawn_blocking(move || sign_record(&client, &record))
+                    .await
+                    .map_err(|e| SignError::Unavailable(e.to_string()))
+                    .and_then(|signed| signed);
                 if let Err(e) = &signed {
                     tracing::warn!("a record was not signed: {e}");
                 }
@@ -193,6 +188,52 @@ impl Actor for SignerActor {
         }
         Ok(())
     }
+}
+
+/// `record` signed with the signer slot's key, as the evidence document it is: refused unless the slot's certificate
+/// names its type; signed in the evidence domain, as `polar-signing` reads it; the signature in its fixed form, with the
+/// slot's chain.
+fn sign_record(
+    client: &CustodyClient,
+    record: &EvidenceRecord,
+) -> Result<polar_signing::Document, SignError> {
+    let not_signed = |e: ClientError| match e {
+        ClientError::Refused(refusal) => SignError::Refused(refusal.to_string()),
+        other => SignError::Unavailable(other.to_string()),
+    };
+    let chain = client.certificate(Slot::Signer).map_err(not_signed)?;
+    let record_type = record
+        .payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let named = chain
+        .first()
+        .and_then(|leaf| cert_issuer_common::evidence::may_record(leaf).ok())
+        .is_some_and(|may| may.allows(record_type));
+    if !named {
+        return Err(SignError::Refused(format!(
+            "the signer's certificate may not record `{record_type}`"
+        )));
+    }
+    let input = polar_signing::document::signing_input_in(
+        polar_signing::Domain::EVIDENCE_RECORD,
+        &record.payload,
+    )
+    .map_err(|e| SignError::Unavailable(format!("the record has no canonical form: {e}")))?;
+    let der = client.sign(Slot::Signer, &input).map_err(not_signed)?;
+    let fixed = p256::ecdsa::Signature::from_der(&der)
+        .map_err(|e| SignError::Unavailable(format!("not a signature: {e}")))?
+        .to_bytes()
+        .to_vec();
+    Ok(polar_signing::Document {
+        payload: record.payload.clone(),
+        signature: polar_signing::SignatureBlock {
+            algorithm: polar_signing::Algorithm::EcdsaP256Sha256,
+            value: fixed,
+            certificate_chain: chain,
+        },
+    })
 }
 
 /// The domain's way to its signer.
@@ -367,7 +408,7 @@ mod tests {
             )
             .is_err()
         );
-        // A type the certificate does not name is the daemon's to refuse.
+        // A type the certificate does not name is the signer's to refuse, before the daemon is asked.
         let other = EvidenceRecord::new("projection-test", Map::new()).unwrap();
         assert!(matches!(
             signer.sign(other).await,
@@ -416,7 +457,57 @@ mod tests {
         );
     }
 
+    /// A client of a daemon whose signer slot's certificate names `names`, and the CA, for a test that signs records
+    /// directly.
+    async fn client_with(names: &[&str]) -> (Arc<CustodyClient>, Ca, tempfile::TempDir) {
+        let (signer, ca, dir) = signer_with(names).await;
+        drop(signer);
+        (
+            Arc::new(CustodyClient::new(dir.path().join("custody.sock"))),
+            ca,
+            dir,
+        )
+    }
+
     proptest! {
+        /// For any record type and any set its certificate names (or the bare name), the record is signed exactly when
+        /// the set allows its type, and every signature verifies as evidence under the certificate.
+        #[test]
+        fn a_record_is_signed_exactly_when_its_certificate_names_its_type(
+            signed in "[a-z0-9-]{1,10}",
+            named in prop::collection::btree_set("[a-z0-9-]{1,10}", 1..4),
+            bare in any::<bool>(),
+        ) {
+            let mut names: Vec<String> = named.iter().map(|t| format!("c:record-evidence:{t}")).collect();
+            if bare {
+                names.push("c:record-evidence".to_string());
+            }
+            let allowed = bare || named.contains(&signed);
+            let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+            let (outcome, ca) = runtime.block_on(async {
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                let (client, ca, _dir) = client_with(&names).await;
+                let record = EvidenceRecord::new(&signed, Map::new()).unwrap();
+                let outcome = tokio::task::spawn_blocking(move || sign_record(&client, &record))
+                    .await
+                    .unwrap();
+                (outcome, ca)
+            });
+            match outcome {
+                Ok(document) => {
+                    prop_assert!(allowed, "{} signed, not named", signed);
+                    let trust = polar_signing::Trust::from_pem(&[ca.pem]).unwrap();
+                    prop_assert!(polar_signing::verify_in(
+                        polar_signing::Domain::EVIDENCE_RECORD, &document, &trust, now()).is_ok());
+                }
+                Err(SignError::Refused(why)) => {
+                    prop_assert!(!allowed, "{} named, yet refused: {}", signed, why);
+                    prop_assert!(why.contains(&format!("`{signed}`")), "{}", why);
+                }
+                Err(other) => prop_assert!(false, "{}", other),
+            }
+        }
+
         // For every type and fields: a record is made exactly when the type is a record type and the fields do not
         // name one, and then what is signed says that type and every field, and nothing else.
         #[test]

@@ -80,38 +80,28 @@ async fn polar_init_installs_and_the_workload_signs_through_the_socket() {
     .unwrap();
 }
 
-// docs/architecture/key-custody.md, "Workload signing keys": the workload has a record signed through the socket and
-// gets it back as a document, which verifies as evidence under the signer's certificate; a record of a type the
-// certificate does not name is refused, and nothing is signed.
+// docs/architecture/key-custody.md, "Workload signing keys": the workload's signer has what it made signed through the
+// socket with the signer key, and the signature verifies under the slot's certificate. What a record is, the daemon
+// does not ask.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_workload_has_a_record_signed_through_the_socket_as_a_document() {
+async fn the_workload_has_what_its_signer_made_signed_through_the_socket() {
     let ca = test_ca();
     let daemon = daemon(&ca, both()).await;
     let certificate = fill_signer(&daemon, &ca, &["c:record-evidence:attestation"]);
     let socket = daemon.socket.clone();
-    let ca_pem = ca.pem.clone();
     tokio::task::spawn_blocking(move || {
         let client = CustodyClient::new(socket);
-        let record = serde_json::json!({ "type": "attestation", "subject": { "pod": "p" } });
-        let document = client.sign_record(&record).unwrap();
-        assert_eq!(document.payload, record);
-        assert_eq!(document.signature.certificate_chain, vec![certificate]);
-        let trust = polar_signing::Trust::from_pem(&[ca_pem]).unwrap();
-        let signer = polar_signing::verify_in(
-            polar_signing::Domain::EVIDENCE_RECORD,
-            &document,
-            &trust,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        )
-        .unwrap();
-        assert_eq!(signer.identity.as_deref(), Some(IDENTITY));
-        assert!(matches!(
-            client.sign_record(&serde_json::json!({ "type": "projection-test" })),
-            Err(ClientError::Refused(Refusal::NotItsRecordType(t))) if t == "projection-test"
-        ));
+        assert_eq!(
+            client.certificate(Slot::Signer).unwrap(),
+            vec![certificate.clone()]
+        );
+        let message = b"the signing input the workload's signer made".to_vec();
+        let der = client.sign(Slot::Signer, &message).unwrap();
+        assert!(
+            verifying_key_of(&certificate)
+                .verify(&message, &Signature::from_der(&der).unwrap())
+                .is_ok()
+        );
     })
     .await
     .unwrap();
