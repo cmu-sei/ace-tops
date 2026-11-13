@@ -67,6 +67,9 @@ follow each step, and the reference sections after the steps go into detail.
 
 > **On a Mac?** Go to **[On a Mac, with minikube](#on-a-mac-with-minikube)**: what your Mac needs, how to set up Docker
 > Desktop, and the same steps in order, for a Mac and the published images.
+>
+> **On Windows?** Go to **[On Windows, with minikube](#on-windows-with-minikube)**: the same steps from PowerShell, with
+> `bin\polar-dev.ps1` in place of `bin/polar-dev`. Docker Desktop on WSL 2 or Hyper-V; no Linux distribution and no bash needed.
 
 ### At a glance
 
@@ -292,7 +295,8 @@ and press Enter in the dev container. It copies your certificate out of the dev 
 cluster's CA, into Librewolf's certificate store, replacing any Polar certificate from before (it needs NSS's `certutil`
 and `pk12util`: from Nix, or your package manager). `up.nu` then checks the Neo4j password and goes on. For another
 browser, import `~/.config/polar-admin/<name>.crt`, its key and `ca.pem` yourself: **On a Mac, with minikube**, step 5, has
-the commands for the macOS Keychain (Safari, Chrome, Edge) and for Firefox.
+the commands for the macOS Keychain (Safari, Chrome, Edge) and for Firefox. On Windows, `bin\polar-dev.ps1 cert` imports
+them into the Windows certificate store (**On Windows, with minikube**, step 5).
 
 *On your own machine* (the variations of step 3), `up.nu` does this itself when it pauses at "Close Librewolf"
 (`just user-cert-install <name>` does the same by hand).
@@ -499,6 +503,205 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
 
    Step 6's checks are the same. Restart counts that grow, and `jira-observer` restarting when no Jira is set up, are
    expected (**Things that look wrong and are not**).
+
+### On Windows, with minikube
+
+The steps above, for Windows 10 or 11 running a minikube cluster in Docker Desktop, from PowerShell, with the images that
+are published. `bin/polar-dev` is a bash script; on Windows, `bin\polar-dev.ps1` does the same in PowerShell (the Windows
+PowerShell every Windows has, or PowerShell 7), and makes the same dev container. No WSL distribution and no bash are
+needed on your machine: everything that needs Linux runs in the cluster. (Written from the Mac steps and tried with
+PowerShell against a Linux cluster; not yet run end to end on Windows for this guide.)
+
+**What it needs.** The same as **On a Mac**: at least 16 GB of memory for the cluster (20 to 24 GB is better), 4 to 8
+CPUs and 40 to 60 GB of free disk. So a PC with 32 GB of memory or more is the one to use.
+
+#### Getting your Windows machine ready
+
+Do these once, in order. Each says how to tell it worked.
+
+**Two ways to open PowerShell.** Many steps say "in PowerShell". Click Start, type `PowerShell`, and press Enter: that is
+PowerShell *as yourself*. A few steps say "in PowerShell **as administrator**": click Start, type `PowerShell`, right-click
+**Windows PowerShell**, choose **Run as administrator**, and answer **Yes**. Its window title begins with
+"Administrator". Use it only for the steps that say so.
+
+**Step A. Check that your PC can run virtual machines.** Press Ctrl+Shift+Esc to open Task Manager, click **Performance**,
+then **CPU**. Under the graph, find **Virtualization**. It should say **Enabled**. If it says Disabled, it has to be turned
+on in the PC's firmware (BIOS or UEFI) settings; how depends on the make of the PC, so look up "enable virtualization" with
+its model, or ask whoever looks after it.
+
+**Step B. Find out which Windows you have.** Click Start, type `winver`, and press Enter. The window that opens names the
+edition: **Home**, **Pro**, **Enterprise** or **Education**. That decides the next step:
+
+- **Windows Home:** follow **Path 1, WSL 2**. It is the only one Home can use.
+- **Pro, Enterprise or Education:** either path works. Path 1 is Docker's default and the one most people use; Path 2
+  keeps WSL off your machine, if your organisation prefers that.
+
+Docker Desktop runs its containers inside a small Linux virtual machine. WSL 2 and Hyper-V are two ways Windows can run
+it. Either way, you work from PowerShell and never need to use Linux yourself.
+
+**Step C, Path 1: WSL 2.**
+
+1. In PowerShell **as administrator**, run:
+
+   ```powershell
+   wsl --install --no-distribution
+   ```
+
+   This turns on the part of Windows that Docker Desktop needs. It does not install a Linux system for you to use.
+2. Restart Windows.
+3. Download Docker Desktop from [docs.docker.com](https://docs.docker.com/desktop/setup/install/windows-install/) and run
+   the installer. When it asks, leave **Use WSL 2 instead of Hyper-V** ticked. Restart again if it asks.
+4. Give it enough memory. In PowerShell (as yourself), run this, all on one line:
+
+   ```powershell
+   Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value "[wsl2]`nmemory=24GB`nprocessors=8"
+   ```
+
+   Use less if your PC has less: about two thirds of its memory, and two thirds of its processors. Then run
+   `wsl --shutdown`, and start Docker Desktop again from the Start menu.
+
+**Step C, Path 2: Hyper-V** (Pro, Enterprise or Education only).
+
+1. In PowerShell **as administrator**, run:
+
+   ```powershell
+   Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All
+   ```
+
+   When it asks to restart, answer **Y**.
+2. Download Docker Desktop from [docs.docker.com](https://docs.docker.com/desktop/setup/install/windows-install/) and run
+   the installer. When it asks, **untick** **Use WSL 2 instead of Hyper-V**. Restart again if it asks.
+3. Give it enough memory. Open Docker Desktop, click the gear (Settings) at the top, then **Resources**, then **Advanced**.
+   Set **Memory** to about 24 GB, **CPUs** to 8 and the disk to 60 GB (less if your PC has less: about two thirds of each).
+   Click **Apply & restart**.
+
+**Step D, either path: check Docker Desktop.** Docker Desktop's whale icon is in the taskbar's corner, and its window says
+**Engine running**. In its Settings, under **Kubernetes**, leave **Enable Kubernetes** off: minikube, next, is the cluster.
+Docker Desktop has to be running whenever you use Polar.
+
+**Step E. Install the other programs.** In PowerShell (as yourself), run each of these. Each asks before installing; answer
+**Y**.
+
+```powershell
+winget install Kubernetes.minikube
+winget install Kubernetes.kubectl
+winget install Git.Git
+```
+
+Then **close PowerShell and open it again**: a window that was open before an install cannot find the new program. Check:
+
+```powershell
+minikube version        # v1.39.0 or later
+kubectl version --client
+git --version
+ssh -V                  # Windows has this already
+```
+
+If `ssh -V` says it is not recognised, add it: Settings, System, Optional features, **View features** (or **Add a
+feature**), **OpenSSH Client**, Install.
+
+**Step F. Your SSH key.** The dev container uses your SSH key, through Windows' key keeper, the ssh-agent service, which is
+off until you turn it on.
+
+1. In PowerShell **as administrator**, run:
+
+   ```powershell
+   Get-Service ssh-agent | Set-Service -StartupType Automatic; Start-Service ssh-agent
+   ```
+
+   Then close that window.
+2. In PowerShell (as yourself), make a key if you have none. Press Enter to accept where it goes, and type a passphrase
+   you will remember:
+
+   ```powershell
+   ssh-keygen -t ed25519
+   ```
+
+3. Hand it to the key keeper, and check:
+
+   ```powershell
+   ssh-add $env:USERPROFILE\.ssh\id_ed25519
+   ssh-add -l              # shows one line for your key
+   ```
+
+If a later step says your key was refused, run `where.exe ssh`. The first line should be
+`C:\Windows\System32\OpenSSH\ssh.exe`. If Git's comes first instead, Git's copy of ssh does not use Windows' key keeper; ask
+for help putting Windows' first on your PATH.
+
+**Step G. Get Polar's files.** In PowerShell (as yourself), from the folder you want them in (your home folder is fine):
+
+```powershell
+git clone --config core.autocrlf=false https://github.com/cmu-sei/ace-tops.git
+cd ace-tops
+```
+
+The `--config core.autocrlf=false` part keeps the files exactly as they are, which the Linux side needs.
+
+**Step H. How to run the dev-container script.** Windows may refuse to run a script downloaded from the internet. This
+form runs it anyway, for that one time, without changing any setting:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File bin\polar-dev.ps1 <command>
+```
+
+Below, `polar-dev.ps1 <command>` means that line, from the `ace-tops` folder. (Standard Windows and Docker Desktop steps, not
+run on Windows for this guide.)
+
+#### Then, Polar
+
+**The steps, in order:**
+
+1. **The cluster** (step 1):
+
+   ```powershell
+   minikube start --driver=docker --cpus 6 --memory 20g --disk-size 60g --extra-config=kubelet.registry-pull-qps=0
+   kubectl version              # Server Version v1.36 or later
+   kubectl get storageclass     # standard (default)
+   ```
+
+   With Docker Desktop running, in PowerShell. `--memory` must be a little less than you gave Docker Desktop in Step C,
+   and `--cpus` no more: with 16 GB given to it, use `--memory 14g --cpus 4`. The first start takes several minutes.
+
+2. **Access to the secrets** (step 2): write your own in the dev container, or if you are on the team, send your SSH public
+   key (`$env:USERPROFILE\.ssh\id_ed25519.pub`) to someone who can add it, and pull.
+
+3. **Your dev container in the cluster** (step 3):
+
+   ```powershell
+   $env:POLAR_DEV_SOPS_KEY = "$env:USERPROFILE\.ssh\id_ed25519"
+   polar-dev.ps1 up             # pulls the dev container; several minutes the first time; you land in it
+   ```
+
+   Your user in the dev container is your Windows user name in lower case, with anything but letters, digits and `-` made
+   a `-`.
+
+4. **Polar, from the published images** (step 4), in the dev container, from `/workspace`:
+
+   ```bash
+   nu infra/up.nu local-minimal --import-from docker.io/daveman1010220 --import-tag 3.0.1 --user <name> --email <email>
+   ```
+
+5. **Your certificate in the browser** (step 5). When `up.nu` pauses at the browser step, in PowerShell on your machine:
+
+   ```powershell
+   polar-dev.ps1 cert <name>
+   ```
+
+   It copies `%USERPROFILE%\.config\polar-admin` out of the dev container, makes `<name>.p12` there, and imports it into
+   your Windows certificate store (Personal), with the cluster's CA into Trusted Root Certification Authorities, which
+   Windows asks you to confirm. Restart Edge or Chrome, and press Enter in the dev container. When Neo4j's page asks which
+   certificate to use, choose "Polar `<name>`". **Firefox** keeps its own store: import `<name>.p12` (password `changeit`)
+   under Your Certificates and `ca.pem` under Authorities, as **On a Mac** says. A rebuilt cluster has a new CA: remove the
+   old "Polar Internal CA" (`certmgr.msc`, Trusted Root Certification Authorities) and do this again.
+
+6. **Open it** (step 6):
+
+   ```powershell
+   polar-dev.ps1 forward        # then https://localhost:7473 (Neo4j) and http://localhost:8050 (ACE)
+   ```
+
+`polar-dev.ps1 attach` logs in again, `sync` copies `polar-deploy` and `polar-admin` back to `%USERPROFILE%\.config`, and
+`down` stops the pod, as `bin/polar-dev`'s do (**Dev container in the cluster**, below).
 
 ### Working environments
 
