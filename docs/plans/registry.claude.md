@@ -76,6 +76,8 @@ OWNER: polar-89, on main.
 
 ## FEATURES (order mine, for review)
 1. nix-cache — first (maintainer's excitement; self-contained; replaces nothing).
+1b. trusted-remotes — proposed 2026-11-13 (registry/trusted-remotes.claude.md): signed `remotes` section, sealed
+   remotes, builder Location by remote name. Before the host-store upstream.
 2. nix-in-build-pod — writable store options: emptyDir store + `--store` chroot (needs userns, blocked by RuntimeDefault?),
    mapping exception, image-volume layers (KEP-4639) + Nix experimental local-overlay-store (needs overlay mount). Open.
 3. crates on demand — sparse registry face (index + dl); keep D2 prefetch as an optimisation or drop. Prior art kellnr

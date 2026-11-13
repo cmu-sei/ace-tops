@@ -88,6 +88,7 @@ switched off; then a build gets only what is held.
 | Feature | What it gives | Status |
 |---|---|---|
 | **The Nix cache** | the content store, and Nix's binary cache protocol over it, signed with Polar's own key; faults from the official cache and from the host's own Nix store | proposed, first: [`registry/nix-cache.md`](registry/nix-cache.md) |
+| **Trusted remotes** | where the registry fetches from, in a signed list that changes while it runs; a remote that is itself a secret sealed whole, reached by a name that says nothing | proposed: [`registry/trusted-remotes.md`](registry/trusted-remotes.md) |
 | **Nix in a build pod** | a build that runs Nix, in a pod that cannot write the image's own store and may not use its node's | to plan |
 | **Crates on demand** | Cargo's registry protocol, so a build's crates fault in as it needs them, rather than all being fetched ahead | to plan |
 | **Git dependencies on demand** | git's protocol for the repositories a build depends on, at the commits its lock pins | to plan |
