@@ -29,7 +29,7 @@
 > A **feature-level plan**, part of [runtime attestation](../runtime-attestation.md). It describes Polar's `main` as it
 > is.
 
-**Status: u7c enforces NetworkPolicy, and builds reach only the registry; the canary is not built.**
+**Status: u7c enforces NetworkPolicy, builds reach only the registry, and the canary proves it before builds run.**
 
 ## 1. The need
 
@@ -112,6 +112,11 @@ requirements, on Polar's own clusters and on anyone else's. Four steps, each see
    cluster. It runs when the orchestrator starts, and again before a build when the last proof is older than a set
    bound. Where enforcement is not proved, a build is refused with the reason, and the result is published.
 
+   Done. The canary runs the fetch's image in a probe mode, in a pod made as a build's. The registry, the API
+   (`kubernetes.default.svc`) and the outside address are given to it as addresses, since it has no DNS. The outside
+   address and how long a proof stands are signed run-time settings. A refused build fails with the canary's reason
+   and its probe's lines, through the failure every build already publishes.
+
 Polar writes only **standard NetworkPolicy**, so the policies and the canary carry to any cluster that enforces them:
 with Calico, Cilium, a cloud provider's engine, k3s's, or kube-nftpolicy. The canary checks each the same way.
 
@@ -176,8 +181,10 @@ u7c enforces NetworkPolicy, and builds of foreign code reach only the registry.
   check pods, which is enforced.
 - **The egress probe tests the other direction.** It checks that the way *out* works for an agent that needs it, so it
   proves nothing about denial.
-- **Enforcement is not yet proved by Polar itself.** Until the canary runs, the rule already in force stays: no build
-  names a repository Polar does not control.
+- **Polar proves enforcement itself.** On u7c the canary passes when the orchestrator starts. With the builds' policy
+  taken away it failed, and builds were refused with its reason; with the policy back it passed again.
+- **The rule that no build names a repository Polar does not control** still stands. The canary was its condition, and
+  lifting it is a decision of its own.
 
 ## 7. What is left before this is met
 
@@ -185,8 +192,6 @@ The pieces left are options: each can be built on its own, in any order, except 
 
 | Option | What it gives | Depends on |
 |---|---|---|
-| **The canary** | Polar proves enforcement itself, at the orchestrator's start and before builds, and publishes the result | nothing left: the builds' policy it runs under is in force |
-| **Refusing a build where enforcement is not proved** | foreign code never runs on a cluster that does not enforce | the canary |
 | **Polar's network needs, from what each agent is built to use** ([plan](network-needs.md)) | every Polar pod reaches only the services its capabilities name, and the outside only if it declares `egress` | nothing; its rollout settles the question of DNS |
 | **The enforcer against upstream's network policy tests** | the enforcer's meaning checked against the Kubernetes project's own tests, beside its property tests | nothing |
 | **Polar offering the enforcer** | a target's configuration can deploy kube-nftpolicy as a DaemonSet on a cluster that has no engine | nothing |

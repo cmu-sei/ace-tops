@@ -99,10 +99,28 @@ a day enforcing AND the next Polar deploy succeeds on it (i.e. not before 2026-1
 - not seen: a real build Job (mappings version 3, 1 repo, no ref moved during the check).
 - polar-cc told: departures() 4th arg; polar-builds closed.
 
+## G4+G5 DONE (2026-11-13, main a8f5caf6 + fix; u7c deployed)
+- fetch/src/probe.rs: `build-fetch --probe-network`, env CYCLOPS_PROBE_REACH / CYCLOPS_PROBE_UNREACHABLE, 5s connect
+  each; reached = TCP connect ok; any error/timeout = not reached (targets all answer when reachable). Plain text (no ANSI).
+- k8s/src/canary.rs: canary_job (no init, one container named `pipeline` [so backend.log reads it], fetch image,
+  command [build-fetch, --probe-network], fetch hardening, tmp vol, aliases), canary_departures, Enforcement (tokio
+  Mutex; fresh ok stands; failed never stands; one at a time), registry_authority, name_of, KUBERNETES_API const
+  `kubernetes.default.svc:443` (std::env::var is clippy-disallowed; resolved like registry). Label
+  cyclops.build/type=canary; in_flight skips it. Deadline 120s; kept 1h; passed one deleted.
+- backend.rs: Gate {enforcement, max_age, registry host:port, api, outside}; KubernetesBackend::gated; enforced();
+  submit refuses "network enforcement is not proved, so no build runs: <why>" → BuildActor fail(AT_SCHEDULING) →
+  existing failure event (no wire change). canary_log one_line (" | ", ANSI stripped).
+- settings: POLAR_ORCHESTRATOR_PROOF_MAX_AGE_SECS (900) and POLAR_ORCHESTRATOR_CANARY_OUTSIDE (github.com:443; empty =
+  none), both Dynamic. supervisor: state.enforcement Arc; Prove message at start (spawned).
+- LIVE u7c: start → proved. Policy deleted + orchestrator restarted → refused, reason lists registry reached (ok), API
+  and github reached (NOT). Policy re-applied from saved yaml, canary Job deleted, restart → proved. Done twice (before
+  and after the one-line fix).
+- OPEN: lifting the "no foreign repos" rule is the maintainer's call (the canary was its condition). Not seen: a real
+  build through the gate (no ref moved). Not published beyond the build's failure event + logs (no introspection yet).
+
 ## GAPS (build order)
 G0 done (Q-flannel, spike, Q-engine). G1 kube-nftpolicy built + live on u7n (done); upstream e2e netpol suite (todo).
-G2 DONE: nix-usernetes main 8ef1747 pushed; u7c rebuilt and enforcing. G3 DONE. G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result).
-G5 admission refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini (enforcer no NAT).
+G2 DONE: nix-usernetes main 8ef1747 pushed; u7c rebuilt and enforcing. G3 DONE. G4 DONE. G5 DONE (refused at submission). G6 C5 precondition: pod src addr unchanged to Cassini (enforcer no NAT).
 LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
 
 ## Q-flannel — DECIDED 2026-11-12 "Calico alone first" → spike run, superseded by Q-engine
