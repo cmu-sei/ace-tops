@@ -235,7 +235,7 @@ impl From<Option<HttpUse>> for Presenting {
 }
 
 /// What the domain is told of a request the CryptoActor did not send, or that failed in sending.
-fn not_sent(name: &str, error: SendError) -> Failure {
+pub(crate) fn not_sent(name: &str, error: SendError) -> Failure {
     match error {
         SendError::Refused(refused) => credential_failure(name, refused),
         SendError::Transport(e) => transport(e),
@@ -273,7 +273,7 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 }
 
 /// What a failure of the client says: never the address, which may carry what a query holds.
-fn transport(e: reqwest::Error) -> Failure {
+pub(crate) fn transport(e: reqwest::Error) -> Failure {
     Failure::Transient(error_chain(&e.without_url()))
 }
 

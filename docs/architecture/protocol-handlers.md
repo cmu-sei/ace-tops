@@ -105,7 +105,8 @@ logic." This is as much the reason for the design as the secret is.
    CA) and the credential's name, to the `CryptoActor`, which checks the binding against where the request goes, puts the credential on and
    sends it, and gives back the response (`polar-crypto/src/sending.rs`). A registry's login is sent the same way, and the token it is
    answered with stays in the `CryptoActor`, presented by a handle that wipes it when dropped. Since 2026-11-13; until then the handler was
-   given the credential and attached it. Git fetches still are, until they move to gitoxide (`docs/plans/registry/trusted-remotes.md`).
+   given the credential and attached it. Git over https goes the same way, on gitoxide (`protocol/git/https.rs`); only an ssh key is still
+   given, for git over ssh, until custody signs for it (`docs/plans/registry/trusted-remotes.md`).
 7. **Process.** The handler calls the registered callback with what came back.
 8. **Return.** The callback's value reaches the domain actor as an ordinary message.
 
@@ -223,7 +224,15 @@ reads it when it exists (`remaining-work.md`, "A Polar security dashboard"). It 
 
   The anonymous path is the same exchange with nothing presented. A registry can make it fetch any address as its auth host: a GET, with no credential, of which nothing but a token is ever read, recorded
   as the permission it is. The old client did the same, without the record.
-- **Git keeps libgit2** (`protocol/git.rs`). It does its own I/O and asks through a callback, and that callback is the handler's. It offers the credential once for each connection, and only when the host
+- **Git over https moved to gitoxide, 2026-11-13** (`protocol/git/https.rs`): gix's blocking client over an `Http` implementation of the builder's own. Each request goes on a
+  thread of its own by the agent's client (`Egress::configure`, a connect bound of 15 s and a read bound of 120 s), and one with the credential by the CryptoActor
+  (`CredentialPort::send_git`: Basic, the user git is given and the secret). It keeps what libgit2 did below: the credential only when the host asks, once, then with
+  every request; the judged host only, over no weaker connection; a redirect within the host followed and one off it refused; `MAX_FETCH`; a new clone that fails
+  removed. libgit2 still makes a new clone's repository and `origin` and sets its `HEAD` as its own clone did (a test holds the two clones to the same refs), and
+  reads the clone. gix asks for `HEAD` beside the remote's refs: over git's second protocol a server lists it only when asked, and without it a clone has no
+  `refs/remotes/origin/HEAD` (found against GitHub, held by a test against git's own `http-backend`, `testing::BackendOrigin`). No credential helper runs.
+- **Git over ssh keeps libgit2** (`protocol/git.rs`), with the key the CryptoActor gives for an ssh binding alone, until custody signs for it. The rest of this
+  entry is from when libgit2 fetched over https as well. It does its own I/O and asks through a callback, and that callback is the handler's. It offers the credential once for each connection, and only when the host
   challenges: asked again means refused, which is held like any other (libgit2 would otherwise ask up to its limit of replays). A test shows that the token is in no file of the clone. The CA (`trust_ca_file`) and the timeouts are global to libgit2, so they are set
   once, by the handler. The two timeouts go together: the connect timeout leaves the socket non-blocking, and with no server timeout every read fails at once with `EAGAIN` (found by a mutation). Bounds: `CONNECT_TIMEOUT` 15 s, `SERVER_TIMEOUT` 120 s for each read or write,
   and `MAX_FETCH` 16 GiB, to review, since a fetch goes to disk and nothing bounded it before. Each request runs on a blocking thread, where the worker used to block a thread of the runtime.

@@ -48,7 +48,7 @@ use crate::configuration::ConfigurationHandle;
 use crate::crypto::SectionKeeper;
 use crate::health::HealthHandle;
 use crate::runtime::RuntimeValue;
-use polar_crypto::registry::{GitCredential, UseRefusal};
+use polar_crypto::registry::{GitCredential, SecretKind, UseRefusal};
 use polar_crypto::sending::{HttpKind, SendError, Sent};
 use polar_crypto::{CredentialPort, CryptoError};
 use polar_crypto::{Exchanged, TokenHandle};
@@ -151,7 +151,17 @@ pub trait CredentialSource: Send + Sync {
         request: reqwest::Request,
         client: reqwest::Client,
     ) -> Result<reqwest::Response, SendError>;
+    /// An ssh key for git over ssh, the binding checked; anything else is sent, never given.
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError>;
+    /// What kind of secret the credential `name` is, for git to `host`, the binding checked.
+    async fn git_kind(&self, name: String, host: String) -> Result<SecretKind, CryptoError>;
+    /// Sends a request of git over https with the credential `name` on it, as git logs in, by `client`.
+    async fn send_git(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Sent, SendError>;
     /// The name of the credential bound to `host`, for [`Credential::ForHost`].
     async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError>;
 }
@@ -187,6 +197,17 @@ impl CredentialSource for CredentialPort {
     }
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError> {
         CredentialPort::git(self, name, host).await
+    }
+    async fn git_kind(&self, name: String, host: String) -> Result<SecretKind, CryptoError> {
+        CredentialPort::git_kind(self, name, host).await
+    }
+    async fn send_git(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Sent, SendError> {
+        CredentialPort::send_git(self, name, request, client).await
     }
     async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
         CredentialPort::bound_to(self, host).await
@@ -1597,9 +1618,10 @@ pub(crate) mod tests {
             if host != self.host {
                 return Err(CryptoError::Use(UseRefusal::HostNotBound));
             }
+            // An ssh key, the one kind still handed to a protocol: the test protocol puts what it is given on its wire.
             Ok(GitCredential {
-                kind: polar_crypto::registry::SecretKind::Token,
-                username: "oauth2".to_string(),
+                kind: polar_crypto::registry::SecretKind::SshKey,
+                username: "git".to_string(),
                 secret: Zeroizing::new(self.secret.clone()),
                 host_keys: Vec::new(),
             })

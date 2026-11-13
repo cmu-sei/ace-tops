@@ -238,6 +238,36 @@ survivors closed: handle id, its Debug, the bound's edge); builder send/answer_c
 survivors in the 301/302 method rule closed with a test). Git still plaintext until C2c. NOT DEPLOYED (with C2c, "every
 agent at once").
 
+## C2c DONE 2026-11-13 (git over https on gitoxide; step 2 complete)
+polar-crypto: `CredentialAsk::Git` now answers an SshKey binding ONLY (else `UseRefusal::SentNotGiven`); new `GitKind{name,host}`
+(kind, no value) and `SendGit{name,request,client}` (git_credential → Basic {username (oauth2 for a token), secret} →
+`sending::send`; an ssh key → NotForHttp). Builder `CredentialSource` + `git_kind`, `send_git`; StandIn blanket mirrors it.
+git.rs: `type Credential = GitUse(Holding::{Sent(https::Login{name,source}), SshKey(GitCredential)})` (opaque); over
+https → `protocol/git/https.rs`, over ssh → libgit2 as before (its userpass/proxy branches removed: only an ssh key reaches
+it). https.rs: gix 3032b1da4 `blocking-network-client` + gix-transport `http-client` (no curl, no reqwest backend) over
+`Through: gix_transport::…::http::Http`; each request on its own std thread, async send via the runtime Handle; POST body
+buffered (≤ MAX_POST 64 MiB) until gix drops the writer; libgit2 semantics kept: 401 → present once by `send_git`, then
+every request carries it, asked again → CredentialRefused; judged host only (case-insensitive, no userinfo, no https→http);
+same-host redirect followed (GET sets `redirected_base_url`), off-host refused; MAX_FETCH counted per piece; a failed fresh
+clone removed; no credential helper (`with_credentials(|_| Ok(None))`); gix's own http config ignored (`configure`).
+Clone shape: libgit2 init_bare + `remote("origin")` (same config/refspec), gix fetches, then libgit2 sets refs/heads/<b>,
+HEAD and refs/remotes/origin/HEAD from the remote's HEAD symref. FOUND against GitHub: over protocol v2 HEAD is listed only
+when asked → extra refspec "HEAD" (`head_too`); a test against git's own `http-backend` (`testing::BackendOrigin`, CGI per
+request) catches its absence (checked by reverting). Client: `reqwest` from `Egress::configure`, connect 15 s, read 120 s,
+no redirects; libgit2's global CA/timeouts kept for the probe and ssh. Test origin (`GitOrigin`) now advertises
+multi_ack_detailed, side-band-64k, include-tag (gix fetches with no less; real servers have them), answers a non-final
+negotiation round with NAK, frames the pack in band 1 when asked (ssh stand-in shares it). CA and silent-host child tests
+run for both clients (gix, libgit2). Test protocol's FakeSource now gives an ssh key (the only kind handed out).
+Pre-existing flake seen once: `the_probe_says_a_port_that_refuses_is_unreachable` (a freed port reused by another test's
+server → Tls), not changed. Mutants: the first, uncapped run OOM-killed whitey (fill_buf → endless stream; see memory
+cap-mutation-runs); rerun in `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0`. Capped run: 35 caught, 7 caught by hanging (the silent-host
+test's cleanup waits out the 120 s read bound; `perform -> Ok(())` hangs because an ask waits for its reply, older than
+this), 3 missed: MAX_POST's value twice (a value to review, 64 MiB) and `configure -> Ok(Default::default())` (equivalent).
+The first run's 8 real survivors were closed: admits (user name alone), MAX_POST's edges, MAX_FETCH's exact edge, a
+repository moved within its host whose POSTs must follow (BackendOrigin::moved). Suites: builder 699, polar-crypto 108, git
+observer 54, orchestrator, jira; clippy clean. Also tried by hand against github.com (clone, refetch, depth 1).
+NOT DEPLOYED: C2a–C2c land together at the next bring-up, every agent at once.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.

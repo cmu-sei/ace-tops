@@ -57,6 +57,10 @@ rand.workspace = true
 reqwest.workspace = true
 # The git protocol handler. A protocol is linked only into an agent that names it in an operation (`ProtocolKind`).
 git2.workspace = true
+# git over https: gix fetches, through an HTTP implementation whose requests the CryptoActor sends (protocol/git/https.rs).
+# libgit2 still fetches over ssh, until custody signs for an ssh key, and reads what was fetched.
+gix = { workspace = true, features = ["blocking-network-client"] }
+gix-transport.workspace = true
 # The Kubernetes protocol handler, under the same rule. `kube`'s TLS asks for a rustls provider, chosen as the rest of the
 # workspace chooses it; k8s-openapi says what a watched type is called, for an agent that reads that type.
 futures.workspace = true

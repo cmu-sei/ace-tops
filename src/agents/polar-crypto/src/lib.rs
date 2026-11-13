@@ -233,10 +233,26 @@ pub enum CredentialAsk {
     },
     /// A kept token is no longer needed, and is wiped.
     ReleaseToken { token: u64 },
+    /// An ssh key, for git over ssh, until custody signs for it. Anything else is sent, never given
+    /// ([`UseRefusal::SentNotGiven`](registry::UseRefusal::SentNotGiven)).
     Git {
         name: String,
         host: String,
         reply: RpcReplyPort<Result<registry::GitCredential, CryptoError>>,
+    },
+    /// What kind of secret git would be given for `host`, the binding checked. A kind, never a value.
+    GitKind {
+        name: String,
+        host: String,
+        reply: RpcReplyPort<Result<registry::SecretKind, CryptoError>>,
+    },
+    /// A request of git over https sent with the credential `name` on it, as git logs in: Basic, its user name and its
+    /// secret, the binding held to where the request goes.
+    SendGit {
+        name: String,
+        request: Box<reqwest::Request>,
+        client: reqwest::Client,
+        reply: RpcReplyPort<Result<sending::Sent, sending::SendError>>,
     },
     /// Which secret is bound to `host` (`registry::bound_to`). A name, never a value.
     BoundTo {
@@ -384,7 +400,7 @@ impl CredentialPort {
         .map_err(|_| sending::SendError::Refused(CryptoError::NoReply))?
     }
 
-    /// The credential git presents to `host`, checked as [`http`](Self::http) is.
+    /// The ssh key git presents to `host`: only an ssh key is given, until custody signs for it.
     pub async fn git(
         &self,
         name: String,
@@ -395,6 +411,38 @@ impl CredentialPort {
             ask: CredentialAsk::Git { name, host, reply },
         })
         .map_err(|_| CryptoError::NoReply)?
+    }
+
+    /// What kind of secret git would be given for `host`, the binding checked.
+    pub async fn git_kind(
+        &self,
+        name: String,
+        host: String,
+    ) -> Result<registry::SecretKind, CryptoError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::GitKind { name, host, reply },
+        })
+        .map_err(|_| CryptoError::NoReply)?
+    }
+
+    /// Sends a request of git over https with the credential `name` on it, by `client`.
+    pub async fn send_git(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<sending::Sent, sending::SendError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::SendGit {
+                name,
+                request: Box::new(request),
+                client,
+                reply,
+            },
+        })
+        .map_err(|_| sending::SendError::Refused(CryptoError::NoReply))?
     }
 
     /// The name of the secret bound to `host`, for a request whose host decides its credential.
@@ -1019,11 +1067,42 @@ impl Actor for CryptoActor {
                     }
                     CredentialAsk::Git { name, host, reply } => {
                         let result = if passes {
-                            git_credential_of(&state.registry, name, &host).await
+                            git_credential_of(&state.registry, name, &host)
+                                .await
+                                .and_then(|credential| match credential.kind {
+                                    registry::SecretKind::SshKey => Ok(credential),
+                                    _ => Err(CryptoError::Use(registry::UseRefusal::SentNotGiven)),
+                                })
                         } else {
                             Err(CryptoError::NotThePort)
                         };
                         let _ = reply.send(result);
+                    }
+                    CredentialAsk::GitKind { name, host, reply } => {
+                        let result = if passes {
+                            git_credential_of(&state.registry, name, &host)
+                                .await
+                                .map(|credential| credential.kind)
+                        } else {
+                            Err(CryptoError::NotThePort)
+                        };
+                        let _ = reply.send(result);
+                    }
+                    CredentialAsk::SendGit {
+                        name,
+                        request,
+                        client,
+                        reply,
+                    } => {
+                        if !passes {
+                            let _ = reply.send(Err(CryptoError::NotThePort.into()));
+                        } else {
+                            let registry = state.registry.clone();
+                            tokio::spawn(async move {
+                                let _ =
+                                    reply.send(send_git(registry, name, *request, client).await);
+                            });
+                        }
                     }
                     CredentialAsk::BoundTo { host, reply } => {
                         let result = if passes {
@@ -1455,6 +1534,27 @@ async fn git_credential_of(
             registry::git_credential(&held.binding, &held.secret, host).map_err(CryptoError::Use)
         }
     }
+}
+
+/// Sends a request of git over https with the credential `name` on it, as git logs in: Basic, the user name git is given
+/// and the secret. An ssh key goes over ssh only.
+async fn send_git(
+    registry: Registry,
+    name: String,
+    request: reqwest::Request,
+    client: reqwest::Client,
+) -> Result<sending::Sent, sending::SendError> {
+    let host = request.url().host_str().unwrap_or_default().to_string();
+    let credential = git_credential_of(&registry, name, &host).await?;
+    if credential.kind == registry::SecretKind::SshKey {
+        return Err(CryptoError::Use(registry::UseRefusal::NotForHttp).into());
+    }
+    let login = registry::HttpCredential::Basic {
+        username: credential.username.clone(),
+        password: credential.secret.clone(),
+    };
+    drop(credential);
+    sending::send(&login, request, client).await
 }
 
 /// The credential an HTTP request is given for `host`, from what is registered under `name`.
@@ -2718,7 +2818,63 @@ mod tests {
         name: &str,
         host: &str,
     ) -> Result<GitCredential, CryptoError> {
-        rig.port.git(name.to_string(), host.to_string()).await
+        git_presents(&rig.port, name, host).await
+    }
+
+    /// What git presents to `host` with the credential `name`: an ssh key as it is given; anything else as a stand-in
+    /// for `host` receives it, from a request the actor sends. The binding is checked for `host` as given first, so a
+    /// host no request could name (one with a port) is refused as it would be.
+    async fn git_presents(
+        port: &CredentialPort,
+        name: &str,
+        host: &str,
+    ) -> Result<GitCredential, CryptoError> {
+        use base64::Engine;
+        let kind = port.git_kind(name.to_string(), host.to_string()).await?;
+        if kind == registry::SecretKind::SshKey {
+            return port.git(name.to_string(), host.to_string()).await;
+        }
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::builder()
+            .resolve(host, *server.address())
+            .build()
+            .unwrap();
+        let request = client
+            .get(format!(
+                "http://{host}:{}/r.git/info/refs",
+                server.address().port()
+            ))
+            .build()
+            .unwrap();
+        port.send_git(name.to_string(), request, client)
+            .await
+            .map_err(|e| match e {
+                sending::SendError::Refused(refused) => refused,
+                other => panic!("the stand-in did not answer: {other}"),
+            })?;
+        let received = server.received_requests().await.unwrap();
+        let login = received[0].headers["authorization"].to_str().unwrap();
+        let login = base64::engine::general_purpose::STANDARD
+            .decode(
+                login
+                    .strip_prefix("Basic ")
+                    .expect("git logs in with Basic"),
+            )
+            .unwrap();
+        let (username, secret) = std::str::from_utf8(&login)
+            .unwrap()
+            .split_once(':')
+            .unwrap();
+        Ok(GitCredential {
+            kind,
+            username: username.to_string(),
+            secret: Zeroizing::new(secret.as_bytes().to_vec()),
+            host_keys: Vec::new(),
+        })
     }
 
     async fn load(rig: &Rig, name: &str) -> Result<bool, CryptoError> {
@@ -2819,9 +2975,7 @@ mod tests {
             registry::escrow_form(&token_binding("jira.example.org"), b"the-token").unwrap();
         let r = rig(vec![], vec![("jira", record.to_vec())], false).await;
         assert!(load(&r, "jira").await.unwrap());
-        let git = r
-            .port
-            .git("jira".to_string(), "jira.example.org".to_string())
+        let git = git_presents(&r.port, "jira", "jira.example.org")
             .await
             .unwrap();
         assert_eq!(git.secret.as_slice(), b"the-token");
@@ -2899,8 +3053,7 @@ mod tests {
                 .unwrap(),
             "Bearer pat-token"
         );
-        let git = port
-            .git("jira".to_string(), "jira.example.org".to_string())
+        let git = git_presents(&port, "jira", "jira.example.org")
             .await
             .unwrap();
         assert_eq!(git.secret.as_slice(), b"pat-token");
@@ -2911,7 +3064,7 @@ mod tests {
                 matches!(refused, Err(CryptoError::Use(UseRefusal::HostNotBound))),
                 "{host}: {refused:?}"
             );
-            let refused = port.git("jira".to_string(), host.to_string()).await;
+            let refused = git_presents(&port, "jira", host).await;
             assert!(
                 matches!(refused, Err(CryptoError::Use(UseRefusal::HostNotBound))),
                 "{host}: {refused:?}"
@@ -2964,6 +3117,67 @@ mod tests {
             .await
             .unwrap();
         r
+    }
+
+    /// Only an ssh key is given to git, until custody signs for it; a token or a password is sent with git's request,
+    /// as git logs in (Basic, with `oauth2` for a token's user), and an ssh key never goes over https.
+    #[tokio::test]
+    async fn git_is_given_only_an_ssh_key_and_a_token_goes_with_its_request() {
+        let r = rig(vec![], vec![], false).await;
+        register(&r, "gh", b"t0ken", b"ctx-gh", token_binding("github.com"))
+            .await
+            .unwrap();
+        let ssh = SecretBinding {
+            host_pattern: "git.example.org".to_string(),
+            kind: SecretKind::SshKey,
+            username: None,
+            host_key: Some("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string()),
+        };
+        register(&r, "key", b"a-key", b"ctx-key", ssh)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            r.port.git("gh".into(), "github.com".into()).await,
+            Err(CryptoError::Use(UseRefusal::SentNotGiven))
+        ));
+        assert_eq!(
+            r.port
+                .git_kind("gh".into(), "github.com".into())
+                .await
+                .unwrap(),
+            SecretKind::Token
+        );
+        let token = git_presents(&r.port, "gh", "github.com").await.unwrap();
+        assert_eq!(
+            (token.username.as_str(), token.secret.as_slice()),
+            ("oauth2", b"t0ken".as_slice())
+        );
+
+        let key = r
+            .port
+            .git("key".into(), "git.example.org".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            (key.kind, key.secret.as_slice()),
+            (SecretKind::SshKey, b"a-key".as_slice())
+        );
+        let request = reqwest::Client::new()
+            .get("https://git.example.org/r.git/info/refs")
+            .build()
+            .unwrap();
+        let sent = r
+            .port
+            .send_git("key".into(), request, reqwest::Client::new())
+            .await;
+        assert!(matches!(
+            sent,
+            Err(sending::SendError::Refused(CryptoError::Use(
+                UseRefusal::NotForHttp
+            )))
+        ));
+        stop_and_release_key(&r.actor).await;
     }
 
     #[tokio::test]
@@ -3177,6 +3391,24 @@ mod tests {
             assert!(
                 matches!(git, Err(CryptoError::NotThePort)),
                 "{name}: {git:?}"
+            );
+            let kind = forged
+                .git_kind(name.to_string(), "jira.example.org".to_string())
+                .await;
+            assert!(matches!(kind, Err(CryptoError::NotThePort)), "{name}");
+            let request = reqwest::Client::new()
+                .get("https://jira.example.org/r.git")
+                .build()
+                .unwrap();
+            let sent = forged
+                .send_git(name.to_string(), request, reqwest::Client::new())
+                .await;
+            assert!(
+                matches!(
+                    sent,
+                    Err(sending::SendError::Refused(CryptoError::NotThePort))
+                ),
+                "{name}"
             );
         }
         let which = forged.bound_to("jira.example.org".to_string()).await;

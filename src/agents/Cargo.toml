@@ -137,6 +137,9 @@ git2 = "0.20"
 # (docs/architecture/runtime-attestation.md, C2). gix and gix-serve come from the same rev, so they are one gix.
 gix = { git = "https://github.com/daveman1010221/gitoxide", rev = "3032b1da4", default-features = false, features = ["revision", "sha1"] }
 gix-serve = { git = "https://github.com/daveman1010221/gitoxide", rev = "3032b1da4" }
+# git fetched over https by the builder's git protocol (docs/plans/registry/trusted-remotes.md, step 2c): gix's blocking
+# client over an HTTP implementation of the builder's own, whose requests the CryptoActor sends; no curl, no reqwest backend.
+gix-transport = { git = "https://github.com/daveman1010221/gitoxide", rev = "3032b1da4", default-features = false, features = ["http-client"] }
 hex = "0.4.3"
 # http::Uri, the type hyper-util's proxy matcher takes (polar::egress)
 http = "1.5"

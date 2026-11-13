@@ -114,7 +114,9 @@ The agents that declare the section:
 - **oci-registry-resolver**: an agent with an operation over HTTP, above, since 2026-11-03. It has no client of its own.
 - **an agent with an operation over git** (`polar_agent_builder::protocol::git`; git-repo-observer, since 2026-11-04): the operation brings the section here too. When the
   agent starts, the handler reads the CA through `ca_bundle` and gives it to libgit2 once, `git2::opts::set_ssl_cert_file` (`trust_ca_file`): it is global to the process, and libgit2
-  adds it to OpenSSL's default locations. Each request is given `proxy_for` its repository's URL, set as `ProxyOptions::url` for the clone or the fetch; with none, libgit2 connects directly.
+  adds it to OpenSSL's default locations, for the probe and for ssh. Since 2026-11-13 a fetch over https is gix's, by a reqwest client that `Egress::configure` makes
+  as for an HTTP operation (the CA bundle beside the system's roots, the proxy, `POLAR_EGRESS_NO_PROXY`); ssh goes through no proxy, and a fetch the way out would
+  send through one is refused.
 
 ## The probe
 

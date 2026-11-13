@@ -21,12 +21,14 @@
    DM26-0670
 */
 
-//! The git protocol: a repository brought up to date in the agent's cache, and a callback that reads it. libgit2 does its
-//! own I/O and asks for the credential through a callback, so that callback is here and nowhere else: it offers what the
-//! CryptoActor gave for the host the request was judged for, once, and only over a connection to that host. libgit2 follows
-//! a redirect within a host by itself and cannot ask about one to another, which would go unjudged and unrecorded, so it is
-//! told to refuse those. libgit2's options are global to the process, so the CA and the timeouts are set once, here, when
-//! the agent starts (docs/architecture/protocol-handlers.md, "The protocols").
+//! The git protocol: a repository brought up to date in the agent's cache, and a callback that reads it. Over https gix
+//! fetches, through an HTTP implementation whose requests the agent's client sends, and the CryptoActor when one goes with
+//! the credential ([`https`]): the handler never has a token or a password. Over ssh libgit2 still fetches, with the key
+//! the CryptoActor gives for an ssh host alone, until custody signs for it. libgit2 does its own I/O and asks for the key
+//! through a callback, so that callback is here and nowhere else: it offers the key for the host the request was judged
+//! for, once, and only over a connection to that host. What was fetched is read with libgit2 either way. libgit2's options
+//! are global to the process, so its CA and timeouts are set once, here, when the agent starts
+//! (docs/architecture/protocol-handlers.md, "The protocols").
 //!
 //! Over ssh (docs/architecture/build-orchestrator.md, "Revised 2026-11-08, the source"), a repository is fetched only with
 //! a credential that is an ssh key, whose signed binding pins the server's host key: libgit2 shows the handler the key the
@@ -44,6 +46,8 @@ use git2::{
     RemoteCallbacks, RemoteRedirect, Repository,
 };
 use polar::egress::Egress;
+
+mod https;
 use polar_crypto::CryptoError;
 use polar_crypto::registry::{GitCredential, SecretKind};
 use reqwest::Url;
@@ -184,10 +188,38 @@ pub(crate) fn trust_ca_file(path: &Path) -> Result<(), git2::Error> {
     unsafe { git2::opts::set_ssl_cert_file(path) }
 }
 
-/// The git protocol, with the way out of the cluster.
+/// The git protocol, with the way out of the cluster: the client gix sends by, and what libgit2 is told of it.
 pub struct Git {
     egress: Egress,
+    client: reqwest::Client,
     max_fetch: usize,
+}
+
+/// A credential as git has it. Over https its name and the CryptoActor that sends with it; over ssh the key itself, until
+/// custody signs for it.
+pub struct GitUse(Holding);
+
+enum Holding {
+    Sent(https::Login),
+    SshKey(GitCredential),
+}
+
+/// The client gix sends by: the way out `egress` says, trusting `bundle` beside the system's roots, with a bound on
+/// opening a connection and on each read, and following no redirect by itself.
+fn client(
+    egress: &Egress,
+    bundle: &[reqwest::Certificate],
+    connect_timeout: Duration,
+    server_timeout: Duration,
+) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(server_timeout)
+        .redirect(reqwest::redirect::Policy::none());
+    egress
+        .configure(builder, bundle)
+        .and_then(reqwest::ClientBuilder::build)
+        .map_err(|e| format!("the git client cannot be built: {e}"))
 }
 
 impl Git {
@@ -197,8 +229,8 @@ impl Git {
         connect_timeout: Duration,
         server_timeout: Duration,
     ) -> Result<Self, String> {
+        let bundle = egress.ca_bundle().await.map_err(|e| e.to_string())?;
         if let Some(path) = &egress.ca_cert {
-            let bundle = egress.ca_bundle().await.map_err(|e| e.to_string())?;
             trust_ca_file(Path::new(path)).map_err(|e| {
                 format!("POLAR_EGRESS_CA_CERT {path} could not be given to git: {e}")
             })?;
@@ -218,25 +250,33 @@ impl Git {
         }
         .map_err(|e| format!("git could not be given its timeouts: {e}"))?;
         Ok(Self {
+            client: client(&egress, &bundle, connect_timeout, server_timeout)?,
             egress,
             max_fetch: MAX_FETCH,
         })
     }
 
+    /// Going out as `egress` says, trusting the tests' CA ([`super::testing::git_ca`]).
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn with_egress(egress: Egress, max_fetch: usize) -> Self {
-        Self { egress, max_fetch }
+        let ca = reqwest::Certificate::from_pem(super::testing::git_ca().pem.as_bytes())
+            .expect("the tests' CA");
+        let client = client(&egress, &[ca], CONNECT_TIMEOUT, SERVER_TIMEOUT).expect("a client");
+        Self {
+            egress,
+            client,
+            max_fetch,
+        }
     }
 }
 
-/// What a clone or a fetch is given, each time: the credential, the bound, the depth, and the proxy to go through, if any.
+/// What a clone or a fetch over ssh is given, each time: the key, the bound and the depth. It goes through no proxy.
 /// With none libgit2 connects directly: it is not told to look for one, so the process environment never decides.
 struct Fetching<'a> {
     credential: Option<&'a GitCredential>,
     /// The host the request was judged for.
     host: &'a str,
     depth: Option<usize>,
-    proxy: Option<&'a str>,
     max_fetch: usize,
     /// What a callback knows that libgit2's error will not say.
     told: &'a Cell<Option<Failure>>,
@@ -298,15 +338,8 @@ impl<'a> Fetching<'a> {
             presented = true;
             let secret = std::str::from_utf8(&credential.secret)
                 .map_err(|_| git2::Error::from_str("the credential is not text"))?;
-            match credential.kind {
-                // From memory: the key is never written to a file.
-                SecretKind::SshKey => {
-                    Cred::ssh_key_from_memory(&credential.username, None, secret, None)
-                }
-                SecretKind::Token | SecretKind::UserPassword => {
-                    Cred::userpass_plaintext(&credential.username, secret)
-                }
-            }
+            // From memory: the key is never written to a file. Only an ssh key is ever given here.
+            Cred::ssh_key_from_memory(&credential.username, None, secret, None)
         });
         let max_fetch = self.max_fetch;
         callbacks.transfer_progress(move |progress| {
@@ -323,11 +356,6 @@ impl<'a> Fetching<'a> {
         options.follow_redirects(RemoteRedirect::None);
         if let Some(depth) = self.depth {
             options.depth(depth as i32);
-        }
-        if let Some(proxy) = self.proxy {
-            let mut through = ProxyOptions::new();
-            through.url(proxy);
-            options.proxy_options(through);
         }
         options
     }
@@ -401,7 +429,7 @@ impl Protocol for Git {
     const KIND: ProtocolKind = ProtocolKind::GIT;
     const BUDGET: Duration = READ_BUDGET;
     type Request = Request;
-    type Credential = GitCredential;
+    type Credential = GitUse;
     type Reply = Fetched;
 
     fn configured_host(base: &str) -> Result<String, String> {
@@ -416,21 +444,32 @@ impl Protocol for Git {
         source: &Arc<dyn CredentialSource>,
         name: String,
         host: String,
-    ) -> Result<GitCredential, CryptoError> {
-        source.git(name, host).await
+    ) -> Result<GitUse, CryptoError> {
+        match source.git_kind(name.clone(), host.clone()).await? {
+            SecretKind::SshKey => source
+                .git(name, host)
+                .await
+                .map(|key| GitUse(Holding::SshKey(key))),
+            _ => Ok(GitUse(Holding::Sent(https::Login {
+                name,
+                source: source.clone(),
+            }))),
+        }
     }
 
     async fn perform(
         &self,
         request: Request,
         _: Option<String>,
-        credential: Option<GitCredential>,
+        credential: Option<GitUse>,
         exchange: &mut Exchange<Self>,
     ) -> Result<(), Failure> {
         let target = target_of(&request.url).map_err(Failure::Configuration)?;
         // Read as `target_of` read it, so a scheme written in capitals is ssh all the same.
         let over_ssh = Url::parse(&request.url).is_ok_and(|url| url.scheme() == "ssh");
-        let ssh_key = credential.as_ref().map(|c| c.kind == SecretKind::SshKey);
+        let ssh_key = credential
+            .as_ref()
+            .map(|c| matches!(c.0, Holding::SshKey(_)));
         match (over_ssh, ssh_key) {
             (true, None | Some(false)) => {
                 return Err(Failure::Configuration(
@@ -445,21 +484,41 @@ impl Protocol for Git {
             }
             _ => {}
         }
-        // libgit2's proxy carries http only: where the way out is through one, ssh would go around it, so it does not go.
-        let proxy = if over_ssh {
-            if self
-                .egress
-                .proxy_for(&format!("https://{}/", target.host))
-                .is_some()
-            {
-                return Err(Failure::Configuration(
-                    "the way out is through a proxy, which carries no ssh".to_string(),
-                ));
-            }
-            None
-        } else {
-            self.egress.proxy_for(&request.url)
+        if !over_ssh {
+            let login = match credential {
+                Some(GitUse(Holding::Sent(login))) => Some(login),
+                _ => None,
+            };
+            let through = https::Through::new(
+                self.client.clone(),
+                tokio::runtime::Handle::current(),
+                target,
+                login,
+                self.max_fetch,
+            );
+            // gix blocks for as long as the fetch takes: on a thread of its own, it holds up no other request.
+            let fetched = tokio::task::spawn_blocking(move || https::fetch(&request, through))
+                .await
+                .map_err(|joined| {
+                    Failure::Transient(format!("the fetch did not finish: {joined}"))
+                })??;
+            exchange.reply(fetched).await;
+            return Ok(());
+        }
+        let credential = match credential {
+            Some(GitUse(Holding::SshKey(key))) => Some(key),
+            _ => None,
         };
+        // A proxy carries http only: where the way out is through one, ssh would go around it, so it does not go.
+        if self
+            .egress
+            .proxy_for(&format!("https://{}/", target.host))
+            .is_some()
+        {
+            return Err(Failure::Configuration(
+                "the way out is through a proxy, which carries no ssh".to_string(),
+            ));
+        }
         let max_fetch = self.max_fetch;
         // libgit2 blocks for as long as the fetch takes: on a thread of its own, it holds up no other request.
         let fetched = tokio::task::spawn_blocking(move || {
@@ -468,7 +527,6 @@ impl Protocol for Git {
                 credential: credential.as_ref(),
                 host: &target.host,
                 depth: request.depth,
-                proxy: proxy.as_deref(),
                 max_fetch,
                 told: &told,
             };
@@ -736,6 +794,205 @@ mod tests {
                 && record.protocol == "git"
                 && record.host == "127.0.0.1"
         }));
+    }
+
+    /// What the agents read of a clone: its refs and where they point, what `HEAD` names, and `origin`'s fetch refspec.
+    fn shape(path: &Path) -> (Vec<(String, String)>, Option<String>, Vec<String>) {
+        let repository = Repository::open_bare(path).unwrap();
+        let mut refs: Vec<(String, String)> = repository
+            .references()
+            .unwrap()
+            .map(|reference| {
+                let reference = reference.unwrap();
+                let points = match reference.symbolic_target() {
+                    Some(target) => target.to_string(),
+                    None => reference.target().unwrap().to_string(),
+                };
+                (reference.name().unwrap().to_string(), points)
+            })
+            .collect();
+        refs.sort();
+        let head = repository.find_reference("HEAD").unwrap();
+        let refspecs: Vec<String> = repository
+            .find_remote("origin")
+            .unwrap()
+            .fetch_refspecs()
+            .unwrap()
+            .iter()
+            .flatten()
+            .map(str::to_string)
+            .collect();
+        (refs, head.symbolic_target().map(str::to_string), refspecs)
+    }
+
+    /// What the agents read of a clone is as libgit2's clone made it: the same refs where they point, `HEAD` naming the
+    /// remote's default branch, `refs/remotes/origin/HEAD` naming its tracking ref, and `origin`'s fetch refspec.
+    #[tokio::test]
+    async fn a_clone_over_https_is_the_clone_libgit2_made() {
+        let r = rig().await;
+        commit(&r.repository, "second");
+        r.repository
+            .reference(
+                "refs/heads/feature",
+                r.repository.refname_to_id("refs/heads/main").unwrap(),
+                true,
+                "",
+            )
+            .unwrap();
+        let site = holding("localhost").await;
+        site.handle
+            .ask(Fetch::<false> {
+                request: r.request(&r.origin.url()),
+            })
+            .await
+            .unwrap();
+        let by_libgit2 = tempfile::tempdir().unwrap();
+        git2::build::RepoBuilder::new()
+            .bare(true)
+            .clone(&r.origin.url(), &by_libgit2.path().join("clone"))
+            .unwrap();
+        assert_eq!(
+            shape(&r.cache.path().join("clone")),
+            shape(&by_libgit2.path().join("clone"))
+        );
+    }
+
+    /// Against git's own server, which speaks git's second protocol as GitHub's and gitea's do: a clone is libgit2's clone
+    /// (its `HEAD` and `refs/remotes/origin/HEAD` among it, which that protocol lists only when asked), a fetch brings a
+    /// new commit, and a depth of one is a shallow clone of the tip alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_real_git_server_is_cloned_fetched_and_cloned_shallow() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = Repository::init_bare(root.path().join("r.git")).unwrap();
+        commit(&repository, "first");
+        repository.set_head("refs/heads/main").unwrap();
+        let tip = repository.refname_to_id("refs/heads/main").unwrap();
+        repository
+            .reference("refs/heads/feature", tip, true, "")
+            .unwrap();
+        commit(&repository, "second");
+        let origin = crate::protocol::testing::BackendOrigin::serving(root.path()).await;
+        let site = holding("localhost").await;
+        let cache = tempfile::tempdir().unwrap();
+        let request = |at: &Path, depth| {
+            Request::new(
+                origin.url("r.git"),
+                at.join("clone"),
+                vec!["origin".to_string()],
+                depth,
+            )
+        };
+
+        let fetched = site
+            .handle
+            .ask(Fetch::<false> {
+                request: request(cache.path(), None),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            fetched,
+            repository
+                .refname_to_id("refs/heads/main")
+                .unwrap()
+                .to_string()
+        );
+        let by_libgit2 = tempfile::tempdir().unwrap();
+        git2::build::RepoBuilder::new()
+            .bare(true)
+            .clone(&origin.url("r.git"), &by_libgit2.path().join("clone"))
+            .unwrap();
+        let ours = shape(&cache.path().join("clone"));
+        assert_eq!(ours, shape(&by_libgit2.path().join("clone")));
+        assert!(ours.0.iter().any(
+            |(name, to)| name == "refs/remotes/origin/HEAD" && to == "refs/remotes/origin/main"
+        ));
+
+        let third = commit(&repository, "third");
+        let fetched = site
+            .handle
+            .ask(Fetch::<false> {
+                request: request(cache.path(), None),
+            })
+            .await
+            .unwrap();
+        assert_eq!(fetched, third);
+
+        let shallow = tempfile::tempdir().unwrap();
+        site.handle
+            .ask(Fetch::<false> {
+                request: request(shallow.path(), Some(1)),
+            })
+            .await
+            .unwrap();
+        let clone = Repository::open_bare(shallow.path().join("clone")).unwrap();
+        assert!(clone.is_shallow());
+        let mut walk = clone.revwalk().unwrap();
+        walk.push(clone.refname_to_id("refs/remotes/origin/main").unwrap())
+            .unwrap();
+        assert_eq!(walk.count(), 1);
+    }
+
+    /// A repository that moved within its host is followed there, and what git sends after its refs goes to where it went:
+    /// the old address answers nothing but the move.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repository_moved_within_its_host_is_fetched_where_it_went() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = Repository::init_bare(root.path().join("r.git")).unwrap();
+        let tip = commit(&repository, "first");
+        repository.set_head("refs/heads/main").unwrap();
+        let origin = crate::protocol::testing::BackendOrigin::serving(root.path()).await;
+        origin.moved("old.git", "r.git").await;
+        let site = holding("localhost").await;
+        let cache = tempfile::tempdir().unwrap();
+        let fetched = site
+            .handle
+            .ask(Fetch::<false> {
+                request: Request::new(
+                    origin.url("old.git"),
+                    cache.path().join("clone"),
+                    vec!["origin".to_string()],
+                    None,
+                ),
+            })
+            .await
+            .unwrap();
+        assert_eq!(fetched, tip);
+    }
+
+    /// A fetch may bring exactly its bound, and not a byte more.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fetch_may_bring_its_bound_and_not_a_byte_more() {
+        let r = rig().await;
+        let git = Git::with_egress(Egress::default(), MAX_FETCH);
+        let fetch = |max: usize, at: &str| {
+            let request = r.request(&r.origin.url());
+            let request = Request::new(&request.url, r.cache.path().join(at), Vec::new(), None);
+            let through = https::Through::new(
+                git.client.clone(),
+                tokio::runtime::Handle::current(),
+                target_of(&request.url).unwrap(),
+                None,
+                max,
+            );
+            let counted = through.clone();
+            async move {
+                let fetched = tokio::task::spawn_blocking(move || https::fetch(&request, through))
+                    .await
+                    .unwrap();
+                (fetched.map(|_| ()), counted.received())
+            }
+        };
+        let (whole, size) = fetch(MAX_FETCH, "whole").await;
+        whole.unwrap();
+        let (exact, _) = fetch(size, "exact").await;
+        exact.unwrap();
+        let (over, _) = fetch(size - 1, "over").await;
+        let failure = over.unwrap_err();
+        assert!(
+            matches!(&failure, Failure::Transient(why) if why.contains(&format!("{} bytes", size - 1))),
+            "{failure:?}"
+        );
     }
 
     #[tokio::test]
@@ -1248,34 +1505,55 @@ mod tests {
             .register(&polar::egress::SECTION)
             .build();
         let egress = Egress::read(&config).unwrap();
-        Git::ready(egress, CONNECT_TIMEOUT, SERVER_TIMEOUT)
+        let git = Git::ready(egress, CONNECT_TIMEOUT, SERVER_TIMEOUT)
             .await
             .unwrap();
         let urls = given("EGRESS_TEST_URLS").unwrap();
         for (i, url) in urls.split(',').enumerate() {
             let cache = tempfile::tempdir().unwrap();
-            let told = Cell::new(None);
-            let fetching = Fetching {
-                credential: None,
-                host: "",
-                depth: None,
-                proxy: None,
-                max_fetch: MAX_FETCH,
-                told: &told,
-            };
             let request = Request::new(
                 format!("{url}/r.git"),
                 cache.path().join(i.to_string()),
                 Vec::new(),
                 None,
             );
-            let result = fetching.bring_up_to_date(&request);
             // What the clone found, for a person reading a failure: the stand-in is no git server.
-            println!(
-                "CLONE {url} {:?}",
-                result.err().map(|e| e.message().to_string())
+            println!("CLONE {url} {}", clone_by(&git, request).await);
+        }
+    }
+
+    /// A clone of `request`'s repository with no credential, by the client the child was given (EGRESS_TEST_CLIENT): gix,
+    /// which fetches over https, or libgit2, whose CA and timeouts the probe and ssh still use. What went wrong, if anything.
+    async fn clone_by(git: &Git, request: Request) -> String {
+        if given("EGRESS_TEST_CLIENT").as_deref() == Some("libgit2") {
+            let told = Cell::new(None);
+            let fetching = Fetching {
+                credential: None,
+                host: "",
+                depth: None,
+                max_fetch: MAX_FETCH,
+                told: &told,
+            };
+            return format!(
+                "{:?}",
+                fetching
+                    .bring_up_to_date(&request)
+                    .err()
+                    .map(|e| e.message().to_string())
             );
         }
+        let target = target_of(&request.url).unwrap();
+        let through = https::Through::new(
+            git.client.clone(),
+            tokio::runtime::Handle::current(),
+            target,
+            None,
+            MAX_FETCH,
+        );
+        let fetched = tokio::task::spawn_blocking(move || https::fetch(&request, through))
+            .await
+            .unwrap();
+        format!("{:?}", fetched.err().map(|failure| failure.to_string()))
     }
 
     /// The egress CA is added to what libgit2 trusts, not put in place of the roots OpenSSL finds by default. Those are read
@@ -1293,51 +1571,55 @@ mod tests {
         let corporate_file = corporate.write(dir.path(), "corporate.pem");
         let name = "protocol::git::tests::the_egress_ca_is_trusted_by_git_beside_the_image_roots";
 
-        // Without the egress CA only the image's server is trusted: the test can tell.
-        let (inside, outside) = (https_server(&image).await, https_server(&corporate).await);
-        let urls = format!("{},{}", inside.url, outside.url);
-        let output = rerun(
-            name,
-            &[
-                ("SSL_CERT_FILE", image_file.to_str().unwrap()),
-                ("NIX_SSL_CERT_FILE", image_file.to_str().unwrap()),
-                ("EGRESS_TEST_URLS", &urls),
-            ],
-        )
-        .await;
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(
-            (inside.served() > 0, outside.served() > 0),
-            (true, false),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
+        for client in ["gix", "libgit2"] {
+            // Without the egress CA only the image's server is trusted: the test can tell.
+            let (inside, outside) = (https_server(&image).await, https_server(&corporate).await);
+            let urls = format!("{},{}", inside.url, outside.url);
+            let output = rerun(
+                name,
+                &[
+                    ("SSL_CERT_FILE", image_file.to_str().unwrap()),
+                    ("NIX_SSL_CERT_FILE", image_file.to_str().unwrap()),
+                    ("EGRESS_TEST_URLS", &urls),
+                    ("EGRESS_TEST_CLIENT", client),
+                ],
+            )
+            .await;
+            assert!(output.status.success(), "{client}: {output:?}");
+            assert_eq!(
+                (inside.served() > 0, outside.served() > 0),
+                (true, false),
+                "{client}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
 
-        let (inside, outside) = (https_server(&image).await, https_server(&corporate).await);
-        let urls = format!("{},{}", inside.url, outside.url);
-        let output = rerun(
-            name,
-            &[
-                ("SSL_CERT_FILE", image_file.to_str().unwrap()),
-                ("NIX_SSL_CERT_FILE", image_file.to_str().unwrap()),
-                ("POLAR_EGRESS_CA_CERT", corporate_file.to_str().unwrap()),
-                ("EGRESS_TEST_URLS", &urls),
-            ],
-        )
-        .await;
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(
-            (inside.served() > 0, outside.served() > 0),
-            (true, true),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
+            let (inside, outside) = (https_server(&image).await, https_server(&corporate).await);
+            let urls = format!("{},{}", inside.url, outside.url);
+            let output = rerun(
+                name,
+                &[
+                    ("SSL_CERT_FILE", image_file.to_str().unwrap()),
+                    ("NIX_SSL_CERT_FILE", image_file.to_str().unwrap()),
+                    ("POLAR_EGRESS_CA_CERT", corporate_file.to_str().unwrap()),
+                    ("EGRESS_TEST_URLS", &urls),
+                    ("EGRESS_TEST_CLIENT", client),
+                ],
+            )
+            .await;
+            assert!(output.status.success(), "{client}: {output:?}");
+            assert_eq!(
+                (inside.served() > 0, outside.served() > 0),
+                (true, true),
+                "{client}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
     }
 
     /// In a child (SILENT_HOST set): gives libgit2 a short bound, and clones from a host that takes the connection and says
     /// nothing.
     async fn clone_from_the_silent_host() {
-        Git::ready(
+        let git = Git::ready(
             Egress::default(),
             CONNECT_TIMEOUT,
             Duration::from_millis(300),
@@ -1345,15 +1627,6 @@ mod tests {
         .await
         .unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let told = Cell::new(None);
-        let fetching = Fetching {
-            credential: None,
-            host: "",
-            depth: None,
-            proxy: None,
-            max_fetch: MAX_FETCH,
-            told: &told,
-        };
         let request = Request::new(
             given("SILENT_HOST").unwrap(),
             cache.path().join("clone"),
@@ -1361,43 +1634,42 @@ mod tests {
             None,
         );
         let started = std::time::Instant::now();
-        let failed = fetching.bring_up_to_date(&request).map(|_| ()).unwrap_err();
-        println!(
-            "GAVE UP after {:?}: {}",
-            started.elapsed(),
-            failed.message()
-        );
+        let failed = clone_by(&git, request).await;
+        println!("GAVE UP after {:?}: {failed}", started.elapsed());
     }
 
-    /// The timeout is global to libgit2, so this is a child's. Without it the child would wait for as long as the host does.
+    /// libgit2's timeout is global to the process, so this is a child's; gix's, its client's, is tested the same way. Without
+    /// them the child would wait for as long as the host does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_host_that_stops_answering_fails_the_fetch_when_the_timeout_passes() {
         if given("SILENT_HOST").is_some() {
             return clone_from_the_silent_host().await;
         }
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let silent = format!("http://{}/r.git", listener.local_addr().unwrap());
-        let holding = tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((connection, _)) = listener.accept().await {
-                held.push(connection);
-            }
-        });
-        let output = tokio::time::timeout(
-            Duration::from_secs(30),
-            rerun(
-                "protocol::git::tests::a_host_that_stops_answering_fails_the_fetch_when_the_timeout_passes",
-                &[("SILENT_HOST", &silent)],
-            ),
-        )
-        .await
-        .expect("the child gave up in time");
-        holding.abort();
-        let said = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            said.contains("GAVE UP") && said.contains("timed out"),
-            "{said}"
-        );
+        for client in ["gix", "libgit2"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let silent = format!("http://{}/r.git", listener.local_addr().unwrap());
+            let holding = tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((connection, _)) = listener.accept().await {
+                    held.push(connection);
+                }
+            });
+            let output = tokio::time::timeout(
+                Duration::from_secs(30),
+                rerun(
+                    "protocol::git::tests::a_host_that_stops_answering_fails_the_fetch_when_the_timeout_passes",
+                    &[("SILENT_HOST", &silent), ("EGRESS_TEST_CLIENT", client)],
+                ),
+            )
+            .await
+            .expect("the child gave up in time");
+            holding.abort();
+            let said = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                said.contains("GAVE UP") && said.contains("timed out"),
+                "{client}: {said}"
+            );
+        }
     }
 
     /// The first thing a CA that cannot be used does is stop the agent, with the variable and the path.

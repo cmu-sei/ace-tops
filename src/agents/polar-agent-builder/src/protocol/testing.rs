@@ -37,7 +37,9 @@ use base64::Engine;
 use git2::Repository;
 use polar::egress::Egress;
 use polar::egress::testing::TestCa;
-use polar_crypto::registry::{GitCredential, HttpCredential, SecretBinding};
+use polar_crypto::registry::{
+    GitCredential, HttpCredential, SecretBinding, SecretKind, UseRefusal,
+};
 use polar_crypto::sending::{self, HttpKind, SendError, Sent};
 use polar_crypto::{CryptoError, Exchanged, TokenHandle};
 use ractor::{Actor, ActorRef, OutputPort};
@@ -169,7 +171,31 @@ impl<T: StandIn> CredentialSource for T {
         sending::send_bearer(&held, request, client).await
     }
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError> {
-        StandIn::git(self, name, host).await
+        let credential = StandIn::git(self, name, host).await?;
+        match credential.kind {
+            SecretKind::SshKey => Ok(credential),
+            _ => Err(CryptoError::Use(UseRefusal::SentNotGiven)),
+        }
+    }
+    async fn git_kind(&self, name: String, host: String) -> Result<SecretKind, CryptoError> {
+        StandIn::git(self, name, host).await.map(|c| c.kind)
+    }
+    async fn send_git(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Sent, SendError> {
+        let host = request.url().host_str().unwrap_or_default().to_string();
+        let credential = StandIn::git(self, name, host).await?;
+        if credential.kind == SecretKind::SshKey {
+            return Err(CryptoError::Use(UseRefusal::NotForHttp).into());
+        }
+        let login = HttpCredential::Basic {
+            username: credential.username.clone(),
+            password: credential.secret.clone(),
+        };
+        sending::send(&login, request, client).await
     }
     async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
         StandIn::bound_to(self, host).await
@@ -799,8 +825,17 @@ impl Respond for OriginResponder {
                 advertisement(&repository).expect("the origin's refs"),
                 "application/x-git-upload-pack-advertisement",
             ),
+            // A round of the negotiation that is not the last is answered that nothing is in common yet; the last, with
+            // everything.
+            false if !request.body.windows(9).any(|w| w == b"0009done\n") => {
+                ResponseTemplate::new(200).set_body_raw(
+                    pkt("NAK\n").into_bytes(),
+                    "application/x-git-upload-pack-result",
+                )
+            }
             false => ResponseTemplate::new(200).set_body_raw(
-                pack_reply(&repository).expect("the origin's pack"),
+                pack_reply(&repository, asked_for_side_band(&request.body))
+                    .expect("the origin's pack"),
                 "application/x-git-upload-pack-result",
             ),
         }
@@ -841,9 +876,13 @@ pub(crate) fn refs_advertised(repository: &Repository) -> Result<Vec<u8>, git2::
         .head()
         .ok()
         .and_then(|head| Some((head.name()?.to_string(), head.target()?)));
+    // multi_ack_detailed, side-band-64k and include-tag are the least a client asks of a server (gix fetches with no less),
+    // and every server has them.
     let capabilities = match &head {
-        Some((name, _)) => format!("symref=HEAD:{name}"),
-        None => String::new(),
+        Some((name, _)) => {
+            format!("multi_ack_detailed side-band-64k include-tag symref=HEAD:{name}")
+        }
+        None => "multi_ack_detailed side-band-64k include-tag".to_string(),
     };
     let mut lines = Vec::new();
     let mut listed = Vec::new();
@@ -859,14 +898,25 @@ pub(crate) fn refs_advertised(repository: &Repository) -> Result<Vec<u8>, git2::
                     .map(|(target, name)| pkt(&format!("{target} {name}\n"))),
             );
         }
-        None => lines.push(pkt(&format!("{} capabilities^{{}}\0\n", git2::Oid::zero()))),
+        None => lines.push(pkt(&format!(
+            "{} capabilities^{{}}\0{capabilities}\n",
+            git2::Oid::zero()
+        ))),
     }
     lines.push("0000".to_string());
     Ok(lines.concat().into_bytes())
 }
 
+/// Whether a client's first `want` asked for the pack in side bands.
+pub(crate) fn asked_for_side_band(asked: &[u8]) -> bool {
+    asked
+        .split(|&b| b == b'\n')
+        .find(|line| line.windows(4).any(|w| w == b"want"))
+        .is_some_and(|line| line.windows(13).any(|w| w == b"side-band-64k"))
+}
+
 /// All of `repository`, whatever was asked for: a client takes what it already has without harm.
-pub(crate) fn pack_reply(repository: &Repository) -> Result<Vec<u8>, git2::Error> {
+pub(crate) fn pack_reply(repository: &Repository, side_band: bool) -> Result<Vec<u8>, git2::Error> {
     let mut walk = repository.revwalk()?;
     for reference in repository.references()? {
         if let Some(target) = reference?.target() {
@@ -878,6 +928,152 @@ pub(crate) fn pack_reply(repository: &Repository) -> Result<Vec<u8>, git2::Error
     let mut pack = git2::Buf::new();
     builder.write_buf(&mut pack)?;
     let mut reply = pkt("NAK\n").into_bytes();
-    reply.extend_from_slice(&pack);
+    if !side_band {
+        reply.extend_from_slice(&pack);
+        return Ok(reply);
+    }
+    // In band 1, a line at a time, and a flush at the end.
+    for piece in pack.chunks(65515) {
+        reply.extend_from_slice(format!("{:04x}", piece.len() + 5).as_bytes());
+        reply.push(1);
+        reply.extend_from_slice(piece);
+    }
+    reply.extend_from_slice(b"0000");
     Ok(reply)
+}
+
+/// A real git server for the tests: git's own `http-backend`, run for each request as a web server runs it, serving the
+/// repositories under a directory. It speaks every protocol git does, the second among them, as GitHub's and gitea's
+/// servers do: what [`GitOrigin`], which speaks only the first, cannot show.
+#[cfg(test)]
+pub(crate) struct BackendOrigin {
+    server: MockServer,
+}
+
+#[cfg(test)]
+impl BackendOrigin {
+    /// Serves each repository under `root`, `root/<name>` at `/<name>`.
+    pub(crate) async fn serving(root: &Path) -> Self {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(Backend(root.to_path_buf()))
+            .mount(&server)
+            .await;
+        Self { server }
+    }
+
+    /// The address of the repository `name`, unencrypted.
+    pub(crate) fn url(&self, name: &str) -> String {
+        format!("{}/{name}", self.server.uri())
+    }
+    /// From now on `from` has moved to `to`: a request for its refs is sent there, and anything else asked of it is not
+    /// found, so only a client that follows the move to the end gets anything.
+    pub(crate) async fn moved(&self, from: &str, to: &str) {
+        Mock::given(wiremock::matchers::path_regex(format!("^/{from}/")))
+            .respond_with(Moved {
+                from: from.to_string(),
+                to: to.to_string(),
+            })
+            .with_priority(1)
+            .mount(&self.server)
+            .await;
+    }
+}
+
+#[cfg(test)]
+struct Moved {
+    from: String,
+    to: String,
+}
+
+#[cfg(test)]
+impl Respond for Moved {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        if request.method != wiremock::http::Method::GET {
+            return ResponseTemplate::new(404);
+        }
+        let path =
+            request
+                .url
+                .path()
+                .replacen(&format!("/{}/", self.from), &format!("/{}/", self.to), 1);
+        let query = request
+            .url
+            .query()
+            .map(|q| format!("?{q}"))
+            .unwrap_or_default();
+        ResponseTemplate::new(301).insert_header("Location", format!("{path}{query}"))
+    }
+}
+
+#[cfg(test)]
+struct Backend(PathBuf);
+
+#[cfg(test)]
+impl Respond for Backend {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        use std::io::Write;
+        let header = |name: &str| {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut child = std::process::Command::new("git")
+            .arg("http-backend")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_PROJECT_ROOT", &self.0)
+            .env("GIT_HTTP_EXPORT_ALL", "1")
+            .env("REQUEST_METHOD", request.method.as_str())
+            .env("PATH_INFO", request.url.path())
+            .env("QUERY_STRING", request.url.query().unwrap_or_default())
+            .env("CONTENT_TYPE", header("content-type"))
+            .env("GIT_PROTOCOL", header("git-protocol"))
+            .env("REMOTE_ADDR", "127.0.0.1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("git http-backend");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&request.body)
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        // A CGI reply: its headers, a blank line, its body.
+        let split = output
+            .stdout
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map(|at| (at, at + 4))
+            .or_else(|| {
+                output
+                    .stdout
+                    .windows(2)
+                    .position(|w| w == b"\n\n")
+                    .map(|at| (at, at + 2))
+            })
+            .expect("a CGI reply");
+        let head = String::from_utf8_lossy(&output.stdout[..split.0]).to_string();
+        let body = output.stdout[split.1..].to_vec();
+        let mut status = 200;
+        let mut content_type = "application/octet-stream".to_string();
+        for line in head.lines() {
+            let Some((name, value)) = line.split_once(':') else {
+                continue;
+            };
+            match name.trim().to_ascii_lowercase().as_str() {
+                "status" => {
+                    status = value.trim()[..3].parse().unwrap();
+                }
+                "content-type" => content_type = value.trim().to_string(),
+                _ => {}
+            }
+        }
+        ResponseTemplate::new(status).set_body_raw(body, &content_type)
+    }
 }

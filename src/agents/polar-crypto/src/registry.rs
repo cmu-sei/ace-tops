@@ -272,6 +272,10 @@ pub enum UseRefusal {
     BadBinding,
     #[error("an ssh key is given only to git over ssh, never to an HTTP request")]
     NotForHttp,
+    #[error(
+        "a token or a password is never handed out: the CryptoActor sends the request it goes with"
+    )]
+    SentNotGiven,
 }
 
 /// The credential git is given for `host`, or why not. The host is checked first, so a caller who may not have

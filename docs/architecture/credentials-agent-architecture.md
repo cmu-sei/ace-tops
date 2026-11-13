@@ -518,7 +518,8 @@ implements, not closures supplied by callers, since a closure could simply retur
   actor therefore has no network surface.
 - **Git is different.** libgit2 does its own network I/O and asks for a credential through a callback, so for git
   the operation hands the caller a short-lived username and token (wiped when dropped) for the host the binding
-  names.
+  names. *Superseded 2026-11-13* (`docs/plans/registry/trusted-remotes.md`, step 2): git over https is sent by the
+  CryptoActor (`SendGit`), and `Git` gives an ssh key alone, until custody signs for it.
 - **Escrow.** A registered secret and its binding are escrowed together with the credentials agent
   (`StoreSecret`, retried until acknowledged), so a restarted agent gets both back with `RetrieveSecret`.
 

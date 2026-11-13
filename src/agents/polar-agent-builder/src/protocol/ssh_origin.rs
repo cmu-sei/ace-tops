@@ -26,7 +26,7 @@
 //! connection and every key it is offered, so a test can say that no key reached a server whose host key was not the one
 //! pinned, and that a fetch refused before it went out never connected.
 
-use super::testing::{pack_reply, refs_advertised};
+use super::testing::{asked_for_side_band, pack_reply, refs_advertised};
 use git2::Repository;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::ssh_key::private::Ed25519Keypair;
@@ -212,7 +212,11 @@ impl Handler for Connection {
             if done {
                 let repository =
                     Repository::open(&self.directory).expect("the origin's repository");
-                session.data(channel, pack_reply(&repository).expect("the origin's pack"))?;
+                session.data(
+                    channel,
+                    pack_reply(&repository, asked_for_side_band(&self.asked))
+                        .expect("the origin's pack"),
+                )?;
             }
             session.exit_status_request(channel, 0)?;
             session.eof(channel)?;

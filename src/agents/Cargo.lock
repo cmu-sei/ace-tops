@@ -3389,24 +3389,32 @@ version = "0.90.0"
 source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
 dependencies = [
  "gix-actor",
+ "gix-attributes",
+ "gix-command",
  "gix-commitgraph",
  "gix-config",
+ "gix-credentials",
  "gix-date",
  "gix-diff",
  "gix-discover",
  "gix-error",
+ "gix-filter",
  "gix-fs",
  "gix-glob",
  "gix-hash",
  "gix-hashtable",
+ "gix-ignore",
  "gix-index",
  "gix-lock",
+ "gix-negotiate",
  "gix-note",
  "gix-object",
  "gix-odb",
  "gix-pack",
  "gix-parallel",
  "gix-path",
+ "gix-pathspec",
+ "gix-prompt",
  "gix-protocol",
  "gix-quote",
  "gix-ref",
@@ -3415,12 +3423,15 @@ dependencies = [
  "gix-revwalk",
  "gix-sec",
  "gix-shallow",
+ "gix-submodule",
  "gix-tempfile",
  "gix-trace",
+ "gix-transport",
  "gix-traverse",
  "gix-url",
  "gix-utils",
  "gix-validate",
+ "gix-worktree",
  "gix-worktree-stream",
  "gix-zlib",
  "nonempty",
@@ -3525,6 +3536,25 @@ dependencies = [
  "gix-path",
  "gix-utils",
  "libc",
+]
+
+[[package]]
+name = "gix-credentials"
+version = "0.42.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "bstr",
+ "gix-command",
+ "gix-config-value",
+ "gix-date",
+ "gix-error",
+ "gix-path",
+ "gix-prompt",
+ "gix-quote",
+ "gix-sec",
+ "gix-trace",
+ "gix-url",
+ "percent-encoding",
 ]
 
 [[package]]
@@ -3652,6 +3682,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-ignore"
+version = "0.24.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "bstr",
+ "gix-glob",
+ "gix-path",
+ "gix-trace",
+ "unicode-bom",
+]
+
+[[package]]
 name = "gix-index"
 version = "0.58.0"
 source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
@@ -3702,6 +3744,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-negotiate"
+version = "0.38.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "bitflags 2.13.2",
+ "gix-commitgraph",
+ "gix-date",
+ "gix-error",
+ "gix-hash",
+ "gix-object",
+ "gix-revwalk",
+]
+
+[[package]]
 name = "gix-note"
 version = "0.3.1"
 source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
@@ -3718,10 +3774,13 @@ source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4
 dependencies = [
  "bstr",
  "gix-actor",
+ "gix-command",
  "gix-date",
  "gix-error",
  "gix-hash",
  "gix-hashtable",
+ "gix-path",
+ "gix-tempfile",
  "gix-utils",
  "gix-validate",
  "itoa",
@@ -3812,17 +3871,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-pathspec"
+version = "0.22.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "bitflags 2.13.2",
+ "bstr",
+ "gix-attributes",
+ "gix-config-value",
+ "gix-error",
+ "gix-glob",
+ "gix-path",
+]
+
+[[package]]
+name = "gix-prompt"
+version = "0.19.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "gix-command",
+ "gix-config-value",
+ "gix-error",
+ "parking_lot",
+ "rustix",
+]
+
+[[package]]
 name = "gix-protocol"
 version = "0.68.0"
 source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
 dependencies = [
  "bstr",
+ "gix-credentials",
  "gix-date",
  "gix-error",
  "gix-hash",
+ "gix-lock",
  "gix-macros",
+ "gix-negotiate",
+ "gix-object",
  "gix-ref",
+ "gix-refspec",
+ "gix-revwalk",
  "gix-shallow",
+ "gix-trace",
  "gix-transport",
  "gix-utils",
  "nonempty",
@@ -3935,10 +4027,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-submodule"
+version = "0.36.1"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "bstr",
+ "gix-config",
+ "gix-error",
+ "gix-path",
+ "gix-pathspec",
+ "gix-refspec",
+ "gix-url",
+]
+
+[[package]]
 name = "gix-tempfile"
 version = "27.0.0"
 source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
 dependencies = [
+ "dashmap 6.2.1",
  "gix-fs",
  "libc",
  "parking_lot",
@@ -3956,8 +4063,10 @@ name = "gix-transport"
 version = "0.62.0"
 source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
 dependencies = [
+ "base64 0.22.1",
  "bstr",
  "gix-command",
+ "gix-credentials",
  "gix-error",
  "gix-packetline",
  "gix-path",
@@ -3966,6 +4075,7 @@ dependencies = [
  "gix-trace",
  "gix-url",
  "gix-utils",
+ "parking_lot",
 ]
 
 [[package]]
@@ -4017,6 +4127,24 @@ source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4
 dependencies = [
  "bstr",
  "gix-error",
+]
+
+[[package]]
+name = "gix-worktree"
+version = "0.59.0"
+source = "git+https://github.com/daveman1010221/gitoxide?rev=3032b1da4#3032b1da4e05f9b8cf76bef2085c224c778358e5"
+dependencies = [
+ "bstr",
+ "gix-attributes",
+ "gix-error",
+ "gix-fs",
+ "gix-glob",
+ "gix-hash",
+ "gix-ignore",
+ "gix-index",
+ "gix-object",
+ "gix-path",
+ "gix-validate",
 ]
 
 [[package]]
@@ -7097,6 +7225,8 @@ dependencies = [
  "credentials_agent_common",
  "futures",
  "git2",
+ "gix",
+ "gix-transport",
  "http-auth",
  "k8s-openapi",
  "kube",

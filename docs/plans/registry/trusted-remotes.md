@@ -175,7 +175,8 @@ In steps, each tested before the next:
 - A username is sealed with its password, and nothing in the signed configuration says who a credential logs in as.
 - An HTTP request with a credential is sent by the crypto actor, with the handler's own client: the handler never has
   the token, the password or a registry's token, which the crypto actor keeps and presents by a handle. Git fetches
-  still receive their credential in plain text, until they move to gitoxide.
+  over https go the same way, on gitoxide; only an ssh key is still handed to the handler, for git over ssh, until the
+  custody daemon signs for it.
 - The Nix cache has one upstream, its address and key fixed when the registry is deployed.
 - Credentials are sealed, with the hosts each may go to in plain text.
 - No remote can be sealed, and the handler has no way to a host named by a signed list.
