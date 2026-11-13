@@ -39,7 +39,7 @@ use jira_observer::users::JiraUserObserver;
 use jira_observer::{JiraAuth, JiraDeployment, JiraObserverArgs, JiraObserverMessage};
 use polar::cassini::TcpClient;
 use polar::egress::testing::{TestCa, https_front};
-use polar_agent_builder::protocol::CredentialSource;
+use polar_agent_builder::protocol::testing::StandIn;
 use polar_agent_builder::protocol::testing::http_handle;
 use polar_agent_builder::{
     HealthHandle, HoldReason, SoftValue, StateClient, StateError, StateQuery,
@@ -208,7 +208,7 @@ async fn args(server: &MockServer, client: ActorRef<TcpClientMessage>) -> JiraOb
 struct GivesToken;
 
 #[async_trait]
-impl CredentialSource for GivesToken {
+impl StandIn for GivesToken {
     async fn git(
         &self,
         name: String,

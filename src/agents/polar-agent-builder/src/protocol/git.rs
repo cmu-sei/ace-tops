@@ -413,7 +413,7 @@ impl Protocol for Git {
     }
 
     async fn credential(
-        source: &dyn CredentialSource,
+        source: &Arc<dyn CredentialSource>,
         name: String,
         host: String,
     ) -> Result<GitCredential, CryptoError> {

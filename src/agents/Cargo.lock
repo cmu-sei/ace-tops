@@ -7139,6 +7139,7 @@ dependencies = [
 name = "polar-crypto"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "cassini-client",
  "cassini-types",
  "cert-issuer-common",
@@ -7154,6 +7155,7 @@ dependencies = [
  "ractor",
  "rand 0.10.3",
  "rcgen",
+ "reqwest 0.12.28",
  "rkyv",
  "rsa 0.10.0-rc.18",
  "serde",

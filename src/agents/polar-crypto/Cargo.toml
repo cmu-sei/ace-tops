@@ -49,6 +49,10 @@ cert-issuer-common = { version = "1.0.0", path = "../cert-issuer/common" }
 polar-custody.workspace = true
 x509-parser.workspace = true
 polar-router.workspace = true
+# A credentialed request is sent from here, with the protocol handler's own client, so the credential never leaves the
+# actor (src/sending.rs); and Basic is base64 of a user name and password.
+reqwest.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 # The credentials agent's escrow key, and a recipient's, RSA in the tests.

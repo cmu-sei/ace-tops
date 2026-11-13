@@ -1016,8 +1016,9 @@ pub enum JiraObserverMessage {
 #[cfg(test)]
 pub(crate) mod test_crypto {
     use polar::egress::testing::{TestCa, https_front};
+    use polar_agent_builder::protocol::ProtocolHandle;
+    use polar_agent_builder::protocol::testing::StandIn;
     use polar_agent_builder::protocol::testing::{Site, http_handle};
-    use polar_agent_builder::protocol::{CredentialSource, ProtocolHandle};
     use polar_crypto::registry::{GitCredential, HttpCredential, UseRefusal};
     use polar_crypto::{CryptoError, Zeroizing};
     use std::sync::{Arc, Mutex, OnceLock};
@@ -1048,7 +1049,7 @@ pub(crate) mod test_crypto {
     }
 
     #[ractor::async_trait]
-    impl CredentialSource for FakeCrypto {
+    impl StandIn for FakeCrypto {
         async fn git(&self, name: String, _: String) -> Result<GitCredential, CryptoError> {
             Err(CryptoError::SecretNotRegistered(name))
         }
@@ -1282,10 +1283,10 @@ mod tests {
             last_authorization(&server).await.as_deref(),
             Some("Bearer pat-token")
         );
-        assert_eq!(
-            *crypto.asked.lock().unwrap(),
-            [("jira".to_string(), SITE_HOST.to_string())]
-        );
+        // Once as the request is admitted, for how the credential goes, and once as it sends it, the binding held to
+        // where it goes: both for the site's host.
+        let asked = ("jira".to_string(), SITE_HOST.to_string());
+        assert_eq!(*crypto.asked.lock().unwrap(), [asked.clone(), asked]);
 
         state_with(
             server.uri(),

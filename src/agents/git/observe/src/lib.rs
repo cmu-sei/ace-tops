@@ -933,6 +933,7 @@ mod tests {
     use cassini_client::TcpClientMessage;
     use git_agent_common::status::ObservationState;
     use polar_agent_builder::protocol::CredentialSource;
+    use polar_agent_builder::protocol::testing::StandIn;
     use polar_agent_builder::protocol::testing::{GitOrigin, Site, git_handle};
     use polar_crypto::registry::{GitCredential, HttpCredential, UseRefusal};
     use polar_crypto::{CryptoError, Zeroizing};
@@ -959,7 +960,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl CredentialSource for Recorder {
+    impl StandIn for Recorder {
         async fn http(&self, name: String, _: String) -> Result<HttpCredential, CryptoError> {
             // The git observer never asks for one.
             Err(CryptoError::SecretNotRegistered(name))

@@ -480,7 +480,7 @@ impl Protocol for Kubernetes {
     }
 
     async fn credential(
-        _: &dyn CredentialSource,
+        _: &Arc<dyn CredentialSource>,
         name: String,
         _: String,
     ) -> Result<Self::Credential, CryptoError> {

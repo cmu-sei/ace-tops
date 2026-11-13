@@ -101,8 +101,11 @@ logic." This is as much the reason for the design as the secret is.
    for is a fact the builder knows, so the scaffold prints it under `operations`.
 4. **Ask.** The domain actor sends the request. It names no secret value, holds no client, and gets on with its mailbox.
 5. **Judge.** One pure function decides, and the decision is logged (below).
-6. **Fulfil.** The protocol handler asks the `CryptoActor` for the credential for that host. The `CryptoActor` checks the binding, where
-   the secret lives. The handler attaches it, makes the request through the egress proxy and CA, and drops it.
+6. **Fulfil.** The protocol handler builds the request without the credential and hands it, with its own client (the egress proxy and
+   CA) and the credential's name, to the `CryptoActor`, which checks the binding against where the request goes, puts the credential on and
+   sends it, and gives back the response (`polar-crypto/src/sending.rs`). A registry's login is sent the same way, and the token it is
+   answered with stays in the `CryptoActor`, presented by a handle that wipes it when dropped. Since 2026-11-13; until then the handler was
+   given the credential and attached it. Git fetches still are, until they move to gitoxide (`docs/plans/registry/trusted-remotes.md`).
 7. **Process.** The handler calls the registered callback with what came back.
 8. **Return.** The callback's value reaches the domain actor as an ordinary message.
 

@@ -48,8 +48,10 @@ use crate::configuration::ConfigurationHandle;
 use crate::crypto::SectionKeeper;
 use crate::health::HealthHandle;
 use crate::runtime::RuntimeValue;
-use polar_crypto::registry::{GitCredential, HttpCredential, UseRefusal};
+use polar_crypto::registry::{GitCredential, UseRefusal};
+use polar_crypto::sending::{HttpKind, SendError, Sent};
 use polar_crypto::{CredentialPort, CryptoError};
+use polar_crypto::{Exchanged, TokenHandle};
 use polar_health::HoldReason;
 use ractor::{Actor, ActorCell, ActorProcessingErr, ActorRef, OutputPort, async_trait};
 use std::any::Any;
@@ -120,10 +122,35 @@ impl From<ReadFailure> for Failure {
     }
 }
 
-/// Where a protocol gets a credential: the CryptoActor, through the port only this crate holds.
+/// Where a protocol's credentials are used: the CryptoActor, through the port only this crate holds. An HTTP credential is
+/// never handed over: the protocol builds the request without it, and the actor puts it on and sends it with the
+/// protocol's own client (docs/plans/registry/trusted-remotes.md, "credentials are used without being seen").
 #[async_trait]
 pub trait CredentialSource: Send + Sync {
-    async fn http(&self, name: String, host: String) -> Result<HttpCredential, CryptoError>;
+    /// How the credential `name` is presented to `host` over HTTP, the binding checked.
+    async fn http_kind(&self, name: String, host: String) -> Result<HttpKind, CryptoError>;
+    /// Sends `request` with the credential `name` on it, by `client`, the binding checked against where it goes.
+    async fn send_http(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Sent, SendError>;
+    /// Sends a login to a registry's auth host, and keeps the token it answers with: what comes back holds the token's
+    /// handle, never the token.
+    async fn exchange(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Exchanged, SendError>;
+    /// Sends `request` with the token `token` stands for on it, by `client`.
+    async fn send_with_token(
+        &self,
+        token: &TokenHandle,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<reqwest::Response, SendError>;
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError>;
     /// The name of the credential bound to `host`, for [`Credential::ForHost`].
     async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError>;
@@ -131,8 +158,32 @@ pub trait CredentialSource: Send + Sync {
 
 #[async_trait]
 impl CredentialSource for CredentialPort {
-    async fn http(&self, name: String, host: String) -> Result<HttpCredential, CryptoError> {
-        CredentialPort::http(self, name, host).await
+    async fn http_kind(&self, name: String, host: String) -> Result<HttpKind, CryptoError> {
+        CredentialPort::http_kind(self, name, host).await
+    }
+    async fn send_http(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Sent, SendError> {
+        CredentialPort::send_http(self, name, request, client).await
+    }
+    async fn exchange(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Exchanged, SendError> {
+        CredentialPort::exchange(self, name, request, client).await
+    }
+    async fn send_with_token(
+        &self,
+        token: &TokenHandle,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<reqwest::Response, SendError> {
+        CredentialPort::send_with_token(self, token, request, client).await
     }
     async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError> {
         CredentialPort::git(self, name, host).await
@@ -196,7 +247,7 @@ pub trait Protocol: sealed::Sealed + Send + Sync + Sized + 'static {
     fn target(request: &Self::Request, base: Option<&str>) -> Result<Target, String>;
     /// Asks for the credential in the form this protocol presents it.
     async fn credential(
-        source: &dyn CredentialSource,
+        source: &Arc<dyn CredentialSource>,
         name: String,
         host: String,
     ) -> Result<Self::Credential, CryptoError>;
@@ -464,7 +515,7 @@ async fn admit<P: Protocol>(
                 };
                 return Err(refused(Some(name.clone()), failure));
             };
-            match P::credential(source.as_ref(), name.clone(), target.host.clone()).await {
+            match P::credential(source, name.clone(), target.host.clone()).await {
                 Ok(credential) => Some(credential),
                 Err(error) => {
                     let failure = credential_failure(name, error);
@@ -1354,7 +1405,7 @@ pub(crate) mod tests {
             })
         }
         async fn credential(
-            source: &dyn CredentialSource,
+            source: &Arc<dyn CredentialSource>,
             name: String,
             host: String,
         ) -> Result<Self::Credential, CryptoError> {
@@ -1531,8 +1582,12 @@ pub(crate) mod tests {
     }
 
     #[async_trait]
-    impl CredentialSource for FakeSource {
-        async fn http(&self, _: String, _: String) -> Result<HttpCredential, CryptoError> {
+    impl testing::StandIn for FakeSource {
+        async fn http(
+            &self,
+            _: String,
+            _: String,
+        ) -> Result<polar_crypto::registry::HttpCredential, CryptoError> {
             unreachable!("the test protocol asks as git does")
         }
         async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError> {

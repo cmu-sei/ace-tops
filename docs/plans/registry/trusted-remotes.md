@@ -172,8 +172,10 @@ In steps, each tested before the next:
 ## 6. How much of the need is met now
 
 - An agent's own code has no way to a credential, closed by what it can reach rather than by convention.
-- The handler receives a credential in plain text for each request it makes with one, and a username is in plain text
-  in the signed configuration.
+- A username is sealed with its password, and nothing in the signed configuration says who a credential logs in as.
+- An HTTP request with a credential is sent by the crypto actor, with the handler's own client: the handler never has
+  the token, the password or a registry's token, which the crypto actor keeps and presents by a handle. Git fetches
+  still receive their credential in plain text, until they move to gitoxide.
 - The Nix cache has one upstream, its address and key fixed when the registry is deployed.
 - Credentials are sealed, with the hosts each may go to in plain text.
 - No remote can be sealed, and the handler has no way to a host named by a signed list.

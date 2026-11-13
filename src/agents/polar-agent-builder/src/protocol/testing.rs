@@ -37,8 +37,9 @@ use base64::Engine;
 use git2::Repository;
 use polar::egress::Egress;
 use polar::egress::testing::TestCa;
-use polar_crypto::CryptoError;
 use polar_crypto::registry::{GitCredential, HttpCredential, SecretBinding};
+use polar_crypto::sending::{self, HttpKind, SendError, Sent};
+use polar_crypto::{CryptoError, Exchanged, TokenHandle};
 use ractor::{Actor, ActorRef, OutputPort};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -90,8 +91,93 @@ struct OneSecret {
     binding: SecretBinding,
 }
 
+/// Stands in for the CryptoActor in a test, from credentials the test holds in the clear: it answers as the actor does, and
+/// [`CredentialSource`] comes with it, the HTTP side using what it answers as the actor would (a binding is checked against
+/// where a request goes, a login's token kept and presented by its handle).
 #[async_trait]
-impl CredentialSource for OneSecret {
+pub trait StandIn: Send + Sync {
+    /// The credential `name` for `host`, or why not.
+    async fn http(&self, name: String, host: String) -> Result<HttpCredential, CryptoError>;
+    async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError>;
+    async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError>;
+}
+
+/// The tokens stand-ins were given for logins, by handle.
+fn stand_in_tokens() -> &'static Mutex<HashMap<u64, polar_crypto::Zeroizing<Vec<u8>>>> {
+    static TOKENS: OnceLock<Mutex<HashMap<u64, polar_crypto::Zeroizing<Vec<u8>>>>> =
+        OnceLock::new();
+    TOKENS.get_or_init(Mutex::default)
+}
+
+/// The credential `name` for where `request` goes.
+async fn stand_in_credential<T: StandIn + ?Sized>(
+    stand_in: &T,
+    name: String,
+    request: &reqwest::Request,
+) -> Result<HttpCredential, CryptoError> {
+    let host = request.url().host_str().unwrap_or_default().to_string();
+    stand_in.http(name, host).await
+}
+
+#[async_trait]
+impl<T: StandIn> CredentialSource for T {
+    async fn http_kind(&self, name: String, host: String) -> Result<HttpKind, CryptoError> {
+        self.http(name, host).await.map(|c| sending::kind_of(&c))
+    }
+    async fn send_http(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Sent, SendError> {
+        let credential = stand_in_credential(self, name, &request).await?;
+        sending::send(&credential, request, client).await
+    }
+    async fn exchange(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Exchanged, SendError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let credential = stand_in_credential(self, name, &request).await?;
+        let answered = sending::log_in(&credential, request, client).await?;
+        let token = answered.token.map(|token| {
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            stand_in_tokens().lock().unwrap().insert(id, token);
+            TokenHandle::new(id, |id| {
+                stand_in_tokens().lock().unwrap().remove(&id);
+            })
+        });
+        Ok(Exchanged {
+            status: answered.status,
+            headers: answered.headers,
+            token,
+            kind: answered.kind,
+            looks_base64: answered.looks_base64,
+        })
+    }
+    async fn send_with_token(
+        &self,
+        token: &TokenHandle,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<reqwest::Response, SendError> {
+        let held = stand_in_tokens().lock().unwrap().get(&token.id()).cloned();
+        let held =
+            held.ok_or_else(|| CryptoError::SecretNotRegistered(format!("token {}", token.id())))?;
+        sending::send_bearer(&held, request, client).await
+    }
+    async fn git(&self, name: String, host: String) -> Result<GitCredential, CryptoError> {
+        StandIn::git(self, name, host).await
+    }
+    async fn bound_to(&self, host: String) -> Result<Option<String>, CryptoError> {
+        StandIn::bound_to(self, host).await
+    }
+}
+
+#[async_trait]
+impl StandIn for OneSecret {
     async fn http(&self, name: String, host: String) -> Result<HttpCredential, CryptoError> {
         if name != self.name {
             return Err(CryptoError::SecretNotRegistered(name));

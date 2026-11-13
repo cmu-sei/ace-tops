@@ -21,23 +21,22 @@
    DM26-0670
 */
 
-//! The HTTP protocol: one request, and one whole, bounded reply. It goes out as the cluster says (`polar::egress`), and
-//! presents the credential itself. It follows a redirect only after judging where it goes, so a credential goes to no host
-//! it is not bound to, and it makes one attempt: a failure is the domain's to act on, and a host's `Retry-After` is the
-//! handler's to honour (docs/architecture/protocol-handlers.md). A container registry is this protocol with one more way
-//! of authenticating ([`Request::at_a_registry`]): the login goes only where a judged challenge sends it, and what comes
-//! back goes only to the registry.
+//! The HTTP protocol: one request, and one whole, bounded reply. It goes out as the cluster says (`polar::egress`). A
+//! request with a credential goes by the CryptoActor, which puts the credential on and sends it with this protocol's
+//! client: the handler never holds the credential. It follows a redirect only after judging where it goes, so a
+//! credential goes to no host it is not bound to, and it makes one attempt: a failure is the domain's to act on, and a
+//! host's `Retry-After` is the handler's to honour (docs/architecture/protocol-handlers.md). A container registry is this
+//! protocol with one more way of authenticating ([`Request::at_a_registry`]): the login goes only where a judged
+//! challenge sends it, and the token that comes back is kept by the CryptoActor and goes only to the registry.
 
 use super::probe::{Probed, Reach, classify};
 use super::{
     CredentialSource, Exchange, Failure, Pending, Protocol, ProtocolKind, Started, Target,
+    credential_failure,
 };
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
-use polar_crypto::CryptoError;
-use polar_crypto::Zeroizing;
-use polar_crypto::registry::HttpCredential;
+use polar_crypto::sending::{HttpKind, SendError};
+use polar_crypto::{CryptoError, TokenHandle, Zeroizing};
 use reqwest::header::{LOCATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use reqwest::redirect::Policy;
 use reqwest::{Client, ClientBuilder, Method, Url};
@@ -61,7 +60,7 @@ pub const PIECES_DEADLINE: Duration = Duration::from_secs(60 * 60);
 /// The most hops a request follows, as a browser would.
 pub const MAX_HOPS: usize = 10;
 /// The most a registry's auth host may answer with: a token, and what comes with it.
-pub const MAX_TOKEN_REPLY: usize = 1024 * 1024;
+pub const MAX_TOKEN_REPLY: usize = polar_crypto::sending::MAX_TOKEN_REPLY;
 
 /// What an operation says it wants. Where it goes is a path under the operation's configured address, or a whole address
 /// for an operation that learns its host at run time.
@@ -200,14 +199,48 @@ pub struct Reply {
     pub credential_looks_base64: bool,
 }
 
-/// Whether a secret looks like a base64-encoded copy of a token: it decodes, under some alphabet, to at least 16 printable
-/// bytes. Someone encoded it who should not have, and the site will not accept it.
-pub fn looks_base64(token: &str) -> bool {
-    let token = token.trim();
-    [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD]
-        .iter()
-        .filter_map(|engine| engine.decode(token).ok())
-        .any(|decoded| decoded.len() >= 16 && decoded.iter().all(u8::is_ascii_graphic))
+pub use polar_crypto::sending::looks_base64;
+
+impl From<HttpKind> for Presented {
+    fn from(kind: HttpKind) -> Self {
+        match kind {
+            HttpKind::Bearer => Presented::Bearer,
+            HttpKind::Basic => Presented::Basic,
+        }
+    }
+}
+
+/// A credential as this protocol has it: its name, how it is presented, and the CryptoActor that holds it and sends what
+/// goes with it. Never its value.
+pub struct HttpUse {
+    name: String,
+    kind: HttpKind,
+    source: Arc<dyn CredentialSource>,
+}
+
+/// What the next send presents.
+enum Presenting {
+    Nothing,
+    Credential(HttpUse),
+    /// A token the CryptoActor keeps, which a login it sent was answered with.
+    Kept(TokenHandle, Arc<dyn CredentialSource>),
+    /// A token an auth host gave for no login: anyone may have one, so it is no secret of the agent's.
+    Anonymous(Zeroizing<String>),
+}
+
+impl From<Option<HttpUse>> for Presenting {
+    fn from(credential: Option<HttpUse>) -> Self {
+        credential.map_or(Presenting::Nothing, Presenting::Credential)
+    }
+}
+
+/// What the domain is told of a request the CryptoActor did not send, or that failed in sending.
+fn not_sent(name: &str, error: SendError) -> Failure {
+    match error {
+        SendError::Refused(refused) => credential_failure(name, refused),
+        SendError::Transport(e) => transport(e),
+        SendError::Unreadable(why) => Failure::Transient(why.to_string()),
+    }
 }
 
 /// The wait a `Retry-After` header asks for, given the time now: a number of seconds, or an HTTP date (a date already past
@@ -283,16 +316,14 @@ struct TokenReply {
 }
 
 /// The failure a host asking for time comes to, if it is asking.
-fn asks_for_time(response: &reqwest::Response) -> Option<Failure> {
-    let status = response.status();
+fn asks_for_time(status: StatusCode, headers: &HeaderMap) -> Option<Failure> {
     if !matches!(
         status,
         StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
     ) {
         return None;
     }
-    let wait = response
-        .headers()
+    let wait = headers
         .get(RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| retry_after(value, chrono::Utc::now()))?;
@@ -305,7 +336,7 @@ fn asks_for_time(response: &reqwest::Response) -> Option<Failure> {
 /// What a registry's challenge comes to: what to present, and when it is a token an auth host gave, how the login was
 /// presented for it.
 struct Answer {
-    presenting: HttpCredential,
+    presenting: Presenting,
     exchanged: Option<(Presented, bool)>,
 }
 
@@ -401,26 +432,67 @@ impl Http {
         Self { client }
     }
 
+    /// Sends `request`, presenting what `presenting` holds: a credential or a kept token by the CryptoActor, which puts it
+    /// on. How it was presented, and whether its secret looks base64-encoded.
+    async fn send(
+        &self,
+        request: reqwest::Request,
+        presenting: Presenting,
+    ) -> Result<(reqwest::Response, Presented, bool), Failure> {
+        Ok(match presenting {
+            Presenting::Nothing => (
+                self.client.execute(request).await.map_err(transport)?,
+                Presented::Nothing,
+                false,
+            ),
+            Presenting::Credential(credential) => {
+                let sent = credential
+                    .source
+                    .send_http(credential.name.clone(), request, self.client.clone())
+                    .await
+                    .map_err(|e| not_sent(&credential.name, e))?;
+                (sent.response, sent.kind.into(), sent.looks_base64)
+            }
+            Presenting::Kept(token, source) => {
+                let response = source
+                    .send_with_token(&token, request, self.client.clone())
+                    .await
+                    .map_err(|e| not_sent("(the registry's token)", e))?;
+                (response, Presented::Bearer, false)
+            }
+            Presenting::Anonymous(token) => {
+                let request = reqwest::RequestBuilder::from_parts(self.client.clone(), request)
+                    .bearer_auth(token.as_str());
+                (
+                    request.send().await.map_err(transport)?,
+                    Presented::Bearer,
+                    false,
+                )
+            }
+        })
+    }
+
     /// Answers a registry's challenge, or `None` if nothing can, and then its 401 is the reply. The auth host is judged
-    /// before anything goes to it: off the credential's binding the request fails, and nothing is sent.
+    /// before anything goes to it: off the credential's binding the request fails, and nothing is sent. A login goes by the
+    /// CryptoActor, which keeps the token it is answered with.
     async fn answer_challenge(
         &self,
         headers: &HeaderMap,
         scope: &str,
-        login: Option<HttpCredential>,
+        login: Option<HttpUse>,
         exchange: &mut Exchange<Self>,
     ) -> Result<Option<Answer>, Failure> {
-        if let Some(HttpCredential::Bearer(_)) = &login {
-            return Ok(login.map(|presenting| Answer {
-                presenting,
+        let unanswered = |login: Option<HttpUse>| {
+            login.map(|login| Answer {
+                presenting: Presenting::Credential(login),
                 exchanged: None,
-            }));
+            })
+        };
+        if login.as_ref().is_some_and(|l| l.kind == HttpKind::Bearer) {
+            return Ok(unanswered(login));
         }
         let Some(challenge) = bearer_challenge(headers) else {
-            return Ok(login.map(|presenting| Answer {
-                presenting,
-                exchanged: None,
-            }));
+            return Ok(unanswered(login));
         };
         drop(login);
         let mut realm = Url::parse(&challenge.realm).map_err(|_| {
@@ -435,12 +507,39 @@ impl Http {
                 query.append_pair("service", service);
             }
         }
-        let (outgoing, presented, looks) = attach(self.client.get(realm), at_realm)?;
-        let mut response = outgoing.send().await.map_err(transport)?;
-        if let Some(failure) = asks_for_time(&response) {
+        let request = self.client.get(realm).build().map_err(transport)?;
+        let (status, headers, token, presented, looks) = match at_realm {
+            Some(login) => {
+                let exchanged = login
+                    .source
+                    .exchange(login.name.clone(), request, self.client.clone())
+                    .await
+                    .map_err(|e| not_sent(&login.name, e))?;
+                let token = exchanged
+                    .token
+                    .map(|token| Presenting::Kept(token, login.source.clone()));
+                (
+                    exchanged.status,
+                    exchanged.headers,
+                    token,
+                    exchanged.kind.into(),
+                    exchanged.looks_base64,
+                )
+            }
+            None => {
+                let mut response = self.client.execute(request).await.map_err(transport)?;
+                let (status, headers) = (response.status(), response.headers().clone());
+                let token = if status == StatusCode::OK {
+                    Some(Presenting::Anonymous(anonymous_token(&mut response).await?))
+                } else {
+                    None
+                };
+                (status, headers, token, Presented::Nothing, false)
+            }
+        };
+        if let Some(failure) = asks_for_time(status, &headers) {
             return Err(failure);
         }
-        let status = response.status();
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             if presented == Presented::Nothing {
                 return Ok(None);
@@ -449,24 +548,30 @@ impl Http {
                 "the registry's auth host answered {status}"
             )));
         }
-        if status != StatusCode::OK {
+        let Some(presenting) = token.filter(|_| status == StatusCode::OK) else {
             return Err(Failure::Transient(format!(
                 "the registry's auth host answered {status}"
             )));
-        }
-        let whole = Zeroizing::new(whole_body(&mut response, MAX_TOKEN_REPLY).await?);
-        // What fails to parse says nothing of what it read: a parser's message can repeat it.
-        let reply: TokenReply = serde_json::from_slice(&whole).map_err(|_| {
-            Failure::Transient("the registry's auth host did not answer with a token".to_string())
-        })?;
-        let token = reply.token.or(reply.access_token).ok_or_else(|| {
-            Failure::Transient("the registry's auth host did not answer with a token".to_string())
-        })?;
+        };
         Ok(Some(Answer {
-            presenting: HttpCredential::Bearer(Zeroizing::new(token.into_bytes())),
+            presenting,
             exchanged: Some((presented, looks)),
         }))
     }
+}
+
+/// The token an auth host answered no login with. What fails to parse says nothing of what it read: a parser's message
+/// can repeat it.
+async fn anonymous_token(response: &mut reqwest::Response) -> Result<Zeroizing<String>, Failure> {
+    let whole = Zeroizing::new(whole_body(response, MAX_TOKEN_REPLY).await?);
+    let unreadable =
+        || Failure::Transient("the registry's auth host did not answer with a token".to_string());
+    let reply: TokenReply = serde_json::from_slice(&whole).map_err(|_| unreadable())?;
+    reply
+        .token
+        .or(reply.access_token)
+        .map(Zeroizing::new)
+        .ok_or_else(unreadable)
 }
 
 /// The egress probe's request ([`super::probe`]): a GET of the URL with the agent's client, presenting nothing and following
@@ -492,7 +597,7 @@ impl Protocol for Http {
     const KIND: ProtocolKind = ProtocolKind::HTTP;
     const BUDGET: Duration = Duration::from_secs(30);
     type Request = Request;
-    type Credential = HttpCredential;
+    type Credential = HttpUse;
     type Reply = Reply;
 
     fn configured_host(base: &str) -> Result<String, String> {
@@ -505,25 +610,30 @@ impl Protocol for Http {
     }
 
     async fn credential(
-        source: &dyn CredentialSource,
+        source: &Arc<dyn CredentialSource>,
         name: String,
         host: String,
-    ) -> Result<HttpCredential, CryptoError> {
-        source.http(name, host).await
+    ) -> Result<HttpUse, CryptoError> {
+        let kind = source.http_kind(name.clone(), host).await?;
+        Ok(HttpUse {
+            name,
+            kind,
+            source: source.clone(),
+        })
     }
 
     async fn perform(
         &self,
         request: Request,
         base: Option<String>,
-        credential: Option<HttpCredential>,
+        credential: Option<HttpUse>,
         exchange: &mut Exchange<Self>,
     ) -> Result<(), Failure> {
         let mut url = locate(&request.at, base.as_deref()).map_err(Failure::Configuration)?;
         // What the next send presents. A registry's login is held back until a challenge says where it goes.
         let (mut presenting, mut login) = match request.registry_scope {
-            None => (credential, None),
-            Some(_) => (None, credential),
+            None => (Presenting::from(credential), None),
+            Some(_) => (Presenting::Nothing, credential),
         };
         let mut exchanged = None;
         let mut challenged = false;
@@ -540,11 +650,15 @@ impl Protocol for Http {
             if request.pieces.is_some() {
                 outgoing = outgoing.timeout(PIECES_DEADLINE);
             }
-            let (outgoing, presented, credential_looks_base64) =
-                attach(outgoing, presenting.take())?;
+            let outgoing = outgoing.build().map_err(transport)?;
+            let (mut response, presented, credential_looks_base64) = self
+                .send(
+                    outgoing,
+                    std::mem::replace(&mut presenting, Presenting::Nothing),
+                )
+                .await?;
             let (presented, credential_looks_base64) =
                 exchanged.unwrap_or((presented, credential_looks_base64));
-            let mut response = outgoing.send().await.map_err(transport)?;
             let status = response.status();
 
             if status.is_redirection()
@@ -563,7 +677,7 @@ impl Protocol for Http {
                 // A token from an auth host is for where it was presented: it goes no further.
                 let there = exchange.hop(target).await?;
                 match request.registry_scope {
-                    None => presenting = there,
+                    None => presenting = there.into(),
                     Some(_) => {
                         login = there;
                         exchanged = None;
@@ -582,7 +696,7 @@ impl Protocol for Http {
                 continue;
             }
 
-            if let Some(failure) = asks_for_time(&response) {
+            if let Some(failure) = asks_for_time(status, response.headers()) {
                 return Err(failure);
             }
 
@@ -595,7 +709,7 @@ impl Protocol for Http {
                     .answer_challenge(response.headers(), scope, login.take(), exchange)
                     .await?;
                 if let Some(answer) = answer {
-                    presenting = Some(answer.presenting);
+                    presenting = answer.presenting;
                     exchanged = answer.exchanged;
                     continue;
                 }
@@ -692,41 +806,13 @@ async fn whole_body(response: &mut reqwest::Response, most: usize) -> Result<Vec
     Ok(whole)
 }
 
-/// Puts the credential on the request, and says how it was presented. The secret goes no further than this and the client.
-fn attach(
-    request: reqwest::RequestBuilder,
-    credential: Option<HttpCredential>,
-) -> Result<(reqwest::RequestBuilder, Presented, bool), Failure> {
-    let not_text = || Failure::CredentialUnusable {
-        name: "(the one asked for)".to_string(),
-        why: "it is not text".to_string(),
-    };
-    Ok(match credential {
-        None => (request, Presented::Nothing, false),
-        Some(HttpCredential::Bearer(token)) => {
-            let token = std::str::from_utf8(&token).map_err(|_| not_text())?;
-            (
-                request.bearer_auth(token),
-                Presented::Bearer,
-                looks_base64(token),
-            )
-        }
-        Some(HttpCredential::Basic { username, password }) => {
-            let password = std::str::from_utf8(&password).map_err(|_| not_text())?;
-            (
-                request.basic_auth(username, Some(password)),
-                Presented::Basic,
-                looks_base64(password),
-            )
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::testing::{Site, http_handle_for};
     use super::super::{Credential, Denial, Location, Operation, OperationDecl, ReadFailure};
     use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
     use polar::egress::testing::{TestCa, https_front};
     use polar_crypto::registry::{SecretBinding, SecretKind};
     use proptest::prelude::*;
@@ -1179,6 +1265,56 @@ mod tests {
             "application/json"
         );
         assert!(received[1].body.is_empty());
+    }
+
+    /// As browsers do: a 301 or a 302 makes a POST a GET with no body, and leaves any other method as it was, with its
+    /// body; a 307 keeps even a POST.
+    #[tokio::test]
+    async fn a_301_or_302_makes_only_a_post_a_get_and_a_307_keeps_it() {
+        let f = fixture(SecretKind::Token).await;
+        for (from, status, to) in [
+            ("/p302", 302, "/a1"),
+            ("/u301", 301, "/a2"),
+            ("/p307", 307, "/a3"),
+        ] {
+            Mock::given(path(from))
+                .respond_with(ResponseTemplate::new(status).insert_header("location", to))
+                .mount(&f.server)
+                .await;
+            Mock::given(path(to))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&f.server)
+                .await;
+        }
+        for request in [
+            Request::post("/p302", b"posted".to_vec()),
+            Request::put("/u301", b"put".to_vec()),
+            Request::post("/p307", b"kept".to_vec()),
+        ] {
+            f.site.handle.ask(ConfiguredRead(request)).await.unwrap();
+        }
+        let seen: Vec<_> = f
+            .server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.url.path().to_string(), r.method.to_string(), r.body))
+            .collect();
+        let of = |path: &str, method: &str, body: &[u8]| {
+            (path.to_string(), method.to_string(), body.to_vec())
+        };
+        assert_eq!(
+            seen,
+            [
+                of("/p302", "POST", b"posted"),
+                of("/a1", "GET", b""),
+                of("/u301", "PUT", b"put"),
+                of("/a2", "PUT", b"put"),
+                of("/p307", "POST", b"kept"),
+                of("/a3", "POST", b"kept"),
+            ]
+        );
     }
 
     /// A registry's blob upload is a POST that opens it and a PUT that ends it, and whether a blob is there a HEAD
@@ -1918,7 +2054,10 @@ mod tests {
             .ask(RegistryRead(at_a_registry("localhost", f.port)))
             .await
             .unwrap_err();
-        assert!(failure.to_string().contains("bytes"), "{failure}");
+        assert!(
+            failure.to_string().contains("more than a token"),
+            "{failure}"
+        );
         drop(last);
         let _answering = Mock::given(path("/token"))
             .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))

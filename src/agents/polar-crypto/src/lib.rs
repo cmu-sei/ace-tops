@@ -61,6 +61,7 @@
 pub mod environment;
 pub mod recipient;
 pub mod registry;
+pub mod sending;
 pub mod workload_certificates;
 
 use cassini_client::TcpClientMessage;
@@ -201,11 +202,37 @@ impl Default for CredentialPass {
 /// What a protocol handler asks for. The named operations: which credential, for which host, in the form its protocol
 /// presents (`registry::http_credential`, `registry::git_credential`).
 pub enum CredentialAsk {
-    Http {
+    /// How the credential `name` is presented to `host` over HTTP, once its binding names the host: a kind, never a value.
+    HttpKind {
         name: String,
         host: String,
-        reply: RpcReplyPort<Result<registry::HttpCredential, CryptoError>>,
+        reply: RpcReplyPort<Result<sending::HttpKind, CryptoError>>,
     },
+    /// Sends `request`, judged and built by the handler with no credential, with the credential `name` on it, by `client`,
+    /// the handler's own. The binding is held to the request's host.
+    SendHttp {
+        name: String,
+        request: Box<reqwest::Request>,
+        client: reqwest::Client,
+        reply: RpcReplyPort<Result<sending::Sent, sending::SendError>>,
+    },
+    /// Sends `request`, a GET of a registry's auth host that the handler judged, with the login `name` on it, by `client`,
+    /// and keeps the token the host answers with.
+    Exchange {
+        name: String,
+        request: Box<reqwest::Request>,
+        client: reqwest::Client,
+        reply: RpcReplyPort<Result<Exchanged, sending::SendError>>,
+    },
+    /// Sends `request` with a token an exchange kept, by `client`.
+    SendWithToken {
+        token: u64,
+        request: Box<reqwest::Request>,
+        client: reqwest::Client,
+        reply: RpcReplyPort<Result<reqwest::Response, sending::SendError>>,
+    },
+    /// A kept token is no longer needed, and is wiped.
+    ReleaseToken { token: u64 },
     Git {
         name: String,
         host: String,
@@ -216,6 +243,63 @@ pub enum CredentialAsk {
         host: String,
         reply: RpcReplyPort<Result<Option<String>, CryptoError>>,
     },
+}
+
+/// A token a registry's auth host answered a login with, kept by the CryptoActor: the handler presents it by this, and it
+/// is wiped when this is dropped.
+pub struct TokenHandle {
+    id: u64,
+    release: Option<Box<dyn FnOnce(u64) + Send + Sync>>,
+}
+
+impl TokenHandle {
+    /// The token kept under `id`, which `release` lets go of when this is dropped. The actor makes its own; a stand-in for
+    /// it in a test makes these.
+    pub fn new(id: u64, release: impl FnOnce(u64) + Send + Sync + 'static) -> Self {
+        Self {
+            id,
+            release: Some(Box::new(release)),
+        }
+    }
+
+    /// What the token is kept under.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The actor's handle for its token `id`: dropped, it tells the actor to wipe the token.
+    fn kept_by(id: u64, port: CredentialPort) -> Self {
+        Self::new(id, move |token| {
+            let _ = port.actor.cast(CryptoMessage::UseCredential {
+                pass: port.pass,
+                ask: CredentialAsk::ReleaseToken { token },
+            });
+        })
+    }
+}
+
+impl Drop for TokenHandle {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release(self.id);
+        }
+    }
+}
+
+impl std::fmt::Debug for TokenHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TokenHandle({})", self.id)
+    }
+}
+
+/// What a registry's auth host answered a login with: its status and headers, and the token, kept by the actor, when it
+/// gave one; how the login went, and whether its secret looks base64-encoded. Never the token or the login.
+pub struct Exchanged {
+    pub status: reqwest::StatusCode,
+    pub headers: reqwest::header::HeaderMap,
+    pub token: Option<TokenHandle>,
+    pub kind: sending::HttpKind,
+    pub looks_base64: bool,
 }
 
 /// A protocol handler's way to the CryptoActor's credentials: the actor and the pass together.
@@ -230,17 +314,74 @@ impl CredentialPort {
         Self { actor, pass }
     }
 
-    /// The credential an HTTP request presents to `host`. The binding is checked by the actor, where the secret is.
-    pub async fn http(
+    /// How the credential `name` is presented to `host` over HTTP, the binding checked by the actor, where the secret is.
+    pub async fn http_kind(
         &self,
         name: String,
         host: String,
-    ) -> Result<registry::HttpCredential, CryptoError> {
+    ) -> Result<sending::HttpKind, CryptoError> {
         ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
             pass: self.pass.clone(),
-            ask: CredentialAsk::Http { name, host, reply },
+            ask: CredentialAsk::HttpKind { name, host, reply },
         })
         .map_err(|_| CryptoError::NoReply)?
+    }
+
+    /// Sends `request` with the credential `name` on it, by `client`: the credential never leaves the actor.
+    pub async fn send_http(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<sending::Sent, sending::SendError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::SendHttp {
+                name,
+                request: Box::new(request),
+                client,
+                reply,
+            },
+        })
+        .map_err(|_| sending::SendError::Refused(CryptoError::NoReply))?
+    }
+
+    /// Exchanges the login `name` at a registry's auth host (`request`, judged by the handler), the token kept by the actor.
+    pub async fn exchange(
+        &self,
+        name: String,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<Exchanged, sending::SendError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::Exchange {
+                name,
+                request: Box::new(request),
+                client,
+                reply,
+            },
+        })
+        .map_err(|_| sending::SendError::Refused(CryptoError::NoReply))?
+    }
+
+    /// Sends `request` with the token `token` keeps, by `client`.
+    pub async fn send_with_token(
+        &self,
+        token: &TokenHandle,
+        request: reqwest::Request,
+        client: reqwest::Client,
+    ) -> Result<reqwest::Response, sending::SendError> {
+        ractor::call!(self.actor, |reply| CryptoMessage::UseCredential {
+            pass: self.pass.clone(),
+            ask: CredentialAsk::SendWithToken {
+                token: token.id,
+                request: Box::new(request),
+                client,
+                reply,
+            },
+        })
+        .map_err(|_| sending::SendError::Refused(CryptoError::NoReply))?
     }
 
     /// The credential git presents to `host`, checked as [`http`](Self::http) is.
@@ -473,7 +614,12 @@ pub struct CryptoActorState {
     escrow_retry: (Duration, Duration),
     /// The pass the protocol handlers ask with.
     credential_pass: Option<CredentialPass>,
+    /// The tokens registries' auth hosts answered logins with, by the handle's number, each wiped when it is released.
+    tokens: Tokens,
+    next_token: Arc<std::sync::atomic::AtomicU64>,
 }
+
+type Tokens = Arc<std::sync::Mutex<std::collections::HashMap<u64, zeroize::Zeroizing<Vec<u8>>>>>;
 
 /// A secret and where it may be used. The secret is wiped when it is dropped.
 struct RegisteredSecret {
@@ -589,6 +735,8 @@ impl Actor for CryptoActor {
             escrow_tasks: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             escrow_retry: args.escrow_retry,
             credential_pass: args.credential_pass,
+            tokens: Arc::default(),
+            next_token: Arc::default(),
         })
     }
 
@@ -609,7 +757,7 @@ impl Actor for CryptoActor {
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
@@ -786,13 +934,88 @@ impl Actor for CryptoActor {
                     );
                 }
                 match ask {
-                    CredentialAsk::Http { name, host, reply } => {
+                    CredentialAsk::HttpKind { name, host, reply } => {
                         let result = if passes {
-                            http_credential_of(&state.registry, name, &host).await
+                            http_credential_of(&state.registry, name, &host)
+                                .await
+                                .map(|credential| sending::kind_of(&credential))
                         } else {
                             Err(CryptoError::NotThePort)
                         };
                         let _ = reply.send(result);
+                    }
+                    CredentialAsk::SendHttp {
+                        name,
+                        request,
+                        client,
+                        reply,
+                    } => {
+                        if !passes {
+                            let _ = reply.send(Err(CryptoError::NotThePort.into()));
+                        } else {
+                            // Spawned: a request takes as long as the site does, and the actor answers others meanwhile.
+                            let registry = state.registry.clone();
+                            tokio::spawn(async move {
+                                let _ =
+                                    reply.send(send_http(registry, name, *request, client).await);
+                            });
+                        }
+                    }
+                    CredentialAsk::Exchange {
+                        name,
+                        request,
+                        client,
+                        reply,
+                    } => match (passes, state.credential_pass.clone()) {
+                        (true, Some(pass)) => {
+                            let registry = state.registry.clone();
+                            let tokens = state.tokens.clone();
+                            let next = state.next_token.clone();
+                            let port = CredentialPort::new(myself.clone(), pass);
+                            tokio::spawn(async move {
+                                let result =
+                                    exchange(registry, tokens, next, port, name, *request, client)
+                                        .await;
+                                let _ = reply.send(result);
+                            });
+                        }
+                        _ => {
+                            let _ = reply.send(Err(CryptoError::NotThePort.into()));
+                        }
+                    },
+                    CredentialAsk::SendWithToken {
+                        token,
+                        request,
+                        client,
+                        reply,
+                    } => {
+                        let held = if passes {
+                            state.tokens.lock().unwrap().get(&token).cloned()
+                        } else {
+                            None
+                        };
+                        match held {
+                            None => {
+                                let refused = if passes {
+                                    CryptoError::SecretNotRegistered(format!("token {token}"))
+                                } else {
+                                    CryptoError::NotThePort
+                                };
+                                let _ = reply.send(Err(refused.into()));
+                            }
+                            Some(held) => {
+                                tokio::spawn(async move {
+                                    let result =
+                                        sending::send_bearer(&held, *request, client).await;
+                                    let _ = reply.send(result);
+                                });
+                            }
+                        }
+                    }
+                    CredentialAsk::ReleaseToken { token } => {
+                        if passes {
+                            state.tokens.lock().unwrap().remove(&token);
+                        }
                     }
                     CredentialAsk::Git { name, host, reply } => {
                         let result = if passes {
@@ -1247,6 +1470,46 @@ async fn http_credential_of(
             registry::http_credential(&held.binding, &held.secret, host).map_err(CryptoError::Use)
         }
     }
+}
+
+/// Sends `request` with the credential `name` on it, the binding held to the request's own host.
+async fn send_http(
+    registry: Registry,
+    name: String,
+    request: reqwest::Request,
+    client: reqwest::Client,
+) -> Result<sending::Sent, sending::SendError> {
+    let host = request.url().host_str().unwrap_or_default().to_string();
+    let credential = http_credential_of(&registry, name, &host).await?;
+    sending::send(&credential, request, client).await
+}
+
+/// Sends a login to a registry's auth host and keeps the token it answers with, under a new handle.
+async fn exchange(
+    registry: Registry,
+    tokens: Tokens,
+    next: Arc<std::sync::atomic::AtomicU64>,
+    port: CredentialPort,
+    name: String,
+    request: reqwest::Request,
+    client: reqwest::Client,
+) -> Result<Exchanged, sending::SendError> {
+    let host = request.url().host_str().unwrap_or_default().to_string();
+    let credential = http_credential_of(&registry, name, &host).await?;
+    let answered = sending::log_in(&credential, request, client).await?;
+    drop(credential);
+    let token = answered.token.map(|token| {
+        let id = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tokens.lock().unwrap().insert(id, token);
+        TokenHandle::kept_by(id, port)
+    });
+    Ok(Exchanged {
+        status: answered.status,
+        headers: answered.headers,
+        token,
+        kind: answered.kind,
+        looks_base64: answered.looks_base64,
+    })
 }
 
 /// The name of the secret bound to `host`, from what is registered.
@@ -2336,6 +2599,40 @@ mod tests {
             .to_vec()
     }
 
+    /// The `Authorization` a request carries when the port sends it with the credential `name` to `host`: a real request,
+    /// to a stand-in server reached under the host's name, so the binding is held to the host as for any request.
+    async fn sent_authorization(
+        port: &CredentialPort,
+        name: &str,
+        host: &str,
+    ) -> Result<String, sending::SendError> {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let address = *server.address();
+        let client = reqwest::Client::builder()
+            .resolve(host, address)
+            .build()
+            .unwrap();
+        let request = client
+            .get(format!("http://{host}:{}/x", address.port()))
+            .build()
+            .unwrap();
+        let sent = port.send_http(name.to_string(), request, client).await?;
+        assert_eq!(sent.response.status(), reqwest::StatusCode::OK);
+        let received = server.received_requests().await.unwrap();
+        Ok(received[0]
+            .headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string())
+    }
+
     fn token_binding(host: &str) -> SecretBinding {
         SecretBinding {
             host_pattern: host.to_string(),
@@ -2545,11 +2842,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let ask = |host: &str| r.port.http("jira".to_string(), host.to_string());
-        let Ok(registry::HttpCredential::Bearer(token)) = ask("jira.example.org").await else {
-            panic!("a bearer token");
-        };
-        assert_eq!(token.as_slice(), b"pat-token");
+        let ask = |host: &str| r.port.http_kind("jira".to_string(), host.to_string());
+        assert_eq!(
+            ask("jira.example.org").await.unwrap(),
+            sending::HttpKind::Bearer
+        );
+        assert_eq!(
+            sent_authorization(&r.port, "jira", "jira.example.org")
+                .await
+                .unwrap(),
+            "Bearer pat-token"
+        );
         for host in [
             "evil.example.org",
             "jira.example.org.evil.org",
@@ -2563,7 +2866,7 @@ mod tests {
         }
         let unknown = r
             .port
-            .http("other".to_string(), "jira.example.org".to_string())
+            .http_kind("other".to_string(), "jira.example.org".to_string())
             .await;
         assert!(
             matches!(unknown, Err(CryptoError::SecretNotRegistered(_))),
@@ -2590,13 +2893,12 @@ mod tests {
         .unwrap();
         let port = CredentialPort::new(r.actor.clone(), pass);
 
-        let Ok(registry::HttpCredential::Bearer(token)) = port
-            .http("jira".to_string(), "jira.example.org".to_string())
-            .await
-        else {
-            panic!("a bearer token");
-        };
-        assert_eq!(token.as_slice(), b"pat-token");
+        assert_eq!(
+            sent_authorization(&port, "jira", "jira.example.org")
+                .await
+                .unwrap(),
+            "Bearer pat-token"
+        );
         let git = port
             .git("jira".to_string(), "jira.example.org".to_string())
             .await
@@ -2604,7 +2906,7 @@ mod tests {
         assert_eq!(git.secret.as_slice(), b"pat-token");
 
         for host in ["evil.example.org", "jira.example.org:443"] {
-            let refused = port.http("jira".to_string(), host.to_string()).await;
+            let refused = port.http_kind("jira".to_string(), host.to_string()).await;
             assert!(
                 matches!(refused, Err(CryptoError::Use(UseRefusal::HostNotBound))),
                 "{host}: {refused:?}"
@@ -2616,12 +2918,210 @@ mod tests {
             );
         }
         let unknown = port
-            .http("other".to_string(), "jira.example.org".to_string())
+            .http_kind("other".to_string(), "jira.example.org".to_string())
             .await;
         assert!(
             matches!(unknown, Err(CryptoError::SecretNotRegistered(_))),
             "{unknown:?}"
         );
+        stop_and_release_key(&r.actor).await;
+    }
+
+    /// A registry's auth host, stood in for: it answers a login with `reply`, and the registry behind it takes only the
+    /// token. The client reaches both under the bound host's name.
+    async fn auth_host(
+        reply: wiremock::ResponseTemplate,
+    ) -> (wiremock::MockServer, reqwest::Client, String) {
+        use wiremock::{Mock, MockServer, matchers::path};
+        let server = MockServer::start().await;
+        Mock::given(path("/token"))
+            .respond_with(reply)
+            .mount(&server)
+            .await;
+        Mock::given(path("/v2/x"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let address = *server.address();
+        let client = reqwest::Client::builder()
+            .resolve("reg.example.org", address)
+            .build()
+            .unwrap();
+        (
+            server,
+            client,
+            format!("http://reg.example.org:{}", address.port()),
+        )
+    }
+
+    async fn registry_rig() -> Rig {
+        let r = rig(vec![], vec![], false).await;
+        let binding = SecretBinding {
+            username: Some("robot".to_string()),
+            ..user_password("reg.example.org")
+        };
+        register(&r, "reg", b"login-pw", b"ctx", binding)
+            .await
+            .unwrap();
+        r
+    }
+
+    #[tokio::test]
+    async fn a_login_is_exchanged_for_a_token_the_actor_keeps_and_presents_by_its_handle() {
+        use base64::Engine;
+        let r = registry_rig().await;
+        let (server, client, base) = auth_host(
+            wiremock::ResponseTemplate::new(200).set_body_string(r#"{"token": "short-lived"}"#),
+        )
+        .await;
+        let exchanged = r
+            .port
+            .exchange(
+                "reg".into(),
+                client.get(format!("{base}/token")).build().unwrap(),
+                client.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (exchanged.status, exchanged.kind),
+            (reqwest::StatusCode::OK, sending::HttpKind::Basic)
+        );
+        let token = exchanged.token.expect("a token kept");
+        let response = r
+            .port
+            .send_with_token(
+                &token,
+                client.get(format!("{base}/v2/x")).build().unwrap(),
+                client.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let received = server.received_requests().await.unwrap();
+        let auth = |i: usize| {
+            received[i]
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            auth(0),
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("robot:login-pw")
+            )
+        );
+        assert_eq!(auth(1), "Bearer short-lived");
+
+        // What a handle shows is its number, never the token.
+        assert_eq!(format!("{token:?}"), format!("TokenHandle({})", token.id()));
+
+        // A second login keeps a second token. Dropped, a handle's token is wiped: a handle of its number presents
+        // nothing, and the other's still presents its own.
+        let second = r
+            .port
+            .exchange(
+                "reg".into(),
+                client.get(format!("{base}/token")).build().unwrap(),
+                client.clone(),
+            )
+            .await
+            .unwrap()
+            .token
+            .expect("a second token kept");
+        assert_ne!(token.id(), second.id());
+        let (gone, kept) = (token.id(), second.id());
+        drop(token);
+        settle().await;
+        let present = |id: u64| {
+            let (port, client, base) = (r.port.clone(), client.clone(), base.clone());
+            async move {
+                let handle = TokenHandle::new(id, |_| {});
+                port.send_with_token(
+                    &handle,
+                    client.get(format!("{base}/v2/x")).build().unwrap(),
+                    client.clone(),
+                )
+                .await
+            }
+        };
+        assert!(matches!(
+            present(gone).await,
+            Err(sending::SendError::Refused(
+                CryptoError::SecretNotRegistered(_)
+            ))
+        ));
+        assert_eq!(
+            present(kept).await.unwrap().status(),
+            reqwest::StatusCode::OK
+        );
+        drop(second);
+        stop_and_release_key(&r.actor).await;
+    }
+
+    #[tokio::test]
+    async fn an_auth_host_that_refuses_or_answers_with_no_token_keeps_nothing() {
+        let r = registry_rig().await;
+        let (_s, client, base) = auth_host(wiremock::ResponseTemplate::new(401)).await;
+        let exchanged = r
+            .port
+            .exchange(
+                "reg".into(),
+                client.get(format!("{base}/token")).build().unwrap(),
+                client,
+            )
+            .await
+            .unwrap();
+        assert_eq!(exchanged.status, reqwest::StatusCode::UNAUTHORIZED);
+        assert!(exchanged.token.is_none());
+
+        let no_token = "the registry's auth host did not answer with a token";
+        for (body, said) in [
+            (r#"{"nothing": 1}"#.to_string(), no_token),
+            ("not json".to_string(), no_token),
+            (
+                "x".repeat(sending::MAX_TOKEN_REPLY + 1),
+                "the registry's auth host answered with more than a token",
+            ),
+        ] {
+            let (_s, client, base) =
+                auth_host(wiremock::ResponseTemplate::new(200).set_body_string(body)).await;
+            let refused = r
+                .port
+                .exchange(
+                    "reg".into(),
+                    client.get(format!("{base}/token")).build().unwrap(),
+                    client,
+                )
+                .await;
+            assert!(
+                matches!(refused, Err(sending::SendError::Unreadable(why)) if why == said),
+                "{said}"
+            );
+        }
+
+        // A reply of exactly the bound is read.
+        let token = r#"{"token": "t"}"#;
+        let whole = format!(
+            "{token}{}",
+            " ".repeat(sending::MAX_TOKEN_REPLY - token.len())
+        );
+        let (_s, client, base) =
+            auth_host(wiremock::ResponseTemplate::new(200).set_body_string(whole)).await;
+        let exchanged = r
+            .port
+            .exchange(
+                "reg".into(),
+                client.get(format!("{base}/token")).build().unwrap(),
+                client,
+            )
+            .await
+            .unwrap();
+        assert!(exchanged.token.is_some());
         stop_and_release_key(&r.actor).await;
     }
 
@@ -2642,11 +3142,34 @@ mod tests {
         // The same answer for a name that exists and one that does not, so a wrong pass cannot find out which.
         for name in ["jira", "other"] {
             let http = forged
-                .http(name.to_string(), "jira.example.org".to_string())
+                .http_kind(name.to_string(), "jira.example.org".to_string())
                 .await;
             assert!(
                 matches!(http, Err(CryptoError::NotThePort)),
                 "{name}: {http:?}"
+            );
+            // Nothing is sent for a wrong pass: refused before any connection, the same for every name.
+            let client = reqwest::Client::new();
+            let request = || client.get("https://jira.example.org/x").build().unwrap();
+            let sent = forged
+                .send_http(name.to_string(), request(), client.clone())
+                .await;
+            assert!(
+                matches!(
+                    sent,
+                    Err(sending::SendError::Refused(CryptoError::NotThePort))
+                ),
+                "{name}"
+            );
+            let exchanged = forged
+                .exchange(name.to_string(), request(), client.clone())
+                .await;
+            assert!(
+                matches!(
+                    exchanged,
+                    Err(sending::SendError::Refused(CryptoError::NotThePort))
+                ),
+                "{name}"
             );
             let git = forged
                 .git(name.to_string(), "jira.example.org".to_string())
@@ -2813,19 +3336,16 @@ mod tests {
         register(&r, "jira", b"api-token", b"ctx", binding)
             .await
             .unwrap();
-        match r
-            .port
-            .http("jira".to_string(), "example.atlassian.net".to_string())
-            .await
-        {
-            Ok(registry::HttpCredential::Basic { username, password }) => {
-                assert_eq!(
-                    (username.as_str(), password.as_slice()),
-                    ("me@example.org", &b"api-token"[..])
-                );
-            }
-            other => panic!("expected Basic, got {other:?}"),
-        }
+        use base64::Engine;
+        assert_eq!(
+            sent_authorization(&r.port, "jira", "example.atlassian.net")
+                .await
+                .unwrap(),
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("me@example.org:api-token")
+            )
+        );
         stop_and_release_key(&r.actor).await;
     }
 
@@ -2853,7 +3373,7 @@ mod tests {
         );
         assert!(
             r.port
-                .http("jira".to_string(), "example.atlassian.net".to_string())
+                .http_kind("jira".to_string(), "example.atlassian.net".to_string())
                 .await
                 .is_err()
         );
@@ -2913,7 +3433,7 @@ mod tests {
         }
         assert!(
             r.port
-                .http("jira".to_string(), "example.atlassian.net".to_string())
+                .http_kind("jira".to_string(), "example.atlassian.net".to_string())
                 .await
                 .is_err()
         );

@@ -215,6 +215,29 @@ Open for the maintainer: polar-crypto owning an HTTP client and the OCI token ex
 "credentialed-sender" actor in the builder that receives the plaintext from the CryptoActor — rejected by me: it is
 the handler again under another name).
 
+## C2a+C2b DONE 2026-11-13 (HTTP and the registry exchange, one commit; approved design above)
+polar-crypto/src/sending.rs: `send(&HttpCredential, Request, Client)` (Authorization set, marked sensitive, replaces any
+the request had), `send_bearer`, `log_in` → `Answered` (token read only on 200, ≤ MAX_TOKEN_REPLY, parse errors say
+nothing of the body), `looks_base64`/`kind_of` (moved from the builder). CryptoActor `CredentialAsk`: `Http` (plaintext)
+REMOVED; `HttpKind{name,host}`, `SendHttp`, `Exchange`, `SendWithToken{token}`, `ReleaseToken`; sends are spawned so the
+actor keeps answering; the binding is held to `request.url().host_str()` at the send. Registry token kept in the actor
+(`tokens: HashMap<u64, Zeroizing<Vec<u8>>>`), handed out as `TokenHandle` (Drop → ReleaseToken; `TokenHandle::new(id,
+release)` lets a stand-in make one). Builder: `CredentialSource` = http_kind / send_http / exchange / send_with_token /
+git / bound_to; `Protocol::credential` takes `&Arc<dyn CredentialSource>`; Http's `type Credential = HttpUse {name,
+kind, source}` (no value); `perform` builds the reqwest::Request and `Http::send` routes it by `Presenting` (Nothing |
+Credential | Kept(TokenHandle) | Anonymous(token from a no-login auth host: anyone can get one, not the agent's
+secret)). `attach()` gone. Test doubles: `protocol::testing::StandIn` (old shape: http → plaintext, git, bound_to) with
+a blanket `impl<T: StandIn> CredentialSource for T` that sends through the same `sending` functions (coherence holds:
+StandIn is local). Behaviour change seen in tests: the actor is asked twice per credentialed request (kind at admission,
+binding at the send) — Jira's ask-count test now says so; the oversized-token message is "answered with more than a
+token". The design's "`domain_has_no_way_out` test extended" named a test that does not exist: the property holds by
+the port's API (no CredentialPort method returns an HttpCredential); no source-scan test added (no precedent).
+Suites: builder 693, polar-crypto 107; jira, git observer, resolver, registry, http observer/testkit, gitlab, openapi,
+credentials observer pass; clippy all-targets clean. Mutants: crypto sending/handles/token bound 14 caught (6 first
+survivors closed: handle id, its Debug, the bound's edge); builder send/answer_challenge/perform 28 caught (2 old
+survivors in the 301/302 method rule closed with a test). Git still plaintext until C2c. NOT DEPLOYED (with C2c, "every
+agent at once").
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
