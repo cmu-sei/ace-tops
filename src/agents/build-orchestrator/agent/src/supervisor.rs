@@ -41,7 +41,8 @@ use crate::settings::{self, Deployment, Tuning};
 use crate::source::{GitSource, Source};
 use chrono::Utc;
 use git_agent_common::GitRepositoryMessage;
-use orchestrator_backend_k8s::backend::KubernetesBackend;
+use orchestrator_backend_k8s::backend::{Gate, KubernetesBackend};
+use orchestrator_backend_k8s::canary::{Enforcement, KUBERNETES_API, registry_authority};
 use orchestrator_backend_k8s::job::{JobOptions, registry_host};
 use orchestrator_core::backend::{BuildBackend, InFlight};
 use orchestrator_core::types::{BuildRequest, BuildState, SourceRef};
@@ -88,6 +89,8 @@ pub enum OrchestratorMessage {
     },
     /// Time to adopt the Jobs found running.
     Adopt,
+    /// Time to prove network enforcement, as the orchestrator starts, so the first build need not wait for it.
+    Prove,
     /// Time to remove the Jobs past their retention.
     Sweep,
     PrepareShutdown,
@@ -119,6 +122,8 @@ pub struct OrchestratorState {
     pub observed: Observed,
     /// How each build waiting to start begins, by its id.
     pub starts: HashMap<Uuid, Start>,
+    /// The last proof of network enforcement, shared by every build (docs/plans/runtime-attestation/network-enforcement.md).
+    pub enforcement: Arc<Enforcement>,
 }
 
 /// The build a ref update asks for, if any: a moved ref of a mapped repository, at a commit that is one. `Ok(None)` for
@@ -173,6 +178,11 @@ fn mapping_of<'a>(mappings: &'a [Mapping], repo: &RepoId) -> Option<&'a Mapping>
 impl OrchestratorSupervisor {
     /// A backend as the settings in force say: what a build started now is made with.
     fn backend(state: &OrchestratorState) -> Arc<dyn BuildBackend> {
+        Arc::new(Self::kubernetes(state))
+    }
+
+    /// The Kubernetes backend as the settings in force say, its builds made only while enforcement is proved.
+    fn kubernetes(state: &OrchestratorState) -> KubernetesBackend {
         let options = JobOptions {
             namespace: state.deployment.namespace.clone(),
             template: state.deployment.template.clone(),
@@ -182,7 +192,16 @@ impl OrchestratorSupervisor {
             registry_host: registry_host(&state.deployment.registry),
             registry_address: None,
         };
-        Arc::new(KubernetesBackend::new(state.protocols.clone(), options))
+        let registry = registry_authority(&state.deployment.registry)
+            .map(|(host, port)| format!("{host}:{port}"))
+            .unwrap_or_else(|| state.deployment.registry.clone());
+        KubernetesBackend::new(state.protocols.clone(), options).gated(Gate {
+            enforcement: Arc::clone(&state.enforcement),
+            max_age: state.tuning.proof_max_age,
+            registry,
+            api: Some(KUBERNETES_API.to_string()),
+            outside: state.tuning.canary_outside.clone(),
+        })
     }
 
     /// Reads the mappings in force. A body was validated before it was accepted, so one that does not read now is the
@@ -441,6 +460,7 @@ impl Actor for OrchestratorSupervisor {
             section: mappings::SECTION_NAME.to_string(),
         })?;
         myself.cast(OrchestratorMessage::Adopt)?;
+        myself.cast(OrchestratorMessage::Prove)?;
         myself.send_interval(SWEEP_EVERY, || OrchestratorMessage::Sweep);
         let (registry, _) = Actor::spawn_linked(
             Some(format!("{AGENT_NAME}.registry")),
@@ -481,6 +501,7 @@ impl Actor for OrchestratorSupervisor {
             registry,
             observed: Observed::new(OBSERVED_COMMITS),
             starts: HashMap::new(),
+            enforcement: Arc::new(Enforcement::default()),
         })
     }
 
@@ -534,6 +555,17 @@ impl Actor for OrchestratorSupervisor {
                 }
             }
             OrchestratorMessage::Adopt => Self::adopt(&myself, state).await,
+            OrchestratorMessage::Prove => {
+                let backend = Self::kubernetes(state);
+                tokio::spawn(async move {
+                    match backend.enforced().await {
+                        Ok(()) => info!("network enforcement is proved: builds may run"),
+                        Err(why) => warn!(
+                            "network enforcement is not proved, so no build runs until it is: {why}"
+                        ),
+                    }
+                });
+            }
             OrchestratorMessage::Sweep => {
                 if state.drain.is_draining() {
                     return Ok(());

@@ -29,6 +29,7 @@
 //! reaches the source's origin.
 
 pub mod dependencies;
+pub mod probe;
 
 use futures::StreamExt;
 use polar_env::{Config, Defaulted, Described, Optional, Required, Section};

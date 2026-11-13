@@ -27,7 +27,8 @@
 //!   PodTemplate a build's Job is made from;
 //! - its run-time settings, Dynamic, so a signed update changes them in a running agent, each with a default: how many
 //!   builds run at once, what a pipeline may use, how long a finished Job is kept, how much one build may report, how
-//!   much of a report line the reader reads, and the command a mapping that names none runs.
+//!   much of a report line the reader reads, the command a mapping that names none runs, and how network enforcement is
+//!   proved (how long a proof stands, and the address outside the cluster a canary must not reach).
 //!
 //! The reader's bounds are also what its worker allocates when it is forked, at start: a signed update may narrow them
 //! while the agent runs, never widen them past what the worker was given ([`narrowed`]).
@@ -147,6 +148,22 @@ pub static KEEP_FAILED_SECS: Defaulted<u64> = Defaulted::seconds(
 )
 .dynamic();
 
+pub static PROOF_MAX_AGE_SECS: Defaulted<u64> = Defaulted::seconds(
+    "POLAR_ORCHESTRATOR_PROOF_MAX_AGE_SECS",
+    "how long a proof that the builds' policy is enforced stands, in seconds: the first build after it grew older is made \
+     only once a canary proves it again (docs/plans/runtime-attestation/network-enforcement.md)",
+    "900",
+)
+.dynamic();
+
+pub static CANARY_OUTSIDE: Defaulted<String> = Defaulted::text(
+    "POLAR_ORCHESTRATOR_CANARY_OUTSIDE",
+    "an address outside the cluster that answers when it is reachable, `host:port`, which the canary's pod must not \
+     reach; empty, the canary tries none outside the cluster, which proves less",
+    "github.com:443",
+)
+.dynamic();
+
 pub static MAX_REPORTS: Defaulted<usize> = Defaulted::number(
     "POLAR_ORCHESTRATOR_MAX_REPORTS",
     "how many report lines one build may print, read or refused; past it the rest are refused. At least 1",
@@ -227,6 +244,8 @@ pub static TUNING: &[&dyn Described] = &[
     &WORKSPACE_LIMIT,
     &KEEP_SUCCEEDED_SECS,
     &KEEP_FAILED_SECS,
+    &PROOF_MAX_AGE_SECS,
+    &CANARY_OUTSIDE,
     &MAX_REPORTS,
     &MAX_REPORT_BYTES,
     &MAX_LOG_BYTES,
@@ -254,6 +273,8 @@ static VARIABLES: &[&dyn Described] = &[
     &WORKSPACE_LIMIT,
     &KEEP_SUCCEEDED_SECS,
     &KEEP_FAILED_SECS,
+    &PROOF_MAX_AGE_SECS,
+    &CANARY_OUTSIDE,
     &MAX_REPORTS,
     &MAX_REPORT_BYTES,
     &MAX_LOG_BYTES,
@@ -307,6 +328,10 @@ pub struct Tuning {
     /// The most of a build's log kept.
     pub max_log: usize,
     pub default_command: Vec<String>,
+    /// How long a proof of network enforcement stands.
+    pub proof_max_age: Duration,
+    /// The address outside the cluster a canary must not reach; none, it tries none.
+    pub canary_outside: Option<String>,
 }
 
 pub fn deployment(config: &Config) -> Result<Deployment, String> {
@@ -343,6 +368,15 @@ pub fn tuning(config: &Config) -> Result<Tuning, String> {
         reader: reader_bounds(config)?,
         max_log: config.read(&MAX_LOG_BYTES).map_err(read)?,
         default_command: config.read(&DEFAULT_COMMAND).map_err(read)?,
+        proof_max_age: Duration::from_secs(config.read(&PROOF_MAX_AGE_SECS).map_err(read)?),
+        canary_outside: Some(
+            config
+                .read(&CANARY_OUTSIDE)
+                .map_err(read)?
+                .trim()
+                .to_string(),
+        )
+        .filter(|o| !o.is_empty()),
     })
 }
 

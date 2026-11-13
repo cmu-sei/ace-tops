@@ -22,4 +22,5 @@
 */
 
 pub mod backend;
+pub mod canary;
 pub mod job;

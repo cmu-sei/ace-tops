@@ -31,6 +31,9 @@ async fn main() -> ExitCode {
     polar_version::exit_if_asked("build-fetch");
     let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt().with_target(false).init();
+    if std::env::args().nth(1).as_deref() == Some(build_fetch::probe::PROBE_ARG) {
+        return probe().await;
+    }
     let config = polar_env::Config::builder(&polar_env::ProcessEnv)
         .register(&build_fetch::SECTION)
         .build();
@@ -46,6 +49,30 @@ async fn main() -> ExitCode {
         }
         Err(e) => {
             tracing::error!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The canary's probe (src/probe.rs): one line for each address, and success only when every one did as required.
+async fn probe() -> ExitCode {
+    let config = polar_env::Config::builder(&polar_env::ProcessEnv)
+        .register(&build_fetch::probe::PROBE_SECTION)
+        .build();
+    let problems = config.check();
+    if !problems.is_empty() {
+        tracing::error!("the probe's configuration is not sound: {problems:?}");
+        return ExitCode::FAILURE;
+    }
+    match build_fetch::probe::run(&config).await {
+        Ok(seen) => {
+            seen.iter().for_each(|s| tracing::info!("{}", s.line()));
+            tracing::info!("the network is enforced as the builds' policy says");
+            ExitCode::SUCCESS
+        }
+        Err(seen) => {
+            seen.iter().for_each(|s| tracing::error!("{}", s.line()));
+            tracing::error!("the network is not enforced as the builds' policy says");
             ExitCode::FAILURE
         }
     }

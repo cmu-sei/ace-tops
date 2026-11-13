@@ -25,6 +25,9 @@
 //! call an operation that declares what it may do, judged and recorded (docs/architecture/build-orchestrator.md, 5a). It
 //! holds no client of its own and no credential: the protocol goes with the pod's ServiceAccount token.
 
+use crate::canary::{
+    CANARY_DEADLINE, CANARY_TYPE, Enforcement, Probe, canary_departures, canary_job, name_of,
+};
 use crate::job::{JobOptions, build_job, departures, expired};
 use async_trait::async_trait;
 use k8s_openapi::api::batch::v1::Job;
@@ -44,6 +47,8 @@ use polar_agent_builder::protocol::{
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use serde_json::Value;
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::{info, instrument, warn};
 
 const JOB: Resource = Resource::of::<Job>();
@@ -107,11 +112,151 @@ pub struct KubernetesBackend {
     protocols: ProtocolHandle,
     /// Deployment-level job settings: namespace, template, resources, retention.
     options: JobOptions,
+    /// What a build waits on: network enforcement proved by the canary (`crate::canary`). None makes builds unproved,
+    /// as the tests do.
+    gate: Option<Gate>,
 }
+
+/// What a build waits on before its Job is made: a proof, by the canary, that the builds' policy is enforced.
+#[derive(Clone)]
+pub struct Gate {
+    /// The last proof, shared by every build.
+    pub enforcement: Arc<Enforcement>,
+    /// How old a proof may be and still stand.
+    pub max_age: Duration,
+    /// The registry, `host:port`, as a build's pod reaches it: which it must reach.
+    pub registry: String,
+    /// The Kubernetes API's service address, `ip:port`, which a build's pod must not reach.
+    pub api: Option<String>,
+    /// An address outside the cluster that answers when reachable, `host:port`, which a build's pod must not reach.
+    pub outside: Option<String>,
+}
+
+/// How long a canary is waited for: its own deadline, and room for its pod to be made.
+const CANARY_WAIT: Duration = Duration::from_secs(CANARY_DEADLINE.as_secs() + 60);
+/// How often a canary's Job is asked how it is doing.
+const CANARY_POLL: Duration = Duration::from_secs(2);
+/// The most of a failed canary's log said in why it failed.
+const CANARY_LOG: usize = 4096;
 
 impl KubernetesBackend {
     pub fn new(protocols: ProtocolHandle, options: JobOptions) -> Self {
-        Self { protocols, options }
+        Self {
+            protocols,
+            options,
+            gate: None,
+        }
+    }
+
+    /// The backend, with builds made only while enforcement is proved.
+    pub fn gated(mut self, gate: Gate) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    /// Ok while a canary's proof stands; otherwise runs one, and says why enforcement is not proved if it is not.
+    pub async fn enforced(&self) -> Result<(), String> {
+        let Some(gate) = &self.gate else {
+            return Err("this backend proves nothing".into());
+        };
+        gate.enforcement
+            .proved(gate.max_age, || self.prove(gate))
+            .await
+    }
+
+    /// Runs one canary to its end: Ok when its probe did as required.
+    async fn prove(&self, gate: &Gate) -> Result<(), String> {
+        let unreachable: Vec<String> = gate.api.iter().chain(&gate.outside).cloned().collect();
+        let mut aliases = Vec::new();
+        for address in std::iter::once(&gate.registry)
+            .chain(&gate.api)
+            .chain(&gate.outside)
+        {
+            if let Some(host) = name_of(address) {
+                aliases.push((host.to_string(), resolve_ipv4(host).await?));
+            }
+        }
+        let names: Vec<&str> = aliases.iter().map(|(h, _)| h.as_str()).collect();
+        let probe = Probe {
+            reach: vec![gate.registry.clone()],
+            unreachable,
+            aliases: aliases.clone(),
+        };
+        let template = self.template().await.map_err(|e| e.to_string())?;
+        let job = canary_job(&template, &self.options, &probe, uuid::Uuid::new_v4())?;
+        let departed = canary_departures(&template, &job, &names);
+        if !departed.is_empty() {
+            return Err(format!(
+                "the canary departs from the build workload's template: {}",
+                departed.join("; ")
+            ));
+        }
+        let call = Call::create(self.namespace(), &job)?;
+        let made = match self.protocols.ask(CreateJob(call)).await {
+            Ok(Answer::Object(made)) => made,
+            Ok(Answer::Said(answer)) => {
+                return Err(format!(
+                    "the API did not make the canary: {}",
+                    said(&answer)
+                ));
+            }
+            Ok(other) => return Err(format!("the API answered a create {other:?}")),
+            Err(e) => return Err(e.to_string()),
+        };
+        let (Some(name), Some(uid)) = (meta(&made, "name"), meta(&made, "uid")) else {
+            return Err("the canary's Job has no name or uid".into());
+        };
+        let handle = BackendJobHandle { name, uid };
+        let started = std::time::Instant::now();
+        loop {
+            match self.poll(&handle).await {
+                Ok(JobStatus::Succeeded) => {
+                    info!(job = %handle, "network enforcement proved by the canary");
+                    if let Err(e) = self.cancel(&handle).await {
+                        warn!(job = %handle, "the canary's Job was not removed: {e}");
+                    }
+                    return Ok(());
+                }
+                Ok(JobStatus::Failed { reason }) => {
+                    let log = self.canary_log(&handle).await;
+                    return Err(format!(
+                        "the canary failed ({}); its Job {handle} is kept. {log}",
+                        reason.unwrap_or_else(|| "no reason given".into())
+                    ));
+                }
+                Ok(JobStatus::Unknown) => return Err(format!("the canary's Job {handle} is gone")),
+                Ok(JobStatus::Pending | JobStatus::Running) => {}
+                Err(e) => {
+                    warn!(job = %handle, "the canary could not be asked how it is doing: {e}")
+                }
+            }
+            if started.elapsed() > CANARY_WAIT {
+                let _ = self.cancel(&handle).await;
+                return Err(format!(
+                    "the canary did not end within {}s",
+                    CANARY_WAIT.as_secs()
+                ));
+            }
+            tokio::time::sleep(CANARY_POLL).await;
+        }
+    }
+
+    /// What a failed canary printed, up to a bound: the probe's line for each address.
+    async fn canary_log(&self, handle: &BackendJobHandle) -> String {
+        let mut pieces = match self.log(handle).await {
+            Ok(pieces) => pieces,
+            Err(e) => return format!("Its log could not be read: {e}"),
+        };
+        let mut text = Vec::new();
+        while text.len() < CANARY_LOG {
+            match pieces.next().await {
+                Some(Ok(piece)) => text.extend(piece),
+                Some(Err(e)) => return format!("Its log could not be read: {e}"),
+                None => break,
+            }
+        }
+        text.truncate(CANARY_LOG);
+        format!("It said: {}", String::from_utf8_lossy(&text).trim())
     }
 
     fn namespace(&self) -> String {
@@ -173,6 +318,14 @@ fn said(answer: &ApiAnswer) -> String {
 impl BuildBackend for KubernetesBackend {
     #[instrument(skip(self, spec), fields(build_id = %spec.build_id))]
     async fn submit(&self, spec: &BuildSpec) -> Result<SubmittedJob, BackendError> {
+        // No build of foreign code runs where the builds' policy is not proved enforced (network-enforcement.md).
+        if self.gate.is_some() {
+            self.enforced().await.map_err(|why| {
+                BackendError::SubmissionFailed(format!(
+                    "network enforcement is not proved, so no build runs: {why}"
+                ))
+            })?;
+        }
         let template = self.template().await?;
         // A build's pod has no DNS (the build namespace's policy), so the registry's name is resolved here, for each Job,
         // and the pod given the address.
@@ -345,6 +498,16 @@ impl BuildBackend for KubernetesBackend {
     async fn in_flight(&self) -> Result<Vec<InFlight>, BackendError> {
         let mut found = Vec::new();
         for job in self.own_jobs().await? {
+            // A canary is no build: one a restarted orchestrator finds running is left to end and expire.
+            if job
+                .metadata
+                .labels
+                .as_ref()
+                .and_then(|l| l.get("cyclops.build/type"))
+                .is_some_and(|t| t == CANARY_TYPE)
+            {
+                continue;
+            }
             match in_flight_of(&job) {
                 Ok(Some(job)) => found.push(job),
                 Ok(None) => {}
@@ -766,6 +929,107 @@ mod tests {
             sent["spec"]["template"]["spec"]["serviceAccountName"],
             "build-runner"
         );
+    }
+
+    fn gate() -> Gate {
+        Gate {
+            enforcement: Arc::new(Enforcement::default()),
+            max_age: Duration::from_secs(600),
+            registry: "10.96.97.171:5000".into(),
+            api: Some("10.96.0.1:443".into()),
+            outside: None,
+        }
+    }
+
+    async fn gated(api: &KubeApi, gate: Gate) -> KubernetesBackend {
+        let site = kubernetes_handle(OPERATIONS, api).await;
+        KubernetesBackend::new(site.handle, options()).gated(gate)
+    }
+
+    const JOB_1: &str = "/apis/batch/v1/namespaces/builds/jobs/build-1";
+
+    fn answered(api: &KubeApi, canary_status: Value) {
+        api.answers(
+            "GET",
+            TEMPLATE,
+            200,
+            serde_json::to_value(template()).unwrap(),
+        );
+        api.answers("POST", JOBS, 201, job(json!({})));
+        api.answers("GET", JOB_1, 200, job(canary_status));
+        api.answers("DELETE", JOB_1, 200, job(json!({})));
+    }
+
+    /// Where the canary fails, no build's Job is made, and the build says why.
+    #[tokio::test]
+    async fn where_enforcement_is_not_proved_no_build_runs_and_it_says_why() {
+        let api = KubeApi::start().await;
+        answered(
+            &api,
+            json!({"failed": 1, "conditions": [{"type": "Failed", "status": "True", "message": "BackoffLimitExceeded"}]}),
+        );
+        let refused = gated(&api, gate()).await.submit(&spec()).await;
+        match refused {
+            Err(BackendError::SubmissionFailed(said)) => {
+                assert!(said.contains("network enforcement is not proved"), "{said}")
+            }
+            other => panic!("a build ran unproved: {:?}", other.map(|s| s.handle)),
+        }
+        let received = api.received().await;
+        let posts: Vec<Value> = received
+            .iter()
+            .filter(|(method, path, ..)| method == "POST" && path == JOBS)
+            .map(|r| serde_json::from_slice(&r.3).unwrap())
+            .collect();
+        assert_eq!(posts.len(), 1, "the canary alone was made");
+        assert_eq!(
+            posts[0]["metadata"]["labels"]["cyclops.build/type"],
+            "canary"
+        );
+        let env = &posts[0]["spec"]["template"]["spec"]["containers"][0]["env"];
+        assert_eq!(env[0]["value"], "10.96.97.171:5000");
+        assert_eq!(env[1]["value"], "10.96.0.1:443");
+    }
+
+    /// Where the canary succeeds, its Job is removed and the build's made; a second build within the bound needs no
+    /// second canary.
+    #[tokio::test]
+    async fn a_proof_lets_builds_run_until_it_grows_old() {
+        let api = KubeApi::start().await;
+        answered(&api, json!({"succeeded": 1}));
+        // Each answer is given once: the two builds' templates and Jobs besides the canary's.
+        for _ in 0..2 {
+            api.answers(
+                "GET",
+                TEMPLATE,
+                200,
+                serde_json::to_value(template()).unwrap(),
+            );
+            api.answers("POST", JOBS, 201, job(json!({})));
+        }
+        let gate = gate();
+        let backend = gated(&api, gate.clone()).await;
+        backend.submit(&spec()).await.unwrap();
+        backend.submit(&spec()).await.unwrap();
+        let received = api.received().await;
+        let asked: Vec<(&str, &str)> = received
+            .iter()
+            .map(|(method, path, ..)| (method.as_str(), path.as_str()))
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                ("GET", TEMPLATE),
+                ("POST", JOBS),
+                ("GET", JOB_1),
+                ("DELETE", JOB_1),
+                ("GET", TEMPLATE),
+                ("POST", JOBS),
+                ("GET", TEMPLATE),
+                ("POST", JOBS),
+            ]
+        );
+        assert!(matches!(gate.enforcement.last().await, Some((_, Ok(())))));
     }
 
     /// No Job is made without the build workload's template, or from one that is not the build workload's.

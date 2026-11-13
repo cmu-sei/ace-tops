@@ -193,7 +193,7 @@ pub fn registry_host(registry: &str) -> Option<String> {
 }
 
 /// The one alias a build's pod is given: the registry's name, at the address it resolved to.
-fn registry_alias(host: &str, address: Ipv4Addr) -> HostAlias {
+pub(crate) fn registry_alias(host: &str, address: Ipv4Addr) -> HostAlias {
     HostAlias {
         ip: address.to_string(),
         hostnames: Some(vec![host.to_string()]),
@@ -324,7 +324,7 @@ pub fn build_job(
     })
 }
 
-fn plain(name: impl Into<String>, value: impl Into<String>) -> EnvVar {
+pub(crate) fn plain(name: impl Into<String>, value: impl Into<String>) -> EnvVar {
     EnvVar {
         name: name.into(),
         value: Some(value.into()),
@@ -350,7 +350,7 @@ fn pipeline_env_vars(spec: &BuildSpec) -> Vec<EnvVar> {
 
 /// A container's security context: hardened, with only what `privileges` asks for beyond that, and never privileged. It
 /// runs as the template's user and group, unless its mapping runs it as root, when it runs as its image's.
-fn security_context(
+pub(crate) fn security_context(
     template: Option<&SecurityContext>,
     privileges: &Privileges,
 ) -> SecurityContext {
@@ -389,7 +389,7 @@ fn harden(container: &mut Container, privileges: &Privileges) {
         .push(tmp_volume_mount());
 }
 
-fn tmp_volume() -> Volume {
+pub(crate) fn tmp_volume() -> Volume {
     Volume {
         name: TMP_VOLUME.to_string(),
         empty_dir: Some(EmptyDirVolumeSource {
@@ -400,7 +400,7 @@ fn tmp_volume() -> Volume {
     }
 }
 
-fn tmp_volume_mount() -> VolumeMount {
+pub(crate) fn tmp_volume_mount() -> VolumeMount {
     VolumeMount {
         name: TMP_VOLUME.to_string(),
         mount_path: TMP_PATH.to_string(),
@@ -418,7 +418,7 @@ fn pipeline_resources(r: &PipelineResources) -> ResourceRequirements {
     )
 }
 
-fn fetch_resources() -> ResourceRequirements {
+pub(crate) fn fetch_resources() -> ResourceRequirements {
     resource_requirements("200m", "256Mi", "100m", "128Mi")
 }
 
@@ -556,12 +556,12 @@ pub fn departures(
     found
 }
 
-fn to_value<T: serde::Serialize>(value: &T) -> Value {
+pub(crate) fn to_value<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 /// Takes `field` out of an object, as null when it has none.
-fn take(object: &mut Value, field: &str) -> Value {
+pub(crate) fn take(object: &mut Value, field: &str) -> Value {
     object
         .as_object_mut()
         .and_then(|o| o.remove(field))
@@ -569,7 +569,7 @@ fn take(object: &mut Value, field: &str) -> Value {
 }
 
 /// The fields two objects differ in, sorted.
-fn differing(a: &Value, b: &Value) -> Vec<String> {
+pub(crate) fn differing(a: &Value, b: &Value) -> Vec<String> {
     let empty = serde_json::Map::new();
     let (a, b) = (
         a.as_object().unwrap_or(&empty),
@@ -587,7 +587,7 @@ fn differing(a: &Value, b: &Value) -> Vec<String> {
 }
 
 /// Whether the map `got` holds every entry of `want` unchanged (and may hold more).
-fn extends(want: &Value, got: &Value) -> bool {
+pub(crate) fn extends(want: &Value, got: &Value) -> bool {
     let empty = serde_json::Map::new();
     let want = want.as_object().unwrap_or(&empty);
     let got = got.as_object().unwrap_or(&empty);
