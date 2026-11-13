@@ -153,6 +153,10 @@ fingerprint `1;/nix/store/<hash>-<name>;sha256:<nix32>;<n>;<refs>`; ssh → user
 SSH_MSG_USERAUTH_REQUEST, ...); tls → TLS 1.3 CertificateVerify (64×0x20 + context string + 0x00 + hash). No raw sign.
 Agreed with polar-cc: bring acp's Slot::Signer + SignRecord to main as the first purpose when step C3 starts (port
 together); before that nothing collides.
+Settled with polar-cc (2026-11-13): a key's purpose comes from its CERTIFICATE (c:record-evidence:<type> on acp; a
+capability naming nix/ssh/tls purpose likewise), not a per-key setting at creation — AGENTS.md "certificates carry
+them". acp "bite S" to port at C3: 094e51ae (custody signer slot + SignRecord), 3e704430 (custodian fetches the pod's
+signing key), c45ec253 (builder's signer + domain handle); main reads the Signing certificate since 0388d70f.
 
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
