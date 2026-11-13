@@ -1627,6 +1627,13 @@ above already plans to split it, for the same reason.
    signing agent without `POLAR_CUSTODY_SOCKET` (the `signer` section). It is started with the Cassini client's parts,
    though it needs none of them, so that the domain finds it beside the crypto actor. The confused-deputy rule is in the
    module's documentation; no handler signs yet, so no property holds a handler to it (bite B's records will).
+   *Moved into the crypto actor 2026-11-13 on main (docs/plans/crypto-actor.md, step K1):* the `SignerActor` is gone.
+   Record signing is `CryptoMessage::SignRecord` (`polar_crypto::records`: `EvidenceRecord`, the type check against the
+   slot's certificate, the evidence-domain input, the document), answered with the custody client the crypto actor
+   holds. An agent that signs is given a crypto actor whether it encrypts or not (`with_escrow(false)`: it subscribes
+   to none of the credentials agent's replies), and the domain's `SignerHandle` reaches it for records alone; an agent
+   that only signs is not handed the crypto actor's own handle. The handle, the trait and the compile-fail doc tests
+   are unchanged.
 5. **The certificate.** cert-issuer's existing `Signing` kind (documentSigning, digital signature; the broker refuses it
    for TLS in either role, `tls_refuses_a_signing_cert_in_either_role`). The custodian asks for it under a fourth
    custody name, `p:custody:signing`, in its five-minute window, with the attestation check and the renewal rule of the

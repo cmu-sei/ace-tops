@@ -331,6 +331,9 @@ struct ClientParts {
     /// its session at once (docs/architecture/authority-model.md, "Multi-instance workloads").
     one_of_many: bool,
     crypto: Option<CryptoHandle>,
+    /// Whether the domain is given the crypto actor's handle: an agent that escrows secrets (`encryption`). One that only
+    /// signs records reaches it through its signer handle alone.
+    escrow: bool,
     /// What the protocol handler asks the crypto actor with: nothing else ever has it.
     credential_port: Option<polar_crypto::CredentialPort>,
     signer: Option<crate::signer::SignerHandle>,
@@ -649,7 +652,9 @@ impl InfrastructureSupervisor {
                 Some(cassini_client::TcpClientMessage::JudgeAgain)
             });
 
-        let (crypto, credential_port) = if setup.wants_crypto {
+        // The crypto actor: every key use of the agent's, for an agent that escrows secrets or signs records
+        // (docs/plans/crypto-actor.md).
+        let (crypto, credential_port) = if setup.wants_crypto || setup.wants_signer {
             let pass = polar_crypto::CredentialPass::new();
             let (crypto_actor, _) = polar_crypto::CryptoActor::spawn_linked(
                 None,
@@ -659,7 +664,8 @@ impl InfrastructureSupervisor {
                         polar_crypto::environment::CryptoSettings::from_env(&*setup.config)
                             .map_err(ActorProcessingErr::from)?,
                     )
-                    .with_credential_pass(pass.clone()),
+                    .with_credential_pass(pass.clone())
+                    .with_escrow(setup.wants_crypto),
                 myself_cell.clone(),
             )
             .await
@@ -672,11 +678,10 @@ impl InfrastructureSupervisor {
             (None, None)
         };
 
-        // Unnamed, as the crypto actor is: nothing finds it by name, and only the domain's handle asks it
-        // (docs/architecture/key-custody.md, "Workload signing keys", item 4). It needs no Cassini, and is started here
-        // so the domain has it in its resources beside the crypto actor.
+        // Records are signed by the crypto actor; the domain's handle reaches nothing else of it
+        // (docs/architecture/key-custody.md, "Workload signing keys", item 4).
         let signer = if setup.wants_signer {
-            let socket = setup
+            setup
                 .config
                 .read(&polar_custody::environment::CUSTODY_SOCKET)
                 .map_err(|e| ActorProcessingErr::from(e.to_string()))?
@@ -686,17 +691,9 @@ impl InfrastructureSupervisor {
                         polar_custody::environment::CUSTODY_SOCKET.name()
                     ))
                 })?;
-            let (signer, _) = Actor::spawn_linked(
-                None,
-                crate::signer::SignerActor,
-                crate::signer::SignerArgs {
-                    client: Arc::new(polar_custody::client::CustodyClient::new(socket)),
-                },
-                myself_cell,
-            )
-            .await
-            .map_err(ActorProcessingErr::from)?;
-            Some(crate::signer::SignerHandle::new(signer))
+            crypto
+                .as_ref()
+                .map(|crypto| crate::signer::SignerHandle::new(crypto.actor()))
         } else {
             None
         };
@@ -729,6 +726,7 @@ impl InfrastructureSupervisor {
                 tcp_client,
                 one_of_many,
                 crypto,
+                escrow: setup.wants_crypto,
                 credential_port,
                 signer,
                 protocols: None,
@@ -785,13 +783,6 @@ impl InfrastructureSupervisor {
             .is_some_and(|crypto| crypto.actor().get_id() == id)
         {
             Child::Other("the crypto actor".to_string())
-        } else if state
-            .client
-            .as_ref()
-            .and_then(|client| client.signer.as_ref())
-            .is_some_and(|signer| signer.actor().get_id() == id)
-        {
-            Child::Other("the signer".to_string())
         } else if state
             .client
             .as_ref()
@@ -1324,7 +1315,7 @@ impl Actor for InfrastructureSupervisor {
                         router: client.router.clone(),
                         tcp_client: client.tcp_client.clone(),
                         healthcheck: state.healthcheck.clone(),
-                        crypto: client.crypto.clone(),
+                        crypto: client.crypto.clone().filter(|_| client.escrow),
                         signer: client.signer.clone(),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
@@ -1776,7 +1767,7 @@ mod tests {
             let health_writer = Some(RIG_WRITER.to_string());
             let dir = tempfile::tempdir().unwrap();
             let certificate = dir.path().join("cert.pem");
-            if crypto {
+            if crypto || signing {
                 let params = rcgen::CertificateParams::new(vec![format!("{service}-identity")])
                     .expect("certificate parameters");
                 let key = rcgen::KeyPair::generate().expect("key");
@@ -1799,11 +1790,14 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
             let mut required = vec![crate::Capability::Cassini];
-            if crypto {
+            // The crypto actor takes its identity from the agent's certificate: one that encrypts or signs has one.
+            if crypto || signing {
                 vars.insert(
                     "TLS_CLIENT_CERT".to_string(),
                     certificate.to_string_lossy().into_owned(),
                 );
+            }
+            if crypto {
                 required.push(crate::Capability::Encryption);
             }
             if state_agent.is_some() {
@@ -3593,8 +3587,9 @@ mod tests {
         assert_eq!(rig.events(), ["prepare_shutdown"]);
     }
 
-    // docs/architecture/key-custody.md, "Workload signing keys", item 4: an agent with the `signing` capability is given a
-    // signer, one without none; the signer is the infrastructure's, and its end ends the agent, as the crypto actor's does.
+    // docs/architecture/key-custody.md, "Workload signing keys", item 4, and docs/plans/crypto-actor.md: an agent with the
+    // `signing` capability is given a signer handle, one without none; it reaches the crypto actor, which a signing agent
+    // has whether it encrypts or not, and whose end ends the agent. One that only signs is not handed the crypto actor.
     #[tokio::test]
     async fn an_agent_that_signs_is_given_a_signer_and_its_end_ends_the_agent() {
         let plain = Rig::with_crypto("infra-no-signer").await;
@@ -3605,6 +3600,10 @@ mod tests {
             .signer
             .clone()
             .expect("a signing agent has one");
+        assert!(
+            rig.resources.crypto.is_none(),
+            "an agent that only signs is not handed the crypto actor"
+        );
         assert!(
             signer.actor().get_name().is_none(),
             "unnamed: nothing finds it by name"

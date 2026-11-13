@@ -60,6 +60,7 @@
 
 pub mod environment;
 pub mod recipient;
+pub mod records;
 pub mod registry;
 pub mod sending;
 pub mod workload_certificates;
@@ -463,6 +464,12 @@ pub enum CryptoMessage {
     /// construction. Sent on every registration, so a reconnect
     /// restores them too. Subscribing again is harmless.
     ClientRegistered,
+    /// `record` signed with the pod's signing key, as the evidence document it is ([`records`]): the builder's signer
+    /// handle's, for an agent with the `signing` capability.
+    SignRecord {
+        record: records::EvidenceRecord,
+        reply: RpcReplyPort<Result<polar_signing::Document, records::SignError>>,
+    },
     /// A general secret to escrow -- e.g. an access token an observer
     /// holds and wants the Credentials Agent to store on its behalf.
     /// Not the agent's own escrow private key, which the custody
@@ -582,6 +589,9 @@ pub struct CryptoActorArgs {
     pub escrow_retry: (Duration, Duration),
     /// The pass a protocol handler asks for a credential with. None: nothing can ask that way.
     pub credential_pass: Option<CredentialPass>,
+    /// Whether the agent escrows and retrieves secrets (its `encryption` capability), and so hears the credentials
+    /// agent's replies. An agent that only signs records does not.
+    pub escrow: bool,
 }
 
 impl CryptoActorArgs {
@@ -596,7 +606,14 @@ impl CryptoActorArgs {
             settings: None,
             escrow_retry: (Duration::from_secs(1), Duration::from_secs(30)),
             credential_pass: None,
+            escrow: true,
         }
+    }
+
+    /// Whether the agent escrows and retrieves secrets: `false` for one that only signs records.
+    pub fn with_escrow(mut self, escrow: bool) -> Self {
+        self.escrow = escrow;
+        self
     }
 
     /// The pass the protocol handlers will ask with.
@@ -621,6 +638,8 @@ impl CryptoActorArgs {
 
 pub struct CryptoActorState {
     tcp_client: ActorRef<TcpClientMessage>,
+    /// Whether it hears the credentials agent's replies ([`CryptoActorArgs::escrow`]).
+    escrow: bool,
     escrow_key_reply_router: Arc<ReplyRouter<credentials_agent_common::escrow_key::EscrowKeyReply>>,
     store_secret_reply_router: Arc<ReplyRouter<StoreSecretReply>>,
     agent_escrow_key_reply_router: Arc<ReplyRouter<AgentEscrowKeyReply>>,
@@ -754,6 +773,7 @@ impl Actor for CryptoActor {
         // sent on CryptoMessage::ClientRegistered instead.
         Ok(CryptoActorState {
             tcp_client: args.tcp_client,
+            escrow: args.escrow,
             escrow_key_reply_router: Arc::new(ReplyRouter::new()),
             store_secret_reply_router: Arc::new(ReplyRouter::new()),
             agent_escrow_key_reply_router: Arc::new(ReplyRouter::new()),
@@ -810,12 +830,35 @@ impl Actor for CryptoActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
+            CryptoMessage::SignRecord { record, reply } => match state.escrow_key.clone() {
+                None => {
+                    let _ = reply.send(Err(records::SignError::Unavailable(
+                        "no custody daemon: the signing key is the daemon's".to_string(),
+                    )));
+                }
+                // The client blocks on the socket: off the actor and off the runtime's workers.
+                Some(client) => {
+                    tokio::spawn(async move {
+                        let signed = tokio::task::spawn_blocking(move || {
+                            records::sign_record(&client, &record)
+                        })
+                        .await
+                        .map_err(|e| records::SignError::Unavailable(e.to_string()))
+                        .and_then(|signed| signed);
+                        if let Err(e) = &signed {
+                            warn!("a record was not signed: {e}");
+                        }
+                        let _ = reply.send(signed);
+                    });
+                }
+            },
             CryptoMessage::ClientRegistered => {
                 // Subscribes to the *_REPLIES_TOPIC constants specifically --
                 // CryptoActor is a requester here, not a responder, so it
                 // needs the reply topics, not the request topics (easy to
-                // transpose by accident, worth being explicit about).
-                for topic in REPLY_TOPICS {
+                // transpose by accident, worth being explicit about). An agent
+                // that only signs records asks the credentials agent nothing.
+                for topic in REPLY_TOPICS.iter().filter(|_| state.escrow) {
                     if let Err(e) = state.tcp_client.send_message(TcpClientMessage::Subscribe {
                         topic: topic.to_string(),
                         trace_ctx: None,

@@ -71,8 +71,20 @@ cassini/test/producer. Decided (standing rules, maintainer's direction): the Cry
 the CryptoActor's (custody socket in a pod; files for a person or cert-issuer); deployed CLI daemon / c2 rendered with
 the custody sidecar; `polar::cassini` helper removed, its users take the builder's client.
 
+## ACP'S OWN PATHS (polar-cc, 2026-11-13, since merge base a4c1c984; test files left out)
+1. polar-git (acp-only source-code git server): src/settings.rs:74-77 ServerKey (File|Custody via one_key),
+   src/supervisor.rs its own tokio_rustls TlsAcceptor → K3, as the git server.
+2. polar-records-client (acp-only): src/lib.rs its own TcpClientActor + TCPClientConfig, a person's tool over Cassini
+   (used by polar-eden, polar-sign evidence/schedules) → K2b, beside polar-running-config.
+3. polar-eden src/main.rs (acp-only): reqwest Identity::from_pem + add_root_certificate with a person's cert/key files,
+   for the git face of polar-evidence. DECIDED (the rule): included, a person's CLI is a process that uses a key → a
+   CryptoActor over file keys, as polar-sign's git push would be.
+4. attestation agent src/supervisor.rs:545-552 (acp) reads its own TLS_CLIENT_CERT file for its identity → the
+   CryptoActor answers its identity (it already derives own_identity from that certificate).
+5. builder signer.rs: superseded by K1.
+
 ## STEPS (each tested, committed, pushed; u7c bring-up before the TLS step is called done)
-K1 Signer into the CryptoActor: CryptoMessage/port op SignRecord-equivalent in polar-crypto (input build + type check
+K1 DONE 2026-11-13. Signer into the CryptoActor: CryptoMessage/port op SignRecord-equivalent in polar-crypto (input build + type check
    from signer.rs), SignerHandle → CryptoActor; SignerActor and its spawn removed; signing agents get a CryptoActor.
    acp: its only custody call is signer.rs (polar-cc, 2026-11-13); fixed by its next merge of main. Tell polar-cc.
 K2 CryptoActor in every agent, first: spawned before tcp_client with custody client (or key files when degraded); late
