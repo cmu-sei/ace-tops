@@ -158,6 +158,27 @@ capability naming nix/ssh/tls purpose likewise), not a per-key setting at creati
 them". acp "bite S" to port at C3: 094e51ae (custody signer slot + SignRecord), 3e704430 (custodian fetches the pod's
 signing key), c45ec253 (builder's signer + domain handle); main reads the Signing certificate since 0388d70f.
 
+## C1 DONE 2026-11-13 (maintainer: "Please continue without me.")
+Smallest change that holds: the credentials schema marks `username` `{"type":"ciphertext","secret":true}` → polar-sign
+(generic: seals every field the schema marks secret, polar-sign/src/seal.rs) seals it with NO polar-sign code change,
+bound `<agent>|credentials|<version>|<name>|username` (own field, same entry: cannot be paired with another entry's
+secret). Section check (credentials.rs `entry`): a username must be an escrowed secret by its bytes (`secret_problem`),
+else "`username` … a user name is sealed, as the secret is, and polar-sign seals it". `apply` hands it on as
+`polar_crypto::SealedPart {ciphertext, context}`; the binding carries no username. CryptoActor `RegisterSecret` gains
+`username: Option<SealedPart>`; `register_secret` refuses a binding naming a username ("a user name comes sealed, never in
+the binding"), opens the sealed one in custody, holds it to `registry::is_username` (1..=MAX_USERNAME 128, no control),
+puts it in its own binding, then `binding.check()`. Escrow record (escrow_form) unchanged: it already holds username
+inside. Not "sealed whole" as one blob: two sealed fields bound to the same entry — the same property (neither clear,
+not separable). Reach: an existing section fails only where an entry names a username (Jira Cloud email+token: seed.nu
+writes `username: $email`, sealed by polar-sign from the new scaffold with no seed change); tokens and ssh keys without
+one stay valid. Tests: crypto (sealed username → Basic; clear-in-binding refused; sealed under another field's context →
+DecryptFailed; empty / control → BadBinding; helpers seal any test binding's username), builder (clear username refused,
+schema marks it secret, apply hands it on under `…|username`, polar-sign's own seal_body with this schema seals both).
+Suites: builder 692, polar-crypto 102, polar-sign 159; workspace check all-targets clean. Mutants: crypto
+register_secret/is_username 8/8 caught; builder entry/apply/context 13 caught + 2 unviable (3 older gaps in the binding
+field-naming closed with a test). Docs: jira.md, git-controller.md. NOT DEPLOYED: u7c agents rebuild at the next
+bring-up; then a Jira user-password credential must be re-sealed by the user.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.

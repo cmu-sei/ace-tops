@@ -231,6 +231,14 @@ fn is_fingerprint(pin: &str) -> bool {
             .is_some_and(|value| value & 0b11 == 0)
 }
 
+/// The longest user name a credential holds.
+pub const MAX_USERNAME: usize = 128;
+
+/// Whether `name` may be a credential's user name: 1 to [`MAX_USERNAME`] bytes, none a control character.
+pub fn is_username(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_USERNAME && !name.chars().any(char::is_control)
+}
+
 /// What git is given for a host: a user name and a secret, wiped when dropped.
 pub struct GitCredential {
     pub kind: SecretKind,

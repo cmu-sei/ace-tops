@@ -167,6 +167,14 @@ struct KeyPaths {
     pinned_ca: Option<String>,
 }
 
+/// A part of a credential sealed in a signed document, as the protocol actor hands it on: the escrowed ciphertext, and
+/// the context it was bound to when it was sealed.
+#[derive(Debug, Clone)]
+pub struct SealedPart {
+    pub ciphertext: Vec<u8>,
+    pub context: Vec<u8>,
+}
+
 /// What lets its holder ask the CryptoActor for a credential: the one the actor was started with, compared by identity,
 /// so one made anywhere else is not it. The builder makes it, starts the actor with it and gives it to the protocol
 /// handlers, and nothing hands it on, so domain code cannot get a credential by writing a function that asks for one
@@ -307,6 +315,10 @@ pub enum CryptoMessage {
         section: String,
         secret: Vec<u8>,
         context: Vec<u8>,
+        /// The user name, sealed as the secret is and bound to the same entry under its own field: a credential is its
+        /// user name and its secret together, and neither is in the clear in a signed document. The binding names no
+        /// user name; the one opened here is put in it.
+        username: Option<SealedPart>,
         binding: registry::SecretBinding,
         reply: RpcReplyPort<Result<(), CryptoError>>,
     },
@@ -711,6 +723,7 @@ impl Actor for CryptoActor {
                 section,
                 secret,
                 context,
+                username,
                 binding,
                 reply,
             } => {
@@ -719,7 +732,8 @@ impl Actor for CryptoActor {
                 let shared = state.shared();
                 tokio::spawn(async move {
                     let result =
-                        register_secret(shared, name, section, secret, context, binding).await;
+                        register_secret(shared, name, section, secret, context, username, binding)
+                            .await;
                     let _ = reply.send(result);
                 });
             }
@@ -1060,8 +1074,31 @@ async fn register_secret(
     section: String,
     secret: Vec<u8>,
     context: Vec<u8>,
-    binding: registry::SecretBinding,
+    username: Option<SealedPart>,
+    mut binding: registry::SecretBinding,
 ) -> Result<(), CryptoError> {
+    // A user name comes sealed, never in the binding: one there was put in the clear somewhere.
+    if binding.username.is_some() {
+        return Err(registry::RecordError::BadBinding(
+            "a user name comes sealed, never in the binding".to_string(),
+        )
+        .into());
+    }
+    if let Some(sealed) = username {
+        let opened =
+            handle_decrypt_own_escrowed(&shared.escrow_key, sealed.ciphertext, sealed.context)
+                .await?;
+        let opened = std::str::from_utf8(&opened)
+            .ok()
+            .filter(|u| registry::is_username(u))
+            .ok_or_else(|| {
+                registry::RecordError::BadBinding(format!(
+                    "the sealed user name is not 1 to {} characters of text with no control character",
+                    registry::MAX_USERNAME
+                ))
+            })?;
+        binding.username = Some(opened.to_string());
+    }
     binding.check()?;
     let binding_kind = binding.kind;
     let plaintext = handle_decrypt_own_escrowed(&shared.escrow_key, secret, context).await?;
@@ -2059,6 +2096,7 @@ mod tests {
             section: "s".to_string(),
             secret: sealed,
             context: b"ctx".to_vec(),
+            username: None,
             binding: token_binding("github.com"),
             reply,
         })
@@ -2111,6 +2149,7 @@ mod tests {
                 section: "s".to_string(),
                 secret: sealed,
                 context: b"ctx".to_vec(),
+                username: None,
                 binding: token_binding("github.com"),
                 reply,
             })
@@ -2309,6 +2348,22 @@ mod tests {
     /// The section the tests register under unless a test says otherwise.
     const SECTION: &str = "credentials";
 
+    /// A binding's user name, as a section hands it on: sealed under its own context, and out of the binding.
+    fn sealed_username(
+        rig: &Rig,
+        context: &[u8],
+        mut binding: SecretBinding,
+    ) -> (Option<SealedPart>, SecretBinding) {
+        let username = binding.username.take().map(|u| {
+            let context = [context, b"|username"].concat();
+            SealedPart {
+                ciphertext: escrowed_bytes(rig, u.as_bytes(), &context),
+                context,
+            }
+        });
+        (username, binding)
+    }
+
     async fn register_in(
         rig: &Rig,
         section: &str,
@@ -2318,11 +2373,13 @@ mod tests {
         binding: SecretBinding,
     ) -> Result<(), CryptoError> {
         let secret = escrowed_bytes(rig, plaintext, context);
+        let (username, binding) = sealed_username(rig, context, binding);
         ractor::call!(rig.actor, |reply| CryptoMessage::RegisterSecret {
             name: name.to_string(),
             section: section.to_string(),
             secret,
             context: context.to_vec(),
+            username,
             binding,
             reply,
         })
@@ -2346,11 +2403,13 @@ mod tests {
         binding: SecretBinding,
     ) -> Result<(), CryptoError> {
         let secret = escrowed_bytes(rig, plaintext, context);
+        let (username, binding) = sealed_username(rig, context, binding);
         ractor::call!(rig.actor, |reply| CryptoMessage::RegisterSecret {
             name: name.to_string(),
             section: SECTION.to_string(),
             secret,
             context: context.to_vec(),
+            username,
             binding,
             reply,
         })
@@ -2658,6 +2717,7 @@ mod tests {
             section: SECTION.to_string(),
             secret: secret.clone(),
             context: b"git-repo-observer|credentials|1|other|secret".to_vec(),
+            username: None,
             binding: token_binding("github.com"),
             reply,
         })
@@ -2684,6 +2744,7 @@ mod tests {
             section: SECTION.to_string(),
             secret: b"not an escrowed secret".to_vec(),
             context: b"ctx".to_vec(),
+            username: None,
             binding: token_binding("github.com"),
             reply,
         })
@@ -2729,6 +2790,132 @@ mod tests {
         assert!(
             matches!(refused, Err(CryptoError::Use(UseRefusal::NoUsername))),
             "{refused:?}"
+        );
+        stop_and_release_key(&r.actor).await;
+    }
+
+    fn user_password(host: &str) -> SecretBinding {
+        SecretBinding {
+            host_pattern: host.to_string(),
+            kind: SecretKind::UserPassword,
+            username: None,
+            host_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sealed_user_name_is_opened_into_the_binding_and_sent_with_its_password() {
+        let r = rig(vec![], vec![], false).await;
+        let binding = SecretBinding {
+            username: Some("me@example.org".to_string()),
+            ..user_password("example.atlassian.net")
+        };
+        register(&r, "jira", b"api-token", b"ctx", binding)
+            .await
+            .unwrap();
+        match r
+            .port
+            .http("jira".to_string(), "example.atlassian.net".to_string())
+            .await
+        {
+            Ok(registry::HttpCredential::Basic { username, password }) => {
+                assert_eq!(
+                    (username.as_str(), password.as_slice()),
+                    ("me@example.org", &b"api-token"[..])
+                );
+            }
+            other => panic!("expected Basic, got {other:?}"),
+        }
+        stop_and_release_key(&r.actor).await;
+    }
+
+    #[tokio::test]
+    async fn a_user_name_in_the_clear_in_the_binding_is_refused() {
+        let r = rig(vec![], vec![], false).await;
+        let binding = SecretBinding {
+            username: Some("me@example.org".to_string()),
+            ..user_password("example.atlassian.net")
+        };
+        let secret = escrowed_bytes(&r, b"api-token", b"ctx");
+        let refused = ractor::call!(r.actor, |reply| CryptoMessage::RegisterSecret {
+            name: "jira".to_string(),
+            section: SECTION.to_string(),
+            secret,
+            context: b"ctx".to_vec(),
+            username: None,
+            binding,
+            reply,
+        })
+        .unwrap();
+        assert!(
+            matches!(&refused, Err(CryptoError::Record(registry::RecordError::BadBinding(why))) if why.contains("sealed")),
+            "{refused:?}"
+        );
+        assert!(
+            r.port
+                .http("jira".to_string(), "example.atlassian.net".to_string())
+                .await
+                .is_err()
+        );
+        stop_and_release_key(&r.actor).await;
+    }
+
+    #[tokio::test]
+    async fn a_user_name_sealed_for_another_field_or_not_one_is_refused() {
+        let r = rig(vec![], vec![], false).await;
+        let secret = || escrowed_bytes(&r, b"api-token", b"ctx");
+        // Sealed under the secret's own context, handed on as the user name's: it does not open.
+        let elsewhere = SealedPart {
+            ciphertext: escrowed_bytes(&r, b"me@example.org", b"ctx"),
+            context: b"ctx|username".to_vec(),
+        };
+        for (username, opens) in [
+            (elsewhere, true),
+            (
+                SealedPart {
+                    ciphertext: escrowed_bytes(&r, b"", b"ctx|username"),
+                    context: b"ctx|username".to_vec(),
+                },
+                false,
+            ),
+            (
+                SealedPart {
+                    ciphertext: escrowed_bytes(&r, b"me\nyou", b"ctx|username"),
+                    context: b"ctx|username".to_vec(),
+                },
+                false,
+            ),
+        ] {
+            let refused = ractor::call!(r.actor, |reply| CryptoMessage::RegisterSecret {
+                name: "jira".to_string(),
+                section: SECTION.to_string(),
+                secret: secret(),
+                context: b"ctx".to_vec(),
+                username: Some(username),
+                binding: user_password("example.atlassian.net"),
+                reply,
+            })
+            .unwrap();
+            if opens {
+                assert!(
+                    matches!(refused, Err(CryptoError::DecryptFailed(_))),
+                    "{refused:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        refused,
+                        Err(CryptoError::Record(registry::RecordError::BadBinding(_)))
+                    ),
+                    "{refused:?}"
+                );
+            }
+        }
+        assert!(
+            r.port
+                .http("jira".to_string(), "example.atlassian.net".to_string())
+                .await
+                .is_err()
         );
         stop_and_release_key(&r.actor).await;
     }
@@ -3167,6 +3354,7 @@ mod tests {
             section: SECTION.to_string(),
             secret: escrowed_bytes(&r, b"ghp-super-secret", b"ctx-a"),
             context: b"ctx-b".to_vec(),
+            username: None,
             binding: token_binding("github.com"),
             reply,
         })

@@ -113,6 +113,7 @@ pub(crate) trait SectionKeeper: Send + Sync {
         section: String,
         secret: Vec<u8>,
         context: Vec<u8>,
+        username: Option<polar_crypto::SealedPart>,
         binding: SecretBinding,
     ) -> Result<(), CryptoError>;
 
@@ -201,6 +202,7 @@ impl SectionKeeper for CryptoHandle {
         section: String,
         secret: Vec<u8>,
         context: Vec<u8>,
+        username: Option<polar_crypto::SealedPart>,
         binding: SecretBinding,
     ) -> Result<(), CryptoError> {
         let result = ractor::call!(self.actor, |reply| CryptoMessage::RegisterSecret {
@@ -208,6 +210,7 @@ impl SectionKeeper for CryptoHandle {
             section,
             secret,
             context,
+            username,
             binding,
             reply,
         });

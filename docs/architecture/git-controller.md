@@ -248,7 +248,7 @@ The observer's export has the same shape, with one runtime section:
     "name":         { "type": "text", "required": true },
     "host_pattern": { "type": "host pattern", "required": true, "doc": "the only hosts this credential is ever sent to" },
     "kind":         { "type": "token | user-password", "required": true },
-    "username":     { "type": "text", "required": false },
+    "username":     { "type": "ciphertext", "required": false, "secret": true },
     "secret":       { "type": "ciphertext", "required": true, "secret": true }
   } } }
 } ]
@@ -304,12 +304,14 @@ the same in each (`algorithm` is `ed25519` or `ecdsa-p256-sha256`; the chain is 
 { "payload": { "type": "runtime", "id": "cred-github-sei-0001", "target": { "agent": "git-repo-observer" },
                "section": "credentials", "version": 1,
                "body": { "credentials": [
-                 { "name": "github-sei", "host_pattern": "github.com", "kind": "token", "username": "oauth2",
+                 { "name": "github-sei", "host_pattern": "github.com", "kind": "token",
+                   "username": "<base64 of the EscrowedSecret bytes, bound to git-repo-observer|credentials|1|github-sei|username>",
                    "secret": "<base64 of the EscrowedSecret bytes, bound to git-repo-observer|credentials|1|github-sei|secret>" } ] } },
   "signature": { "...": "same shape" } }
 ```
 
-The binding context and the text encoding are in `signed-configuration.md` (decided 2026-10-14). What is escrowed after decrypting is not the bare token: it is `{host_pattern, kind, username, token}`, so that
+The binding context and the text encoding are in `signed-configuration.md` (decided 2026-10-14). The user name is sealed as the
+secret is, under its own field of the entry (since 2026-11-13; a token's, when it has none, is `oauth2` to git). What is escrowed after decrypting is not the bare token: it is `{host_pattern, kind, username, token}`, so that
 a `RetrieveSecret` after a restart brings the binding back with the secret, and the host check cannot be lost.
 
 ### The two messages between the agents

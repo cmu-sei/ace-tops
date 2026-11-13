@@ -69,7 +69,9 @@ jira-observer is the first agent on the protocol handler (`protocol-handlers.md`
 It declares the credential (`PolarAgent::CREDENTIALS`, `jira/observe/src/credentials.rs`), which brings the `credentials` runtime
 section and encryption, so its pod escrows a key in init. The section holds one entry `{ name, host_pattern, kind, username, secret }`, called
 **`jira`** (`CREDENTIAL`, as the seed names it), its `secret` an `EscrowedSecret` for jira-observer bound to
-`jira-observer|credentials|<version>|<name>|secret` and to `host_pattern`. `polar-sign` makes it from what is typed, as for git.
+`jira-observer|credentials|<version>|<name>|secret` and to `host_pattern`, and its `username`, when it has one, sealed the same
+way under `...|<name>|username` (since 2026-11-13: a credential is its user name and its secret together, and neither is in
+the clear in a signed document; docs/plans/registry/trusted-remotes.md). `polar-sign` makes both from what is typed, as for git.
 The infrastructure hands each version to the CryptoActor (`RegisterSecret`, then `ReplaceSection` keeping that name, so a
 version with no entry withdraws it), which opens it inside the custody daemon and escrows it.
 

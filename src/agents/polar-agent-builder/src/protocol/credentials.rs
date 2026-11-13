@@ -42,10 +42,10 @@ pub const SECTION_NAME: &str = "credentials";
 /// Longest entry name, as `polar_escrow::binding_context` takes it.
 pub const MAX_NAME: usize = 64;
 /// Longest user name.
-pub const MAX_USERNAME: usize = 128;
+pub const MAX_USERNAME: usize = polar_crypto::registry::MAX_USERNAME;
 
 /// What the section's body may hold: `polar-sign` checks a document against this, and makes each secret from what is typed.
-const BODY: &str = r#"{"credentials": {"list_of": {"name": {"type": "text of lowercase letters, digits and hyphens", "required": true, "doc": "what the credential is called"}, "host_pattern": {"type": "host pattern", "required": true, "doc": "the only hosts this credential is ever sent to: a host name, or *. and a domain, or several of those separated by commas; for an ssh-key, also one address"}, "kind": {"type": "token | user-password | ssh-key", "required": true, "doc": "token: a bearer token; user-password: a user name and a secret; ssh-key: an ssh private key, for git over ssh"}, "username": {"type": "text", "required": false, "doc": "required for a user-password; for an ssh-key, git unless named"}, "host_key": {"type": "text: a SHA-256 fingerprint", "required": false, "doc": "required for an ssh-key, and only for one: each of the server's host keys as ssh-keygen -l writes it (SHA256:...), separated by commas, since which it shows is negotiated; the key is offered to no server that shows another"}, "secret": {"type": "ciphertext", "required": true, "secret": true, "doc": "the secret itself. In the signed document it is base64 of an EscrowedSecret for this agent, bound to <agent>|credentials|<version>|<name>|secret; polar-sign makes that from what you type"}}}}"#;
+const BODY: &str = r#"{"credentials": {"list_of": {"name": {"type": "text of lowercase letters, digits and hyphens", "required": true, "doc": "what the credential is called"}, "host_pattern": {"type": "host pattern", "required": true, "doc": "the only hosts this credential is ever sent to: a host name, or *. and a domain, or several of those separated by commas; for an ssh-key, also one address"}, "kind": {"type": "token | user-password | ssh-key", "required": true, "doc": "token: a bearer token; user-password: a user name and a secret; ssh-key: an ssh private key, for git over ssh"}, "username": {"type": "ciphertext", "required": false, "secret": true, "doc": "the user name the credential logs in as, sealed as the secret is, since a credential is its user name and its secret together: required for a user-password; given to git, oauth2 for a token and git for an ssh-key unless named. In the signed document it is base64 of an EscrowedSecret for this agent, bound to <agent>|credentials|<version>|<name>|username; polar-sign makes that from what you type"}, "host_key": {"type": "text: a SHA-256 fingerprint", "required": false, "doc": "required for an ssh-key, and only for one: each of the server's host keys as ssh-keygen -l writes it (SHA256:...), separated by commas, since which it shows is negotiated; the key is offered to no server that shows another"}, "secret": {"type": "ciphertext", "required": true, "secret": true, "doc": "the secret itself. In the signed document it is base64 of an EscrowedSecret for this agent, bound to <agent>|credentials|<version>|<name>|secret; polar-sign makes that from what you type"}}}}"#;
 
 /// The section of an agent that takes at most `MAX` credentials, `doc` saying what they are for. Replaced whole by each
 /// version, so an entry left out is withdrawn.
@@ -191,17 +191,21 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
         }
     };
 
+    // A user name is sealed, as the secret is: a credential is the two together, and neither is in the clear here. What
+    // it opens to is judged where it is opened, by the CryptoActor (`registry::is_username`).
     let username = match object.get("username") {
         None | Some(Value::Null) => None,
-        Some(Value::String(u))
-            if !u.is_empty() && u.len() <= MAX_USERNAME && !u.chars().any(char::is_control) =>
-        {
-            Some(u.clone())
-        }
+        Some(Value::String(u)) => match secret_problem(u) {
+            None => Some(u.clone()),
+            Some(why) => {
+                problems.push(format!(
+                    "{label}: `username` {why}: a user name is sealed, as the secret is, and polar-sign seals it"
+                ));
+                None
+            }
+        },
         Some(_) => {
-            problems.push(format!(
-                "{label}: `username` must be 1 to {MAX_USERNAME} characters, none a control character"
-            ));
+            problems.push(format!("{label}: `username` must be text"));
             None
         }
     };
@@ -226,7 +230,7 @@ fn entry(i: usize, item: &Value) -> Result<Entry, Vec<String>> {
             let binding = SecretBinding {
                 host_pattern: host_pattern.clone(),
                 kind,
-                username: username.clone(),
+                username: None,
                 host_key: host_key.clone(),
             };
             if let Err(e) = binding.check() {
@@ -285,8 +289,9 @@ pub(crate) fn context(
     agent: &str,
     version: u64,
     name: &str,
+    field: &str,
 ) -> Result<Vec<u8>, polar_escrow::ContextError> {
-    polar_escrow::binding_context(agent, SECTION_NAME, version, name, "secret")
+    polar_escrow::binding_context(agent, SECTION_NAME, version, name, field)
 }
 
 /// What became of a version of the section, announced to the domain ([`super::ProtocolHandle::credentials_applied`]).
@@ -322,7 +327,7 @@ pub(crate) async fn apply(
                 .push((entry.name.clone(), "the secret is not base64".to_string()));
             continue;
         };
-        let context = match context(agent, version, &entry.name) {
+        let context = match context(agent, version, &entry.name, "secret") {
             Ok(context) => context,
             Err(e) => {
                 warn!(credential = %entry.name, "could not register the credential: {e}");
@@ -330,10 +335,32 @@ pub(crate) async fn apply(
                 continue;
             }
         };
+        let username = match &entry.username {
+            None => None,
+            Some(sealed) => {
+                let part = STANDARD
+                    .decode(sealed)
+                    .ok()
+                    .zip(self::context(agent, version, &entry.name, "username").ok());
+                match part {
+                    Some((ciphertext, context)) => Some(polar_crypto::SealedPart {
+                        ciphertext,
+                        context,
+                    }),
+                    None => {
+                        applied.failed.push((
+                            entry.name.clone(),
+                            "the user name could not be read".to_string(),
+                        ));
+                        continue;
+                    }
+                }
+            }
+        };
         let binding = SecretBinding {
             host_pattern: entry.host_pattern.clone(),
             kind: entry.kind,
-            username: entry.username.clone(),
+            username: None,
             host_key: entry.host_key.clone(),
         };
         match crypto
@@ -342,6 +369,7 @@ pub(crate) async fn apply(
                 SECTION_NAME.to_string(),
                 secret,
                 context,
+                username,
                 binding,
             )
             .await
@@ -407,6 +435,8 @@ pub(crate) mod tests_support {
         pub(crate) refuse: Vec<String>,
         pub(crate) kept: Mutex<Vec<Vec<String>>>,
         pub(crate) withdraws: Vec<String>,
+        /// Each name registered, with the context its sealed user name was handed on with, if it had one.
+        pub(crate) usernames: Mutex<Vec<(String, Option<Vec<u8>>)>>,
     }
 
     #[async_trait::async_trait]
@@ -417,11 +447,16 @@ pub(crate) mod tests_support {
             section: String,
             _secret: Vec<u8>,
             context: Vec<u8>,
+            username: Option<polar_crypto::SealedPart>,
             binding: SecretBinding,
         ) -> Result<(), CryptoError> {
             if self.refuse.contains(&name) {
                 return Err(CryptoError::SecretNotRegistered(name));
             }
+            self.usernames
+                .lock()
+                .unwrap()
+                .push((name.clone(), username.map(|u| u.context)));
             self.registered
                 .lock()
                 .unwrap()
@@ -478,10 +513,11 @@ mod tests {
 
     #[test]
     fn a_sound_body_gives_its_entries() {
+        let username = ciphertext(b"me@example.org", b"x");
         let entries = parse(
             &json!({"credentials": [token_entry("a-site"), {
                 "name": "cloud", "host_pattern": "*.atlassian.net", "kind": "user-password",
-                "username": "me@example.org", "secret": ciphertext(b"api-token", b"x")}]}),
+                "username": username, "secret": ciphertext(b"api-token", b"x")}]}),
             2,
         )
         .unwrap();
@@ -489,7 +525,7 @@ mod tests {
         assert_eq!(entries[0].kind, SecretKind::Token);
         assert_eq!(entries[0].username, None);
         assert_eq!(entries[1].kind, SecretKind::UserPassword);
-        assert_eq!(entries[1].username.as_deref(), Some("me@example.org"));
+        assert_eq!(entries[1].username.as_deref(), Some(username.as_str()));
         assert_eq!(parse(&json!({"credentials": []}), 1), Ok(Vec::new()));
     }
 
@@ -497,15 +533,84 @@ mod tests {
     /// username, which it leaves out, comes back from the signed file as null, and is no username.
     #[test]
     fn a_token_and_a_user_password_in_one_signed_version_read_back_as_they_were_written() {
+        let username = ciphertext(b"me@example.org", b"x");
         let body = json!({"credentials": [token_entry("a-site"), {
             "name": "cloud", "host_pattern": "*.atlassian.net", "kind": "user-password",
-            "username": "me@example.org", "secret": ciphertext(b"api-token", b"x")}]});
+            "username": username, "secret": ciphertext(b"api-token", b"x")}]});
         let signed = polar_sign::dhall(&body).expect("one list");
         let read = polar_sign::evaluate(&signed).unwrap();
         assert_eq!(read["credentials"][0]["username"], Value::Null);
         let entries = parse(&read, 2).unwrap();
         assert_eq!(entries[0].username, None);
-        assert_eq!(entries[1].username.as_deref(), Some("me@example.org"));
+        assert_eq!(entries[1].username.as_deref(), Some(username.as_str()));
+    }
+
+    /// polar-sign, given this section's own schema, seals a typed user name as it seals the secret: each under its own
+    /// field of the same entry, so the two cannot be paired with another entry's.
+    #[test]
+    fn polar_sign_seals_a_typed_user_name_under_its_own_field_of_the_entry() {
+        let description: Value = serde_json::from_str(BODY).unwrap();
+        let mut body = json!({"credentials": [{
+            "name": "cloud", "host_pattern": "*.atlassian.net", "kind": "user-password",
+            "username": "me@example.org", "secret": "api-token"}]});
+        let mut calls: Vec<(String, String)> = Vec::new();
+        let mut encrypt = |plaintext: &[u8], context: &[u8]| {
+            calls.push((
+                String::from_utf8(plaintext.to_vec()).unwrap(),
+                String::from_utf8(context.to_vec()).unwrap(),
+            ));
+            Ok(format!("SEALED-{}", calls.len()))
+        };
+        let mut no_stdin = || Err("no standard input".to_string());
+        polar_sign::seal::seal_body(
+            &description,
+            &mut body,
+            "jira-observer",
+            SECTION_NAME,
+            4,
+            &mut encrypt,
+            &mut no_stdin,
+        )
+        .unwrap();
+        drop(encrypt);
+        calls.sort();
+        assert_eq!(
+            calls,
+            [
+                (
+                    "api-token".to_string(),
+                    "jira-observer|credentials|4|cloud|secret".to_string()
+                ),
+                (
+                    "me@example.org".to_string(),
+                    "jira-observer|credentials|4|cloud|username".to_string()
+                ),
+            ]
+        );
+        assert!(!body.to_string().contains("me@example.org"));
+    }
+
+    /// A credential is its user name and its secret together, and a signed document holds neither in the clear: a user name
+    /// written as text is refused, saying it is sealed as the secret is, and the schema marks it secret, so polar-sign
+    /// seals it.
+    #[test]
+    fn a_user_name_in_the_clear_is_refused_and_the_schema_marks_it_secret() {
+        let problems = parse(
+            &json!({"credentials": [{
+                "name": "cloud", "host_pattern": "*.atlassian.net", "kind": "user-password",
+                "username": "me@example.org", "secret": ciphertext(b"api-token", b"x")}]}),
+            2,
+        )
+        .unwrap_err()
+        .join(" | ");
+        assert!(
+            problems.contains("`username` is not standard base64: a user name is sealed"),
+            "{problems}"
+        );
+        let fields: Value = serde_json::from_str(BODY).unwrap();
+        let fields = &fields["credentials"]["list_of"];
+        assert_eq!(fields["username"]["secret"], true);
+        assert_eq!(fields["username"]["type"], "ciphertext");
     }
 
     #[test]
@@ -569,13 +674,18 @@ mod tests {
             ..Default::default()
         };
         let entries = parse(
-            &json!({"credentials": [token_entry("good"), token_entry("refused")]}),
+            &json!({"credentials": [token_entry("good"), token_entry("refused"), {
+                "name": "cloud", "host_pattern": "*.atlassian.net", "kind": "user-password",
+                "username": ciphertext(b"me@example.org", b"x"), "secret": ciphertext(b"api-token", b"x")}]}),
             8,
         )
         .unwrap();
         let applied = apply(&crypto, "an-agent", 3, &entries).await;
         assert_eq!(applied.version, 3);
-        assert_eq!(applied.registered, vec!["good".to_string()]);
+        assert_eq!(
+            applied.registered,
+            vec!["good".to_string(), "cloud".to_string()]
+        );
         assert_eq!(applied.failed.len(), 1);
         assert_eq!(applied.failed[0].0, "refused");
         assert_eq!(applied.withdrawn, vec!["old".to_string()]);
@@ -586,10 +696,22 @@ mod tests {
         assert_eq!(section, "credentials");
         assert_eq!(context.as_slice(), b"an-agent|credentials|3|good|secret");
         assert_eq!(binding.host_pattern, "site.example.org");
-        // Both names were kept: what the version lists is not withdrawn, registered or not.
+        // The user name goes on sealed, under its own field's context, and never in the binding.
+        let usernames = crypto.usernames.lock().unwrap();
+        assert!(usernames.contains(&("good".to_string(), None)));
+        assert!(usernames.contains(&(
+            "cloud".to_string(),
+            Some(b"an-agent|credentials|3|cloud|username".to_vec())
+        )));
+        assert!(registered.iter().all(|(_, _, _, b)| b.username.is_none()));
+        // Every name was kept: what the version lists is not withdrawn, registered or not.
         assert_eq!(
             crypto.kept.lock().unwrap()[0],
-            vec!["good".to_string(), "refused".to_string()]
+            vec![
+                "good".to_string(),
+                "refused".to_string(),
+                "cloud".to_string()
+            ]
         );
     }
 
@@ -608,6 +730,44 @@ mod tests {
 
     /// The fingerprint of a host key, as `ssh-keygen -l` writes it.
     const PIN: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    /// Where a binding is not usable, the problem names the field to change: a host key, which only an ssh key has, or the
+    /// host pattern; and an entry with no host pattern is told so once, not judged again with an empty one.
+    #[test]
+    fn a_binding_that_cannot_be_used_names_the_field_to_change_once() {
+        let problems = |entry: Value| parse(&json!({"credentials": [entry]}), 2).unwrap_err();
+        let mut no_pattern = token_entry("t");
+        no_pattern.as_object_mut().unwrap().remove("host_pattern");
+        assert_eq!(
+            problems(no_pattern),
+            ["entry `t`: `host_pattern` must be text"]
+        );
+
+        let mut token_with_pin = token_entry("t");
+        token_with_pin["host_key"] = json!(PIN);
+        let got = problems(token_with_pin);
+        assert!(
+            got.len() == 1 && got[0].starts_with("entry `t`: `host_key` or `host_pattern`:"),
+            "{got:?}"
+        );
+
+        let ssh_without_pin = json!({
+            "name": "s", "host_pattern": "git.example.org", "kind": "ssh-key",
+            "secret": ciphertext(b"key", b"context")});
+        let got = problems(ssh_without_pin);
+        assert!(
+            got.len() == 1 && got[0].starts_with("entry `s`: `host_key` or `host_pattern`:"),
+            "{got:?}"
+        );
+
+        let mut token_bad_pattern = token_entry("t");
+        token_bad_pattern["host_pattern"] = json!("*");
+        let got = problems(token_bad_pattern);
+        assert!(
+            got.len() == 1 && got[0].starts_with("entry `t`: `host_pattern`:"),
+            "{got:?}"
+        );
+    }
 
     fn ssh_entry(host_pattern: &str, host_key: Option<&str>) -> Value {
         let mut entry = json!({
