@@ -1369,7 +1369,6 @@ dependencies = [
  "cert-issuer-common",
  "clap",
  "jsonwebtoken",
- "polar-custody",
  "polar-scudo",
  "polar-version",
  "proptest",

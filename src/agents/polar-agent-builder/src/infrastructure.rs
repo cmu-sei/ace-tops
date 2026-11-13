@@ -237,6 +237,9 @@ async fn cassini_tls(
 
 pub struct InfrastructureSupervisorArgs {
     pub service_name: String,
+    /// The agent's crypto actor, when it was started before the infrastructure (`ConfiguredAgent::tls`): linked, not
+    /// spawned again.
+    pub(crate) crypto: Option<CryptoParts>,
     pub health_check_args: HealthCheckArgs,
     /// The one snapshot of the environment the builder took. Held for the life of the
     /// agent, and handed out through `AgentResources::config`.
@@ -357,8 +360,8 @@ struct ClientSetup {
 
 /// The agent's crypto actor: every agent has one, started before anything that uses a key (docs/plans/crypto-actor.md).
 #[derive(Clone)]
-struct CryptoParts {
-    handle: CryptoHandle,
+pub(crate) struct CryptoParts {
+    pub(crate) handle: CryptoHandle,
     /// What the protocol handler asks the crypto actor with, for an agent that escrows secrets.
     credential_port: Option<polar_crypto::CredentialPort>,
     /// Whether the agent escrows secrets (`encryption`).
@@ -570,10 +573,10 @@ impl InfrastructureSupervisor {
 
     /// The agent's crypto actor, before anything that uses a key: one that escrows secrets (`escrow`) reads its identity
     /// and pinned CA and hears the credentials agent; any other needs neither.
-    async fn spawn_crypto(
+    pub(crate) async fn spawn_crypto(
         config: &polar_env::Config,
         escrow: bool,
-        supervisor: ractor::ActorCell,
+        supervisor: Option<ractor::ActorCell>,
     ) -> Result<CryptoParts, ActorProcessingErr> {
         let pass = escrow.then(polar_crypto::CredentialPass::new);
         let mut args = polar_crypto::CryptoActorArgs::unconnected()
@@ -585,13 +588,20 @@ impl InfrastructureSupervisor {
         if let Some(pass) = &pass {
             args = args.with_credential_pass(pass.clone());
         }
-        let (actor, _) = polar_crypto::CryptoActor::spawn_linked(
-            None,
-            polar_crypto::CryptoActor,
-            args,
-            supervisor,
-        )
-        .await
+        // Started before the infrastructure (ConfiguredAgent::tls), it has no supervisor yet: the infrastructure links
+        // it when it starts.
+        let (actor, _) = match supervisor {
+            Some(supervisor) => {
+                polar_crypto::CryptoActor::spawn_linked(
+                    None,
+                    polar_crypto::CryptoActor,
+                    args,
+                    supervisor,
+                )
+                .await
+            }
+            None => polar_crypto::CryptoActor::spawn(None, polar_crypto::CryptoActor, args).await,
+        }
         .map_err(ActorProcessingErr::from)?;
         Ok(CryptoParts {
             handle: CryptoHandle::new(actor.clone()),
@@ -1021,8 +1031,17 @@ impl Actor for InfrastructureSupervisor {
 
         // The crypto actor: every agent's, started before anything that uses a key, Cassini's client among them
         // (docs/plans/crypto-actor.md). It is told the client once there is one.
-        let crypto =
-            Self::spawn_crypto(&args.config, args.wants_crypto, myself_cell.clone()).await?;
+        let crypto = match args.crypto {
+            // Started before the infrastructure, for the domain's TLS before it: linked here, its end ends the agent.
+            Some(crypto) => {
+                crypto.handle.actor().get_cell().link(myself_cell.clone());
+                crypto
+            }
+            None => {
+                Self::spawn_crypto(&args.config, args.wants_crypto, Some(myself_cell.clone()))
+                    .await?
+            }
+        };
 
         let (mut client, self_test) = if args.with_client {
             let (client, self_test) = Self::spawn_client_parts(
@@ -1898,6 +1917,7 @@ mod tests {
                 None,
                 InfrastructureSupervisor,
                 InfrastructureSupervisorArgs {
+                    crypto: None,
                     service_name: service.to_string(),
                     health_check_args: HealthCheckArgs::new(false, 300, vec![])
                         .with_config(startup.health),
@@ -3954,6 +3974,7 @@ mod service_tests {
                 None,
                 InfrastructureSupervisor,
                 InfrastructureSupervisorArgs {
+                    crypto: None,
                     service_name: "a-service".to_string(),
                     health_check_args: HealthCheckArgs::new(false, 300, vec![])
                         .with_config(startup.health),

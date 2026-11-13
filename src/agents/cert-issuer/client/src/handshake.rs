@@ -27,7 +27,6 @@ use cert_issuer_common::{
     CertType, InternalIssueRequest, IssueError, IssueRequest, IssueResponse, SubjectDnDefaults,
     ValidateRequest, ValidateResponse,
 };
-use polar_custody::client::ClientKey;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -156,73 +155,23 @@ impl HandshakeClient {
     /// once from `GET /ca` without verifying the server, then trust only
     /// what came back.
     pub async fn for_trust_mode(base_url: String, ca_path: Option<&str>) -> Result<Self, String> {
-        let pem = match ca_path {
-            Some(path) => std::fs::read(path)
-                .map_err(|e| format!("reading CA certificate from {path}: {e}"))?,
-            None => Self::fetch_ca_pem(&base_url).await?.into_bytes(),
-        };
+        let pem = Self::trusted_ca_pem(&base_url, ca_path).await?;
         Self::with_root_ca(base_url, &pem)
     }
 
-    /// `for_trust_mode`, plus a client certificate presented on the
-    /// handshake -- what `/internal/issue` needs. `cert_path` is the PEM
-    /// file the agent's own mTLS certificate already lives in
-    /// (TLS_CLIENT_CERT), and `key` its key: the file it lives in
-    /// (TLS_CLIENT_KEY), or the custody daemon that holds it
-    /// (POLAR_CUSTODY_SOCKET). Missing or malformed files are errors;
-    /// there is no fallback to an anonymous client.
-    pub async fn for_trust_mode_with_identity(
-        base_url: String,
-        ca_path: Option<&str>,
-        cert_path: &str,
-        key: &ClientKey,
-    ) -> Result<Self, String> {
-        let ca_pem = match ca_path {
+    /// The CA cert-issuer is trusted under, chosen as [`for_trust_mode`](Self::for_trust_mode) chooses it: the file at
+    /// `ca_path`, or, unset, the degraded self-bootstrap mode's fetch from `GET /ca`.
+    pub async fn trusted_ca_pem(base_url: &str, ca_path: Option<&str>) -> Result<Vec<u8>, String> {
+        Ok(match ca_path {
             Some(path) => std::fs::read(path)
                 .map_err(|e| format!("reading CA certificate from {path}: {e}"))?,
-            None => Self::fetch_ca_pem(&base_url).await?.into_bytes(),
-        };
-        let key_path = match key {
-            ClientKey::File(path) => path,
-            ClientKey::Custody(_) => {
-                return Self::with_root_ca_and_custody(base_url, &ca_pem, cert_path, key);
-            }
-        };
-        let mut identity_pem = std::fs::read(cert_path)
-            .map_err(|e| format!("reading client certificate from {cert_path}: {e}"))?;
-        identity_pem.push(b'\n');
-        identity_pem.extend(
-            std::fs::read(key_path)
-                .map_err(|e| format!("reading client key from {key_path}: {e}"))?,
-        );
-        Self::with_root_ca_and_identity(base_url, &ca_pem, &identity_pem)
+            None => Self::fetch_ca_pem(base_url).await?.into_bytes(),
+        })
     }
 
-    /// Like `with_root_ca_and_identity`, the key being the custody
-    /// daemon's (docs/architecture/key-custody.md): a PEM identity cannot
-    /// carry a key the client never holds, so rustls is configured here,
-    /// TLS 1.3 alone, and handed to reqwest whole.
-    fn with_root_ca_and_custody(
-        base_url: String,
-        ca_pem: &[u8],
-        cert_path: &str,
-        key: &ClientKey,
-    ) -> Result<Self, String> {
-        use rustls::pki_types::CertificateDer;
-        use rustls::pki_types::pem::PemObject as _;
-        let mut roots = rustls::RootCertStore::empty();
-        for certificate in CertificateDer::pem_slice_iter(ca_pem) {
-            roots
-                .add(certificate.map_err(|e| format!("invalid CA certificate PEM: {e}"))?)
-                .map_err(|e| format!("invalid CA certificate: {e}"))?;
-        }
-        let verifier = rustls::client::WebPkiServerVerifier::builder(std::sync::Arc::new(roots))
-            .build()
-            .map_err(|e| format!("building the server verifier: {e}"))?;
-        let chain = CertificateDer::pem_file_iter(cert_path)
-            .and_then(|certificates| certificates.collect::<Result<Vec<_>, _>>())
-            .map_err(|e| format!("reading client certificate from {cert_path}: {e}"))?;
-        let tls = polar_custody::client::client_config(verifier, chain, key)?;
+    /// A client over `tls`, the agent's TLS from its crypto actor (docs/plans/crypto-actor.md): its own client
+    /// certificate presented on the handshake, which `/internal/issue` needs, and cert-issuer verified as `tls` says.
+    pub fn with_tls(base_url: String, tls: rustls::ClientConfig) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .use_preconfigured_tls(tls)
@@ -472,13 +421,9 @@ mod identity_build_tests {
 #[cfg(test)]
 mod custody_identity_tests {
     use super::*;
-    use polar_custody::custody::Custody;
-    use polar_custody::protocol::Slot;
-    use polar_custody::server::{Callers, bind, serve};
     use rustls::pki_types::pem::PemObject as _;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use std::os::unix::fs::MetadataExt as _;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     const IDENTITY: &str = "credentials-agent.polar.serviceaccount.cluster.local";
@@ -557,43 +502,30 @@ mod custody_identity_tests {
         port
     }
 
+    /// The client presents the certificate of the TLS it was given, the agent's crypto actor's
+    /// (docs/plans/crypto-actor.md), and verifies cert-issuer as that configuration says.
     #[tokio::test(flavor = "multi_thread")]
-    async fn with_the_custody_daemon_s_key_the_client_presents_its_certificate() {
+    async fn the_client_presents_the_certificate_of_the_tls_it_was_given() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (issuer, ca_pem) = ca();
-        let dir = tempfile::tempdir().unwrap();
-        let uid = std::fs::metadata(dir.path()).unwrap().uid();
-        let socket = dir.path().join("custody.sock");
-        tokio::spawn(serve(
-            bind(&socket).unwrap(),
-            Arc::new(RwLock::new(Custody::new(&ca_pem).unwrap())),
-            Arc::new(Callers {
-                installer_uid: uid,
-                workload_uids: vec![uid],
-            }),
-        ));
-        // polar-init's part: the daemon's CSR certified and installed, and the certificate in the bundle.
-        let daemon = polar_custody::client::CustodyClient::new(&socket);
-        let csr =
-            tokio::task::block_in_place(|| daemon.make_csr(Slot::Client, IDENTITY, &[])).unwrap();
-        let mut request = rcgen::CertificateSigningRequestParams::from_pem(&csr).unwrap();
-        request.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        let certificate = request.signed_by(&issuer).unwrap().pem();
-        tokio::task::block_in_place(|| daemon.install(Slot::Client, vec![certificate.clone()]))
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![IDENTITY.to_string()]).unwrap();
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        let certificate = params.signed_by(&key, &issuer).unwrap().pem();
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
             .unwrap();
-        let cert_path = dir.path().join("cert.pem");
-        std::fs::write(&cert_path, &certificate).unwrap();
-        let ca_path = dir.path().join("ca.pem");
-        std::fs::write(&ca_path, &ca_pem).unwrap();
+        let tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_client_auth_cert(
+                vec![CertificateDer::from_pem_slice(certificate.as_bytes()).unwrap()],
+                PrivateKeyDer::from_pem_slice(key.serialize_pem().as_bytes()).unwrap(),
+            )
+            .unwrap();
 
         let port = server(&issuer, &ca_pem).await;
-        let client = HandshakeClient::for_trust_mode_with_identity(
-            format!("https://localhost:{port}"),
-            Some(ca_path.to_str().unwrap()),
-            cert_path.to_str().unwrap(),
-            &polar_custody::client::ClientKey::Custody(socket.display().to_string()),
-        )
-        .await
-        .unwrap();
+        let client = HandshakeClient::with_tls(format!("https://localhost:{port}"), tls).unwrap();
         let seen = client
             .http
             .get(format!("{}/who", client.base_url))

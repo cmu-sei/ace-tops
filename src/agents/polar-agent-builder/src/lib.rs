@@ -482,6 +482,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
         Ok(ConfiguredAgent {
             builder: self,
             startup,
+            crypto: None,
         })
     }
 
@@ -507,6 +508,7 @@ impl<M: ractor::Message> AgentBuilder<M> {
         ConfiguredAgent {
             builder: self,
             startup: configured.startup,
+            crypto: None,
         }
     }
 
@@ -522,6 +524,8 @@ impl<M: ractor::Message> AgentBuilder<M> {
 pub struct ConfiguredAgent<M: ractor::Message> {
     builder: AgentBuilder<M>,
     startup: startup::Startup,
+    /// The agent's crypto actor, if the domain asked for its TLS before the infrastructure ([`Self::tls`]).
+    crypto: Option<infrastructure::CryptoParts>,
 }
 
 impl<M: ractor::Message> ConfiguredAgent<M> {
@@ -539,12 +543,31 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
         &self.startup.config
     }
 
+    /// The agent's TLS, for what the domain starts before its infrastructure (the credentials agent's clients of
+    /// cert-issuer): the crypto actor is started now, first (docs/plans/crypto-actor.md), and the infrastructure adopts
+    /// it. The same handle as [`AgentResources::tls`].
+    pub async fn tls(&mut self) -> Result<crypto::TlsHandle, ActorProcessingErr> {
+        if self.crypto.is_none() {
+            self.crypto = Some(
+                infrastructure::InfrastructureSupervisor::spawn_crypto(
+                    &self.startup.config,
+                    self.builder.wants_crypto,
+                    None,
+                )
+                .await?,
+            );
+        }
+        let crypto = self.crypto.as_ref().expect("started above");
+        Ok(crypto::TlsHandle::new(crypto.handle.actor()))
+    }
+
     /// Spawns the infrastructure: the health check, the router, the subscriptions and the
     /// Cassini client, on the snapshot taken when this was configured.
     pub async fn build(self) -> Result<AgentResources, ActorProcessingErr> {
         let ConfiguredAgent {
             builder: this,
             startup,
+            crypto: early_crypto,
         } = self;
         let health_check_args = HealthCheckArgs::new(
             startup.health.expects_graph,
@@ -604,6 +627,7 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
             None,
             InfrastructureSupervisor,
             infrastructure::InfrastructureSupervisorArgs {
+                crypto: early_crypto,
                 service_name: this.service_name.clone(),
                 health_check_args,
                 config: startup.config,
@@ -789,6 +813,7 @@ impl<M: ractor::Message> ConfiguredService<M> {
             None,
             InfrastructureSupervisor,
             infrastructure::InfrastructureSupervisorArgs {
+                crypto: None,
                 service_name: this.service_name.clone(),
                 health_check_args,
                 config: startup.config,

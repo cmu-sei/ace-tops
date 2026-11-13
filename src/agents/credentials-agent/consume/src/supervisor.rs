@@ -940,7 +940,7 @@ impl Actor for ConsumerSupervisor {
         for subscription in Self::request_subscriptions(&myself) {
             builder = builder.with_subscription(subscription);
         }
-        let configured = builder
+        let mut configured = builder
             .with_drain(|| ConsumerSupervisorMessage::PrepareShutdown)
             .into_configured(judged);
         let graph_settings =
@@ -1026,18 +1026,26 @@ impl Actor for ConsumerSupervisor {
         // whose workload it is. Without the certificate a request would be
         // treated as that workload's own, and refused once the issuance
         // floor is configured (docs/architecture/cert-issuer-isolation.md).
+        //
+        // The certificate and its key are the agent's own, presented through the TLS its crypto actor makes
+        // (docs/plans/crypto-actor.md): the crypto actor is started now, before the infrastructure, for these clients.
         let cert_issuer_ca_path = settings.ca_cert.clone();
-        let own_cert_path = settings.own_cert_path.clone();
-        let own_key = settings.own_key.clone();
+        let tls = configured.tls().await?;
         let make_cert_issuer_client = || async {
-            HandshakeClient::for_trust_mode_with_identity(
-                cert_issuer_url.clone(),
-                cert_issuer_ca_path.as_deref(),
-                &own_cert_path,
-                &own_key,
-            )
-            .await
-            .map_err(|e| {
+            let ca_pem =
+                HandshakeClient::trusted_ca_pem(&cert_issuer_url, cert_issuer_ca_path.as_deref())
+                    .await
+                    .map_err(|e| {
+                        ActorProcessingErr::from(format!(
+                            "cannot establish trust in cert-issuer: {e}"
+                        ))
+                    })?;
+            let verifier = cert_issuer_verifier(&ca_pem).map_err(ActorProcessingErr::from)?;
+            let config = tls
+                .client_config(verifier)
+                .await
+                .map_err(|e| ActorProcessingErr::from(format!("the TLS to cert-issuer: {e}")))?;
+            HandshakeClient::with_tls(cert_issuer_url.clone(), config).map_err(|e| {
                 ActorProcessingErr::from(format!("cannot establish trust in cert-issuer: {e}"))
             })
         };
@@ -3596,4 +3604,21 @@ mod builder_wiring_tests {
             ]
         );
     }
+}
+
+/// The verifier of cert-issuer's certificate, under the CA in `ca_pem`.
+fn cert_issuer_verifier(
+    ca_pem: &[u8],
+) -> Result<std::sync::Arc<rustls::client::WebPkiServerVerifier>, String> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject as _;
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(ca_pem) {
+        roots
+            .add(certificate.map_err(|e| format!("cert-issuer's CA: {e}"))?)
+            .map_err(|e| format!("cert-issuer's CA: {e}"))?;
+    }
+    rustls::client::WebPkiServerVerifier::builder(std::sync::Arc::new(roots))
+        .build()
+        .map_err(|e| format!("cert-issuer's verifier: {e}"))
 }
