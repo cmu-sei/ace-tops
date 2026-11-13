@@ -127,6 +127,19 @@ export def layer_states [items: list, commit: string] {
     }
 }
 
+# The Kustomizations of Polar's layers in the cluster (`present`, their names) that what was just published (`published`) no longer
+# names: a layer taken out of the target, or a configuration under test the cluster no longer carries. Left in place, one fails
+# ("kustomization path not found") and holds the wait for ever, and prunes nothing; deleted, Flux prunes what it applied, as
+# for any object no longer rendered, and a claim keeps its data (deploy-objects.nu, protect_claims).
+export def dropped_layers [present: list<string>, published: list<string>] {
+    $present | where {|n| ($n | str starts-with "polar-") and $n not-in $published } | sort
+}
+
+# The names of the Kustomizations in a published `flux/kustomizations.yaml`, as deploy-objects.nu's `yaml_docs` writes it.
+export def published_layers [text: string] {
+    $text | split row "\n---\n" | each {|d| $d | from yaml } | compact | where {|d| ($d.kind? | default "") == "Kustomization" } | each {|d| $d.metadata.name }
+}
+
 # Every layer is Ready and applied from the published commit (and there is at least one).
 export def settled [states: list] {
     ($states | is-not-empty) and ($states | all {|s| $s.ready and $s.current })
@@ -344,6 +357,11 @@ def "main install" [
     run_ok "waiting for Flux to fetch the deployment repository" { ^kubectl -n $FLUX_NS wait --for=condition=Ready --timeout=180s $"gitrepository/($SOURCE_NAME)" } | ignore
     print "  ok: Flux has fetched the deployment repository"
     for f in ($objects | skip 1) { run_ok $"applying ($f | path basename)" { ^kubectl apply -f $f } | print }
+    let published = (published_layers (open --raw ($objects | last)))
+    let present = (run_ok "listing the Kustomizations" { ^kubectl -n $FLUX_NS get kustomizations.kustomize.toolkit.fluxcd.io -o jsonpath='{.items[*].metadata.name}' } | split row " " | where {|n| $n | is-not-empty })
+    for gone in (dropped_layers $present $published) {
+        run_ok $"deleting ($gone), a layer no longer published" { ^kubectl -n $FLUX_NS delete kustomization $gone --timeout=300s } | print
+    }
     rm -rf $work
     print $"  ok: Flux reconciles the layers of deploy-($target) from ($commit | str substring 0..11); next: nu infra/flux.nu wait ($target)"
 }

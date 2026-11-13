@@ -25,7 +25,8 @@
 # counts as done.
 
 use std/assert
-use ../flux.nu [with_requeue, reconcile_request, commit_of_revision, due_stale, revision_waited_on, stale_waits, track_stale, describe_state, layer_states, settled]
+use ../deploy-objects.nu
+use ../flux.nu [dropped_layers, published_layers, with_requeue, reconcile_request, commit_of_revision, due_stale, revision_waited_on, stale_waits, track_stale, describe_state, layer_states, settled]
 
 def kustomization [name: string, ready: string, revision: string, reason: string = "ReconciliationSucceeded", message: string = ""] {
     {
@@ -50,6 +51,24 @@ const WAITING = "Running health checks for revision main@sha1:abc with a timeout
 
 def main [] {
     let tests = [
+        {
+            name: "a layer of Polar's no longer published is dropped, and nothing else is"
+            body: {
+                let present = ["polar-agents" "polar-under-test-gitlab" "polar-data" "flux-own" "polar-old-layer"]
+                let published = ["polar-agents" "polar-data"]
+                assert equal (dropped_layers $present $published) ["polar-old-layer" "polar-under-test-gitlab"]
+                assert equal (dropped_layers ["polar-agents"] ["polar-agents" "polar-new"]) []
+                assert equal (dropped_layers [] ["polar-agents"]) []
+            }
+        }
+        {
+            name: "the published Kustomizations are read by name, as deploy-objects writes them"
+            body: {
+                let layer = {|name, deps| deploy-objects kustomization { name: $name, depends_on: $deps, wait_for: [] } [] false }
+                let text = (deploy-objects yaml_docs [(do $layer "agents" []) (do $layer "data" ["agents"])])
+                assert equal (published_layers $text) ["polar-agents" "polar-data"]
+            }
+        }
         {
             name: "the kustomize-controller is told to ask again after five seconds, and nothing else changes"
             body: {
