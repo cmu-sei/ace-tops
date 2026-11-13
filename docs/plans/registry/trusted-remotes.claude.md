@@ -179,6 +179,36 @@ register_secret/is_username 8/8 caught; builder entry/apply/context 13 caught + 
 field-naming closed with a test). Docs: jira.md, git-controller.md. NOT DEPLOYED: u7c agents rebuild at the next
 bring-up; then a Jira user-password credential must be re-sealed by the user.
 
+## C2 DESIGN (2026-11-13, written while the maintainer was away; NOT built; for review)
+Found reading http.rs: today `run` → admit → `CredentialSource::http(name, host)` → CryptoActor `UseCredential` returns
+plaintext `HttpCredential` (Bearer | Basic{username, password}) → `perform(.., credential, ..)` → `attach()` puts it on
+the reqwest RequestBuilder and computes `Presented` + `looks_base64` from it. Registry path (`at_a_registry`):
+`answer_challenge` sends the login (Basic) to the auth host named by the WWW-Authenticate challenge (judged hop), parses
+`{token|access_token}` (≤ MAX_TOKEN_REPLY), and presents that DERIVED bearer token to the registry; the handler holds it.
+Redirect hops re-admit (binding checked per host). git.rs: `CredentialSource::git` → plaintext `GitCredential` → libgit2
+callbacks (`Cred::userpass_plaintext`, `ssh_key_from_memory`).
+Proposed (each for review):
+- polar-crypto gains reqwest (already linked into every agent via the builder; one-artifact unchanged) and a message
+  `SendWithCredential { pass, name, host, request: reqwest::Request, client: reqwest::Client }`: the handler builds the
+  request WITHOUT auth, with its own client (egress proxy + roots), the CryptoActor checks the binding names the
+  request's host, attaches Bearer/Basic, executes, and replies with the reqwest::Response (body streams to the handler,
+  which reads it as now) plus the facts (`Presented`, `looks_base64`) it computed. Each redirect hop is a new
+  SendWithCredential, so the binding is checked per hop in the holder.
+- Registry auth: `SendToRegistry { pass, name, scope, request, client }`: the CryptoActor runs the challenge exchange
+  itself (realm judged by the handler first: the handler passes the judged realm URL, so judging stays in the judge), and
+  KEEPS the derived token (per credential + realm + scope, until its `expires_in` or a 401) — the handler never holds it.
+  Moves bearer_challenge parsing + TokenReply into polar-crypto (or a small shared crate both use).
+- Protocol trait: `type Credential` for Http becomes a reference (name + the CredentialPort), never plaintext;
+  `CredentialSource::http` returning plaintext is removed; the `domain_has_no_way_out` test extended: no plaintext
+  credential type reachable from the builder's protocol code except inside polar-crypto.
+- C2c git: fetch on gitoxide (daveman1010221/gitoxide, pinned rev) with an HTTP transport whose requests go through
+  SendWithCredential; ssh fetch waits for C3's signer.
+- Bites: C2a plain HTTP (Bearer/Basic, hops); C2b registry exchange; C2c git over HTTPS on gitoxide. "Every agent at
+  once": none deployed until C2a–C2c are all in; the old path removed in the same series.
+Open for the maintainer: polar-crypto owning an HTTP client and the OCI token exchange (alternative: a separate
+"credentialed-sender" actor in the builder that receives the plaintext from the CryptoActor — rejected by me: it is
+the handler again under another name).
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
