@@ -136,7 +136,7 @@ rm -rf ~/.kube/cache/discovery/127.0.0.1_6443
 *On minikube* (an Apple-silicon Mac, for example), the default topology, `single`, is the one: one node, no node pools. Use
 minikube **v1.39.0 or later**, the first to offer Kubernetes 1.36 and 1.37 (it starts 1.37 by default; this is from its
 release notes as an aggregator reports them, so check minikube's own release page). Give it as much memory and as many CPUs as
-you can spare: the deployment is twenty-odd pods (Neo4j, Keycloak and Postgres among them).
+you can spare: the deployment is twenty-odd pods (Neo4j among them).
 
 ```bash
 minikube start --cpus <n> --memory <MiB> --extra-config=kubelet.registry-pull-qps=0
@@ -265,8 +265,9 @@ Choose it on a fresh cluster: a deployed one's volumes are bound to its nodes, s
 choice (`infra/targets/<target>/cluster-inputs.nuon`, which is not committed), so later runs need no flag. A target's layouts are in its `config.nuon`, under `cluster.placement`.
 
 What `sandbox-local` deploys: Neo4j, Cassini, `cert-issuer`, the credentials agent and its observer, ACE, the ingestion
-agents, a git server for the schedules repository, and Keycloak with its own Postgres (an optional identity-provider route
-for certificates for people). Each runs as a Deployment of one pod that restarts in place whenever it ends: its init
+agents, and a git server for the schedules repository. Keycloak with its own Postgres (an optional identity-provider route
+for certificates for people) is left out of `sandbox-local` for now: its charts are in `infra/layers/2-services`, and adding
+their files back to the target's data layer and its chart list brings it back. Each runs as a Deployment of one pod that restarts in place whenever it ends: its init
 container asks for its certificates again each time, which is how it rejuvenates and how it recovers when a certificate or
 its environment changes. ACE holds no other cluster permissions.
 
@@ -830,8 +831,8 @@ the dev container, where `up.nu` has already started what it uses. On your own m
 port-forwards for everything you'd normally want reachable:
 
 ```bash
-just port-forwards-up       # neo4j (7473/7687), keycloak (8080), ace (8050),
-                            # jaeger (4318/16686), credentials-agent observer (8081)
+just port-forwards-up       # neo4j (7473/7687), ace (8050), jaeger (4318/16686),
+                            # credentials-agent observer (8081); keycloak (8080) only when named
 just port-forwards-down     # stop them
 ```
 
@@ -842,7 +843,7 @@ not something to leave running in a dedicated terminal.
 - ACE's dashboard: `http://localhost:8050`
 - Neo4j Browser: `https://localhost:7473` (requires your user
   certificate; see below)
-- Keycloak admin console: `http://localhost:8080`
+- Keycloak admin console, where a target deploys Keycloak: `http://localhost:8080` (`just port-forwards-up keycloak`)
 - Jaeger traces: `http://localhost:16686`
 - Credentials-agent observer (used by the admin tools): `http://localhost:8081`
 
@@ -898,7 +899,8 @@ rebuilding the cluster.
 
 ### Bootstrapping Keycloak
 
-`sandbox-local`'s Keycloak deploys with no realm, client, or users
+`sandbox-local` leaves Keycloak out for now (above, what it deploys); this is for a target that deploys it. Its Keycloak
+deploys with no realm, client, or users
 configured yet. A single idempotent recipe sets all of it up — safe to
 re-run any time:
 
@@ -1167,6 +1169,8 @@ claimed through the admin flow; see **Admin access and your user
 certificate**, above.
 
 ## Validating Keycloak certificate issuance
+
+For a target that deploys Keycloak; `sandbox-local` leaves it out for now.
 
 Kubernetes workloads (ACE, the ingestion agents) get their certificates
 automatically, with no manual steps. People normally get theirs through
