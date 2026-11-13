@@ -25,7 +25,7 @@
 
 PAIR: `nix-cache.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
-PARENT: `../registry.claude.md`. AS-OF main a9ef59e4 (2026-11-12). STATUS: proposed; cleared to build by the
+PARENT: `../registry.claude.md`. AS-OF main a9ef59e4 (2026-11-12). STATUS: proposed; NC1 done; cleared to build by the
 maintainer's "write up the proposal and then just start implementing this" (2026-11-12). Steps NC1-NC5 below.
 
 ## PROTOCOL FACTS (Nix binary cache; check each against `nix` itself in tests)
@@ -60,9 +60,22 @@ maintainer's "write up the proposal and then just start implementing this" (2026
 - Uploads (nix copy --to, PUT narinfo/nar): mTLS + policy; not in NC1-NC5 unless needed.
 
 ## STEPS
-- NC1 formats crate (`polar-registry/nix`?): StorePath parse/print, nix32, NAR writer (from fs) + reader/hasher,
-  narinfo parse/render, sign/verify. Oracle tests vs `nix` (skip when absent, say so), proptests (round trips,
-  rejection of malformed).
+- NC1 formats crate. DONE 2026-11-12: `src/agents/polar-registry/nix` (package polar-registry-nix; deps only
+  existing workspace ones: ed25519-dalek 2.2, sha2, base64, hex, thiserror). nix32 (decode refuses stray high bits:
+  one spelling), Sha256 (reads sha256:nix32|hex and SRI; prints sha256:nix32), StorePath (base-name kept, orders as
+  Nix; names per Nix 2.34 probed: `.foo` `-a` `...` ok; `.` `..` space 212 chars refused), NAR (Node model;
+  `dump` from fs as nix-store --dump, exec = owner x bit; strict `decode`: zero padding, entry names, strict order,
+  MAX_DEPTH 256, no trailing bytes, link target non-empty no NUL), NarInfo (parse strict on required/dup keys,
+  unknown keys dropped as Nix ignores them; render in Nix's order; fingerprint; sign replaces same-name sig),
+  signature (Nix key/sig spellings; verify_strict; SecretKey Debug hides key), cache_info.
+  Oracle (tests/nix.rs, real nix 2.34.8, skips loudly if absent): nix-store --dump bytes == ours for a tree with
+  every node kind and owner-only/others-only exec; nix hash path; nix32 vs `nix hash convert`; cache.nixos.org-1 sig
+  on nix's own path verifies under our fingerprint; `nix copy --to file://…?compression=none&secret-key=` narinfo
+  parses and renders byte-identical, our Ed25519 sig == Nix's, its .nar == our dump. Props (tests/props.rs, 8).
+  cargo-mutants (package only, POLAR_VERSION=1.0.0): 242 mutants, 225 caught, 16 unviable, 1 missed =
+  nix32.rs encode `|`→`^` (equivalent: bit ranges disjoint; commented). First run missed 30; closed with tests.
+  `just static-analysis`: geiger (needs absolute manifest path), semver-checks (pkcs1 doc error on logger), udeps
+  (other crates only), mutants (workspace copy lacks VERSION) fail — all pre-existing, none in this crate.
 - NC2 CAS + Nix face server (hyper-util, plain http read), Polar sig; test: `nix copy --from http://127.0.0.1:P
   --to <tmp store>` with trusted-public-keys = Polar's.
 - NC3 faults from a binary cache (test upstream = a second instance / static dir made by `nix copy --to file://`),

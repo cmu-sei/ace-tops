@@ -7485,6 +7485,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "polar-registry-nix"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "proptest",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "polar-router"
 version = "1.0.0"
 dependencies = [

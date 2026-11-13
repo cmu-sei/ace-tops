@@ -67,6 +67,7 @@ members = [
     "polar-env",
     "polar-git-server/common",
     "polar-git-server/server",
+    "polar-registry/nix",
     "polar-health",
     "polar-log",
     "polar-scudo",
