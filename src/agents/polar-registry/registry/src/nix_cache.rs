@@ -28,9 +28,10 @@
 //! (zstd); any other request is refused, so nothing a reader asks for names anything but a path or an archive.
 
 use crate::blobs::{Blobs, Expect, PutError, temp_name};
+use crate::faults::Faults;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Path as UrlPath, State};
+use axum::extract::{ConnectInfo, Path as UrlPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -42,6 +43,7 @@ use polar_registry_nix::{FormatError, nix32};
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
@@ -178,7 +180,7 @@ impl NixCache {
 }
 
 /// The cache's routes.
-pub fn router(cache: Arc<NixCache>) -> Router {
+pub fn router(cache: Arc<Faults>) -> Router {
     Router::new()
         .route("/nix-cache-info", get(info))
         .route("/:file", get(narinfo))
@@ -199,33 +201,35 @@ fn failed(e: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
-async fn info(State(cache): State<Arc<NixCache>>) -> Response {
+async fn info(State(faults): State<Arc<Faults>>) -> Response {
     (
         [(header::CONTENT_TYPE, "text/x-nix-cache-info")],
-        cache_info(cache.priority),
+        cache_info(faults.cache().priority),
     )
         .into_response()
 }
 
-async fn narinfo(State(cache): State<Arc<NixCache>>, UrlPath(file): UrlPath<String>) -> Response {
+async fn narinfo(
+    State(faults): State<Arc<Faults>>,
+    ConnectInfo(requester): ConnectInfo<SocketAddr>,
+    UrlPath(file): UrlPath<String>,
+) -> Response {
     let Some(hash_part) = file.strip_suffix(".narinfo") else {
         return not_held();
     };
-    let hash_part = hash_part.to_string();
-    let found = tokio::task::spawn_blocking(move || cache.narinfo(&hash_part)).await;
-    match found {
-        Ok(Ok(Some(info))) => (
+    match faults.lookup(hash_part, Some(requester)).await {
+        Ok(Some(info)) => (
             [(header::CONTENT_TYPE, "text/x-nix-narinfo")],
             info.render(),
         )
             .into_response(),
-        Ok(Ok(None)) => not_held(),
-        Ok(Err(e)) => failed(e),
+        Ok(None) => not_held(),
         Err(e) => failed(e),
     }
 }
 
-async fn nar(State(cache): State<Arc<NixCache>>, UrlPath(file): UrlPath<String>) -> Response {
+async fn nar(State(faults): State<Arc<Faults>>, UrlPath(file): UrlPath<String>) -> Response {
+    let cache = faults.cache();
     let Some(digest) = file
         .strip_suffix(".nar.zst")
         .and_then(|h| nix32::decode::<32>(h).ok())
@@ -252,7 +256,11 @@ async fn nar(State(cache): State<Arc<NixCache>>, UrlPath(file): UrlPath<String>)
         .into_response()
 }
 
-/// Serves the cache on `listener` until it fails.
-pub async fn serve(listener: tokio::net::TcpListener, cache: Arc<NixCache>) -> io::Result<()> {
-    axum::serve(listener, router(cache)).await
+/// Serves the cache on `listener` until it fails, faulting as `faults` says.
+pub async fn serve(listener: tokio::net::TcpListener, faults: Arc<Faults>) -> io::Result<()> {
+    axum::serve(
+        listener,
+        router(faults).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }

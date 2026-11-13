@@ -28,8 +28,8 @@
 >
 > A **feature-level plan**, part of [Polar's registry](../registry.md). It describes Polar's `main` as it is.
 
-**Status: being built.** Nix's formats, the content store and the Nix face are built and tested against Nix
-itself; faults, the host's store and the cluster are next.
+**Status: being built.** Nix's formats, the content store, the Nix face and faults from binary caches are built and
+tested against Nix itself; the host's store and the cluster are next.
 
 ## 1. The need
 
@@ -138,14 +138,22 @@ Little of it, and none in a cluster:
   was said to be.
 - The Nix face serves paths from it, signed with Polar's key: Nix copies a path and its references from it when it
   trusts that key, and refuses them when it does not, or when an archive is not what its narinfo says.
-- A path enters only when given to it directly. Nothing fetches on a miss yet, no cache runs in Polar's clusters, and a
-  build pod cannot run Nix.
+- A path it does not hold faults in from the binary caches it is given, each trusted by its own key: the narinfo must
+  be for the path asked, signed by that key, and name its archive under that cache; the archive is checked as it
+  enters. Every fault is recorded, with who asked and what each cache said. Faults can be switched off, and a path
+  then missing is recorded too. It has faulted a path in from `cache.nixos.org` exactly as Nix holds it.
+- An archive compressed with xz, as older paths on `cache.nixos.org` are, is refused for now, with that reason.
+- No cache runs in Polar's clusters, the host's store is not yet an upstream, and a build pod cannot run Nix.
 
 ## 7. What is left before this is met
 
 - **The five steps above.**
 - **Nix in a build pod,** a feature of its own: the pod's own Nix needs a store it can write, inside a pod that may not
   write its image or use its node, and it needs to trust Polar's key alone.
+- **Archives held whole in memory while they are fetched,** up to a bound, until the builder's way out can stream.
+- **Clients remember a cache's answers.** Nix keeps a cache's narinfos for a month, by its address. A registry that is
+  reset at the same address meets clients asking for archives it no longer holds; a build pod starts with an empty
+  Nix and is unaffected.
 - **Who holds Polar's signing key:** first a key the registry keeps on its own volume; then one certified through the
   credentials agent, as other workload keys are.
 - **Sharing storage with the host,** not only downloads: the cluster still keeps its own copy of each path a build

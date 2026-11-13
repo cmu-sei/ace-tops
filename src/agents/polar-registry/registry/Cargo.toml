@@ -38,6 +38,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# The cache's way to its upstreams, a trait its agent implements.
+async-trait.workspace = true
 
 [dev-dependencies]
 # Blobs, archives and caches made and read back (tests/).

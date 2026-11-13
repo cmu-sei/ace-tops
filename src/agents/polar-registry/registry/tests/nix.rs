@@ -25,127 +25,17 @@
 //! trusts Polar's key and refuses the paths when it does not, and refuses an archive that is not what its narinfo says.
 //! The paths are two tiny derivations built here, one referring to the other, so that they are input-addressed: Nix
 //! takes a content-addressed path without any signature, which would prove nothing about Polar's. Each test says it
-//! skipped where `nix` is not on the PATH; Polar's CI image has it.
+//! skipped where `nix` is not on the PATH (`common`).
 
+mod common;
+
+use common::{copy, dumped, info_of, no_faults, oracle_paths, writable};
 use polar_registry::blobs::Blobs;
 use polar_registry::nix_cache::{Archive, NixCache, PRIORITY, PathInfo, serve};
-use polar_registry_nix::nar;
 use polar_registry_nix::signature::SecretKey;
 use polar_registry_nix::store_path::StorePath;
-use std::path::Path;
-use std::process::{Command, Output};
 use std::sync::Arc;
 use structured_zstd::encoding::{CompressionLevel, compress_to_vec};
-
-fn nix(args: &[&str]) -> Option<Output> {
-    match Command::new("nix")
-        .args(args)
-        .env("NIX_CONFIG", "experimental-features = nix-command flakes")
-        .output()
-    {
-        Ok(out) => Some(out),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("skipped: nix is not on the PATH");
-            None
-        }
-        Err(e) => panic!("nix: {e}"),
-    }
-}
-
-fn ok(out: Output) -> String {
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
-}
-
-/// Two input-addressed paths, `a` referring to `b`, built with the bash on the PATH as their builder.
-fn oracle_paths() -> Option<(StorePath, StorePath)> {
-    let bash = std::fs::canonicalize(ok(Command::new("sh")
-        .args(["-c", "command -v bash"])
-        .output()
-        .ok()?))
-    .ok()?;
-    let bash = bash.ancestors().nth(2)?.to_str()?.to_string();
-    let expr = format!(
-        r#"let bash = builtins.storePath "{bash}";
-               build = name: script: derivation {{ inherit name; system = builtins.currentSystem;
-                 builder = "${{bash}}/bin/bash"; args = [ "-c" script ]; }};
-               b = build "polar-registry-oracle-b" "echo b > $out";
-           in build "polar-registry-oracle-a" "echo ${{b}} > $out""#
-    );
-    let a: StorePath = ok(nix(&[
-        "build",
-        "--impure",
-        "--no-link",
-        "--print-out-paths",
-        "--expr",
-        &expr,
-    ])?)
-    .parse()
-    .unwrap();
-    let info = info_of(&a);
-    let b = info.references.iter().next().unwrap().clone();
-    Some((a, b))
-}
-
-/// What the machine's Nix says of `path`.
-fn info_of(path: &StorePath) -> PathInfo {
-    let json = ok(nix(&[
-        "path-info",
-        "--json-format",
-        "1",
-        "--json",
-        &path.to_string(),
-    ])
-    .unwrap());
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let v = &v[path.to_string()];
-    PathInfo {
-        store_path: path.clone(),
-        nar_hash: v["narHash"].as_str().unwrap().parse().unwrap(),
-        nar_size: v["narSize"].as_u64().unwrap(),
-        references: v["references"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| r.as_str().unwrap().parse().unwrap())
-            .collect(),
-        deriver: v["deriver"].as_str().map(|d| d.parse().unwrap()),
-        ca: v["ca"].as_str().map(str::to_string),
-        sigs: Vec::new(),
-    }
-}
-
-fn dumped(path: &StorePath) -> Vec<u8> {
-    let mut out = Vec::new();
-    nar::dump(Path::new(&path.to_string()), &mut out).unwrap();
-    out
-}
-
-/// Copies `path` from the cache at `url` into a store of its own under `root`, trusting `key`.
-fn copy(url: &str, path: &StorePath, root: &Path, key: &str) -> Output {
-    let to = format!("local?root={}", root.display());
-    nix(&[
-        "copy",
-        "--from",
-        url,
-        "--to",
-        &to,
-        "--option",
-        "trusted-public-keys",
-        key,
-        &path.to_string(),
-    ])
-    .unwrap()
-}
-
-/// A store Nix made under `root` is read-only; made writable so that it can be removed.
-fn writable(root: &Path) {
-    let _ = Command::new("chmod").args(["-R", "u+w"]).arg(root).status();
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn nix_copies_a_path_and_its_references_trusting_polar_s_key_and_refuses_otherwise() {
@@ -172,7 +62,7 @@ async fn nix_copies_a_path_and_its_references_trusting_polar_s_key_and_refuses_o
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(serve(listener, cache.clone()));
+    tokio::spawn(serve(listener, no_faults(dir.path(), cache.clone())));
 
     let client = reqwest::Client::new();
     let info = client
@@ -273,7 +163,7 @@ async fn nix_refuses_an_archive_that_is_not_what_its_narinfo_says() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(serve(listener, cache));
+    tokio::spawn(serve(listener, no_faults(dir.path(), cache)));
     let target = tempfile::tempdir().unwrap();
     let root = target.path().to_path_buf();
     let out = tokio::task::spawn_blocking(move || copy(&url, &a, &root, &public))
@@ -346,7 +236,7 @@ async fn a_narinfo_the_cache_cannot_read_is_answered_as_its_own_failure() {
     .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(serve(listener, cache));
+    tokio::spawn(serve(listener, no_faults(dir.path(), cache)));
     let status = reqwest::get(format!("{url}/{hash_part}.narinfo"))
         .await
         .unwrap()

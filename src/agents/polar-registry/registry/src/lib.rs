@@ -22,7 +22,8 @@
 */
 
 //! Polar's registry (docs/plans/registry.md): one content store for everything a build reads, and a face for each
-//! protocol over it. Built so far: the store (`blobs`) and the Nix cache (`nix_cache`).
+//! protocol over it. Built so far: the store (`blobs`), the Nix cache (`nix_cache`) and its faults (`faults`).
 
 pub mod blobs;
+pub mod faults;
 pub mod nix_cache;

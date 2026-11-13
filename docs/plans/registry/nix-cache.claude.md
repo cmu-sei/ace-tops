@@ -134,8 +134,34 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   `zstd -19` output kept as received, 16 concurrent writes, interrupted/failing readers, unreadable record = error.
   cargo-mutants polar-registry: 55, 43 caught + 2 timeouts (an infinite retry: caught), 9 unviable, 0 missed after
   sharing temp_name (the duplicate's mutant was the last one).
-- NC3 faults from a binary cache (test upstream = a second instance / static dir made by `nix copy --to file://`),
-  switch off; network-gated test vs cache.nixos.org.
+- NC3 faults. DONE 2026-11-12: `faults.rs`. trait Fetch (async_trait; get(url, limit) → Option<Vec<u8>>; whole
+  bodies because polar-agent-builder's HTTP handler Reply.body is Vec<u8> — NC5 implements Fetch over it; NoFetch
+  for none). Upstream{url, key}. Faults{cache, upstreams, fetch, on: AtomicBool (set_on), max_archive, faults.jsonl
+  appended + sync_data per record, per-hash-part tokio Mutex so concurrent asks fault once}. lookup(hash_part,
+  requester): held → serve; off → record Off, 404; else each upstream in order: narinfo ≤ MAX_NARINFO 64 KiB, must be
+  for the hash part asked, signed_by(upstream.key), Compression zstd (kept as received) | none (encoded here) | other
+  refused "not taken yet" (xz), URL a place under the cache (is_archive_place: relative, [A-Za-z0-9._-/], no `..`
+  or empty segment; URL is UNSIGNED so this matters), FileSize > max_archive refused before fetch, archive ≤
+  max_archive, enter() with upstream sigs kept + Polar's. FileHash is unsigned and not relied on (NarHash is).
+  Outcomes Entered/Absent/Refused/Off; record {at_unix_ms, hash_part, requester (ConnectInfo), outcome,
+  store_path, nar_hash, nar_size, tried[{upstream, said}]}. Eager: a narinfo miss fetches the archive too (a fresh
+  build pod asks narinfo only for what it will fetch; a query-only client would cause downloads — noted).
+  blobs::compressed_bound(size) = size + size/128 + 1 MiB: put_zstd reads no more (skippable frames can't stall).
+  Router state is Arc<Faults>; serve(listener, faults) with ConnectInfo.
+  Tests (tests/faults.rs; tests/common/mod.rs shared): upstreams made by `nix copy --to file://…?compression=
+  {zstd,none,xz}&secret-key=` signed by a test key; Polar faults a+b in and `nix copy` from Polar trusting ONLY
+  Polar's key takes both, identical; narinfo sigs [upstream-test-1, polar-test-1]; zstd blob == upstream's .nar.zst
+  bytes; records entered with requester 127.0.0.1. Refusals with exact reasons: xz, untrusted key, b's narinfo for
+  a's hash part, URL `../outside.nar.zst`, FileSize over bound (exact bound accepted), narinfo over 64 KiB (4 KiB
+  padding with an unknown key accepted, sigs unaffected), absent. Off → "off" recorded; held still served when off,
+  nothing recorded. 8 concurrent asks → one record. LIVE: nix's own path faulted from https://cache.nixos.org via a
+  reqwest Fetch (test-only), NarHash/NarSize/References == local `nix path-info`, sigs contain cache.nixos.org-1 +
+  polar (skips when unreachable). cargo-mutants: 99, 83 caught + 2 timeouts, 14 unviable, 0 missed.
+  FOUND (flaky 1/15 under the mutation baseline): Nix's narinfo disk cache (~/.cache/nix, keyed by cache URL,
+  positive TTL 30 days) answered for a reused 127.0.0.1 port, so no fault happened and the NAR 404'd. Tests give each
+  copy its own XDG_CACHE_HOME. Real-world: a reset registry at the same URL meets stale clients (dev machines; build
+  pods start empty). Options later: answer a NAR miss by faulting if the narinfo is known, or per-instance URLs.
+  OPEN for NC5: faults default on or off (ask then); max_archive and the upstream list as Dynamic signed settings.
 - NC4 host mode.
 - NC5 catalog workload (ns polar-registry), PVC, key, settings, builds' policy port, u7c.
 

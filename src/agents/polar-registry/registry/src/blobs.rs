@@ -155,6 +155,12 @@ fn check_decoded(zstd: impl Read, expect: Expect) -> Result<(), PutError> {
     Ok(())
 }
 
+/// The most a zstd stream of `size` plain bytes is read for: zstd's own bound (a block stored as it is costs a few bytes
+/// per 128 KiB) with room for its headers, and more besides.
+pub fn compressed_bound(size: u64) -> u64 {
+    size + size / 128 + (1 << 20)
+}
+
 impl Blobs {
     /// The store in `root`, compressing what arrives plain at `level`. A write left unfinished by a stop is removed.
     pub fn open(root: &Path, level: i32) -> io::Result<Self> {
@@ -206,8 +212,11 @@ impl Blobs {
         }
     }
 
-    /// Keeps `zstd`, content compressed elsewhere, exactly as it arrives, once it decodes to what `expect` says.
+    /// Keeps `zstd`, content compressed elsewhere, exactly as it arrives, once it decodes to what `expect` says. No more
+    /// is read of it than any compression of that much content needs (`compressed_bound`): a stream that would go on
+    /// past it, with frames that decode to nothing, is cut there and refused.
     pub fn put_zstd(&self, zstd: impl Read, expect: Expect) -> Result<Blob, PutError> {
+        let zstd = zstd.take(compressed_bound(expect.size));
         if let Some(blob) = self.held(expect)? {
             return Ok(blob);
         }

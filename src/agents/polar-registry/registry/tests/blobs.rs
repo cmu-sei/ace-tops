@@ -302,3 +302,32 @@ fn a_record_that_cannot_be_read_is_an_error_not_an_absence() {
     std::fs::create_dir(dir.path().join(format!("blobs/{}.json", digest.hex()))).unwrap();
     assert!(blobs.get(&digest).is_err());
 }
+
+#[test]
+fn zstd_is_read_no_further_than_its_content_could_need() {
+    use polar_registry::blobs::compressed_bound;
+    assert_eq!(compressed_bound(0), 1 << 20);
+    assert_eq!(
+        compressed_bound(128 << 20),
+        (128 << 20) + (1 << 20) + (1 << 20)
+    );
+    // A frame of the content, then frames that decode to nothing (skippable: magic, length, bytes) past the bound.
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Blobs::open(dir.path(), 3).unwrap();
+    let content = b"a little content".to_vec();
+    let mut zstd = compress_to_vec(&content[..], CompressionLevel::from_level(1));
+    let skippable = |len: u32| {
+        let mut f = 0x184D2A50u32.to_le_bytes().to_vec();
+        f.extend_from_slice(&len.to_le_bytes());
+        f.extend(std::iter::repeat_n(0u8, len as usize));
+        f
+    };
+    let mut within = zstd.clone();
+    within.extend(skippable(1024));
+    blobs.put_zstd(&within[..], expect(&content)).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Blobs::open(dir.path(), 3).unwrap();
+    zstd.extend(skippable(2 << 20));
+    assert!(blobs.put_zstd(&zstd[..], expect(&content)).is_err());
+    assert_eq!(leftovers(dir.path()), 0);
+}
