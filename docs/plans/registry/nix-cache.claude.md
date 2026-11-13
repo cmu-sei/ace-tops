@@ -51,8 +51,18 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   file's sha256 + size (FileHash/FileSize). narinfo: URL `nar/<nix32 narhash>.nar.zst`, Compression zstd, FileHash/
   FileSize of the stored file; served as stored, never recompressed per read. Upstream faults: decompress whatever
   upstream sent (xz/zstd/bzip2/none), recompress zstd. zstd level, and whether other faces' blobs (OCI layers are
-  already gzip/zstd) are stored as-is: decide in NC2 / the images feature. Crate: `zstd` (C libzstd, static) vs
-  pure-Rust decoder `ruzstd` (no encoder of note) — check workspace/Cargo.lock first; one-artifact rule.
+  already gzip/zstd) are stored as-is: decide in NC2 / the images feature.
+- zstd library: DECIDED 2026-11-12, maintainer: "not a fan of adding a C library. We did it for the allocator because
+  there's not any real option to it" → `ruzstd` (pure Rust, MIT, 0.9.1 of 2026-10-11). Rejected: `zstd` 0.14 (C
+  libzstd 1.5.7 via zstd-sys; would have built with workspace.nix's static musl CC). ruzstd 0.9.1: decoder complete
+  (1.4-3.5x slower than C, its README); encoder only Uncompressed and Fastest (~level 1; Default/Better/Best
+  UNIMPLEMENTED per docs.rs). So: an upstream's zstd bytes are stored AS RECEIVED (decoded once to check NarHash,
+  never re-encoded); only plain (or xz) upstreams are encoded, at Fastest. cache.nixos.org now serves zstd (sampled
+  2026-11-12: nix-2.34.8 4113736 → 1240540, glibc-2.44-25 35578272 → 10427318, both `.nar.zst`), so most content is
+  never encoded here. xz (older cache paths): pure-Rust `lzma-rs` (MIT, last release 2023-01) when the first xz path
+  faults; refuse with a clear reason until then.
+- C already in the workspace (told the maintainer): git2 → libgit2-sys, libssh2-sys, libz-sys; static OpenSSL
+  (workspace.nix OPENSSL_*); ring's C/asm. gitoxide is the way off libgit2.
 - Path records: per hashpart, a JSON record {store_path, nar_hash, nar_size, references, deriver?, ca?, upstream
   sigs, entered_at, from}; narinfo rendered from it + Polar's sig (signed at entry; key rotation → re-sign on read?
   open).
