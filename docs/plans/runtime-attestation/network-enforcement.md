@@ -29,7 +29,7 @@
 > A **feature-level plan**, part of [runtime attestation](../runtime-attestation.md). It describes Polar's `main` as it
 > is.
 
-**Status: u7c enforces NetworkPolicy; Polar's side (the builds' policy and the canary) is not built.**
+**Status: u7c enforces NetworkPolicy, and builds reach only the registry; the canary is not built.**
 
 ## 1. The need
 
@@ -105,6 +105,8 @@ requirements, on Polar's own clusters and on anyone else's. Four steps, each see
    - egress only to the registry's pods, on its port;
    - no DNS, since a name server that forwards upstream is a way out. The orchestrator resolves the registry's name
      itself and gives the pod the address directly.
+
+   Done: the render writes it beside the build namespace, and every build pod is given the registry's address.
 4. **A canary that proves enforcement.** The build orchestrator runs it in `polar-builds`, under the builds' own
    policy. It must reach the registry, and must **fail** to reach the Kubernetes API and an address outside the
    cluster. It runs when the orchestrator starts, and again before a build when the last proof is older than a set
@@ -156,7 +158,7 @@ Until the canary passes, the rule already in force holds: **no build names a rep
 
 ## 6. How much of the need is met now
 
-u7c enforces NetworkPolicy; Polar renders none of its own yet.
+u7c enforces NetworkPolicy, and builds of foreign code reach only the registry.
 
 - **kube-nftpolicy works on a rootless cluster whose kernel has no IPv6.** On a throwaway three-node cluster, both
   as a DaemonSet and as a node service in the node image, a policy limiting a pod to one server's named port let that
@@ -167,12 +169,15 @@ u7c enforces NetworkPolicy; Polar renders none of its own yet.
 - **u7c enforces NetworkPolicy.** Its node images run the enforcer on every worker, and Polar came back on them with
   every pod running. Flux's policies are in force there: another namespace reaches source-controller's metrics, but not
   its artifacts.
-- **Polar renders no policy for its own namespaces.** The one policy it does make is a deny-all for a throwaway
-  namespace where it runs check pods, which is now enforced.
+- **The build namespace is closed.** The builds' policy is in force on u7c. A pod made as a build's is, with the
+  registry's address, reached the registry by the name it was told. It could not reach the cluster's DNS, the
+  Kubernetes API, Cassini, Polar's git server or the internet, nor resolve a name outside.
+- **Polar's other namespaces have no policy of their own** but the deny-all for the throwaway namespace where it runs
+  check pods, which is enforced.
 - **The egress probe tests the other direction.** It checks that the way *out* works for an agent that needs it, so it
   proves nothing about denial.
-- **What holds the line is a rule,** not enforcement: no build names a repository Polar does not control. A build is
-  offline today only because Cargo has no reason to go out, not because anything stops it.
+- **Enforcement is not yet proved by Polar itself.** Until the canary runs, the rule already in force stays: no build
+  names a repository Polar does not control.
 
 ## 7. What is left before this is met
 
@@ -180,8 +185,7 @@ The pieces left are options: each can be built on its own, in any order, except 
 
 | Option | What it gives | Depends on |
 |---|---|---|
-| **The builds' policy** | builds of foreign code reach only the registry, on its port, with no DNS | nothing |
-| **The canary** | Polar proves enforcement itself, at the orchestrator's start and before builds, and publishes the result | the builds' policy, which it runs under |
+| **The canary** | Polar proves enforcement itself, at the orchestrator's start and before builds, and publishes the result | nothing left: the builds' policy it runs under is in force |
 | **Refusing a build where enforcement is not proved** | foreign code never runs on a cluster that does not enforce | the canary |
 | **Polar's network needs, from what each agent is built to use** ([plan](network-needs.md)) | every Polar pod reaches only the services its capabilities name, and the outside only if it declares `egress` | nothing; its rollout settles the question of DNS |
 | **The enforcer against upstream's network policy tests** | the enforcer's meaning checked against the Kubernetes project's own tests, beside its property tests | nothing |

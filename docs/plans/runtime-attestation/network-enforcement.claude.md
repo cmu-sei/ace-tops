@@ -85,10 +85,23 @@ config. C5 precondition check rides with the first. Maintainer picks order.
 DECIDED 2026-11-12: builds' policy FIRST (my recommendation). :pre-nftpolicy rollback images: remove after u7c has run
 a day enforcing AND the next Polar deploy succeeds on it (i.e. not before 2026-11-13).
 
+## G3 DONE (2026-11-12, main 005b9d8f; u7c deployed 0dba4967)
+- render: cluster-registry.nu builds_policy (PORT const 5000 shared by Deployment/Service/pod_registry/policy);
+  resolve.nu `builds-policy`; render.nu namespaces context `policies`; namespaces chart main.nu appends after Namespaces.
+  No registry_in_cluster → egress []; no builds ns → no policy.
+- orchestrator: job.rs JobOptions.registry_host (from settings URL via registry_host()) + registry_address (per
+  submit, backend.rs resolve_ipv4 via tokio lookup_host; failure = SubmissionFailed); build_job adds HostAlias;
+  departures(.., registry_host) allows template aliases + at most one {IPv4, [registry_host]}; 3 new Departure
+  variants in the proptest. supervisor.rs sets registry_host.
+- attestation judges a Job pod vs its own Job template (holdings.rs hold_owner Kind::Job): aliases not judged.
+- LIVE u7c: policy `builds` in polar-builds; probe pod (observers pool, alias to registry ClusterIP) → registry by
+  name OK; DNS 10.96.0.10:53, API, Cassini, git server, 1.1.1.1 BLOCKED; github.com unresolvable. Probe deleted.
+- not seen: a real build Job (mappings version 3, 1 repo, no ref moved during the check).
+- polar-cc told: departures() 4th arg; polar-builds closed.
+
 ## GAPS (build order)
 G0 done (Q-flannel, spike, Q-engine). G1 kube-nftpolicy built + live on u7n (done); upstream e2e netpol suite (todo).
-G2 DONE: nix-usernetes main 8ef1747 pushed; u7c rebuilt and enforcing. G3 N1 render (catalog → policy for polar-builds; hostAliases in
-orchestrator Jobs). G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result).
+G2 DONE: nix-usernetes main 8ef1747 pushed; u7c rebuilt and enforcing. G3 DONE. G4 N2 canary in orchestrator (probe mode of fetch image; Dynamic staleness bound; publish result).
 G5 admission refuses build when unproved. G6 C5 precondition: pod src addr unchanged to Cassini (enforcer no NAT).
 LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolation.md:206-218).
 
