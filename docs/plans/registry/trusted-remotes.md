@@ -56,9 +56,10 @@ stay sealed, so that the registry's own code reaches it by a name that says noth
 each version, so a remote left out is withdrawn. Each remote has a name, which is all anyone sees of a sealed one, and
 is either:
 
-- **plain:** its address, the key its contents are signed with, how its server's identity is checked (the system's
-  roots, a certificate authority of its own, or a pinned certificate), the credential it needs if any (by name, from
-  the `credentials` section), and what it may be used for; or
+- **plain:** its address; the key its contents are signed with; how its server's identity is checked, which is always
+  declared in the entry, as a certificate authority of the remote's own or a pinned public key, since no system's list
+  of authorities is trusted for a remote; the credential it needs if any (by name, from the `credentials` section); and
+  the kinds of content it supplies (Nix paths, crates, images, git), the only kinds it is asked for; or
 - **sealed:** all of that, together, as one sealed entry, opened only by the agent's escrow, which is where Polar's
   credentials are already opened. The address never enters the agent's own code.
 
@@ -68,9 +69,10 @@ handler finds the remote, opening it in escrow if it is sealed, connects with th
 and judges the request as it judges every other: a name the section does not hold is refused. The handler's record
 names a sealed remote by its name, never its address. So does the registry's record of faults.
 
-**What the agent's code may hold of a sealed remote:** its name, and the key that checks its signatures. Each path's
-description has to be checked against that key, and the key lets its holder check, not read and not sign. The code
-never logs or records it. The alternative, the check made in escrow with the rest, is set out below.
+**The agent's code holds no remote's key.** The infrastructure side of the agent, where sealed entries are opened, holds
+every remote's signing key, plain or sealed, and checks a path's signature when the agent's code asks, naming the
+remote; the code holds only names. The handler's record and the registry's record of faults name a plain remote by its
+name and its host, and a sealed one by its name alone.
 
 **A dropped remote's content is quarantined.** Every path the registry holds records which remote it came from (a path
 held before that is recorded is traced by the remote's signature it carries). When a signed version of the list drops a
@@ -79,7 +81,8 @@ list that dropped it. An archive is withheld when only quarantined paths use it.
 if a remote still on the list offers it, it is fetched again and checked under that remote's key, which releases it;
 otherwise it is refused, and the refusal recorded. Re-adding the dropped remote does not release its paths by itself,
 since a remote is often dropped because it can no longer be trusted: a remote still trusted vouching for a path again,
-or a person's signed release, does. Nothing quarantined is deleted except by a person's decision.
+or a person's signed release, does. Nothing quarantined is deleted except by a person's decision. Both are signed
+commands to the registry, allowed by a capability of their own, and each is recorded in its record.
 
 **The Nix cache moves onto it:** its upstreams come from its `remotes` section, in the order the section gives, in
 place of its two deployment settings, and change while it runs.
@@ -100,8 +103,14 @@ In steps, each tested before the next:
   with no place for a secret remote.
 - **The address in plain text, only the credential sealed,** as credentials work now. Enough for most remotes, which is
   why a remote may be plain; not for one whose existence is the secret.
-- **Checking a sealed remote's signatures in escrow too,** so the agent's code never sees its key. Stronger on paper,
-  but every path's description would cross into escrow and back to be checked, and the key only checks.
+- **The agent's code holding a sealed remote's key,** never logging it. Rejected: the key stays with the infrastructure
+  side, beside the rest of the sealed entry, and the code asks it to check.
+- **Checking signatures in the escrow daemon itself.** Every path's description would cross the process boundary to be
+  checked; the infrastructure side of the agent already holds what escrow opened.
+- **Trusting the system's list of certificate authorities for a remote's server.** Rejected: a remote's trust is
+  declared within Polar, signed, and managed there.
+- **One list of remotes for the whole cluster.** Rejected: each agent that fetches has its own, as it has its own
+  credentials, so an agent learns only the remotes it uses.
 - **A remote reached as `Arbitrary`,** the handler's "any host" permission, with the agent checking the host against
   the section itself. The handler's judge would not know the list, and the agent would hold every address.
 
@@ -127,7 +136,7 @@ In steps, each tested before the next:
 - **The four steps above.**
 - **What a remote may be used for:** which kinds of content (Nix paths, crates, images), and for which builds. A first
   form is part of step 1; how far it goes is to be settled with the registry's other faces.
-- **Releasing quarantined content by a person's signed decision,** and deleting it by one: the decisions themselves,
-  and where they are signed.
+- **The registry's own signing key in custody,** signing with Ed25519, before the registry is deployed to any cluster;
+  until then its key file is for tests and development runs only.
 - **A certificate as a credential kind,** for a remote that admits clients by certificate; today a credential is a
   token, a user and password, or an ssh key.

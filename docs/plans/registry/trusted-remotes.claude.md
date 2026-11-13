@@ -79,6 +79,24 @@ signed release (where signed: TBD). Re-adding X alone does NOT release (for revi
 precedent, deploy-objects.nu protect_claims, maintainer 2026-11-02). Generalize to every face (crates, images) via the
 same provenance field in the CAS's records.
 
+## DECIDED (maintainer, 2026-11-13, asked all at once: "Ask all of your questions.")
+1. Sealed remote's key: "1., and it should be held by the infrastructure side actors, maybe crypto actor or config
+   actor." → the domain holds NO remote key (plain or sealed); infra side holds keys and verifies on request by remote
+   name. Mine, for review: the CryptoActor (it already opens escrowed entries and keeps credentials with bindings);
+   plain remotes' keys too, so one API: verify(remote, fingerprint, sig) → bool.
+2. Quarantine release: trusted remote vouching again, or a person's signed release; re-adding alone does not.
+3. Release/delete: signed commands (commands.md), a capability of their own; recorded.
+4. Remotes list: per agent.
+5. Records: plain remote by name + host; sealed by name only.
+6. Uses: kinds of content now (nix, crates, oci, git); finer scoping later.
+7. Server identity: "System roots are not to be trusted for this, the trust must be declared within polar and managed
+   within polar." → entry declares CA (PEM) or pin (SPKI SHA-256); no webpki/system roots for remote clients; even
+   cache.nixos.org gets an explicit anchor in its signed entry. Handler: per-remote client built with only the declared
+   trust (reqwest ClientBuilder tls_built_in_root_certs(false) + add_root_certificate, or a pinning verifier).
+8. Polar's own Nix signing key: custody signs Ed25519 BEFORE the registry is deployed to any cluster (NC5 blocked on it).
+Decided by standing rules (for review): order = list order; a fault in flight when its remote is dropped finishes,
+then its path is quarantined with the rest; quarantine records name the remotes version that dropped it.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
