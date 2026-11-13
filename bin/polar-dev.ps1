@@ -39,7 +39,7 @@
 #   down      sync, then stop the pod (its volumes stay); --purge removes the namespace and the volumes too
 #   build-image [tag] [target]
 #             build the dev image from this checkout's current commit, in the pod, and push it to the target's registry
-#             in the cluster (tag: the short commit; target: POLAR_TARGET, else local-minimal); it prints the `up` that
+#             in the cluster (tag: the short commit; target: POLAR_TARGET, else sandbox-local); it prints the `up` that
 #             runs it
 #
 # Settings (environment, as for bin/polar-dev): POLAR_DEV_IMAGE, POLAR_DEV_ARCH (amd64 or arm64; default: the cluster's
@@ -67,7 +67,7 @@ $Login = if ($env:USERNAME) { $env:USERNAME } else { $env:USER }
 $U = (($Login.ToLowerInvariant()) -replace '[^a-z0-9-]', '-').Trim('-')
 $NS = "polar-dev-$U"
 $Deploy = "polar-dev-$U"
-$Repo = if ($env:POLAR_DEV_REPO) { $env:POLAR_DEV_REPO } else { 'https://github.com/cmu-sei/ace-tops.git' }
+$Repo = if ($env:POLAR_DEV_REPO) { $env:POLAR_DEV_REPO } else { 'git@52.235.181.217:SEI/ACE.git' }
 $Branch = if ($env:POLAR_DEV_BRANCH) { $env:POLAR_DEV_BRANCH } else { 'main' }
 $Port = if ($env:POLAR_DEV_PORT) { $env:POLAR_DEV_PORT } else { '2222' }
 $SopsKey = if ($env:POLAR_DEV_SOPS_KEY) { $env:POLAR_DEV_SOPS_KEY } elseif ($env:SOPS_AGE_SSH_PRIVATE_KEY_FILE) { $env:SOPS_AGE_SSH_PRIVATE_KEY_FILE } else { Join-Path $UserHome '.ssh\id_ed25519' }
@@ -514,7 +514,7 @@ say "$dest is for $arch"
 '@
 
 function Invoke-BuildImage([string]$tag, [string]$target) {
-    if (-not $target) { $target = if ($env:POLAR_TARGET) { $env:POLAR_TARGET } else { 'local-minimal' } }
+    if (-not $target) { $target = if ($env:POLAR_TARGET) { $env:POLAR_TARGET } else { 'sandbox-local' } }
     $scratch = '/tmp/polar-dev-build-image'
     if ((Invoke-Captured 'git' @('-C', $Here, 'rev-parse', '--git-dir')).Code -ne 0) { Die "$Here is not a git checkout: build-image bundles its current commit" }
     $commit = (Invoke-Captured 'git' @('-C', $Here, 'rev-parse', '--short', 'HEAD')).Out.Trim()

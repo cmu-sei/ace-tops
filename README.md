@@ -631,8 +631,8 @@ for help putting Windows' first on your PATH.
 **Step G. Get Polar's files.** In PowerShell (as yourself), from the folder you want them in (your home folder is fine):
 
 ```powershell
-git clone --config core.autocrlf=false https://github.com/cmu-sei/ace-tops.git
-cd ace-tops
+git clone --config core.autocrlf=false git@52.235.181.217:SEI/ACE.git
+cd ACE
 ```
 
 The `--config core.autocrlf=false` part keeps the files exactly as they are, which the Linux side needs.
@@ -644,7 +644,7 @@ form runs it anyway, for that one time, without changing any setting:
 powershell -ExecutionPolicy Bypass -File bin\polar-dev.ps1 <command>
 ```
 
-Below, `polar-dev.ps1 <command>` means that line, from the `ace-tops` folder. (Standard Windows and Docker Desktop steps, not
+Below, `polar-dev.ps1 <command>` means that line, from the `ACE` folder. (Standard Windows and Docker Desktop steps, not
 run on Windows for this guide.)
 
 #### Then, Polar
@@ -678,7 +678,7 @@ run on Windows for this guide.)
 4. **Polar, from the published images** (step 4), in the dev container, from `/workspace`:
 
    ```bash
-   nu infra/up.nu local-minimal --import-from docker.io/daveman1010220 --import-tag 3.0.1 --user <name> --email <email>
+   nu infra/up.nu sandbox-local --cluster <id> --import-from docker.io/daveman1010220 --user <name> --email <email>
    ```
 
 5. **Your certificate in the browser** (step 5). When `up.nu` pauses at the browser step, in PowerShell on your machine:
