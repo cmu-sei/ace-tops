@@ -82,6 +82,9 @@ the custody sidecar; `polar::cassini` helper removed, its users take the builder
 4. attestation agent src/supervisor.rs:545-552 (acp) reads its own TLS_CLIENT_CERT file for its identity → the
    CryptoActor answers its identity (it already derives own_identity from that certificate).
 5. builder signer.rs: superseded by K1.
+OWNER: these crates exist only on acp; moving 1-4 onto the CryptoActor is polar-cc's, after it merges K3/K2b (polar-cc,
+2026-11-13). Main's side: K3's API stays general, not shaped around the git server: a server TLS config for the pod's
+own identity with ALPN as the caller asks, and a client config from a person's own key files.
 
 ## STEPS (each tested, committed, pushed; u7c bring-up before the TLS step is called done)
 K1 DONE 2026-11-13. Signer into the CryptoActor: CryptoMessage/port op SignRecord-equivalent in polar-crypto (input build + type check
