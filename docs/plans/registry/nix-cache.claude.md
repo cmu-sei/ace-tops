@@ -42,8 +42,17 @@ maintainer's "write up the proposal and then just start implementing this" (2026
 - cache.nixos.org key `cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=`; its NARs xz (some zstd).
 
 ## DESIGN (mine, for review)
-- CAS: blobs/<sha256 hex>, temp file + fsync + rename, hash checked while writing; NAR uncompressed so blob digest ==
-  NarHash; narinfo URL `nar/<nix32 narhash>.nar`, Compression none, FileHash = NarHash, FileSize = NarSize.
+- CAS (revised 2026-11-12, maintainer: "Yes, plan it that way. It should also improve read performance, too"; the
+  first draft kept NARs uncompressed, and the maintainer took a NAR to be compressed already, which it is not: plain
+  serialization; caches compress on top, FileHash/FileSize of the compressed file, NarHash/NarSize of the plain NAR,
+  shown by NC1's oracle, compression=none .nar == NarSize/NarHash): git-object style. Blob NAMED by sha256 of the
+  UNCOMPRESSED content (= NarHash for a NAR), STORED zstd. Write: stream in → decompress-check (hash + size of plain
+  bytes must equal the name / NarHash) → zstd-compressed temp file → fsync → rename. Per blob keep the compressed
+  file's sha256 + size (FileHash/FileSize). narinfo: URL `nar/<nix32 narhash>.nar.zst`, Compression zstd, FileHash/
+  FileSize of the stored file; served as stored, never recompressed per read. Upstream faults: decompress whatever
+  upstream sent (xz/zstd/bzip2/none), recompress zstd. zstd level, and whether other faces' blobs (OCI layers are
+  already gzip/zstd) are stored as-is: decide in NC2 / the images feature. Crate: `zstd` (C libzstd, static) vs
+  pure-Rust decoder `ruzstd` (no encoder of note) — check workspace/Cargo.lock first; one-artifact rule.
 - Path records: per hashpart, a JSON record {store_path, nar_hash, nar_size, references, deriver?, ca?, upstream
   sigs, entered_at, from}; narinfo rendered from it + Polar's sig (signed at entry; key rotation → re-sign on read?
   open).

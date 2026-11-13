@@ -52,13 +52,16 @@ was recorded. And a developer's cluster should not download again what the devel
 
 ## 3. The plan
 
-A Polar service, the registry, keeps a **content store**: each blob in a file named by the SHA-256 of its contents,
-written whole or not at all, and checked as it is written. Over it, the **Nix face** answers Nix's binary cache
-protocol:
+A Polar service, the registry, keeps a **content store**: each blob named by the SHA-256 of its contents, and kept
+compressed with zstd, as git names an object by its content and stores it compressed. A blob is written whole or not
+at all, and is decompressed and hashed as it is written, so what the store holds under a name is always what the name
+says. Over it, the **Nix face** answers Nix's binary cache protocol:
 
 - `nix-cache-info`, saying which store it serves;
 - for a store path, its *narinfo*: the path, the hash and size of its archive, the paths it refers to, and signatures;
-- the archive itself, kept uncompressed, so that its name in the store is the hash the narinfo states and Nix checks.
+- the archive itself, sent as the store keeps it, compressed. The narinfo states the hash and size of the archive
+  uncompressed, which is its name in the store and what Nix checks once it has decompressed it, and the hash and size
+  of the compressed file it is sent.
 
 **Every narinfo Polar serves is signed with Polar's own key.** A build's Nix trusts that key alone, so it accepts only
 what Polar has checked. Signatures from where a path came from are kept beside Polar's.
@@ -106,8 +109,11 @@ In steps, each tested before the next:
   use its node's filesystem. For the registry, the host's store would be read without the checks an upstream gets, and
   on a cluster whose nodes are containers the host's filesystem is not the node's. Serving it from the host, as an
   upstream, gives the same saving in downloads.
-- **Keeping archives compressed,** as other caches do. Smaller, but then the name in the store is not the hash Nix
-  checks, and every read of a path's contents must decompress it. Compression on the wire can come later.
+- **Naming archives by the hash of the compressed file,** as other caches do. A compressor's output can change from
+  one version or setting to the next, so one archive could be kept twice under two names, and a path's identity would
+  depend on how it was compressed.
+- **Keeping archives uncompressed.** Their name would be the hash Nix checks with nothing in between, but they would
+  take several times the space, and every read would move several times the bytes.
 - **Trusting upstream signatures in build pods directly** (`cache.nixos.org`'s key). Then what a build reads is
   trusted because someone else signed it, not because Polar checked and recorded it.
 
@@ -117,6 +123,9 @@ In steps, each tested before the next:
 - **Faults give the list of a build's inputs** without opening the build's network, and switching them off proves the
   list complete.
 - **A developer's machine becomes the nearest upstream:** paths it holds are not downloaded again.
+- **Smaller, and faster to read:** an archive takes a fraction of its size on disk, and a read moves a fraction of the
+  bytes from disk and over the network. The cache sends what it keeps without compressing it again, and zstd
+  decompresses faster than disks and networks deliver.
 - **It is the registry's first face,** and builds the store the other faces share.
 
 ## 6. How much of the need is met now
