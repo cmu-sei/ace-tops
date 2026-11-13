@@ -143,6 +143,17 @@ Signer trait; the builder implements it (builds nothing ssh-specific beyond pass
 by calling custody sign. Same capability serves the registry's Nix key (NC5 prereq) and client certificates (TLS layer in
 the builder signs the handshake via custody, as the git server's server slot does).
 
+## PURPOSE-BOUND (polar-cc, 2026-11-13; PROPOSED to the maintainer as the trade with "limit the footprint")
+acp has polar-custody Slot::Signer + Request::SignRecord{record}: daemon builds the input in the evidence domain
+(polar_signing::signing_input_in), signs only types its cert names (c:record-evidence), refuses NotItsRecordType /
+BadRequest; Sign{slot,message} never allowed on the signer slot (key-custody.md "Workload signing keys": one key, one
+purpose, custody enforces). A generic sign(named bytes) breaks that (keys forge for each other). Shape: each custody key
+has one purpose at creation; per purpose minimal input rule: record → custody builds; nix → input parses as a narinfo
+fingerprint `1;/nix/store/<hash>-<name>;sha256:<nix32>;<n>;<refs>`; ssh → userauth blob (string session_id, byte 50
+SSH_MSG_USERAUTH_REQUEST, ...); tls → TLS 1.3 CertificateVerify (64×0x20 + context string + 0x00 + hash). No raw sign.
+Agreed with polar-cc: bring acp's Slot::Signer + SignRecord to main as the first purpose when step C3 starts (port
+together); before that nothing collides.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.

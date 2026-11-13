@@ -65,10 +65,13 @@ stay sealed, so that the registry's own code reaches it by a name that says noth
   configuration says who a credential logs in as. The new form replaces the old at once: every credential is sealed
   again, by someone who has it, before agents of the new version start, since nothing can open an old one to re-seal it.
 - **A key is used by signing, never handed out.** An ssh key, a client certificate and the registry's own Nix signing
-  key are held by the custody daemon, a process apart from the agent. Custody's part is kept as small as it can be: it
-  signs the bytes it is given with the key it is named, and gives out that key's public half, and knows nothing of ssh,
-  TLS or Nix. Each protocol's work stays in the agent's infrastructure, which builds exactly what must be signed, asks
-  custody for the signature, and puts it where its protocol needs it. No part of the agent ever has the key.
+  key are held by the custody daemon, a process apart from the agent. Custody's part is kept as small as it can be while
+  each key keeps to one purpose: a key is made for one purpose (an evidence record of a type, a Nix narinfo, an ssh
+  login, a TLS handshake), custody refuses any request outside it, and no key signs whatever it is given. For a record,
+  custody builds what is signed itself, as it does for evidence records; for the others, it checks only that what it is
+  asked to sign has that protocol's fixed shape, and refuses anything else. Each protocol's work otherwise stays in the
+  agent's infrastructure, which builds what must be signed, asks custody for the signature, and puts it where its
+  protocol needs it. No part of the agent ever has the key, and no key can sign for another's purpose.
 - **A shared secret is sent by what holds it.** A token, or a username and password, has to travel inside the request
   itself, so whatever writes those bytes holds the secret. That is the agent's crypto actor, which already keeps the
   opened secrets: the protocol handler gives it the judged request and the credential's name, it sends the request
@@ -131,6 +134,8 @@ In steps, each tested before the next:
 
 ## 4. Alternatives considered
 
+- **Custody signing whatever bytes it is given with the key it is named.** The smallest custody, but a workload taken
+  over could then make one key sign for another key's purpose. Rejected for the purpose-bound shape.
 - **An ssh agent in custody.** Rejected: custody's code is kept to signing named bytes, and the ssh protocol stays out.
 - **The custody daemon sending requests that carry a shared secret,** so the secret never exists in the agent's
   process. Stronger, since it holds against code running inside the agent; set aside for now, because custody, small
