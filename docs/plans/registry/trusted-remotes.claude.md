@@ -268,6 +268,47 @@ repository moved within its host whose POSTs must follow (BackendOrigin::moved).
 observer 54, orchestrator, jira; clippy clean. Also tried by hand against github.com (clone, refetch, depth 1).
 NOT DEPLOYED: C2a–C2c land together at the next bring-up, every agent at once.
 
+## C3 DESIGN (2026-11-13, for review; the maintainer: "I think you need to read more code" to my first framing)
+My first question assumed a long-lived key would be custody-made or supplied; reading showed both keys already have a
+source, and custody already holds what opens them. FOUND:
+- An ssh key is a credential the maintainer makes (a deploy key), sealed by polar-sign into the signed `credentials`
+  section, `kind: ssh-key`, binding pins the server's host keys (build-orchestrator.md "the source", E1-E3). Today the
+  CryptoActor opens it (`open_escrowed`: custody `Unwrap{wrapped}` returns the AES key, the CryptoActor decrypts) and
+  `CredentialAsk::Git` hands it to libgit2: the last secret the handler holds.
+- The registry's Nix key is a file given at deployment (`supervisor.rs` `signing_key`), "for now" (nix-cache.md).
+- Bite S's signer key is the other kind: per pod, made in custody, certified an hour (`p:custody:signing`), gone with the
+  pod; purpose from its certificate (`c:record-evidence:<type>`). Right for records; wrong for a key a remote trusts by
+  its public half (a deploy key, Nix's trusted-public-keys), which must outlive pods.
+- gix runs git over any stream (`gix_transport::client::git::Connection::new(read, write, …, ConnectMode::Process)`,
+  public); russh 0.65 (ring; a dev-dependency of the builder already) authenticates by `authenticate_publickey_with(user,
+  public_key, hash_alg, &mut impl auth::Signer)`, `auth_sign(key, hash_alg, to_sign)`: the signer is handed the
+  userauth blob only. So the ssh client needs no change to the gitoxide fork (the plan assumed one).
+PROPOSED:
+1. Port bite S (094e51ae, 3e704430, c45ec253) as agreed with polar-cc: Slot::Signer, SignRecord, the custodian fetching
+   the signing certificate, the builder's SignerActor/SignerHandle. Same bytes as acp (main-and-acp-stay-compatible).
+2. A sealed key is opened in custody, never in the workload. New custody requests (the workload's): `HoldSealed { name,
+   sealed, context }` → custody unwraps with the escrow key it holds and decrypts the payload ITSELF (today it stops at
+   the AES key), keeps the private key under `name` for the pod's life, answers its public key; `SignSsh { name, to_sign
+   }` and `SignNix { name, fingerprint }`. No request returns a held key. The CryptoActor's register_secret sends an
+   ssh-key (or nix-key) record to custody instead of opening it; it keeps the binding (host, pins) and checks it before
+   asking custody to sign, as it checks a token's before sending.
+3. Purpose: from the key's own form inside the sealed payload, which the maintainer sealed and the workload cannot
+   change: an OpenSSH private key signs ssh userauth only; a Nix secret key (`name:base64`) signs Nix fingerprints only.
+   Per purpose, custody checks the input's fixed shape (userauth: string session id, byte 50, user, "ssh-connection",
+   "publickey", true, the key's own algorithm and public key; Nix: `1;/nix/store/<hash>-<name>;sha256:<nix32>;<n>;<refs>`).
+   No raw sign. DIFFERS from "purpose from the certificate" settled with polar-cc: a sealed key has no certificate, and
+   the signed section's `kind` reaches custody only through the workload, so custody cannot rely on it.
+4. ssh in the builder: `protocol/git/ssh.rs`: russh (dev → normal dependency, the builder's git protocol only) connects,
+   checks the server's key against the binding's pins (as libgit2's certificate_check does now), authenticates with a
+   Signer that asks CredentialSource → CryptoActor (binding) → custody `SignSsh`, execs `git-upload-pack '<path>'`, and
+   gix fetches over the channel. libgit2 then fetches nothing; it still makes a new clone's repository and reads clones.
+5. Nix: the registry's key moves from the file to a sealed entry in its signed section (made with `nix key
+   generate-secret`, sealed with polar-sign), held in custody by (2); narinfo signing goes through `SignNix`. The
+   registry agent then needs escrow (`encryption`) and the custody daemon.
+6. Client certificates: deferred until a remote asks (maintainer gave no preference on scope; my recommendation).
+7. Order: (1) port bite S; (2)+(3) custody's sealed keys; (5) Nix (prerequisite for NC5); (4) ssh. Each tested, committed.
+Rollout: no re-seal (an ssh key's record is unchanged; the Nix key is new). Deployed with C1-C2: every agent at once.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
