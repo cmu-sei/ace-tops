@@ -164,6 +164,7 @@ pub(crate) trait TcpClientSpawner: Send + Sync {
         lifecycle: LifecycleHandler,
         router: ActorRef<polar_router::RouterMessage>,
         config: TCPClientConfig,
+        tls: crate::crypto::TlsHandle,
     ) -> Result<TcpClient, ActorProcessingErr>;
 }
 
@@ -181,8 +182,14 @@ impl TcpClientSpawner for CassiniSpawner {
         supervisor: ActorRef<InfrastructureSupervisorMessage>,
         lifecycle: LifecycleHandler,
         router: ActorRef<polar_router::RouterMessage>,
-        config: TCPClientConfig,
+        mut config: TCPClientConfig,
+        tls: crate::crypto::TlsHandle,
     ) -> Result<TcpClient, ActorProcessingErr> {
+        // The connection's TLS is the crypto actor's, from the agent's own key (docs/plans/crypto-actor.md, step K3):
+        // the client is given it whole, and reads no key of its own.
+        config.tls = Some(Arc::new(
+            cassini_tls(&tls, &config.ca_certificate_path).await?,
+        ));
         // What the agent was refused comes back here: to ask for the authority, and for its health file.
         let told = supervisor.clone();
         let watch: cassini_client::facade::RefusalWatch = Arc::new(move |news| {
@@ -201,6 +208,31 @@ impl TcpClientSpawner for CassiniSpawner {
         )
         .await
     }
+}
+
+/// The Cassini client's TLS: the crypto actor's client configuration, verifying the broker under the CA at `ca_path`.
+async fn cassini_tls(
+    tls: &crate::crypto::TlsHandle,
+    ca_path: &str,
+) -> Result<rustls::ClientConfig, ActorProcessingErr> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject as _;
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_file_iter(ca_path)
+        .map_err(|e| ActorProcessingErr::from(format!("reading the CA from {ca_path}: {e}")))?
+    {
+        let certificate = certificate
+            .map_err(|e| ActorProcessingErr::from(format!("reading the CA from {ca_path}: {e}")))?;
+        roots
+            .add(certificate)
+            .map_err(|e| ActorProcessingErr::from(format!("the CA at {ca_path}: {e}")))?;
+    }
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|e| ActorProcessingErr::from(format!("the broker's verifier: {e}")))?;
+    tls.client_config(verifier)
+        .await
+        .map_err(|e| ActorProcessingErr::from(format!("the Cassini client's TLS: {e}")))
 }
 
 pub struct InfrastructureSupervisorArgs {
@@ -687,6 +719,7 @@ impl InfrastructureSupervisor {
                 lifecycle_handler,
                 router.clone(),
                 client_config,
+                crate::crypto::TlsHandle::new(setup.crypto.handle.actor()),
             )
             .await?;
         // A change of authority may admit what the agent was refused: the client asks its gate again.
@@ -1506,6 +1539,7 @@ mod tests {
             _lifecycle: LifecycleHandler,
             router: ActorRef<polar_router::RouterMessage>,
             config: TCPClientConfig,
+            _tls: crate::crypto::TlsHandle,
         ) -> Result<TcpClient, ActorProcessingErr> {
             self.configs.lock().unwrap().push(config);
             if self.fail_next_spawn.swap(false, Ordering::SeqCst) {
