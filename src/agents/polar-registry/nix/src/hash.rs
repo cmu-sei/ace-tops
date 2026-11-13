@@ -105,6 +105,11 @@ impl<W> Hashing<W> {
         }
     }
 
+    /// How many bytes have been written so far.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
     /// The hash and count of everything written, and the writer.
     pub fn finish(self) -> (Sha256, u64, W) {
         (
@@ -170,6 +175,7 @@ mod tests {
         use std::io::Write;
         let mut w = Hashing::new(Vec::new());
         w.write_all(b"nix").unwrap();
+        assert_eq!(w.count(), 3);
         let (hash, count, inner) = w.finish();
         assert_eq!(
             (hash, count, inner.as_slice()),

@@ -68,6 +68,7 @@ members = [
     "polar-git-server/common",
     "polar-git-server/server",
     "polar-registry/nix",
+    "polar-registry/registry",
     "polar-health",
     "polar-log",
     "polar-scudo",
@@ -180,6 +181,9 @@ serde_json = "1.0"
 serde_path_to_error = "0.1"                               # used in jira/observe
 serde_yaml = "0.9"                                         # used in jira/observe
 sha2 = "^0.10.9"
+# Pure-Rust zstd for Polar's registry (docs/plans/registry/nix-cache.claude.md): the legacy frame formats, the
+# dictionary builder and long-distance matching off.
+structured-zstd = { version = "=0.3.0", default-features = false, features = ["std", "hash", "kernel-scalar", "kernel-avx2", "kernel-neon"] }
 tar = "0.4"                                                # unpacks a build's source archive (build-orchestrator/fetch)
 flate2 = "1.1"                                             # the archive's gzip, as tar's companion
 ed25519-dalek = { version = "2.2", features = ["pkcs8"] }

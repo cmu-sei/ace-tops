@@ -71,7 +71,17 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   (L9 166 / 2429); scalar-only costs ~10% decode. Deps then: twox-hash (MIT). Mitigations to build in: decoding
   bounded by the narinfo's NarSize (refuse past it: no bomb), oracle tests both ways (Nix substitutes our .nar.zst;
   we decode cache.nixos.org's and C zstd CLI's), property round trips and mutated-input-never-panics. Revisit with
-  age; brotli is the fallback. Encoding level for plain inputs: 9 by default (measured), a setting.
+  age; brotli is the fallback.
+  Read 2026-11-12 (the maintainer: "The agents.md in the structured zstd repo seems instructive"): its AGENTS.md is
+  a performance-review checklist with Polar-like discipline: claims in time against upstream C zstd in the same
+  harness and run, a control arm under ~1.5% (layout noise), checked_* not saturating_* (fail at the cause), a
+  provable removed check becomes debug_assert, kernels present regardless of baseline (#[target_feature(enable)]),
+  chosen by runtime detection once above the loop, scalar fallback, a test sweeping every tier the CPU supports
+  against scalar for bit-identical output; cfg(target_feature) only for architectural facts (NEON on aarch64, SSE2
+  on x86_64). That runtime dispatch is what keeps one artifact per target. Lineage: GitHub contributors
+  KillingSpark (ruzstd's author) 429, polaz 309, release bot 63, paolobarbolini 30, Shnatsel 10: ruzstd's history
+  carried forward with a full encoder, not new code; repo created 2026-03-25, 13 stars. By its own standard my
+  bench is indicative only (one run, one host; C figures from the CLI, not the same harness). Encoding level for plain inputs: 9 by default (measured), a setting.
 - C already in the workspace (told the maintainer): git2 → libgit2-sys, libssh2-sys, libz-sys; static OpenSSL
   (workspace.nix OPENSSL_*); ring's C/asm. gitoxide is the way off libgit2.
 - Path records: per hashpart, a JSON record {store_path, nar_hash, nar_size, references, deriver?, ca?, upstream
@@ -106,8 +116,24 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   nix32.rs encode `|`→`^` (equivalent: bit ranges disjoint; commented). First run missed 30; closed with tests.
   `just static-analysis`: geiger (needs absolute manifest path), semver-checks (pkcs1 doc error on logger), udeps
   (other crates only), mutants (workspace copy lacks VERSION) fail — all pre-existing, none in this crate.
-- NC2 CAS + Nix face server (hyper-util, plain http read), Polar sig; test: `nix copy --from http://127.0.0.1:P
-  --to <tmp store>` with trusted-public-keys = Polar's.
+- NC2 CAS + Nix face. DONE 2026-11-12: `src/agents/polar-registry/registry` (package polar-registry; axum 0.7 as
+  the other Polar servers; structured-zstd workspace dep). `blobs.rs`: Blobs{root/blobs/<hex>.zst + <hex>.json
+  (size, file_sha256, file_size), root/tmp cleared at open}; put_zstd keeps bytes as received (tee → file while
+  decoding, decode bounded by Expect.size, hash/size checked), put_plain encodes at level (DEFAULT_LEVEL 9) then
+  DECODES THE WRITTEN FILE back and checks (young-encoder guard); commit = rename blob, then sidecar, fsync dir;
+  held blob → not read again, held to its size. `nix_cache.rs`: NixCache{root/nix/<hashpart>.narinfo,
+  root/nix-tmp}; enter(PathInfo, Archive::{Zstd,Plain}) → blob, narinfo URL nar/<nix32>.nar.zst Compression zstd
+  FileHash/FileSize of kept file, upstream sigs kept + Polar sig; same path+NarHash → returned as held, other
+  NarHash → HeldOtherwise; routes /nix-cache-info, /:file (.narinfo), /nar/:file (.nar.zst, nix32 of plain hash),
+  everything else 404, unreadable narinfo → 500; PRIORITY 40; `serve(listener, cache)`.
+  Oracle (tests/nix.rs): two input-addressed derivations built in the test (bash builder, a refers to b) — CA paths
+  (toFile) would pass Nix's signature check vacuously; a entered plain, b as zstd kept as received; `nix copy --from
+  http://127.0.0.1:P --to local?root=…` with trusted-public-keys = Polar's copies both, files identical; another key
+  → refused ("signature"); blob replaced by another path's zstd → refused. Mutation-checked: dropping the signing
+  fails it. Store tests: refusals leave nothing in tmp or blobs, a 64 MiB zstd bomb said to be 1 KiB refused, C
+  `zstd -19` output kept as received, 16 concurrent writes, interrupted/failing readers, unreadable record = error.
+  cargo-mutants polar-registry: 55, 43 caught + 2 timeouts (an infinite retry: caught), 9 unviable, 0 missed after
+  sharing temp_name (the duplicate's mutant was the last one).
 - NC3 faults from a binary cache (test upstream = a second instance / static dir made by `nix copy --to file://`),
   switch off; network-gated test vs cache.nixos.org.
 - NC4 host mode.

@@ -28,7 +28,8 @@
 >
 > A **feature-level plan**, part of [Polar's registry](../registry.md). It describes Polar's `main` as it is.
 
-**Status: proposed, being built.**
+**Status: being built.** Nix's formats, the content store and the Nix face are built and tested against Nix
+itself; faults, the host's store and the cluster are next.
 
 ## 1. The need
 
@@ -130,7 +131,15 @@ In steps, each tested before the next:
 
 ## 6. How much of the need is met now
 
-None of it. No Nix cache runs in Polar's clusters, and a build pod cannot run Nix.
+Little of it, and none in a cluster:
+
+- Polar reads and writes Nix's formats, held to Nix itself.
+- The content store keeps archives compressed under the hash of their content, and keeps nothing that is not what it
+  was said to be.
+- The Nix face serves paths from it, signed with Polar's key: Nix copies a path and its references from it when it
+  trusts that key, and refuses them when it does not, or when an archive is not what its narinfo says.
+- A path enters only when given to it directly. Nothing fetches on a miss yet, no cache runs in Polar's clusters, and a
+  build pod cannot run Nix.
 
 ## 7. What is left before this is met
 
