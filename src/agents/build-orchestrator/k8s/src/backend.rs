@@ -256,7 +256,7 @@ impl KubernetesBackend {
             }
         }
         text.truncate(CANARY_LOG);
-        format!("It said: {}", String::from_utf8_lossy(&text).trim())
+        format!("It said: {}", one_line(&String::from_utf8_lossy(&text)))
     }
 
     fn namespace(&self) -> String {
@@ -303,6 +303,30 @@ async fn resolve_ipv4(host: &str) -> Result<std::net::Ipv4Addr, String> {
         .ok_or_else(|| {
             format!("the registry's name {host} has no IPv4 address, and a build's pod has no DNS")
         })
+}
+
+/// A log as one line, for a reason that is logged and published as one: its lines joined, colour codes taken out.
+fn one_line(log: &str) -> String {
+    let mut plain = String::with_capacity(log.len());
+    let mut chars = log.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            // A colour code: ESC [ parameters, ending at a letter.
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// An object's metadata field, as text.
@@ -958,6 +982,13 @@ mod tests {
         api.answers("POST", JOBS, 201, job(json!({})));
         api.answers("GET", JOB_1, 200, job(canary_status));
         api.answers("DELETE", JOB_1, 200, job(json!({})));
+    }
+
+    #[test]
+    fn a_canary_s_log_is_said_on_one_line_without_colour() {
+        let log =
+            "\u{1b}[2m2026\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m a:1: reached\n\nb:2: not reached\n";
+        assert_eq!(one_line(log), "2026 ERROR a:1: reached | b:2: not reached");
     }
 
     /// Where the canary fails, no build's Job is made, and the build says why.

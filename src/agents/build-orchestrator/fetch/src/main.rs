@@ -30,8 +30,13 @@ use std::process::ExitCode;
 async fn main() -> ExitCode {
     polar_version::exit_if_asked("build-fetch");
     let _ = rustls::crypto::ring::default_provider().install_default();
-    tracing_subscriber::fmt().with_target(false).init();
-    if std::env::args().nth(1).as_deref() == Some(build_fetch::probe::PROBE_ARG) {
+    let probing = std::env::args().nth(1).as_deref() == Some(build_fetch::probe::PROBE_ARG);
+    // The probe's lines are read back by the orchestrator, into why a build is refused: plain text, with no colour.
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_ansi(!probing)
+        .init();
+    if probing {
         return probe().await;
     }
     let config = polar_env::Config::builder(&polar_env::ProcessEnv)
@@ -71,7 +76,13 @@ async fn probe() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(seen) => {
-            seen.iter().for_each(|s| tracing::error!("{}", s.line()));
+            for s in &seen {
+                if s.as_required() {
+                    tracing::info!("{}", s.line());
+                } else {
+                    tracing::error!("{}", s.line());
+                }
+            }
             tracing::error!("the network is not enforced as the builds' policy says");
             ExitCode::FAILURE
         }
