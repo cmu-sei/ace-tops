@@ -38,10 +38,23 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# The cache's way to its upstreams, a trait its agent implements.
+# The cache's way to its upstreams, a trait its agent implements over the builder's protocol handler.
 async-trait.workspace = true
+# The agent: its infrastructure, its settings, its supervisor.
+polar-agent-builder.workspace = true
+polar-env.workspace = true
+polar-scudo.workspace = true
+ractor.workspace = true
+cassini-types.workspace = true
+
+[[bin]]
+name = "polar-registry"
+path = "src/main.rs"
 
 [dev-dependencies]
+# The protocol handler as an agent has it, for faults through it (tests/upstream.rs).
+polar-agent-builder = { workspace = true, features = ["testing"] }
+polar = { workspace = true }
 # Blobs, archives and caches made and read back (tests/).
 proptest.workspace = true
 tempfile.workspace = true

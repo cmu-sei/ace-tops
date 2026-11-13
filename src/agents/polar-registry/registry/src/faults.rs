@@ -44,7 +44,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,8 +54,13 @@ pub const MAX_NARINFO: u64 = 64 * 1024;
 /// How the cache reaches its upstreams.
 #[async_trait::async_trait]
 pub trait Fetch: Send + Sync {
-    /// The body at `url`, at most `limit` bytes; `None` when the upstream does not hold it.
-    async fn get(&self, url: &str, limit: u64) -> Result<Option<Vec<u8>>, String>;
+    /// The body at `path` (from `/`) under `upstream`, at most `limit` bytes; `None` when the upstream does not hold it.
+    async fn get(
+        &self,
+        upstream: &Upstream,
+        path: &str,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>, String>;
 }
 
 /// Fetches nothing: a cache with no upstreams.
@@ -63,7 +68,7 @@ pub struct NoFetch;
 
 #[async_trait::async_trait]
 impl Fetch for NoFetch {
-    async fn get(&self, _url: &str, _limit: u64) -> Result<Option<Vec<u8>>, String> {
+    async fn get(&self, _: &Upstream, _: &str, _: u64) -> Result<Option<Vec<u8>>, String> {
         Ok(None)
     }
 }
@@ -71,9 +76,11 @@ impl Fetch for NoFetch {
 /// A binary cache the cache fetches from, and the key it is trusted by.
 #[derive(Debug, Clone)]
 pub struct Upstream {
-    /// Its address, with no `/` at the end.
+    /// Its address, as the record names it.
     pub url: String,
     pub key: PublicKey,
+    /// The operation the agent declares that reaches it (`upstream`), which goes to the address its own variable holds.
+    pub via: &'static str,
 }
 
 /// What became of one fault.
@@ -114,7 +121,7 @@ pub struct Faults {
     upstreams: Vec<Upstream>,
     fetch: Arc<dyn Fetch>,
     on: AtomicBool,
-    max_archive: u64,
+    max_archive: AtomicU64,
     log: Mutex<File>,
     faulting: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -150,7 +157,7 @@ impl Faults {
             upstreams,
             fetch,
             on: AtomicBool::new(on),
-            max_archive,
+            max_archive: AtomicU64::new(max_archive),
             log: Mutex::new(log),
             faulting: Mutex::new(HashMap::new()),
         })
@@ -164,6 +171,11 @@ impl Faults {
     /// Switches faults on or off.
     pub fn set_on(&self, on: bool) {
         self.on.store(on, Ordering::SeqCst);
+    }
+
+    /// Sets the largest archive a fault fetches.
+    pub fn set_max_archive(&self, bytes: u64) {
+        self.max_archive.store(bytes, Ordering::SeqCst);
     }
 
     async fn held(&self, hash_part: &str) -> io::Result<Option<NarInfo>> {
@@ -254,10 +266,7 @@ impl Faults {
     async fn from(&self, upstream: &Upstream, hash_part: &str) -> Result<Option<NarInfo>, String> {
         let Some(text) = self
             .fetch
-            .get(
-                &format!("{}/{hash_part}.narinfo", upstream.url),
-                MAX_NARINFO,
-            )
+            .get(upstream, &format!("/{hash_part}.narinfo"), MAX_NARINFO)
             .await?
         else {
             return Ok(None);
@@ -282,15 +291,13 @@ impl Faults {
         if !is_archive_place(&info.url) {
             return Err("its archive is not at a place under the cache".into());
         }
-        if info.file_size.is_some_and(|size| size > self.max_archive) {
-            return Err(format!(
-                "its archive is larger than {} bytes",
-                self.max_archive
-            ));
+        let max_archive = self.max_archive.load(Ordering::SeqCst);
+        if info.file_size.is_some_and(|size| size > max_archive) {
+            return Err(format!("its archive is larger than {max_archive} bytes"));
         }
         let archive = self
             .fetch
-            .get(&format!("{}/{}", upstream.url, info.url), self.max_archive)
+            .get(upstream, &format!("/{}", info.url), max_archive)
             .await?
             .ok_or_else(|| "its narinfo is held and its archive is not".to_string())?;
         let path = PathInfo {

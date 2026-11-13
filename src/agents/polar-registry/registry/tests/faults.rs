@@ -50,10 +50,16 @@ struct FromDir {
 
 #[async_trait::async_trait]
 impl Fetch for FromDir {
-    async fn get(&self, url: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
-        let rest = url
-            .strip_prefix(&format!("{UPSTREAM}/"))
-            .ok_or("another host")?;
+    async fn get(
+        &self,
+        upstream: &Upstream,
+        path: &str,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        if upstream.url != UPSTREAM {
+            return Err("another host".into());
+        }
+        let rest = path.strip_prefix('/').ok_or("not a path")?;
         let body = match std::fs::read(self.dir.join(rest)) {
             Ok(body) => (self.change)(rest, body),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -103,6 +109,7 @@ fn polar(root: &Path, fetch: impl Fetch + 'static, trusted: &SecretKey, max_arch
     let upstreams = vec![Upstream {
         url: UPSTREAM.into(),
         key: trusted.public(),
+        via: "test",
     }];
     let faults = Faults::new(cache, root, upstreams, Arc::new(fetch), true, max_archive).unwrap();
     Polar {
@@ -330,6 +337,22 @@ async fn every_wrong_answer_from_an_upstream_is_refused_and_recorded() {
         stated,
     );
     assert!(ask(&p, a.hash_part()).await.0);
+    // The bound is a run-time setting: lowered while the cache runs, it holds for the next fault.
+    let p = fresh(
+        "lowered",
+        from(&up, Box::new(unchanged)),
+        &upstream_key(),
+        1 << 30,
+    );
+    p.faults.set_max_archive(16);
+    assert_eq!(
+        ask(&p, a.hash_part()).await,
+        (
+            false,
+            "refused".into(),
+            "its archive is larger than 16 bytes".into()
+        )
+    );
 
     // A narinfo is read to its bound: a long one is taken, a longer one refused. Keys Nix does not write are passed
     // over, and nothing signed changes.
@@ -392,7 +415,17 @@ async fn a_cache_with_no_upstreams_has_what_it_holds_and_nothing_else() {
     assert_eq!(records(dir.path()).pop().unwrap()["outcome"], "absent");
     // NoFetch, asked directly, holds nothing.
     assert_eq!(
-        polar_registry::faults::NoFetch.get("http://x/y", 10).await,
+        polar_registry::faults::NoFetch
+            .get(
+                &Upstream {
+                    url: "http://x".into(),
+                    key: upstream_key().public(),
+                    via: "test",
+                },
+                "/y",
+                10
+            )
+            .await,
         Ok(None)
     );
 }
@@ -473,8 +506,18 @@ struct Https(reqwest::Client);
 
 #[async_trait::async_trait]
 impl Fetch for Https {
-    async fn get(&self, url: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
-        let reply = self.0.get(url).send().await.map_err(|e| e.to_string())?;
+    async fn get(
+        &self,
+        upstream: &Upstream,
+        path: &str,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let reply = self
+            .0
+            .get(format!("{}{path}", upstream.url))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
         if reply.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -533,6 +576,7 @@ async fn a_path_faults_in_from_cache_nixos_org_as_nix_has_it() {
         key: "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
             .parse()
             .unwrap(),
+        via: "test",
     }];
     let faults = Arc::new(
         Faults::new(

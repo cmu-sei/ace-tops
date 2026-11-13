@@ -28,8 +28,8 @@
 >
 > A **feature-level plan**, part of [Polar's registry](../registry.md). It describes Polar's `main` as it is.
 
-**Status: being built.** Nix's formats, the content store, the Nix face and faults from binary caches are built and
-tested against Nix itself; the host's store and the cluster are next.
+**Status: being built.** Nix's formats, the content store, the Nix face, faults from binary caches and the registry
+as a Polar agent are built and tested against Nix itself; the host's store and the cluster are next.
 
 ## 1. The need
 
@@ -93,8 +93,10 @@ In steps, each tested before the next:
    to this code give the same archive bytes, hashes, narinfo and signatures.
 2. **The content store and the Nix face,** with Polar's signature; Nix copies a path from it and accepts it.
 3. **Faults from a binary cache,** checked and recorded; and faults switched off.
-4. **The host's store as an upstream.**
-5. **In the cluster:** the registry as a catalog workload with its own volume, its key, its settings, and the builds'
+4. **The registry as a Polar agent:** its settings signed, and its faults going out only through the one operation it
+   declares, made by the builder's protocol handler, which judges and records every request.
+5. **The host's store as an upstream.**
+6. **In the cluster:** the registry as a catalog workload with its own volume, its key, its settings, and the builds'
    network policy allowing it.
 
 ## 4. Alternatives considered
@@ -143,6 +145,10 @@ Little of it, and none in a cluster:
   enters. Every fault is recorded, with who asked and what each cache said. Faults can be switched off, and a path
   then missing is recorded too. It has faulted a path in from `cache.nixos.org` exactly as Nix holds it.
 - An archive compressed with xz, as older paths on `cache.nixos.org` are, is refused for now, with that reason.
+- The registry is a Polar agent. It goes out by one declared operation, to the upstream cache its signed settings
+  name, and the builder's protocol handler judges and records each request; nothing else in it reaches out. Whether
+  faults are taken, and the largest archive one fetches, are signed run-time settings; faults are off unless a setting
+  turns them on.
 - No cache runs in Polar's clusters, the host's store is not yet an upstream, and a build pod cannot run Nix.
 
 ## 7. What is left before this is met
@@ -151,11 +157,14 @@ Little of it, and none in a cluster:
 - **Nix in a build pod,** a feature of its own: the pod's own Nix needs a store it can write, inside a pod that may not
   write its image or use its node, and it needs to trust Polar's key alone.
 - **Archives held whole in memory while they are fetched,** up to a bound, until the builder's way out can stream.
+  The builder's handler reads at most 256 MiB of a reply and gives a request two minutes, so a larger archive, or a
+  slower one, cannot be faulted in yet.
 - **Clients remember a cache's answers.** Nix keeps a cache's narinfos for a month, by its address. A registry that is
   reset at the same address meets clients asking for archives it no longer holds; a build pod starts with an empty
   Nix and is unaffected.
-- **Who holds Polar's signing key:** first a key the registry keeps on its own volume; then one certified through the
-  credentials agent, as other workload keys are.
+- **Who holds Polar's signing key:** for now a file given to the registry, which no other Polar agent has (each holds
+  no key file); then held by custody, as other workload keys are. Custody would need to sign with Ed25519, which Nix
+  requires.
 - **Sharing storage with the host,** not only downloads: the cluster still keeps its own copy of each path a build
   used. Whether a single-machine setup can share the files themselves is open.
 - **Records the graph can read,** and retention, with the rest of the registry.

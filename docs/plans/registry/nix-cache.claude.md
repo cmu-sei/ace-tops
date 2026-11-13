@@ -162,6 +162,36 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   copy its own XDG_CACHE_HOME. Real-world: a reset registry at the same URL meets stale clients (dev machines; build
   pods start empty). Options later: answer a NAR miss by faulting if the narinfo is known, or per-instance URLs.
   OPEN for NC5: faults default on or off (ask then); max_archive and the upstream list as Dynamic signed settings.
+- NC3b (inserted 2026-11-13, maintainer: "Youve implemented all of this so far without using the protocol handler?";
+  I had put the riskiest integration last; moved forward on "Yes"). DONE: the registry as a PolarAgent
+  (`agent.rs`: Registry, NAME polar-registry, Role::Service, Cassini client — FOUND: ServiceBuilder (non-Cassini
+  services) gets ProtocolSetup::default(), no handlers, lib.rs:802; so a registry that faults must be a full agent;
+  OPERATIONS = upstream::OPERATIONS; bin `polar-registry`, Scudo), `settings.rs` (Static: POLAR_REGISTRY_ROOT
+  WriteDir, POLAR_REGISTRY_LISTEN 0.0.0.0:5000, POLAR_REGISTRY_NIX_KEY ReadFile, POLAR_REGISTRY_NIX_UPSTREAM
+  https://cache.nixos.org, POLAR_REGISTRY_NIX_UPSTREAM_KEY cache.nixos.org-1; Dynamic: POLAR_REGISTRY_NIX_FAULTS
+  default FALSE (mine, for review: closed unless a signed setting opens it), POLAR_REGISTRY_NIX_MAX_ARCHIVE default
+  268435456 = handler MAX_BODY, relations refuse 0 or > MAX_BODY; upstream URL `http(s)://host[:port]` only; key must
+  parse) — upstream URL Static by the orchestrator's POLAR_ORCHESTRATOR_CRATES precedent. `upstream.rs`: OperationDecl
+  `nix.upstream` HTTP Location::Configured{POLAR_REGISTRY_NIX_UPSTREAM, no credential}; Handled(ProtocolHandle)
+  implements Fetch by Request::get(path) under the configured address (one request, whole reply ≤ 256 MiB, 120 s:
+  polar-agent-builder/src/protocol/http.rs:52-57); Upstream.via names the operation, an upstream no declared operation
+  reaches is refused before the handler. Fetch trait now (upstream, path, limit). Faults.max_archive is an AtomicU64
+  (set_max_archive). `supervisor.rs`: AgentBuilder, follow_group(TUNING) → set_on/set_max_archive, opens store/cache
+  (key from file)/faults, axum::serve with graceful shutdown, PrepareShutdown drains ≤ 120 s then ProceedWithShutdown
+  (git server's pattern). Egress section is implied by the builder for any agent (agent.rs:620).
+  Tests: tests/upstream.rs with polar_agent_builder::protocol::testing::http_handle (the real handler): upstream = a
+  Polar NixCache served here, signed by a test key; Nix copies a+b from the registry trusting only Polar's key; the
+  handler's records: exactly 4 (2 narinfo + 2 archive), each nix.upstream/http/127.0.0.1/allowed/no credential/not
+  arbitrary. Variable unset → handler refuses ("not set"), fault recorded refused, one handler record not allowed.
+  Scaffold (`polar-registry --scaffold`): one operation, configured at POLAR_REGISTRY_NIX_UPSTREAM; filesystem only
+  /etc/resolv.conf, /etc/hosts; sections builder, health, logging, cassini-client, polar-registry, egress.
+  Also: Handled takes a reply to its limit and no further (exact limit Some, limit-1 refused, 404 None);
+  set_max_archive lowered at run time holds for the next fault.
+  cargo-mutants (whole crate 141: 104 caught + 2 timeouts, 23 unviable, 12 missed; 6 closed by those tests and a
+  SHUTDOWN_BUDGET test). LEFT, 6, all needing a live agent (Cassini, a cluster): main → Default, Registry::start → Ok,
+  supervisor handle → Ok, its Registered and TransportError arms, handle_supervisor_evt → Ok. To be exercised in NC5
+  (the git server's and orchestrator's supervisors are in the same position).
+  NOT RUN: the supervisor (needs Cassini and a cluster: NC5).
 - NC4 host mode.
 - NC5 catalog workload (ns polar-registry), PVC, key, settings, builds' policy port, u7c.
 
