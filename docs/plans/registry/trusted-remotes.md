@@ -62,14 +62,19 @@ stay sealed, so that the registry's own code reaches it by a name that says noth
 **First, credentials are used without being seen.**
 
 - **Sealed means the whole credential:** a username is sealed with its password, and nothing in the signed
-  configuration says who a credential logs in as. Sections written the old way are moved over, once, by re-sealing.
+  configuration says who a credential logs in as. The new form replaces the old at once: every credential is sealed
+  again, by someone who has it, before agents of the new version start, since nothing can open an old one to re-seal it.
 - **A key is used by signing, never handed out.** An ssh key, a client certificate and the registry's own Nix signing
   key are held by the custody daemon, a process apart from the agent, which signs what proving possession needs; no
   part of the agent ever has the key.
 - **A shared secret is sent by what holds it.** A token, or a username and password, has to travel inside the request
   itself, so whatever writes those bytes holds the secret. That is the agent's crypto actor, which already keeps the
   opened secrets: the protocol handler gives it the judged request and the credential's name, it sends the request
-  with the credential and gives back only the response. The handler and the agent's code never have the secret.
+  with the credential and gives back only the response. The handler and the agent's code never have the secret. Git
+  fetches move to gitoxide, Polar's own fork of the Rust git library, whose transport takes a hook the crypto actor
+  fills, since the git library Polar uses now makes its own requests and cannot be handed one. For ssh, custody answers
+  as an ssh agent does, on a socket only the handler reaches, and signs; the key never leaves it.
+- **Every agent at once:** after the change there is one way to use a credential, and the handler never receives one.
 
 **Then the remotes.**
 
@@ -167,9 +172,8 @@ In steps, each tested before the next:
 ## 7. What is left before this is met
 
 - **The seven steps above.**
-- **How git over HTTPS goes through the crypto actor:** the git library makes its own requests, so the crypto actor
-  must stand in its path, for instance as a local proxy that adds the credential, rather than being handed a request.
-  Settled in its step.
+- **Gitoxide's ssh:** its client speaks ssh through the system's `ssh` program, which an agent, locked against starting
+  programs, may not run; fetching over ssh needs an ssh client in-process, in the fork, speaking to custody's agent.
 - **What a remote may be used for:** which kinds of content (Nix paths, crates, images), and for which builds. A first
   form is part of step 1; how far it goes is to be settled with the registry's other faces.
 - **The registry's own signing key in custody,** signing with Ed25519, before the registry is deployed to any cluster;

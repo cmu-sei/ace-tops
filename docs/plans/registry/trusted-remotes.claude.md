@@ -121,6 +121,19 @@ libgit2 pointed at it; or gitoxide-based fetch with a request hook); C3 custody 
 credential via a custody agent socket? git2-rs Cred::ssh_key_from_agent; or gitoxide ssh), client certs (custody client
 slot, today only a server slot), Ed25519 for Nix (prereq for NC5). Then R1.. as before.
 
+## DECIDED (maintainer, 2026-11-13, "Ask your questions and then I have to run off for a meeting")
+- Migration: "Re-seal everything at once" (not my recommendation of both formats for a release): new format only;
+  every credential re-entered with polar-sign before agents of the new version start.
+- Git over HTTPS: "Move git fetches to gitoxide" (not my local-proxy recommendation): fetch via daveman1010221/gitoxide
+  with a transport hook the CryptoActor fills; git observer and orchestrator source fetch leave libgit2 for fetching.
+- SSH: "An ssh-agent from custody": custody speaks ssh-agent protocol on a socket only the handler reaches.
+- Rollout: every agent at once; one credential path.
+FOUND (to settle in C2/C3): gix's ssh transport shells out to the `ssh` program; agents' seccomp lock refuses new
+programs (runtime-attestation "Each agent locks itself") → need an in-process ssh client in the fork (russh, already a
+dev-dep of the builder for tests) talking to custody's agent socket. Check git-server's gix-serve fork work for reuse.
+NOT STARTED: C1 is breaking for acp (credentials sections of git observer, jira, gitlab, orchestrator) → told polar-cc
+before starting; user away at a meeting, C1 waits for the go-ahead.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
