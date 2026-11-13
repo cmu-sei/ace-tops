@@ -134,6 +134,15 @@ dev-dep of the builder for tests) talking to custody's agent socket. Check git-s
 NOT STARTED: C1 is breaking for acp (credentials sections of git observer, jira, gitlab, orchestrator) → told polar-cc
 before starting; user away at a meeting, C1 waits for the go-ahead.
 
+## REVISED (maintainer, 2026-11-13): "I'd prefer you keep as much of the ssh stuff out of custody daemon as possible.
+Please limit the footprint of that work that must go into the custodian."
+Supersedes "An ssh-agent from custody". Custody gains ONE generic capability: sign(key name, bytes) → signature, and
+public(key name) → public key; Ed25519 (Nix, ssh-ed25519) and the types custody already has (P-256 for TLS). No ssh-agent
+protocol, socket, ssh parsing, or Nix/TLS knowledge in custody. SSH: in-process client in the gitoxide fork takes a
+Signer trait; the builder implements it (builds nothing ssh-specific beyond passing the exact bytes the client hands it)
+by calling custody sign. Same capability serves the registry's Nix key (NC5 prereq) and client certificates (TLS layer in
+the builder signs the handshake via custody, as the git server's server slot does).
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
