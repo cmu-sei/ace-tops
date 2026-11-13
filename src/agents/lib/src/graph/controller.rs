@@ -22,7 +22,6 @@
 */
 
 use super::environment::{GraphSettings, GraphTls};
-use cassini_client::ClientKey;
 use neo4rs::{BoltNull, BoltType, Graph, Query};
 use ractor::concurrency::Duration;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, async_trait};
@@ -1025,11 +1024,9 @@ impl GraphControllerActor {
     ///   GRAPH_PASSWORD  — password credential
     ///   GRAPH_ENDPOINT  — bolt endpoint, e.g. bolt+s://neo4j.polar.svc.cluster.local:7687
     ///
-    /// What is read, and the rule between the TLS variables, are declared in
-    /// `graph::environment`: GRAPH_CLIENT_CERT, GRAPH_CLIENT_KEY and GRAPH_CA_CERT are all
-    /// set (mutual TLS), or only GRAPH_CA_CERT (verify the server, present no client
-    /// certificate, as behind a proxy with its own CA), or none. Any other combination
-    /// fails fast rather than silently connecting without the full certificate chain.
+    /// What is read is declared in `graph::environment`: GRAPH_CA_CERT set means mutual TLS, the agent presenting its
+    /// own client certificate, whose configuration its crypto actor makes (docs/plans/crypto-actor.md). Read from the
+    /// process alone there is no crypto actor, so mutual TLS cannot be had this way.
     pub fn get_neo_config() -> Result<neo4rs::Config, ractor::ActorProcessingErr> {
         Self::neo_config_from(&polar_env::ProcessEnv)
     }
@@ -1040,7 +1037,7 @@ impl GraphControllerActor {
         env: &dyn polar_env::Env,
     ) -> Result<neo4rs::Config, ractor::ActorProcessingErr> {
         let settings = GraphSettings::from_env(env).map_err(ractor::ActorProcessingErr::from)?;
-        Self::neo_config_for(settings)
+        Self::neo_config_for(settings, None)
     }
 
     /// The connection to use for `args`: from the settings it was given, or, for an agent
@@ -1049,14 +1046,16 @@ impl GraphControllerActor {
         args: &GraphControllerArgs,
     ) -> Result<neo4rs::Config, ractor::ActorProcessingErr> {
         match &args.settings {
-            Some(settings) => Self::neo_config_for(settings.clone()),
+            Some(settings) => Self::neo_config_for(settings.clone(), args.tls.clone()),
             None => Self::get_neo_config(),
         }
     }
 
-    /// The connection for settings already read and judged.
+    /// The connection for settings already read and judged, over `tls`, the agent's TLS from its crypto actor, where
+    /// the settings ask for mutual TLS.
     pub fn neo_config_for(
         settings: GraphSettings,
+        tls: Option<Arc<rustls::ClientConfig>>,
     ) -> Result<neo4rs::Config, ractor::ActorProcessingErr> {
         info!("Using Neo4j database at {}", settings.endpoint);
 
@@ -1069,37 +1068,14 @@ impl GraphControllerActor {
             .max_connections(10);
 
         let config = match settings.tls {
-            GraphTls::Mutual {
-                ca,
-                cert,
-                key: ClientKey::File(key),
-            } => {
-                info!("Configuring Neo4j mTLS with cert={cert} key={key} ca={ca}");
-                builder
-                    .with_mutual_tls_validation(Some(ca), cert, key)
-                    .build()?
-            }
-            GraphTls::Mutual {
-                ca,
-                cert,
-                key: custody @ ClientKey::Custody(_),
-            } => {
-                // The key is the custody daemon's, in no file: rustls is configured here, TLS 1.3 alone, and handed
-                // to neo4rs whole (docs/architecture/key-custody.md, "The neo4rs patch").
-                info!(
-                    "Configuring Neo4j mTLS with cert={cert} ca={ca}, its key the custody daemon's"
-                );
-                builder
-                    .with_rustls_config(Arc::new(
-                        custody_tls(&ca, &cert, &custody).map_err(ActorProcessingErr::from)?,
-                    ))
-                    .build()?
-            }
-            GraphTls::ServerOnly { ca } => {
-                // TLS without client cert: Neo4j verifies the server, we don't present a
-                // cert. Covers the old istio proxy CA case.
-                info!("Configuring Neo4j TLS (no client cert) with ca={ca}");
-                builder.with_client_certificate(ca).build()?
+            GraphTls::Mutual { ca } => {
+                let tls = tls.ok_or_else(|| {
+                    ActorProcessingErr::from(
+                        "mutual TLS to Neo4j needs the agent's TLS, which its crypto actor makes, and none was given",
+                    )
+                })?;
+                info!("Configuring Neo4j mTLS with ca={ca}, the agent's own client certificate");
+                builder.with_rustls_config(tls).build()?
             }
             GraphTls::None => {
                 info!("Configuring Neo4j without TLS client configuration");
@@ -1127,6 +1103,8 @@ pub struct GraphControllerArgs {
     /// The repairs of what this writer wrote wrong before, run at the first contact with the graph, after the
     /// constraints (`graph::repair`).
     pub repairs: Vec<crate::graph::repair::Repair>,
+    /// The agent's TLS, its crypto actor's, for settings that ask for mutual TLS.
+    pub tls: Option<Arc<rustls::ClientConfig>>,
 }
 
 impl GraphControllerArgs {
@@ -1136,7 +1114,14 @@ impl GraphControllerArgs {
             settings: None,
             key_indexes: Vec::new(),
             repairs: Vec::new(),
+            tls: None,
         }
+    }
+
+    /// Connect over `tls`, the agent's TLS from its crypto actor.
+    pub fn with_tls(mut self, tls: Option<Arc<rustls::ClientConfig>>) -> Self {
+        self.tls = tls;
+        self
     }
 
     /// Run these repairs at the first contact with the graph.
@@ -1309,28 +1294,6 @@ impl Actor for GraphControllerActor {
         }
         Ok(())
     }
-}
-
-/// The rustls configuration for a client certificate whose key the custody daemon holds: the server verified against
-/// the CA at `ca`, the certificate at `cert` presented, and every handshake signed through the daemon.
-fn custody_tls(ca: &str, cert: &str, key: &ClientKey) -> Result<rustls::ClientConfig, String> {
-    use rustls::pki_types::CertificateDer;
-    use rustls::pki_types::pem::PemObject as _;
-    let mut roots = rustls::RootCertStore::empty();
-    for certificate in CertificateDer::pem_file_iter(ca)
-        .map_err(|e| format!("reading the Neo4j CA from {ca}: {e}"))?
-    {
-        roots
-            .add(certificate.map_err(|e| format!("the Neo4j CA at {ca}: {e}"))?)
-            .map_err(|e| format!("the Neo4j CA at {ca}: {e}"))?;
-    }
-    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
-        .build()
-        .map_err(|e| format!("the Neo4j server verifier: {e}"))?;
-    let chain = CertificateDer::pem_file_iter(cert)
-        .and_then(|certificates| certificates.collect::<Result<Vec<_>, _>>())
-        .map_err(|e| format!("reading the client certificate from {cert}: {e}"))?;
-    polar_custody::client::client_config(verifier, chain, key)
 }
 
 /// The planner, without a graph: a batch's rows carry back exactly what was written, and the grouping never moves a
@@ -1679,20 +1642,16 @@ mod environment_tests {
 mod custody_tests {
     use super::*;
     use crate::graph::environment::{GraphSettings, GraphTls};
-    use cassini_client::ClientKey;
-    use polar_custody::client::CustodyClient;
-    use polar_custody::custody::Custody;
-    use polar_custody::protocol::Slot;
-    use polar_custody::server::{Callers, bind, serve};
     use rustls::pki_types::pem::PemObject as _;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use std::os::unix::fs::MetadataExt as _;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     const IDENTITY: &str = "kube-consumer.polar.serviceaccount.cluster.local";
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_graph_writer_shows_neo4j_the_custody_daemon_s_certificate() {
+    /// The controller connects over the TLS it was given, the agent's crypto actor's (docs/plans/crypto-actor.md): Neo4j
+    /// is shown that configuration's client certificate, and without one mutual TLS is refused.
+    async fn a_graph_writer_shows_neo4j_the_certificate_of_the_tls_it_was_given() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -1700,29 +1659,25 @@ mod custody_tests {
         let ca_pem = ca_params.self_signed(&ca_key).unwrap().pem();
         let issuer = rcgen::Issuer::new(ca_params, ca_key);
 
-        // The daemon, and polar-init's part: its CSR certified and installed, the certificate and the CA as files.
+        // The agent's client certificate, and the configuration its crypto actor would make.
         let dir = tempfile::tempdir().unwrap();
-        let uid = std::fs::metadata(dir.path()).unwrap().uid();
-        let socket = dir.path().join("custody.sock");
-        tokio::spawn(serve(
-            bind(&socket).unwrap(),
-            Arc::new(RwLock::new(Custody::new(&ca_pem).unwrap())),
-            Arc::new(Callers {
-                installer_uid: uid,
-                workload_uids: vec![uid],
-            }),
-        ));
-        let daemon = CustodyClient::new(&socket);
-        let csr =
-            tokio::task::block_in_place(|| daemon.make_csr(Slot::Client, IDENTITY, &[])).unwrap();
-        let mut request = rcgen::CertificateSigningRequestParams::from_pem(&csr).unwrap();
-        request.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        let cert_pem = request.signed_by(&issuer).unwrap().pem();
-        tokio::task::block_in_place(|| daemon.install(Slot::Client, vec![cert_pem.clone()]))
-            .unwrap();
-        let (cert_path, ca_path) = (dir.path().join("cert.pem"), dir.path().join("ca.pem"));
-        std::fs::write(&cert_path, &cert_pem).unwrap();
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let mut client_params = rcgen::CertificateParams::new(vec![IDENTITY.to_string()]).unwrap();
+        client_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        let cert_pem = client_params.signed_by(&client_key, &issuer).unwrap().pem();
+        let ca_path = dir.path().join("ca.pem");
         std::fs::write(&ca_path, &ca_pem).unwrap();
+        let mut client_roots = rustls::RootCertStore::empty();
+        client_roots
+            .add(CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
+            .unwrap();
+        let client_tls = rustls::ClientConfig::builder()
+            .with_root_certificates(client_roots)
+            .with_client_auth_cert(
+                vec![CertificateDer::from_pem_slice(cert_pem.as_bytes()).unwrap()],
+                PrivateKeyDer::from_pem_slice(client_key.serialize_pem().as_bytes()).unwrap(),
+            )
+            .unwrap();
 
         // The stand-in: TLS 1.3, a client certificate under the CA demanded, and the one shown kept.
         let server_key = rcgen::KeyPair::generate().unwrap();
@@ -1767,12 +1722,16 @@ mod custody_tests {
             endpoint: format!("bolt+s://localhost:{port}"),
             tls: GraphTls::Mutual {
                 ca: ca_path.display().to_string(),
-                cert: cert_path.display().to_string(),
-                key: ClientKey::Custody(socket.display().to_string()),
             },
         };
-        let graph =
-            Graph::connect(GraphControllerActor::neo_config_for(settings).unwrap()).unwrap();
+        assert!(
+            GraphControllerActor::neo_config_for(settings.clone(), None).is_err(),
+            "mutual TLS with no TLS given is refused"
+        );
+        let graph = Graph::connect(
+            GraphControllerActor::neo_config_for(settings, Some(Arc::new(client_tls))).unwrap(),
+        )
+        .unwrap();
         // The connection is made on first use. The stand-in speaks no Bolt, so the query fails after the handshake.
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -1783,13 +1742,13 @@ mod custody_tests {
             .await
             .expect("a handshake")
             .unwrap()
-            .expect("the handshake, signed through the daemon");
+            .expect("the handshake");
         assert_eq!(
             shown.as_ref(),
             CertificateDer::from_pem_slice(cert_pem.as_bytes())
                 .unwrap()
                 .as_ref(),
-            "the stand-in saw the daemon's certificate"
+            "the stand-in saw the certificate of the TLS the controller was given"
         );
     }
 }

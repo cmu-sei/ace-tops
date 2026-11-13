@@ -81,12 +81,41 @@ pub(crate) struct GraphSetup {
 /// Starts the agent's graph controller under `supervisor`, its signals reported to `health` as
 /// the agent uses the graph. The controller only builds its pool here; `Available` is what proves
 /// the graph answers.
+/// The graph's TLS, where its settings ask for mutual TLS: the crypto actor's client configuration for the agent's own
+/// key (docs/plans/crypto-actor.md), verifying Neo4j under the settings' CA.
+pub async fn graph_tls(
+    tls: &crate::crypto::TlsHandle,
+    settings: &polar::graph::environment::GraphSettings,
+) -> Result<Option<Arc<rustls::ClientConfig>>, String> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject as _;
+    let polar::graph::environment::GraphTls::Mutual { ca } = &settings.tls else {
+        return Ok(None);
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_file_iter(ca)
+        .map_err(|e| format!("reading the Neo4j CA from {ca}: {e}"))?
+    {
+        roots
+            .add(certificate.map_err(|e| format!("the Neo4j CA at {ca}: {e}"))?)
+            .map_err(|e| format!("the Neo4j CA at {ca}: {e}"))?;
+    }
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .map_err(|e| format!("the Neo4j server verifier: {e}"))?;
+    Ok(Some(Arc::new(tls.client_config(verifier).await?)))
+}
+
 pub(crate) async fn start_controller(
     name: String,
     setup: GraphSetup,
     health: ActorRef<HealthCheckMessage>,
     supervisor: ractor::ActorCell,
+    tls: &crate::crypto::TlsHandle,
 ) -> Result<GraphHandle, ActorProcessingErr> {
+    let graph_tls = graph_tls(tls, &setup.settings)
+        .await
+        .map_err(ActorProcessingErr::from)?;
     let port = Arc::new(OutputPort::<GraphSignal>::default());
     let uses = setup.uses;
     port.subscribe(health.clone(), move |signal| {
@@ -97,6 +126,7 @@ pub(crate) async fn start_controller(
         GraphControllerActor,
         GraphControllerArgs::new(port)
             .with_settings(setup.settings)
+            .with_tls(graph_tls)
             .with_key_indexes(setup.key_indexes)
             .with_repairs(setup.repairs),
         supervisor,

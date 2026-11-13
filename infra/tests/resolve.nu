@@ -1098,7 +1098,7 @@ def main [] {
             let r = (resolve "soft-state-observer")
             assert ("graph-read" in $r.needs) ($r.needs | str join ",")
             assert ("graph-write" not-in $r.needs) ($r.needs | str join ",")
-            assert equal (env_value $r "GRAPH_CLIENT_CERT") "/etc/tls/certs/cert.pem"
+            assert equal (env_value $r "GRAPH_CA_CERT") "/etc/tls/certs/ca.pem"
             assert ((env_value $r "GRAPH_ENDPOINT") | str starts-with "bolt+s://")
             assert equal $r.certs ["client:/etc/tls/certs:custody:"]
             assert ($r.dep_checks | all {|d| not ($d | str contains "neo4j") and not ($d | str contains "polar-db") }) ($r.dep_checks | str join ",")
@@ -1657,16 +1657,16 @@ def main [] {
         "a graph agent presents the pod's one client certificate to Neo4j and does not ask for a second": {
             # Two client certificates for one pod instance is what the credentials agent refuses (and a second
             # would revoke the first), and the second was the same identity and type with no extra names, so
-            # Neo4j is shown the certificate the pod already has.
-            # With the custody daemon (the default), the key is the daemon's and neo4rs is handed its configuration; on
-            # key files, the key is the file beside the certificate.
+            # Neo4j is shown the certificate the pod already has, through the TLS its crypto actor makes
+            # (docs/plans/crypto-actor.md): the graph is given no key variables of its own. With the custody daemon (the
+            # default), the key is the daemon's; on key files, the crypto actor reads the client key file.
             for n in [kube-consumer jira-processor polar-scheduler git-repo-processor credentials-agent] {
                 let r = (resolve $n)
                 assert equal $r.certs ["client:/etc/tls/certs:custody:"] $n
                 assert ($r.volumes | where name == "neo4j-client-tls" | is-empty) $n
                 assert ($r.mounts | where name == "neo4j-client-tls" | is-empty) $n
                 assert ($r.init_mounts | where name == "neo4j-client-tls" | is-empty) $n
-                assert equal (env_value $r "GRAPH_CLIENT_CERT") "/etc/tls/certs/cert.pem" $n
+                assert equal (env_value $r "GRAPH_CLIENT_CERT") null $n
                 assert equal (env_value $r "GRAPH_CLIENT_KEY") null $n
                 assert equal (env_value $r "POLAR_CUSTODY_SOCKET") "/run/polar-custody/custody.sock" $n
                 assert equal (env_value $r "GRAPH_CA_CERT") "/etc/tls/certs/ca.pem" $n
@@ -1680,8 +1680,9 @@ def main [] {
                     assert ($r.volumes | where name == "neo4j-client-tls" | is-empty) $n
                     assert ($r.mounts | where name == "neo4j-client-tls" | is-empty) $n
                     assert ($r.init_mounts | where name == "neo4j-client-tls" | is-empty) $n
-                    assert equal (env_value $r "GRAPH_CLIENT_CERT" $t) "/etc/tls/certs/cert.pem" $n
-                    assert equal (env_value $r "GRAPH_CLIENT_KEY" $t) "/etc/tls/certs/key.pem" $n
+                    assert equal (env_value $r "GRAPH_CLIENT_CERT" $t) null $n
+                    assert equal (env_value $r "GRAPH_CLIENT_KEY" $t) null $n
+                    assert equal (env_value $r "TLS_CLIENT_KEY" $t) "/etc/tls/certs/key.pem" $n
                     assert equal (env_value $r "GRAPH_CA_CERT" $t) "/etc/tls/certs/ca.pem" $n
                 }
             }

@@ -988,7 +988,7 @@ impl Actor for ConsumerSupervisor {
             ProjectionActor,
             ProjectionActorArgs {
                 ledger: None,
-                graph: graph_settings,
+                graph: graph_settings.clone(),
             },
             myself.get_cell(),
         )
@@ -1324,6 +1324,12 @@ impl Actor for ConsumerSupervisor {
             },
         ));
         let resources = configured.build().await?;
+        // The projection's graph, over the agent's TLS, which its crypto actor makes now that the infrastructure is up
+        // (docs/plans/crypto-actor.md).
+        let graph_tls = polar_agent_builder::graph::graph_tls(&resources.tls, &graph_settings)
+            .await
+            .map_err(ActorProcessingErr::from)?;
+        let _ = projection_actor.cast(ProjectionMessage::Connect(graph_tls));
 
         // The "infrastructure -> domain" half of the respawn/shutdown protocol.
         // Without this subscription the infrastructure supervisor would wait

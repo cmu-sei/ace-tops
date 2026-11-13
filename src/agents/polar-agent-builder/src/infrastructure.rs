@@ -1064,6 +1064,7 @@ impl Actor for InfrastructureSupervisor {
                     setup,
                     healthcheck.clone(),
                     myself_cell.clone(),
+                    &crate::crypto::TlsHandle::new(crypto.handle.actor()),
                 )
                 .await?,
             ),

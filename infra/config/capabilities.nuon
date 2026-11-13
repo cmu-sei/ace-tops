@@ -83,8 +83,6 @@
         { name: "GRAPH_DB",          value: "neo4j" }
         { name: "GRAPH_USER",        value: "neo4j" }
         { name: "GRAPH_PASSWORD",    secret: "polar-graph-pw", key: "secret" }
-        { name: "GRAPH_CLIENT_CERT", value: "/etc/tls/certs/cert.pem" }
-        { name: "GRAPH_CLIENT_KEY",  value: "/etc/tls/certs/key.pem", key_of: "client" }
         { name: "GRAPH_CA_CERT",     value: "/etc/tls/certs/ca.pem" }
       ]
     }
@@ -109,8 +107,6 @@
         { name: "GRAPH_DB",          value: "neo4j" }
         { name: "GRAPH_USER",        value: "neo4j" }
         { name: "GRAPH_PASSWORD",    secret: "polar-graph-pw", key: "secret" }
-        { name: "GRAPH_CLIENT_CERT", value: "/etc/tls/certs/cert.pem" }
-        { name: "GRAPH_CLIENT_KEY",  value: "/etc/tls/certs/key.pem", key_of: "client" }
         { name: "GRAPH_CA_CERT",     value: "/etc/tls/certs/ca.pem" }
       ]
     }

@@ -74,7 +74,9 @@ pub struct ProjectionActorArgs {
 
 pub struct ProjectionActorState {
     ledger: Option<ActorRef<LedgerMessage>>,
-    graph_controller: GraphController,
+    /// Spawned on `Connect`, once the agent's crypto actor can make its TLS (docs/plans/crypto-actor.md).
+    graph_controller: Option<GraphController>,
+    graph: polar::graph::environment::GraphSettings,
 }
 
 // An event is sent once, as it is appended, so its size beside a graph signal's is not worth boxing it.
@@ -101,6 +103,9 @@ pub enum ProjectionMessage {
     /// see ProjectionActorArgs::ledger's own doc for why this can't
     /// just be a constructor argument.
     SetLedger(ActorRef<LedgerMessage>),
+    /// The graph's TLS, the agent's crypto actor's, once its infrastructure is up: the graph controller is started with
+    /// it. Until then nothing is projected; the ledger is authoritative, and catch-up projects what was missed.
+    Connect(Option<std::sync::Arc<rustls::ClientConfig>>),
 }
 
 #[async_trait]
@@ -111,36 +116,43 @@ impl Actor for ProjectionActor {
 
     async fn pre_start(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         args: ProjectionActorArgs,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let signal_port = Arc::new(OutputPort::<GraphSignal>::default());
-        signal_port.subscribe(myself.clone(), |signal| {
-            Some(ProjectionMessage::GraphSignal(signal))
-        });
-
-        let (graph_controller, _) = GraphControllerActor::spawn_linked(
-            Some("credentials-agent.projection.graph.controller".to_string()),
-            GraphControllerActor,
-            GraphControllerArgs::new(signal_port).with_settings(args.graph.clone()),
-            myself.get_cell(),
-        )
-        .await
-        .map_err(ActorProcessingErr::from)?;
-
         Ok(ProjectionActorState {
             ledger: args.ledger,
-            graph_controller,
+            graph_controller: None,
+            graph: args.graph,
         })
     }
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
+            ProjectionMessage::Connect(tls) => {
+                if state.graph_controller.is_some() {
+                    return Ok(());
+                }
+                let signal_port = Arc::new(OutputPort::<GraphSignal>::default());
+                signal_port.subscribe(myself.clone(), |signal| {
+                    Some(ProjectionMessage::GraphSignal(signal))
+                });
+                let (graph_controller, _) = GraphControllerActor::spawn_linked(
+                    Some("credentials-agent.projection.graph.controller".to_string()),
+                    GraphControllerActor,
+                    GraphControllerArgs::new(signal_port)
+                        .with_settings(state.graph.clone())
+                        .with_tls(tls),
+                    myself.get_cell(),
+                )
+                .await
+                .map_err(ActorProcessingErr::from)?;
+                state.graph_controller = Some(graph_controller);
+            }
             ProjectionMessage::ProjectEvent {
                 seq,
                 event,
@@ -150,21 +162,23 @@ impl Actor for ProjectionActor {
                     warn!("Dropping event projection -- ledger reference not yet set");
                     return Ok(());
                 };
-                project_single_event(
-                    &state.graph_controller,
-                    seq,
-                    &event,
-                    &superseded_serials,
-                    ledger,
-                )
-                .await;
+                let Some(graph_controller) = &state.graph_controller else {
+                    warn!(
+                        "Dropping event projection -- the graph is not connected yet; catch-up projects it"
+                    );
+                    return Ok(());
+                };
+                project_single_event(graph_controller, seq, &event, &superseded_serials, ledger)
+                    .await;
             }
             ProjectionMessage::GraphSignal(GraphSignal::Available) => {
-                let Some(ledger) = &state.ledger else {
+                let (Some(ledger), Some(graph_controller)) =
+                    (&state.ledger, &state.graph_controller)
+                else {
                     warn!("Skipping catch-up -- ledger reference not yet set");
                     return Ok(());
                 };
-                catch_up(ledger, &state.graph_controller).await;
+                catch_up(ledger, graph_controller).await;
             }
             ProjectionMessage::GraphSignal(GraphSignal::OpFailed(reason)) => {
                 warn!(

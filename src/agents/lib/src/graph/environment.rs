@@ -27,8 +27,6 @@
 //! between the TLS variables lives, so the controller, the agent builder's startup check and
 //! the render-time checker cannot disagree about what a sound graph environment is.
 
-use cassini_client::ClientKey;
-use cassini_client::environment::CUSTODY_SOCKET;
 use polar_env::{Described, Env, EnvError, Optional, Required, Section};
 
 pub const GRAPH_DB: Required<String> = Required::text("GRAPH_DB", "the Neo4j database name");
@@ -39,20 +37,10 @@ pub const GRAPH_ENDPOINT: Required<String> = Required::text(
     "GRAPH_ENDPOINT",
     "the Neo4j address, for example bolt+s://host:7687",
 );
-pub const GRAPH_CLIENT_CERT: Optional<String> = Optional::path(
-    "GRAPH_CLIENT_CERT",
-    polar_env::Access::ReadFile,
-    "path to the client certificate presented to Neo4j; set with GRAPH_CLIENT_KEY and GRAPH_CA_CERT or not at all",
-);
-pub const GRAPH_CLIENT_KEY: Optional<String> = Optional::path(
-    "GRAPH_CLIENT_KEY",
-    polar_env::Access::ReadFile,
-    "path to the private key for GRAPH_CLIENT_CERT; this or POLAR_CUSTODY_SOCKET, the custody daemon holding the key, not both",
-);
 pub const GRAPH_CA_CERT: Optional<String> = Optional::path(
     "GRAPH_CA_CERT",
     polar_env::Access::ReadFile,
-    "path to the CA certificate Neo4j's certificate is verified against",
+    "path to the CA certificate Neo4j's certificate is verified against; set, the agent connects over mutual TLS, presenting its own client certificate, the crypto actor's",
 );
 
 static VARIABLES: &[&dyn Described] = &[
@@ -60,23 +48,16 @@ static VARIABLES: &[&dyn Described] = &[
     &GRAPH_USER,
     &GRAPH_PASSWORD,
     &GRAPH_ENDPOINT,
-    &GRAPH_CLIENT_CERT,
-    &GRAPH_CLIENT_KEY,
     &GRAPH_CA_CERT,
 ];
 
-/// How the controller secures its connection, from which of the TLS variables are set.
+/// How the controller secures its connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphTls {
-    /// Mutual TLS: present a client certificate, verify the server against the CA. Its key is a file, or the custody
-    /// daemon's (docs/architecture/key-custody.md, "The neo4rs patch").
-    Mutual {
-        ca: String,
-        cert: String,
-        key: ClientKey,
-    },
-    /// Verify the server against the CA; present no client certificate.
-    ServerOnly { ca: String },
+    /// Mutual TLS: verify the server against the CA, and present the agent's own client certificate. The pod has one
+    /// client certificate, presented to Neo4j as to Cassini, and its TLS is the crypto actor's (docs/plans/crypto-actor.md):
+    /// the controller is given the configuration, and reads no key.
+    Mutual { ca: String },
     /// No TLS configuration beyond what the endpoint scheme implies.
     None,
 }
@@ -108,53 +89,11 @@ impl GraphSettings {
         let password = take(GRAPH_PASSWORD.read(env));
         let endpoint = take(GRAPH_ENDPOINT.read(env));
 
-        let mut optional = |read: Result<Option<String>, EnvError>| match read {
-            Ok(value) => value,
+        let tls = match GRAPH_CA_CERT.read(env) {
+            Ok(Some(ca)) => GraphTls::Mutual { ca },
+            Ok(None) => GraphTls::None,
             Err(error) => {
                 problems.push(error.to_string());
-                None
-            }
-        };
-        let cert = optional(GRAPH_CLIENT_CERT.read(env));
-        let key = optional(GRAPH_CLIENT_KEY.read(env));
-        let ca = optional(GRAPH_CA_CERT.read(env));
-        // The pod's custody socket, declared by the Cassini client: the key of a client certificate shown to Neo4j may
-        // be the daemon's. Without a client certificate it is the Cassini client's alone, and says nothing here.
-        let socket = optional(CUSTODY_SOCKET.read(env));
-
-        let tls = match (cert, key, ca, socket) {
-            (Some(cert), Some(key), Some(ca), None) => GraphTls::Mutual {
-                ca,
-                cert,
-                key: ClientKey::File(key),
-            },
-            (Some(cert), None, Some(ca), Some(socket)) => GraphTls::Mutual {
-                ca,
-                cert,
-                key: ClientKey::Custody(socket),
-            },
-            (Some(_), Some(_), Some(_), Some(_)) => {
-                problems.push(format!(
-                    "{} and {} are both set: the key shown to Neo4j is a file or the custody daemon's, not both",
-                    GRAPH_CLIENT_KEY.name(),
-                    CUSTODY_SOCKET.name()
-                ));
-                GraphTls::None
-            }
-            (None, None, Some(ca), _) => GraphTls::ServerOnly { ca },
-            (None, None, None, _) => GraphTls::None,
-            // Partial TLS configuration: fail fast rather than silently connecting without
-            // the full certificate chain.
-            (cert, key, ca, _) => {
-                problems.push(format!(
-                    "the Neo4j TLS settings are incomplete (GRAPH_CLIENT_CERT is {}, \
-                     GRAPH_CLIENT_KEY is {}, GRAPH_CA_CERT is {}): a client certificate needs \
-                     all three, its key a file or, with POLAR_CUSTODY_SOCKET, the custody daemon's, \
-                     and without one only GRAPH_CA_CERT may be set",
-                    state(&cert),
-                    state(&key),
-                    state(&ca)
-                ));
                 GraphTls::None
             }
         };
@@ -170,10 +109,6 @@ impl GraphSettings {
             tls,
         })
     }
-}
-
-fn state(value: &Option<String>) -> &'static str {
-    if value.is_some() { "set" } else { "not set" }
 }
 
 /// What must hold between the graph variables. Run only when each parses.
@@ -224,130 +159,55 @@ mod tests {
         );
     }
 
+    /// The CA alone makes mutual TLS: the agent presents its own client certificate, whose key is the crypto actor's.
     #[test]
-    fn all_three_make_mutual_tls() {
-        let s = GraphSettings::from_env(&with(&[
-            ("GRAPH_CLIENT_CERT", "/c.pem"),
-            ("GRAPH_CLIENT_KEY", "/k.pem"),
-            ("GRAPH_CA_CERT", "/ca.pem"),
-        ]))
-        .unwrap();
+    fn the_ca_makes_mutual_tls_with_the_agent_s_own_key() {
+        let s = GraphSettings::from_env(&with(&[("GRAPH_CA_CERT", "/ca.pem")])).unwrap();
         assert_eq!(
             s.tls,
             GraphTls::Mutual {
-                ca: "/ca.pem".into(),
-                cert: "/c.pem".into(),
-                key: ClientKey::File("/k.pem".into())
-            }
-        );
-    }
-
-    // docs/architecture/key-custody.md, "The neo4rs patch": the key Neo4j is shown may be the custody daemon's, through
-    // the socket the Cassini client reads too.
-    #[test]
-    fn the_key_may_be_the_custody_daemon_s_and_is_one_or_the_other() {
-        let custody = GraphSettings::from_env(&with(&[
-            ("GRAPH_CLIENT_CERT", "/c.pem"),
-            ("GRAPH_CA_CERT", "/ca.pem"),
-            ("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"),
-        ]))
-        .unwrap();
-        assert_eq!(
-            custody.tls,
-            GraphTls::Mutual {
-                ca: "/ca.pem".into(),
-                cert: "/c.pem".into(),
-                key: ClientKey::Custody("/custody/custody.sock".into())
-            }
-        );
-        let error = GraphSettings::from_env(&with(&[
-            ("GRAPH_CLIENT_CERT", "/c.pem"),
-            ("GRAPH_CLIENT_KEY", "/k.pem"),
-            ("GRAPH_CA_CERT", "/ca.pem"),
-            ("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"),
-        ]))
-        .unwrap_err();
-        assert!(
-            error.contains("GRAPH_CLIENT_KEY") && error.contains("POLAR_CUSTODY_SOCKET"),
-            "{error}"
-        );
-    }
-
-    // Without a client certificate for Neo4j the socket is the Cassini client's alone, and says nothing here.
-    #[test]
-    fn without_a_client_certificate_the_socket_says_nothing_to_the_graph() {
-        let socket = ("POLAR_CUSTODY_SOCKET", "/custody/custody.sock");
-        assert_eq!(
-            GraphSettings::from_env(&with(&[socket])).unwrap().tls,
-            GraphTls::None
-        );
-        assert_eq!(
-            GraphSettings::from_env(&with(&[socket, ("GRAPH_CA_CERT", "/ca.pem")]))
-                .unwrap()
-                .tls,
-            GraphTls::ServerOnly {
                 ca: "/ca.pem".into()
             }
         );
-        let error =
-            GraphSettings::from_env(&with(&[socket, ("GRAPH_CLIENT_CERT", "/c.pem")])).unwrap_err();
-        assert!(error.contains("incomplete"), "{error}");
     }
 
-    /// Every way the four can be set or not: the section judges each as the controller reads it.
+    /// The agent's key variables are the crypto actor's: the graph reads none of them, set or not.
     #[test]
-    fn the_section_judges_every_combination_as_the_controller_reads_it() {
-        let vars = [
+    fn the_agent_s_key_variables_say_nothing_to_the_graph() {
+        let keys = [
             ("GRAPH_CLIENT_CERT", "/c.pem"),
             ("GRAPH_CLIENT_KEY", "/k.pem"),
-            ("GRAPH_CA_CERT", "/ca.pem"),
+            ("TLS_CLIENT_KEY", "/k.pem"),
             ("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"),
         ];
-        for mask in 0u8..16 {
-            let given: Vec<_> = vars
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| mask & (1 << i) != 0)
-                .map(|(_, v)| *v)
-                .collect();
-            let env = with(&given);
+        assert_eq!(
+            GraphSettings::from_env(&with(&keys)).unwrap().tls,
+            GraphTls::None
+        );
+        let with_ca = [&keys[..], &[("GRAPH_CA_CERT", "/ca.pem")][..]].concat();
+        assert_eq!(
+            GraphSettings::from_env(&with(&with_ca)).unwrap().tls,
+            GraphTls::Mutual {
+                ca: "/ca.pem".into()
+            }
+        );
+    }
+
+    #[test]
+    fn the_section_judges_as_the_controller_reads() {
+        for given in [&[][..], &[("GRAPH_CA_CERT", "/ca.pem")][..]] {
+            let env = with(given);
             assert_eq!(
                 SECTION.check(&env).is_empty(),
                 GraphSettings::from_env(&env).is_ok(),
                 "{given:?}"
             );
         }
-    }
-
-    #[test]
-    fn only_the_ca_means_server_verification_alone() {
-        let s = GraphSettings::from_env(&with(&[("GRAPH_CA_CERT", "/ca.pem")])).unwrap();
+        let missing = env(&[("GRAPH_CA_CERT", "/ca.pem")]);
         assert_eq!(
-            s.tls,
-            GraphTls::ServerOnly {
-                ca: "/ca.pem".into()
-            }
+            SECTION.check(&missing).is_empty(),
+            GraphSettings::from_env(&missing).is_ok()
         );
-    }
-
-    #[test]
-    fn a_partial_set_is_refused_and_says_which_are_set() {
-        for extra in [
-            &[("GRAPH_CLIENT_CERT", "/c.pem")][..],
-            &[
-                ("GRAPH_CLIENT_CERT", "/c.pem"),
-                ("GRAPH_CA_CERT", "/ca.pem"),
-            ][..],
-            &[
-                ("GRAPH_CLIENT_CERT", "/c.pem"),
-                ("GRAPH_CLIENT_KEY", "/k.pem"),
-            ][..],
-            &[("GRAPH_CLIENT_KEY", "/k.pem")][..],
-        ] {
-            let error = GraphSettings::from_env(&with(extra)).unwrap_err();
-            assert!(error.contains("incomplete"), "{extra:?}: {error}");
-            assert!(error.contains("GRAPH_CLIENT_CERT is"), "{error}");
-        }
     }
 
     #[test]
@@ -360,7 +220,7 @@ mod tests {
 
     #[test]
     fn the_password_is_never_in_a_message() {
-        let error = GraphSettings::from_env(&with(&[("GRAPH_CLIENT_CERT", "/c.pem")])).unwrap_err();
+        let error = GraphSettings::from_env(&env(&[("GRAPH_PASSWORD", "hunter2")])).unwrap_err();
         assert!(!error.contains("hunter2"), "{error}");
         let described = SECTION.describe();
         assert!(
@@ -373,14 +233,15 @@ mod tests {
     #[test]
     fn the_section_judges_the_same_rule() {
         assert!(SECTION.check(&env(BASE)).is_empty());
-        assert_eq!(
+        assert!(
             SECTION
-                .check(&with(&[
-                    ("GRAPH_CA_CERT", "/ca.pem"),
-                    ("GRAPH_CLIENT_KEY", "/k.pem")
-                ]))
-                .len(),
-            1
+                .check(&with(&[("GRAPH_CA_CERT", "/ca.pem")]))
+                .is_empty()
+        );
+        assert!(
+            !SECTION
+                .check(&env(&[("GRAPH_CA_CERT", "/ca.pem")]))
+                .is_empty()
         );
     }
 }

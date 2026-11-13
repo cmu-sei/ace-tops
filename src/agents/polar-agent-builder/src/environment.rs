@@ -370,10 +370,9 @@ mod tests {
         vars.extend_from_slice(GRAPH_ENV);
         assert!(check_environment(&env(&vars)).is_empty());
 
-        vars.push(("GRAPH_CLIENT_CERT", "/c.pem"));
-        let partial = check_environment(&env(&vars));
-        assert_eq!(partial.len(), 1, "{partial:?}");
-        assert!(partial[0].contains("incomplete"), "{partial:?}");
+        // Its TLS is GRAPH_CA_CERT alone: set, the agent presents its own client certificate, its crypto actor's.
+        vars.push(("GRAPH_CA_CERT", "/ca.pem"));
+        assert!(check_environment(&env(&vars)).is_empty());
     }
 
     #[test]

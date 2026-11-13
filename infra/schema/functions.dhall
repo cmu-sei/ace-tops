@@ -62,14 +62,6 @@ let makeGraphEnv
               , secretKeyRef = Some passwordSecret
               }
             }
-          , kubernetes.EnvVar::{
-            , name = "GRAPH_CLIENT_CERT"
-            , value = Some "${certDir}/cert.pem"
-            }
-          , kubernetes.EnvVar::{
-            , name = "GRAPH_CLIENT_KEY"
-            , value = Some "${certDir}/key.pem"
-            }
           ]
         # merge
             { Some =
