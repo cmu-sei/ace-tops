@@ -67,6 +67,18 @@ PARENT: `../registry.claude.md`. AS-OF main 621375b8 (2026-11-13). STATUS: propo
 - Compatibility: additive builder API; acp shares polar-agent-builder (main-and-acp-stay-compatible) — new Location
   variant: match exhaustiveness in acp code? judge matches are inside builder; check acp for `match location` before R2.
 
+## QUARANTINE (maintainer 2026-11-13: "A dropped remote should place the files in the registry that came from that
+remote under quarantine.")
+Design (mine; release rule for review): per-path provenance `from: <remote name>` in the path record (NixCache narinfo
+store; extend the record beyond NarInfo text, e.g. a sidecar or a record type), backfilled from upstream Sig key names
+(cache.nixos.org-1 → the remote whose key it is). On a `remotes` version that drops X: mark every path from X
+quarantined {by section version, at}; lookup treats quarantined as not held → fault from remaining remotes (a fresh,
+verified entry under a trusted key releases it) else refuse + record outcome "quarantined"; NAR endpoint serves a blob
+only if some unquarantined path names it (blob → paths index). Release: trusted remote vouches again, or a person's
+signed release (where signed: TBD). Re-adding X alone does NOT release (for review). Delete: only by a person (claims
+precedent, deploy-objects.nu protect_claims, maintainer 2026-11-02). Generalize to every face (crates, images) via the
+same provenance field in the CAS's records.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.

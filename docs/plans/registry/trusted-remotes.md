@@ -72,12 +72,22 @@ names a sealed remote by its name, never its address. So does the registry's rec
 description has to be checked against that key, and the key lets its holder check, not read and not sign. The code
 never logs or records it. The alternative, the check made in escrow with the rest, is set out below.
 
+**A dropped remote's content is quarantined.** Every path the registry holds records which remote it came from (a path
+held before that is recorded is traced by the remote's signature it carries). When a signed version of the list drops a
+remote, every path that came from it is put under quarantine: kept, not served, and recorded with the version of the
+list that dropped it. An archive is withheld when only quarantined paths use it. A quarantined path counts as not held:
+if a remote still on the list offers it, it is fetched again and checked under that remote's key, which releases it;
+otherwise it is refused, and the refusal recorded. Re-adding the dropped remote does not release its paths by itself,
+since a remote is often dropped because it can no longer be trusted: a remote still trusted vouching for a path again,
+or a person's signed release, does. Nothing quarantined is deleted except by a person's decision.
+
 **The Nix cache moves onto it:** its upstreams come from its `remotes` section, in the order the section gives, in
 place of its two deployment settings, and change while it runs.
 
 In steps, each tested before the next:
 
-1. **The section,** plain remotes only, judged when it arrives; the registry reads its upstreams from it.
+1. **The section,** plain remotes only, judged when it arrives; the registry reads its upstreams from it; each path held
+   records the remote it came from, and a remote dropped puts its paths under quarantine.
 2. **The handler's way to a remote by name,** for plain remotes: judged, recorded, each remote's own trust and
    credential applied.
 3. **Sealed remotes:** the sealed entry, made by `polar-sign` as a credential's secret is; opened in escrow; the handler
@@ -98,6 +108,8 @@ In steps, each tested before the next:
 ## 5. Why this plan
 
 - **Where the registry fetches from is signed, and changes as signed configuration does,** without deploying again.
+- **Withdrawing trust from a remote withdraws it from what that remote supplied,** without destroying the evidence of
+  what it supplied.
 - **A secret remote stays secret** from Polar's configuration, its logs and its records, and from the code that uses
   it.
 - **The handler's judge holds the list,** as it holds a configured host now, so a remote nobody signed off is refused
@@ -115,5 +127,7 @@ In steps, each tested before the next:
 - **The four steps above.**
 - **What a remote may be used for:** which kinds of content (Nix paths, crates, images), and for which builds. A first
   form is part of step 1; how far it goes is to be settled with the registry's other faces.
+- **Releasing quarantined content by a person's signed decision,** and deleting it by one: the decisions themselves,
+  and where they are signed.
 - **A certificate as a credential kind,** for a remote that admits clients by certificate; today a credential is a
   token, a user and password, or an ssh key.
