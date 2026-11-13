@@ -32,7 +32,6 @@
   namespaces: {
     polar: "polar"
     graph: "polar-graph"
-    auth: "polar-auth"
     # Where the build orchestrator's Jobs run (docs/architecture/build-orchestrator.md).
     builds: "polar-builds"
   }

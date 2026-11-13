@@ -45,15 +45,6 @@ export const SECRETS = [
     # kubectl -n polar get secret cassini-shutdown-token -o jsonpath='{.data.token}' | base64 -d
     { namespace: "polar", name: "cassini-shutdown-token", from: { generated: "token" } }
     { namespace: "polar", name: "polar-graph-pw", from: { sops: ["graph_password"] }, data: { secret: "graph_password" } }
-    {
-        namespace: "polar-auth", name: "keycloak-admin-secret", from: { sops: ["keycloak_admin_user", "keycloak_admin_password"] }
-        data: { username: "keycloak_admin_user", password: "keycloak_admin_password" }, defaults: { keycloak_admin_user: "admin" }
-        required: "keycloak_admin_password", optional: true
-    }
-    {
-        namespace: "polar-auth", name: "keycloak-db-secret", from: { sops: ["keycloak_db_password"] }
-        data: { password: "keycloak_db_password" }, required: "keycloak_db_password", optional: true
-    }
 ]
 
 # What this target makes, as the plan names it: no value.

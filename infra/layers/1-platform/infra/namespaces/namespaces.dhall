@@ -43,14 +43,6 @@ in  [ kubernetes.Resource.Namespace
           , name = Some Constants.GraphNamespace
           }
         }
-    , kubernetes.Resource.Namespace
-        kubernetes.Namespace::{
-        , apiVersion = "v1"
-        , kind       = "Namespace"
-        , metadata   = kubernetes.ObjectMeta::{
-          , name = Some Constants.AuthNamespace
-          }
-        }
     -- Holds exactly one thing: the ServiceAccount whose token proves
     -- cluster control to the credentials agent at bootstrap. Nothing runs
     -- here, and nothing is bound to that ServiceAccount. Kept apart from

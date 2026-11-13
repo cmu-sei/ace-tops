@@ -70,7 +70,9 @@ def main [] {
             ]
         }
         # the graph database. Keycloak and its Postgres are left out while no work needs people's tokens from it: their charts
-        # are in layers/2-services, and adding their files and charts back here brings them back.
+        # are in layers/2-services. Bringing them back takes their files and charts here, their namespace (polar-auth: the
+        # namespaces chart, cluster.nuon, attested.nu's first), their two Secrets (secrets.nu) and cert-issuer's trust of
+        # Keycloak's tokens (config.nuon): docs/plans/lifecycle/one-switch-per-workload.md makes that one switch.
         {
             name: "data"
             depends_on: ["cert-issuer"]

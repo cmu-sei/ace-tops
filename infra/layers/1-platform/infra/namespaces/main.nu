@@ -24,7 +24,7 @@
 # infra/layers/1-platform/infra/namespaces/main.nu
 #
 # Chart entrypoint for namespace definitions.
-# Renders: polar, polar-graph and polar-auth, then the namespaces the context adds (`added`: the build namespace, and those the
+# Renders: polar and polar-graph (polar-auth, Keycloak's, while no target deploys Keycloak, is not made), then the namespaces the context adds (`added`: the build namespace, and those the
 # target attests besides), each with its labels.
 # Applied first in every target — all other resources depend on these.
 #

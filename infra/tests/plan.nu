@@ -79,7 +79,7 @@ def main [] {
             body: {
                 let declared = (^$nu.current-exe ($env.FILE_PWD | path join "../targets/sandbox-local/secrets.nu") declared | from json)
                 assert equal ($declared | each {|s| $"($s.namespace)/($s.name)" } | sort) [
-                    "polar-auth/keycloak-admin-secret" "polar-auth/keycloak-db-secret" "polar-graph/neo4j-secret" "polar/cassini-shutdown-token" "polar/polar-graph-pw"
+                    "polar-graph/neo4j-secret" "polar/cassini-shutdown-token" "polar/polar-graph-pw"
                 ]
                 assert equal ($declared | where name == "neo4j-secret" | first | get from.sops) ["neo4j_auth"]
                 assert equal ($declared | where name == "cassini-shutdown-token" | first | get from.generated) "token"

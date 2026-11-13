@@ -122,7 +122,7 @@ export def role_namespace_problem [catalog: any, scaffold: any, capability: stri
 }
 
 # Polar's first namespaces, which the namespaces chart writes itself (namespaces.dhall), by their keys.
-const FIRST = ["polar" "graph" "auth"]
+const FIRST = ["polar" "graph"]
 const LEVELS = ["privileged" "baseline" "restricted"]
 const MODES = ["enforce" "warn" "audit"]
 

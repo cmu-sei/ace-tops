@@ -266,8 +266,8 @@ choice (`infra/targets/<target>/cluster-inputs.nuon`, which is not committed), s
 
 What `sandbox-local` deploys: Neo4j, Cassini, `cert-issuer`, the credentials agent and its observer, ACE, the ingestion
 agents, and a git server for the schedules repository. Keycloak with its own Postgres (an optional identity-provider route
-for certificates for people) is left out of `sandbox-local` for now: its charts are in `infra/layers/2-services`, and adding
-their files back to the target's data layer and its chart list brings it back. Each runs as a Deployment of one pod that restarts in place whenever it ends: its init
+for certificates for people) is left out of `sandbox-local` for now: its charts are in `infra/layers/2-services`, and the
+target's `target.nu` says what bringing it back takes. Each runs as a Deployment of one pod that restarts in place whenever it ends: its init
 container asks for its certificates again each time, which is how it rejuvenates and how it recovers when a certificate or
 its environment changes. ACE holds no other cluster permissions.
 
