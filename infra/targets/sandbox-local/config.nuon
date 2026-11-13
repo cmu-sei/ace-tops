@@ -67,21 +67,8 @@
           jwks_cache_ttl_min: { secs: 30, nanos: 0 }
           jwks_cache_ttl_max: { secs: 3600, nanos: 0 }
         }
-        # People's tokens, from Keycloak. `issuer` is what the tokens carry, which with --hostname-strict=false is how
-        # the person reached Keycloak to log in: the port-forward at localhost:8080. `jwks_uri` is where cert-issuer,
-        # in the cluster, fetches the keys: the Service.
-        {
-          issuer: "http://localhost:8080/realms/polar"
-          audience: ["polar-cert-issuer.local"]
-          jwks_uri: "http://keycloak-svc.polar-auth.svc.cluster.local:8080/realms/polar/protocol/openid-connect/certs"
-          workload_identity_claim: "preferred_username"
-          instance_binding_claim: "sid"
-          identity_normalization: { strategy: "suffixed_claim" }
-          identity_scope_claim: "identity_scope"
-          allowed_algorithms: ["RS256"]
-          jwks_cache_ttl_min: { secs: 30, nanos: 0 }
-          jwks_cache_ttl_max: { secs: 3600, nanos: 0 }
-        }
+        # People's tokens from Keycloak are not trusted while Keycloak is left out of this target (target.nu, the data layer):
+        # an issuer whose server is gone would trust whatever came to answer at its address.
         ] }
         { name: "CERT_ISSUER_SERVER_LIFETIME_SECS", value: "43200" }
         # A year, for the identities whose certificates are not renewed by rejuvenation.

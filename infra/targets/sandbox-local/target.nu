@@ -69,11 +69,12 @@ def main [] {
                 "cert-issuer.yaml"
             ]
         }
-        # the graph database, the relational store and the identity provider
+        # the graph database. Keycloak and its Postgres are left out while no work needs people's tokens from it: their charts
+        # are in layers/2-services, and adding their files and charts back here brings them back.
         {
             name: "data"
             depends_on: ["cert-issuer"]
-            # No wait_for: Neo4j (and Keycloak) cannot be Ready until the credentials agent issues their certificates,
+            # No wait_for: Neo4j cannot be Ready until the credentials agent issues its certificates,
             # and the credentials agent is a later layer that depends on this one. Waiting here would never end under Flux.
             # up.nu applied these without waiting too, and waits for Neo4j in its core-services step, after every layer.
             wait_for: []
@@ -83,11 +84,6 @@ def main [] {
                 "neo4j-pvcs.yaml"
                 "neo4j-service.yaml"
                 "neo4j-statefulset.yaml"
-                "postgres-pvc.yaml"
-                "postgres-service.yaml"
-                "postgres-statefulset.yaml"
-                "keycloak-service.yaml"
-                "keycloak-deployment.yaml"
             ]
         }
         # the broker; a client that starts before it attaches to one that is going away, so it is a layer of its own
@@ -196,8 +192,6 @@ def main [] {
             ($layers | path join "2-services/jaeger/main.nu")
             ($layers | path join "2-services/ace/main.nu")
             ($layers | path join "2-services/neo4j/main.nu")
-            ($layers | path join "2-services/postgres/main.nu")
-            ($layers | path join "2-services/keycloak/main.nu")
         ]
 
         apply_layers : $apply_layers
