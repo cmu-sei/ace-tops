@@ -179,7 +179,13 @@ register_secret/is_username 8/8 caught; builder entry/apply/context 13 caught + 
 field-naming closed with a test). Docs: jira.md, git-controller.md. NOT DEPLOYED: u7c agents rebuild at the next
 bring-up; then a Jira user-password credential must be re-sealed by the user.
 
-## C2 DESIGN (2026-11-13, written while the maintainer was away; NOT built; for review)
+## C2 DESIGN (2026-11-13, written while the maintainer was away; APPROVED the same day)
+Maintainer: "Is cryptoa actor using the protocol actor for this or something else?" → explained: protocol actor keeps
+judging, recording, building the request without credential; hands the CryptoActor the request + ITS OWN client + the
+credential's name; CryptoActor checks binding, attaches, sends with that client, returns response + facts. Maintainer:
+"That's the part I was looking for, sends the request with the protocol actor's client. It doesn't actually put a bunch
+of HTTP code in the crypto actor. Then yes, I'm good with that." Caveat told: for a registry the CryptoActor also reads
+the auth host's token reply (small JSON), since the token it keeps is the secret.
 Found reading http.rs: today `run` → admit → `CredentialSource::http(name, host)` → CryptoActor `UseCredential` returns
 plaintext `HttpCredential` (Bearer | Basic{username, password}) → `perform(.., credential, ..)` → `attach()` puts it on
 the reqwest RequestBuilder and computes `Presented` + `looks_base64` from it. Registry path (`at_a_registry`):
