@@ -309,6 +309,21 @@ PROPOSED:
 7. Order: (1) port bite S; (2)+(3) custody's sealed keys; (5) Nix (prerequisite for NC5); (4) ssh. Each tested, committed.
 Rollout: no re-seal (an ssh key's record is unchanged; the Nix key is new). Deployed with C1-C2: every agent at once.
 
+## C3 REVISED (maintainer, 2026-11-13): "The custodian is supposed to [be] just that: a simple, secure place that store
+keys, allow for them to be used safely. It's not supposed to keep increasing in scope. I build the cryptoactor to be the
+place the crypto work happens." Also: stop asking what is already decided. Supersedes C3 DESIGN 2-3 and the
+PURPOSE-BOUND proposal (a peer agreement, never the maintainer's); the maintainer's own REVISED rule above stands:
+- Custody: make an Ed25519 key under a name, give its public key, sign bytes with it. No ssh, Nix or TLS knowledge, no
+  shape checks, no opening of sealed payloads. A named key outlives the pod by the escrow path the escrow key already
+  takes (escrowed with the credentials agent, fetched back by the custodian).
+- CryptoActor: everything else. It builds and checks what is signed (ssh userauth blob, Nix fingerprint), keeps the
+  binding (host, pins), is the russh Signer and the registry's Nix signer, and shows a key's public half to add as a
+  deploy key or a trusted Nix key. Answered by the evidence: the u7c deploy keys were made by this session in a
+  scratchpad (2026-11-09) and shredded after sealing; custody making the key ends that.
+- Bite S is still ported first, as it is (main and acp stay compatible).
+- Then: custody's named Ed25519 keys; the CryptoActor's ssh signer and the builder's russh+gix client; the registry's
+  Nix signing through the CryptoActor. Client certificates deferred.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
