@@ -59,6 +59,18 @@ Direct crypto deps elsewhere: polar-signing in broker (Trust), git server (commi
 escrow/checkpoint cert verify), builder config/authority actors (signed sections), attestation-agent; polar-escrow in
 builder (credentials.rs binding_context, a context string helper) and credentials agent.
 
+## STANDALONE CASSINI CLIENTS (the maintainer, mid-turn: "the cassini client as a standalone daemon. In order to be
+consistent, that guy would need to be built with a cryptoactor and a custodian, somehow.")
+Found: cassini-client bin `--daemon` (cli.rs; TCPClientConfig::from_env, own TLS via lib.rs:1721); cassini-c2
+(main.rs:65 TCPClientConfig::new); polar-running-config (lib.rs:114, a person's keys); polar-init (own client +
+CryptoActor, escrow bootstrap); custody daemon custodian (watch.rs:248, signs own handshake in process: the one
+exception, custody is the keyring); `polar::cassini` (lib/src/cassini.rs:139) = a SECOND client inside builder agents:
+attestation/agent/src/supervisor.rs, build-orchestrator/agent/src/publish.rs, cert-issuer/server/src/supervisor.rs,
+cassini/test/producer. Decided (standing rules, maintainer's direction): the CryptoActor is startable by any process
+(polar-crypto), TCPClientConfig takes TLS only from a CryptoActor (no env key reading in cassini-client), key source is
+the CryptoActor's (custody socket in a pod; files for a person or cert-issuer); deployed CLI daemon / c2 rendered with
+the custody sidecar; `polar::cassini` helper removed, its users take the builder's client.
+
 ## STEPS (each tested, committed, pushed; u7c bring-up before the TLS step is called done)
 K1 Signer into the CryptoActor: CryptoMessage/port op SignRecord-equivalent in polar-crypto (input build + type check
    from signer.rs), SignerHandle → CryptoActor; SignerActor and its spawn removed; signing agents get a CryptoActor.
@@ -68,6 +80,8 @@ K2 CryptoActor in every agent, first: spawned before tcp_client with custody cli
 K3 TLS from the CryptoActor: polar-crypto offers client/server rustls configs (or a sync `TlsKeys` handle) built from
    the agent's cert, custody signer, trust; the TLS-1.3-shape check moves from custody's daemon (custody.rs Sign arm,
    is_tls13_certificate_verify) into the signer polar-crypto makes. Five call sites switch. u7c bring-up.
+K2b Standalone processes: CLI daemon, c2, polar-running-config, cert-issuer, polar-init each start a CryptoActor;
+   TCPClientConfig loses its own key reading; `polar::cassini` removed.
 K4 Dependency test: cargo metadata; only polar-crypto, polar-init, polar-health, polar-custody-daemon (and polar-custody
    itself) may depend on polar-custody. Builder loses its direct dependency.
 K5 Degraded key files held by the CryptoActor (same shape).

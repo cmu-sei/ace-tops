@@ -60,6 +60,12 @@ listing everything that talks to the custody daemon, and the list was longer tha
 | polar-init | installs the pod's keys and certificates (the installer: expected) |
 | polar-health | asks custody for a certificate to see that it answers (a probe: expected) |
 
+Cassini's client is also made outside the builder, and each such client builds its own TLS from what its environment
+gives it: the client's command-line daemon (a socket for programs in other languages), `cassini-c2`, the tool that asks
+a running agent for its configuration, `polar-init`, and a helper in the shared library that gives some agents (the
+attestation agent, the build orchestrator's publisher, cert-issuer) a second Cassini client beside the builder's. Only
+one of these has a crypto actor (`polar-init`'s), and none of the others has a reason not to.
+
 Two constraints explain some of it. TLS signs in the middle of a handshake, and the TLS library Polar uses (rustls,
 chosen because the alternatives are C libraries) asks for that signature synchronously; and the crypto actor reaches the
 credentials agent over Cassini, whose own connection needs its handshake signed. Neither requires anything to go
@@ -73,6 +79,14 @@ the credentials agent once Cassini is up.
 agent, encrypting or not. It holds the agent's custody client (or, where a cluster runs without custody, the key files),
 and nothing else in the agent does. Once Cassini is connected, it is given the way to the credentials agent, for escrow
 and retrieval.
+
+**Every process that uses a key has a crypto actor.** Not only agents: the crypto actor is something any Polar process
+starts, and Cassini's client takes its TLS only from one, so that no program can open a Cassini connection with keys of
+its own. Where a crypto actor's keys come from is its own business: in a pod, the custody daemon beside it (a deployed
+command-line daemon or `cassini-c2` gets the same pod shape as an agent); on a person's machine, that person's key
+files; for cert-issuer, which makes its own key as the certificate authority, its files. The one exception is custody
+itself, whose custodian signs its own connection with its own key, as a keyring would. The shared library's second
+Cassini client goes: those agents use the builder's.
 
 **Every TLS configuration comes from the crypto actor.** Client and server: the agent's certificate, its key's signer,
 and the trust it is given. Cassini's client, the broker, the git server, the graph client and the cert-issuer client
@@ -123,6 +137,8 @@ its own, since it changes how every signed section, commit and certificate is be
 ## 7. What is left before this is met
 
 - **The crypto actor in every agent, started first,** and given the way to the credentials agent once Cassini is up.
+- **The crypto actor in every other process that uses a key** (the command-line daemon, `cassini-c2`, the
+  configuration tool, cert-issuer), Cassini's client taking TLS only from one, and the library's second client gone.
 - **The five TLS configurations from the crypto actor,** and the TLS check moved out of custody.
 - **Record signing in the crypto actor.**
 - **The dependency test.**
