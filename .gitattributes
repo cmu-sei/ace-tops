@@ -1,0 +1,10 @@
+# Scripts that Linux and the dev container read keep LF, in a checkout on Windows too: a bash script with CRLF fails on
+# its first line. bin\polar-dev.ps1 is PowerShell's, which reads either.
+*.sh     text eol=lf
+*.bash   text eol=lf
+*.nu     text eol=lf
+*.nix    text eol=lf
+*.dhall  text eol=lf
+Justfile text eol=lf
+bin/*    text eol=lf
+*.ps1    text eol=crlf
