@@ -48,8 +48,17 @@ can reach, and which outlives the pod (`polar-kernel-keyring/src/lib.rs:62`, "A 
 ## The design (the maintainer, 2026-10-27)
 
 **A custody daemon in every pod holds the pod's mTLS key, and does every signature with it.** The workload holds a
-certificate and a socket, never the key. The idea is the kernel keyring's: usable but not readable. In user space it
-has none of the kernel's limits, and it can do what the keyring cannot (decide, record, revoke).
+certificate and a socket, never the key. The idea is the kernel keyring's: usable but not readable. The custodian was
+built as a replacement for the keyring, and its scope is the keyring's: it holds keys, and performs for its agent the
+operations that can be done only where the key is, because it is usable nowhere else (make a key, give its public half,
+sign, unwrap). A keyring knows nothing of what it signs, and nor does the custodian: what is signed, in what domain and
+for what protocol, is built and checked by the caller, the agent's CryptoActor (the maintainer, 2026-11-13). The test
+for anything proposed for it: would the kernel keyring do this?
+
+It differs from the keyring in two ways. In user space it has none of the kernel's limits, and it can decide, record and
+revoke: decide *which caller may use which key*, never what a key may sign. And it fetches: a keyring holds only what
+it is given, while `polar-init` gives the custodian a key of its own, the custodian's, with which it fetches its agent's
+keys from the credentials agent and takes them into custody (**Part A's bootstrap: the custodian**, below).
 
 - **A native sidecar.** An init container with `restartPolicy: Always`, declared before `polar-init`, so it starts first
   and runs for the pod's whole life; its own UID, no shared PID namespace, `PR_SET_DUMPABLE` off, its memory locked,
