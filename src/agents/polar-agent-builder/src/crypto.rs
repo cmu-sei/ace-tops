@@ -143,6 +143,45 @@ impl CryptoHandle {
     }
 }
 
+/// The agent's TLS, made by its crypto actor from the agent's own keys (docs/plans/crypto-actor.md, step K3): what a
+/// component that speaks TLS is given in place of a key. It asks for a configuration and nothing else of the actor.
+#[derive(Clone)]
+pub struct TlsHandle {
+    actor: ActorRef<CryptoMessage>,
+}
+
+impl TlsHandle {
+    pub(crate) fn new(actor: ActorRef<CryptoMessage>) -> Self {
+        Self { actor }
+    }
+
+    /// A client configuration presenting the agent's client key, verifying the server with `verifier`.
+    pub async fn client_config(
+        &self,
+        verifier: std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    ) -> Result<rustls::ClientConfig, String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::ClientTls {
+            verifier,
+            reply
+        })
+        .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+    }
+
+    /// A server configuration presenting the agent's server key, verifying clients with `verifier`, offering `alpn`.
+    pub async fn server_config(
+        &self,
+        verifier: std::sync::Arc<dyn rustls::server::danger::ClientCertVerifier>,
+        alpn: Vec<Vec<u8>>,
+    ) -> Result<rustls::ServerConfig, String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::ServerTls {
+            verifier,
+            alpn,
+            reply
+        })
+        .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+    }
+}
+
 /// Flattens ractor::call!'s own, real, outer RactorErr (a genuine
 /// messaging/mailbox failure, distinct from CryptoError itself, which
 /// only ever describes the real, remote Credentials Agent flow's own
@@ -430,6 +469,7 @@ mod tests {
                     own_certificate_path: own_cert_file.path().to_string_lossy().into_owned(),
                     custody_socket: None,
                     ca_cert_path: ca_file.path().to_string_lossy().into_owned(),
+                    ..Default::default()
                 },
             ),
         )
@@ -538,6 +578,7 @@ mod tests {
                     own_certificate_path: own_cert_file.path().to_string_lossy().into_owned(),
                     custody_socket: None,
                     ca_cert_path: "/nonexistent/ca.pem".to_string(),
+                    ..Default::default()
                 },
             ),
         )

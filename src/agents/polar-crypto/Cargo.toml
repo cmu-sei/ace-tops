@@ -57,6 +57,8 @@ base64.workspace = true
 # (src/records.rs).
 polar-signing.workspace = true
 p256.workspace = true
+# Every TLS configuration the agent uses is made here, from its own keys (src/tls.rs).
+rustls.workspace = true
 
 [dev-dependencies]
 # The credentials agent's escrow key, and a recipient's, RSA in the tests.

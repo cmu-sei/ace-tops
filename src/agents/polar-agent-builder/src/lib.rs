@@ -155,6 +155,8 @@ pub struct AgentResources {
     pub tcp_client: TcpClient,
     pub healthcheck: crate::health::HealthHandle,
     pub crypto: Option<crate::crypto::CryptoHandle>,
+    /// The agent's TLS, from its own keys: every TLS configuration it uses comes from here (docs/plans/crypto-actor.md).
+    pub tls: crate::crypto::TlsHandle,
     /// What the agent signs its evidence records with, for one with the `signing` capability ([`signer`]).
     pub signer: Option<crate::signer::SignerHandle>,
     /// The agent's way to the outside, for one that declares operations or credentials ([`protocol::ProtocolHandle`]).
@@ -676,6 +678,8 @@ pub struct ServiceResources {
     pub config: Arc<polar_env::Config>,
     /// The configuration, live. See [`AgentResources::configuration`].
     pub configuration: crate::configuration::ConfigurationHandle,
+    /// The service's TLS, from its own keys. See [`AgentResources::tls`].
+    pub tls: crate::crypto::TlsHandle,
 }
 
 /// The infrastructure of a service that is not a Cassini client: the broker itself, or any

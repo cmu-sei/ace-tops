@@ -63,6 +63,7 @@ pub mod recipient;
 pub mod records;
 pub mod registry;
 pub mod sending;
+pub mod tls;
 pub mod workload_certificates;
 
 use cassini_client::TcpClientMessage;
@@ -476,6 +477,19 @@ pub enum CryptoMessage {
         tcp_client: ActorRef<TcpClientMessage>,
         router: ActorRef<polar_router::RouterMessage>,
     },
+    /// A TLS client configuration presenting the agent's own client key (docs/plans/crypto-actor.md, step K3), verifying
+    /// the server with `verifier`.
+    ClientTls {
+        verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+        reply: RpcReplyPort<Result<rustls::ClientConfig, String>>,
+    },
+    /// A TLS server configuration presenting the agent's own server key, verifying clients with `verifier`, offering
+    /// `alpn`.
+    ServerTls {
+        verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+        alpn: Vec<Vec<u8>>,
+        reply: RpcReplyPort<Result<rustls::ServerConfig, String>>,
+    },
     /// `record` signed with the pod's signing key, as the evidence document it is ([`records`]): the builder's signer
     /// handle's, for an agent with the `signing` capability.
     SignRecord {
@@ -668,6 +682,8 @@ pub struct CryptoActorState {
     tcp_client: Option<ActorRef<TcpClientMessage>>,
     /// Whether it hears the credentials agent's replies ([`CryptoActorArgs::escrow`]).
     escrow: bool,
+    /// The agent's key files, for its TLS where no custody daemon holds its keys.
+    key_files: environment::KeyFiles,
     escrow_key_reply_router: Arc<ReplyRouter<credentials_agent_common::escrow_key::EscrowKeyReply>>,
     store_secret_reply_router: Arc<ReplyRouter<StoreSecretReply>>,
     agent_escrow_key_reply_router: Arc<ReplyRouter<AgentEscrowKeyReply>>,
@@ -789,6 +805,7 @@ impl Actor for CryptoActor {
         Ok(CryptoActorState {
             tcp_client: args.tcp_client,
             escrow: args.escrow,
+            key_files: settings.key_files.clone(),
             escrow_key_reply_router: Arc::new(ReplyRouter::new()),
             store_secret_reply_router: Arc::new(ReplyRouter::new()),
             agent_escrow_key_reply_router: Arc::new(ReplyRouter::new()),
@@ -868,6 +885,26 @@ impl Actor for CryptoActor {
                     });
                 }
             },
+            CryptoMessage::ClientTls { verifier, reply } => {
+                let source = state.key_source(polar_custody::protocol::Slot::Client);
+                // The daemon is asked for the certificate over its socket: off the actor and the runtime's workers.
+                tokio::task::spawn_blocking(move || {
+                    let _ =
+                        reply.send(source.and_then(|source| tls::client_config(verifier, &source)));
+                });
+            }
+            CryptoMessage::ServerTls {
+                verifier,
+                alpn,
+                reply,
+            } => {
+                let source = state.key_source(polar_custody::protocol::Slot::Server);
+                tokio::task::spawn_blocking(move || {
+                    let _ = reply.send(
+                        source.and_then(|source| tls::server_config(verifier, alpn, &source)),
+                    );
+                });
+            }
             CryptoMessage::Connect { tcp_client, router } => {
                 register_replies(&myself, &router);
                 state.tcp_client = Some(tcp_client);
@@ -1459,6 +1496,28 @@ struct Shared {
 }
 
 impl CryptoActorState {
+    /// Where the agent's key for `slot` is: the custody daemon, where the pod has one, or the key files it was given.
+    fn key_source(&self, slot: polar_custody::protocol::Slot) -> Result<tls::KeySource, String> {
+        use polar_custody::protocol::Slot;
+        if let Some(client) = &self.escrow_key {
+            return Ok(tls::KeySource::Custody {
+                client: client.clone(),
+                slot,
+            });
+        }
+        let files = match slot {
+            Slot::Client => &self.key_files.client,
+            Slot::Server => &self.key_files.server,
+            _ => &None,
+        };
+        files
+            .clone()
+            .map(|(certificate, key)| tls::KeySource::Files { certificate, key })
+            .ok_or_else(|| {
+                format!("the agent has no {slot:?} key: no custody daemon, and no key files given")
+            })
+    }
+
     /// What the registry's tasks need: the Cassini client and the actor's own identity, or why they are not there.
     fn shared(&self) -> Result<Shared, CryptoError> {
         Ok(Shared {
@@ -2390,6 +2449,7 @@ mod tests {
                 own_certificate_path: own_cert_file.path().to_string_lossy().into_owned(),
                 custody_socket: config.custody_socket.clone(),
                 ca_cert_path: test_ca_file().to_string_lossy().into_owned(),
+                ..Default::default()
             })
             .with_escrow_retry(
                 std::time::Duration::from_millis(5),

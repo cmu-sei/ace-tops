@@ -100,6 +100,22 @@ K2 DONE 2026-11-13 (builder agents; standalone processes are K2b). polar-crypto:
    declared by cassini-client's section): K3 moves that declaration to the crypto actor's own section, every agent.
    Was: CryptoActor in every agent, first: spawned before tcp_client with custody client (or key files when degraded); late
    `Connected(tcp_client)`; `Encryption` keeps meaning escrow key (wants_crypto → escrow ops only).
+K3a DONE 2026-11-13 (polar-crypto + builder handle; call sites are K3b). polar-crypto/src/tls.rs: KeySource
+   {Custody{client,slot} | Files{certificate,key}}; SlotSigner (rustls SigningKey/Signer over a custody slot, ECDSA
+   P-256, refuses anything but a TLS 1.3 CertificateVerify input before asking the daemon); client_config(verifier,
+   source), server_config(verifier, alpn, source) (custody → TLS 1.3 only, cert chain from the slot; files → rustls
+   defaults). CryptoMessage::ClientTls{verifier} / ServerTls{verifier, alpn} (spawn_blocking; key_source: custody slot
+   if the pod has the daemon, else the key files). environment::KEYS section (POLAR_CUSTODY_SOCKET, TLS_CLIENT_CERT,
+   TLS_CLIENT_KEY, TLS_SERVER_CERT_CHAIN, TLS_SERVER_KEY, all Optional; the same names cassini-client's and the
+   broker's sections declare today); KeyFiles in
+   CryptoSettings. KEYS is NOT yet registered: the agents' soundness test requires each variable declared once, and the
+   Cassini client's and the broker's sections declare these names; each stops declaring them in K3b as it takes its TLS
+   from the crypto actor, and K3b registers KEYS in the builder's base sections then (tried in K3a: 52 soundness
+   failures, and the broker's settings tests read the names as undeclared). Builder: crypto::TlsHandle (client_config, server_config; nothing else) in AgentResources.tls and
+   ServiceResources.tls (polar-cc's general API: a server config for the pod's identity, ALPN by the caller). Tests:
+   in-memory mutual handshakes (daemon keys, ALPN agreed; key files), the signer's refusal, the actor's TLS ops and a
+   keyless actor's refusal. Custody's own TLS-shape check stays until K3b moves every caller (removing it first would
+   leave the old signers unchecked).
 K3 TLS from the CryptoActor: polar-crypto offers client/server rustls configs (or a sync `TlsKeys` handle) built from
    the agent's cert, custody signer, trust; the TLS-1.3-shape check moves from custody's daemon (custody.rs Sign arm,
    is_tls13_certificate_verify) into the signer polar-crypto makes. Five call sites switch. u7c bring-up.

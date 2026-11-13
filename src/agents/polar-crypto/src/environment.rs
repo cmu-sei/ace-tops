@@ -31,7 +31,7 @@
 //! (docs/architecture/key-custody.md, step 9).
 
 use cassini_client::environment::{CUSTODY_SOCKET, TLS_CA_CERT, TLS_CLIENT_CERT};
-use polar_env::{Described, Env, Section};
+use polar_env::{Access, Described, Env, Optional, Section};
 
 static VARIABLES: &[&dyn Described] = &[];
 
@@ -43,8 +43,70 @@ pub static SECTION: Section = Section {
     relations: |_| Vec::new(),
 };
 
+/// The agent's client certificate file, read for its TLS only where the custody daemon does not hold its key.
+pub const CLIENT_CERT_FILE: Optional<String> = Optional::path(
+    "TLS_CLIENT_CERT",
+    Access::ReadFile,
+    "path to the agent's client certificate (PEM); its TLS presents it with TLS_CLIENT_KEY where no custody daemon holds the key",
+);
+/// The key of the agent's client certificate, where no custody daemon holds it.
+pub const CLIENT_KEY_FILE: Optional<String> = Optional::path(
+    "TLS_CLIENT_KEY",
+    Access::ReadFile,
+    "path to the private key of the agent's client certificate; this or POLAR_CUSTODY_SOCKET, not both",
+);
+/// The agent's server certificate chain file, read for its TLS only where the custody daemon does not hold its key.
+pub const SERVER_CERT_FILE: Optional<String> = Optional::path(
+    "TLS_SERVER_CERT_CHAIN",
+    Access::ReadFile,
+    "path to the agent's own server certificate (PEM); its TLS presents it with TLS_SERVER_KEY where no custody daemon holds the key",
+);
+/// The key of the agent's server certificate, where no custody daemon holds it.
+pub const SERVER_KEY_FILE: Optional<String> = Optional::path(
+    "TLS_SERVER_KEY",
+    Access::ReadFile,
+    "path to the private key of the agent's server certificate; this or POLAR_CUSTODY_SOCKET, not both",
+);
+
+static KEY_VARIABLES: &[&dyn Described] = &[
+    &CUSTODY_SOCKET,
+    &CLIENT_CERT_FILE,
+    &CLIENT_KEY_FILE,
+    &SERVER_CERT_FILE,
+    &SERVER_KEY_FILE,
+];
+
+/// Where the agent's keys are: the custody daemon's socket, or, where a cluster runs without the daemon, its key files.
+/// Every agent has a crypto actor (docs/plans/crypto-actor.md), so the builder is to register this for every agent,
+/// once the components that declare these variables today (the Cassini client, the broker) take their TLS from the
+/// crypto actor and stop declaring them: each is declared once (step K3b).
+pub static KEYS: Section = Section {
+    name: "keys",
+    vars: KEY_VARIABLES,
+    relations: |_| Vec::new(),
+};
+
+/// The key files an agent was given, as (certificate, key), where the custody daemon does not hold its keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyFiles {
+    pub client: Option<(String, String)>,
+    pub server: Option<(String, String)>,
+}
+
+impl KeyFiles {
+    /// What `env` names: a pair where both of its variables are set.
+    pub fn from_env(env: &dyn Env) -> Result<Self, String> {
+        let read = |var: &Optional<String>| var.read(env).map_err(|e| e.to_string());
+        let pair = |certificate: Option<String>, key: Option<String>| certificate.zip(key);
+        Ok(Self {
+            client: pair(read(&CLIENT_CERT_FILE)?, read(&CLIENT_KEY_FILE)?),
+            server: pair(read(&SERVER_CERT_FILE)?, read(&SERVER_KEY_FILE)?),
+        })
+    }
+}
+
 /// Everything the crypto actor is configured with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CryptoSettings {
     /// The certificate this agent was issued, whose identity the actor takes as its own.
     pub own_certificate_path: String,
@@ -53,6 +115,8 @@ pub struct CryptoSettings {
     pub custody_socket: Option<String>,
     /// The CA the pod pins, which a recipient's escrow certificate must chain to.
     pub ca_cert_path: String,
+    /// The agent's key files, for its TLS where the custody daemon does not hold its keys.
+    pub key_files: KeyFiles,
 }
 
 impl CryptoSettings {
@@ -75,6 +139,10 @@ impl CryptoSettings {
                 None
             }
         };
+        let key_files = KeyFiles::from_env(env).unwrap_or_else(|e| {
+            problems.push(e);
+            KeyFiles::default()
+        });
         if !problems.is_empty() {
             return Err(problems.join("; "));
         }
@@ -82,6 +150,7 @@ impl CryptoSettings {
             own_certificate_path,
             custody_socket,
             ca_cert_path,
+            key_files,
         })
     }
 }
@@ -102,6 +171,7 @@ impl CryptoSettings {
             own_certificate_path: String::new(),
             custody_socket,
             ca_cert_path: String::new(),
+            key_files: KeyFiles::from_env(env)?,
         })
     }
 }

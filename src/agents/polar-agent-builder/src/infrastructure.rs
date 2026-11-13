@@ -1349,6 +1349,7 @@ impl Actor for InfrastructureSupervisor {
                         tcp_client: client.tcp_client.clone(),
                         healthcheck: state.healthcheck.clone(),
                         crypto: client.crypto.clone().filter(|_| client.escrow),
+                        tls: crate::crypto::TlsHandle::new(state.crypto.actor()),
                         signer: client.signer.clone(),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
@@ -1374,6 +1375,7 @@ impl Actor for InfrastructureSupervisor {
                     infrastructure: myself.clone(),
                     config: state.config.clone(),
                     configuration: state.configuration.clone(),
+                    tls: crate::crypto::TlsHandle::new(state.crypto.actor()),
                 });
             }
         }

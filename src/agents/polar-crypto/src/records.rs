@@ -342,6 +342,7 @@ mod tests {
                             .into_owned(),
                     ),
                     ca_cert_path: ca_file.to_string_lossy().into_owned(),
+                    ..Default::default()
                 })
                 .with_escrow(escrow),
         )
@@ -395,6 +396,7 @@ mod tests {
                     own_certificate_path: String::new(),
                     custody_socket: None,
                     ca_cert_path: String::new(),
+                    ..Default::default()
                 },
             ),
         )

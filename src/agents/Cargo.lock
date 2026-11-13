@@ -7290,6 +7290,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rkyv",
  "rsa 0.10.0-rc.18",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
