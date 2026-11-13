@@ -3011,10 +3011,10 @@ mod tests {
             .map(|s| s.name.as_str())
             .collect();
         // Every agent is a Cassini client, so it is implied: an agent cannot forget it. And every
-        // agent logs and traces as its deployment says.
+        // agent logs and traces as its deployment says, and has a crypto actor, which reads where its keys are.
         assert_eq!(
             names,
-            vec!["builder", "health", "logging", "cassini-client"]
+            vec!["builder", "health", "logging", "keys", "cassini-client"]
         );
         assert_eq!(doc.requires, vec!["cassini"]);
     }

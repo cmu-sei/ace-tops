@@ -81,9 +81,7 @@ pub struct BrokerArgs {
     /// for it, before it is ended. `None` is `DEFAULT_SESSION_RETENTION` (ten minutes).
     pub session_timeout: Option<u64>,
 
-    pub server_cert_file: String,
-    /// The certificate's key: a file, or the custody daemon's server slot.
-    pub server_key: polar_custody::client::ServerKey,
+    /// The CA client certificates are verified against. The broker's own certificate and key are its crypto actor's.
     pub ca_cert_file: String,
 
     /// Authorization token for shutdown operations
@@ -125,8 +123,6 @@ impl BrokerArgs {
         Ok(Self {
             bind_addr: settings.bind_addr,
             session_timeout: None,
-            server_cert_file: settings.server_cert_file,
-            server_key: settings.server_key,
             ca_cert_file: settings.ca_cert_file,
             shutdown_auth_token: Some(settings.shutdown_auth_token),
             decision_cache: settings.decision_cache,
@@ -386,8 +382,7 @@ impl Actor for Broker {
             // each needs the session manager and the authority.
             let listener_manager_args = ListenerManagerArgs {
                 bind_addr: args.bind_addr,
-                server_cert_file: args.server_cert_file,
-                server_key: args.server_key,
+                tls: infrastructure.tls.clone(),
                 ca_cert_file: args.ca_cert_file,
                 session_mgr: session_mgr.clone(),
                 shutdown_auth_token: args.shutdown_auth_token.clone(),

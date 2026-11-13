@@ -225,12 +225,13 @@ pub struct InitSettings {
     pub must_outlast: std::time::Duration,
 }
 
-/// The one snapshot of the process polar-init runs on: its own variables and the Cassini
-/// client's (the custody daemon's socket is the client's variable), and nothing else.
+/// The one snapshot of the process polar-init runs on: its own variables, the Cassini client's, and where the pod's
+/// keys are (the custody daemon's socket, declared by the crypto actor's `keys`), and nothing else.
 pub fn snapshot(env: &dyn Env) -> Config {
     Config::builder(env)
         .register(&SECTION)
         .register(&cassini_client::environment::SECTION)
+        .register(&polar_crypto::environment::KEYS)
         .build()
 }
 

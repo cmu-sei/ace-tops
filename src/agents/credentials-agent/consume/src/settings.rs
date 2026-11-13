@@ -32,8 +32,7 @@
 use crate::account::DEFAULT_BOOTSTRAP_IDENTITY;
 use crate::credential::KUBERNETES_ISSUERS_DEFAULT;
 use crate::escrow::CREDENTIALS_ESCROW_KEY_PATH_DEFAULT;
-use cassini_client::ClientKey;
-use cassini_client::environment::{TLS_CLIENT_CERT, read_client_key};
+use cassini_client::environment::TLS_CLIENT_CERT;
 use polar_env::{Config, ConfigError, Defaulted, Described, Env, Optional, Required, Section};
 
 pub const CREDENTIALS_EVENT_LOG_PATH_DEFAULT: &str = "/var/lib/credentials-agent/events.jsonl";
@@ -210,9 +209,9 @@ pub struct ConsumerSettings {
     /// provider credentials does not need it. One that arrives without it is refused by the
     /// handler, never let through unchecked.
     pub introspection: Option<IntrospectionSettings>,
-    /// The agent's own mTLS identity, which it presents to cert-issuer as well as to Cassini.
+    /// The agent's own mTLS identity, which it presents to cert-issuer as well as to Cassini. Its key is the crypto
+    /// actor's, which makes the TLS (docs/plans/crypto-actor.md).
     pub own_cert_path: String,
-    pub own_key: ClientKey,
     /// The deployment's authority model, which a policy or groups document is judged by before it is accepted. A model
     /// that cannot be read stops the agent when its configuration is checked; none given is none to judge by.
     pub authority_model: Option<credentials_agent_model::Model>,
@@ -244,7 +243,6 @@ impl ConsumerSettings {
             kubernetes_issuers: config.read(&KUBERNETES_ISSUERS)?,
             introspection,
             own_cert_path: config.read(&TLS_CLIENT_CERT)?,
-            own_key: read_client_key(config).map_err(ConfigError::Env)?,
             authority_model: Some(config.read(&AUTHORITY_MODEL)?)
                 .filter(|text| !text.trim().is_empty())
                 .and_then(|text| credentials_agent_model::Model::parse(&text).ok()),
@@ -262,7 +260,13 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        Config::builder(&env)
+        // As the agent registers them: the builder's base sections (the crypto actor's `keys` among them), the
+        // Cassini client's, and its own.
+        polar_agent_builder::environment::base_sections()
+            .into_iter()
+            .fold(Config::builder(&env), |builder, section| {
+                builder.register(section)
+            })
             .register(&cassini_client::environment::SECTION)
             .register(&SECTION)
             .build()
@@ -344,20 +348,19 @@ mod tests {
         );
         assert_eq!(settings.introspection, None);
         assert_eq!(settings.own_cert_path, "/c/cert.pem");
-        assert_eq!(settings.own_key, ClientKey::File("/c/key.pem".into()));
     }
 
     #[test]
     fn its_own_key_may_be_the_custody_daemon_s() {
+        // The key is the crypto actor's to use (docs/plans/crypto-actor.md); the rule is still judged: the daemon's
+        // socket alone is sound, and with a key file as well it is refused.
         let mut given = MINIMUM.to_vec();
         given.retain(|(k, _)| *k != "TLS_CLIENT_KEY");
         given.push(("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"));
         assert!(config(&given).check().is_empty());
-        let settings = ConsumerSettings::read(&config(&given)).unwrap();
-        assert_eq!(
-            settings.own_key,
-            ClientKey::Custody("/custody/custody.sock".into())
-        );
+        let mut both = MINIMUM.to_vec();
+        both.push(("POLAR_CUSTODY_SOCKET", "/custody/custody.sock"));
+        assert!(!config(&both).check().is_empty());
     }
 
     #[test]

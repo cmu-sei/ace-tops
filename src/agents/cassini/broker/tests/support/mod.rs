@@ -118,12 +118,24 @@ impl Pki {
         ));
     }
 
-    fn server_key(&self) -> polar_custody::client::ServerKey {
-        self.server_key.clone().unwrap_or_else(|| {
-            polar_custody::client::ServerKey::File(
-                self.path("server.key").to_string_lossy().into_owned(),
-            )
-        })
+    /// Where the broker's key is, as its pod says it, for its crypto actor (docs/plans/crypto-actor.md): the
+    /// certificate and key files, or the custody daemon's socket.
+    fn key_env(&self) -> Vec<(String, String)> {
+        match self.server_key.clone() {
+            Some(polar_custody::client::ServerKey::Custody(socket)) => {
+                vec![("POLAR_CUSTODY_SOCKET".to_string(), socket)]
+            }
+            _ => vec![
+                (
+                    "TLS_SERVER_CERT_CHAIN".to_string(),
+                    self.path("server.pem").to_string_lossy().into_owned(),
+                ),
+                (
+                    "TLS_SERVER_KEY".to_string(),
+                    self.path("server.key").to_string_lossy().into_owned(),
+                ),
+            ],
+        }
     }
 
     /// Files for a client whose certificate names `identity`, as the broker reads it.
@@ -504,6 +516,7 @@ impl TestBroker {
             pki.path("health.json").to_string_lossy().into_owned(),
         )]
         .into_iter()
+        .chain(pki.key_env())
         .collect();
         let (configured, infrastructure) =
             polar_agent_builder::Configured::for_service_test(&env, shutdown_budget, exits.clone());
@@ -513,8 +526,6 @@ impl TestBroker {
             BrokerArgs {
                 bind_addr: addr.to_string(),
                 session_timeout: retention_secs,
-                server_cert_file: pki.path("server.pem").to_string_lossy().into_owned(),
-                server_key: pki.server_key(),
                 ca_cert_file: pki.ca().to_string_lossy().into_owned(),
                 shutdown_auth_token,
                 decision_cache,

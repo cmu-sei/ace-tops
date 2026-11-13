@@ -29,7 +29,7 @@
 //! not a Cassini client, so none of the client's variables are asked of it.
 
 use polar_custody::client::ServerKey;
-use polar_custody::environment::{CUSTODY_SOCKET, KeyGiven, one_key};
+use polar_custody::environment::{KeyGiven, one_key};
 use polar_env::{Config, ConfigError, Defaulted, Described, Env, Optional, Required, Section};
 
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
@@ -113,10 +113,10 @@ pub static BUDGET_STEP_BYTES: Defaulted<u64> = Defaulted::number(
     "16777216",
 );
 
+// Where the broker's key is (TLS_SERVER_CERT_CHAIN, TLS_SERVER_KEY, POLAR_CUSTODY_SOCKET) is declared once, by the
+// crypto actor's `keys` section (docs/plans/crypto-actor.md), and its TLS is the crypto actor's; this section still
+// requires that the broker has its key, below.
 static VARIABLES: &[&dyn Described] = &[
-    &SERVER_CERT_CHAIN,
-    &SERVER_KEY,
-    &CUSTODY_SOCKET,
     &CA_CERT,
     &BIND_ADDR,
     &SHUTDOWN_TOKEN,
@@ -180,9 +180,6 @@ pub fn read_server_key(env: &dyn Env) -> Result<ServerKey, polar_env::EnvError> 
 }
 
 pub struct BrokerSettings {
-    pub server_cert_file: String,
-    /// The certificate's key: a file, or the custody daemon's.
-    pub server_key: ServerKey,
     pub ca_cert_file: String,
     pub bind_addr: String,
     pub shutdown_auth_token: String,
@@ -199,8 +196,6 @@ pub struct BrokerSettings {
 impl BrokerSettings {
     pub fn read(config: &Config) -> Result<Self, ConfigError> {
         Ok(Self {
-            server_cert_file: config.read(&SERVER_CERT_CHAIN)?,
-            server_key: read_server_key(config).map_err(ConfigError::Env)?,
             ca_cert_file: config.read(&CA_CERT)?,
             bind_addr: config.read(&BIND_ADDR)?,
             shutdown_auth_token: config.read(&SHUTDOWN_TOKEN)?,
@@ -262,7 +257,14 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        Config::builder(&env).register(&SECTION).build()
+        // As the builder registers them: its base sections (the crypto actor's `keys` among them), then the broker's.
+        polar_agent_builder::environment::base_sections()
+            .into_iter()
+            .fold(Config::builder(&env), |builder, section| {
+                builder.register(section)
+            })
+            .register(&SECTION)
+            .build()
     }
 
     const MINIMUM: &[(&str, &str)] = &[
@@ -280,8 +282,6 @@ mod tests {
     #[test]
     fn the_certificate_the_key_the_ca_and_the_token_are_enough() {
         let settings = BrokerSettings::read(&config(MINIMUM)).unwrap();
-        assert_eq!(settings.server_cert_file, "/tls/cert.pem");
-        assert_eq!(settings.server_key, ServerKey::File("/tls/key.pem".into()));
         assert_eq!(settings.ca_cert_file, "/tls/ca.pem");
         assert_eq!(settings.bind_addr, DEFAULT_BIND_ADDR);
         assert_eq!(settings.shutdown_auth_token, "t0ken");
@@ -371,8 +371,9 @@ mod tests {
     #[test]
     fn everything_missing_is_named_with_what_it_is_for() {
         let problems = config(&[]).check().join(" | ");
+        // Its certificate file is no longer required: with the custody daemon, the crypto actor takes the certificate
+        // from the daemon's slot; a key file without it is refused by the crypto actor's `keys` (docs/plans/crypto-actor.md).
         for (name, what) in [
-            ("TLS_SERVER_CERT_CHAIN", "presents to every client"),
             ("TLS_CA_CERT", "clients' certificates"),
             ("CASSINI_SHUTDOWN_TOKEN", "shut down over the wire"),
         ] {
@@ -400,15 +401,10 @@ mod tests {
         custody.retain(|(k, _)| *k != "TLS_SERVER_KEY");
         custody.push(("POLAR_CUSTODY_SOCKET", "/run/polar-custody/custody.sock"));
         assert!(config(&custody).check().is_empty());
-        assert_eq!(
-            BrokerSettings::read(&config(&custody)).unwrap().server_key,
-            ServerKey::Custody("/run/polar-custody/custody.sock".into())
-        );
         let mut both = MINIMUM.to_vec();
         both.push(("POLAR_CUSTODY_SOCKET", "/run/polar-custody/custody.sock"));
         let problems = config(&both).check().join(" | ");
         assert!(problems.contains("set one"), "{problems}");
-        assert!(BrokerSettings::read(&config(&both)).is_err());
     }
 
     #[test]

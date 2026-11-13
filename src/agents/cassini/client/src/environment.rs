@@ -70,10 +70,11 @@ pub const CASSINI_QUEUE_PATH: Optional<String> = Optional::path(
     "where the client keeps a local queue of messages it could not deliver (none when unset)",
 );
 
+// Where the client's key is (TLS_CLIENT_KEY, POLAR_CUSTODY_SOCKET) is declared once, by the crypto actor's `keys`
+// section, which the builder registers for every agent (docs/plans/crypto-actor.md); this section still requires that a
+// client has its key, below. Its certificate is its identity, and declared here.
 static VARIABLES: &[&dyn Described] = &[
     &TLS_CLIENT_CERT,
-    &TLS_CLIENT_KEY,
-    &CUSTODY_SOCKET,
     &TLS_CA_CERT,
     &BROKER_ADDR,
     &CASSINI_SERVER_NAME,

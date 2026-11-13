@@ -570,8 +570,8 @@ pub struct ListenerManagerState {
 
 pub struct ListenerManagerArgs {
     pub bind_addr: String,
-    pub server_cert_file: String,
-    pub server_key: polar_custody::client::ServerKey,
+    /// The broker's TLS, its crypto actor's, from its own server key (docs/plans/crypto-actor.md).
+    pub tls: polar_agent_builder::crypto::TlsHandle,
     pub ca_cert_file: String,
     pub session_mgr: ActorRef<BrokerMessage>,
     pub shutdown_auth_token: Option<String>,
@@ -607,12 +607,6 @@ impl Actor for ListenerManager {
             debug!("Crypto provider configured");
         }
 
-        debug!("Gathering certificates for mTLS");
-        let certs: Vec<_> = CertificateDer::pem_file_iter(&args.server_cert_file)
-            .map_err(ActorProcessingErr::from)?
-            .map(|cert| cert.map_err(ActorProcessingErr::from))
-            .collect::<Result<Vec<_>, _>>()?;
-
         let mut root_store = RootCertStore::empty();
         let root_cert = CertificateDer::from_pem_file(&args.ca_cert_file).map_err(|e| {
             error!(error = ?e, ca_cert_file = %args.ca_cert_file, "Failed reading CA cert PEM");
@@ -628,9 +622,15 @@ impl Actor for ListenerManager {
 
         debug!("Building ServerConfig for mTLS");
 
-        // A key file as before, or the custody daemon's server slot, which offers TLS 1.3 alone
-        // (docs/architecture/key-custody.md, step 4).
-        let server_config = polar_custody::client::server_config(verifier, certs, &args.server_key)
+        // The broker's own certificate and key, its crypto actor's: the custody daemon's server slot, which offers TLS 1.3
+        // alone, or the key files without the daemon (docs/plans/crypto-actor.md).
+        // The span is left before the crypto actor is awaited: an entered span is never held across an await.
+        drop(_g);
+        let server_config = args
+            .tls
+            .server_config(verifier, Vec::new())
+            .instrument(span.clone())
+            .await
             .map_err(|e| {
                 error!(error = %e, "Failed building the server configuration");
                 ActorProcessingErr::from(e)

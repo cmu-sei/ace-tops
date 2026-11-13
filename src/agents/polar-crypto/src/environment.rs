@@ -68,23 +68,52 @@ pub const SERVER_KEY_FILE: Optional<String> = Optional::path(
     "path to the private key of the agent's server certificate; this or POLAR_CUSTODY_SOCKET, not both",
 );
 
+// The client certificate (TLS_CLIENT_CERT) is the Cassini client's to declare and require: it is the agent's identity
+// certificate, which every Cassini client is given; read here by its name.
 static KEY_VARIABLES: &[&dyn Described] = &[
     &CUSTODY_SOCKET,
-    &CLIENT_CERT_FILE,
     &CLIENT_KEY_FILE,
     &SERVER_CERT_FILE,
     &SERVER_KEY_FILE,
 ];
 
 /// Where the agent's keys are: the custody daemon's socket, or, where a cluster runs without the daemon, its key files.
-/// Every agent has a crypto actor (docs/plans/crypto-actor.md), so the builder is to register this for every agent,
-/// once the components that declare these variables today (the Cassini client, the broker) take their TLS from the
-/// crypto actor and stop declaring them: each is declared once (step K3b).
+/// Every agent has a crypto actor (docs/plans/crypto-actor.md), so the builder registers this for every agent and
+/// service, and these variables are declared here alone. A component that needs a key (the Cassini client, the broker)
+/// says so in its own section's rules.
 pub static KEYS: Section = Section {
     name: "keys",
     vars: KEY_VARIABLES,
-    relations: |_| Vec::new(),
+    relations: key_relations,
 };
+
+/// A key file goes with its certificate file, and never with the custody daemon's socket: the daemon holds the key, or
+/// the file does.
+fn key_relations(env: &dyn Env) -> Vec<String> {
+    let set = |var: &Optional<String>| matches!(var.read(env), Ok(Some(_)));
+    let socket = set(&CUSTODY_SOCKET);
+    let mut problems = Vec::new();
+    for (certificate, key) in [
+        (&CLIENT_CERT_FILE, &CLIENT_KEY_FILE),
+        (&SERVER_CERT_FILE, &SERVER_KEY_FILE),
+    ] {
+        if set(key) && socket {
+            problems.push(format!(
+                "{} is set as well as {}: the custody daemon holds the key, or the file does; set one",
+                key.name(),
+                CUSTODY_SOCKET.name()
+            ));
+        }
+        if set(key) && !set(certificate) {
+            problems.push(format!(
+                "{} is set without {}: a key file goes with its certificate",
+                key.name(),
+                certificate.name()
+            ));
+        }
+    }
+    problems
+}
 
 /// The key files an agent was given, as (certificate, key), where the custody daemon does not hold its keys.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

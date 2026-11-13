@@ -180,8 +180,13 @@ mod tests {
             .chain(pairs.iter())
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        // As the agent registers them: its own section, and the Cassini client's, which declares the custody socket.
-        Config::builder(&env)
+        // As the agent registers them: the builder's base sections (the crypto actor's `keys`, which declares the custody
+        // socket, among them), its own section, and the Cassini client's.
+        polar_agent_builder::environment::base_sections()
+            .into_iter()
+            .fold(Config::builder(&env), |builder, section| {
+                builder.register(section)
+            })
             .register(&SECTION)
             .register(&cassini_client::environment::SECTION)
             .build()
