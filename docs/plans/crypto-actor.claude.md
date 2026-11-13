@@ -87,7 +87,15 @@ the custody sidecar; `polar::cassini` helper removed, its users take the builder
 K1 DONE 2026-11-13. Signer into the CryptoActor: CryptoMessage/port op SignRecord-equivalent in polar-crypto (input build + type check
    from signer.rs), SignerHandle → CryptoActor; SignerActor and its spawn removed; signing agents get a CryptoActor.
    acp: its only custody call is signer.rs (polar-cc, 2026-11-13); fixed by its next merge of main. Tell polar-cc.
-K2 CryptoActor in every agent, first: spawned before tcp_client with custody client (or key files when degraded); late
+K2 DONE 2026-11-13 (builder agents; standalone processes are K2b). polar-crypto: CryptoActorArgs::unconnected(),
+   CryptoMessage::Connect{tcp_client, router} (reply topics registered then; NotConnected before), own identity and
+   pinned CA optional (CryptoSettings::from_env_for(env, escrow): a non-escrow actor reads neither, only the custody
+   socket); CryptoError::NotConnected, NoIdentity. Builder: spawn_crypto in pre_start before the authority/client
+   parts, for every agent (escrow = wants_crypto; CredentialPort only then), Connect cast once the tcp_client exists;
+   the supervisor's state holds it (child identified there); the domain gets its handle only when it escrows. FOUND for
+   K3: Config holds only declared variables, so a non-Cassini agent's crypto actor sees no POLAR_CUSTODY_SOCKET (it is
+   declared by cassini-client's section): K3 moves that declaration to the crypto actor's own section, every agent.
+   Was: CryptoActor in every agent, first: spawned before tcp_client with custody client (or key files when degraded); late
    `Connected(tcp_client)`; `Encryption` keeps meaning escrow key (wants_crypto → escrow ops only).
 K3 TLS from the CryptoActor: polar-crypto offers client/server rustls configs (or a sync `TlsKeys` handle) built from
    the agent's cert, custody signer, trust; the TLS-1.3-shape check moves from custody's daemon (custody.rs Sign arm,

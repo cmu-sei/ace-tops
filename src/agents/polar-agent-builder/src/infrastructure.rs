@@ -311,7 +311,8 @@ pub(crate) fn names_an_instance(path: &str) -> bool {
 /// What the supervisor needs to make a Cassini client.
 struct ClientSetup {
     subscriptions: Vec<Subscription>,
-    wants_crypto: bool,
+    /// The agent's crypto actor, started before the client, which it is given once it exists.
+    crypto: CryptoParts,
     wants_signer: bool,
     state_agent: Option<String>,
     self_test: bool,
@@ -320,6 +321,16 @@ struct ClientSetup {
     configuration: ConfigurationHandle,
     commands: crate::command_actor::CommandHandle,
     authority: crate::authority::AuthorityHandle,
+}
+
+/// The agent's crypto actor: every agent has one, started before anything that uses a key (docs/plans/crypto-actor.md).
+#[derive(Clone)]
+struct CryptoParts {
+    handle: CryptoHandle,
+    /// What the protocol handler asks the crypto actor with, for an agent that escrows secrets.
+    credential_port: Option<polar_crypto::CredentialPort>,
+    /// Whether the agent escrows secrets (`encryption`).
+    escrow: bool,
 }
 
 /// What a Cassini client brings with it.
@@ -371,6 +382,8 @@ pub struct InfrastructureSupervisorState {
     commands: crate::command_actor::CommandHandle,
     authority: Option<crate::authority::AuthorityHandle>,
     client: Option<ClientParts>,
+    /// The agent's crypto actor, whether or not it is a Cassini client.
+    crypto: CryptoHandle,
     healthcheck: HealthHandle,
     service_name: String,
     shutdown: ShutdownMachine,
@@ -523,8 +536,40 @@ impl InfrastructureSupervisor {
         });
     }
 
-    /// The router, the subscriptions, the Cassini client and, if asked, the crypto actor: what
-    /// makes this agent a client. Moved out of `pre_start` so a service without one skips it all.
+    /// The agent's crypto actor, before anything that uses a key: one that escrows secrets (`escrow`) reads its identity
+    /// and pinned CA and hears the credentials agent; any other needs neither.
+    async fn spawn_crypto(
+        config: &polar_env::Config,
+        escrow: bool,
+        supervisor: ractor::ActorCell,
+    ) -> Result<CryptoParts, ActorProcessingErr> {
+        let pass = escrow.then(polar_crypto::CredentialPass::new);
+        let mut args = polar_crypto::CryptoActorArgs::unconnected()
+            .with_settings(
+                polar_crypto::environment::CryptoSettings::from_env_for(config, escrow)
+                    .map_err(ActorProcessingErr::from)?,
+            )
+            .with_escrow(escrow);
+        if let Some(pass) = &pass {
+            args = args.with_credential_pass(pass.clone());
+        }
+        let (actor, _) = polar_crypto::CryptoActor::spawn_linked(
+            None,
+            polar_crypto::CryptoActor,
+            args,
+            supervisor,
+        )
+        .await
+        .map_err(ActorProcessingErr::from)?;
+        Ok(CryptoParts {
+            handle: CryptoHandle::new(actor.clone()),
+            credential_port: pass.map(|pass| polar_crypto::CredentialPort::new(actor, pass)),
+            escrow,
+        })
+    }
+
+    /// The router, the subscriptions and the Cassini client: what makes this agent a client. Moved out of `pre_start`
+    /// so a service without one skips it all.
     async fn spawn_client_parts(
         myself: &ActorRef<InfrastructureSupervisorMessage>,
         service_name: &str,
@@ -652,31 +697,18 @@ impl InfrastructureSupervisor {
                 Some(cassini_client::TcpClientMessage::JudgeAgain)
             });
 
-        // The crypto actor: every key use of the agent's, for an agent that escrows secrets or signs records
-        // (docs/plans/crypto-actor.md).
-        let (crypto, credential_port) = if setup.wants_crypto || setup.wants_signer {
-            let pass = polar_crypto::CredentialPass::new();
-            let (crypto_actor, _) = polar_crypto::CryptoActor::spawn_linked(
-                None,
-                polar_crypto::CryptoActor,
-                polar_crypto::CryptoActorArgs::new(tcp_client.as_actor_ref(), router.clone())
-                    .with_settings(
-                        polar_crypto::environment::CryptoSettings::from_env(&*setup.config)
-                            .map_err(ActorProcessingErr::from)?,
-                    )
-                    .with_credential_pass(pass.clone())
-                    .with_escrow(setup.wants_crypto),
-                myself_cell.clone(),
-            )
-            .await
+        // The crypto actor was started before the client: it is given the client and the router now.
+        setup
+            .crypto
+            .handle
+            .actor()
+            .cast(polar_crypto::CryptoMessage::Connect {
+                tcp_client: tcp_client.as_actor_ref(),
+                router: router.clone(),
+            })
             .map_err(ActorProcessingErr::from)?;
-            (
-                Some(CryptoHandle::new(crypto_actor.clone())),
-                Some(polar_crypto::CredentialPort::new(crypto_actor, pass)),
-            )
-        } else {
-            (None, None)
-        };
+        let crypto = Some(setup.crypto.handle.clone());
+        let credential_port = setup.crypto.credential_port.clone();
 
         // Records are signed by the crypto actor; the domain's handle reaches nothing else of it
         // (docs/architecture/key-custody.md, "Workload signing keys", item 4).
@@ -726,7 +758,7 @@ impl InfrastructureSupervisor {
                 tcp_client,
                 one_of_many,
                 crypto,
-                escrow: setup.wants_crypto,
+                escrow: setup.crypto.escrow,
                 credential_port,
                 signer,
                 protocols: None,
@@ -776,12 +808,7 @@ impl InfrastructureSupervisor {
             .is_some_and(|client| id == client.router.get_id())
         {
             Child::Other("the router".to_string())
-        } else if state
-            .client
-            .as_ref()
-            .and_then(|client| client.crypto.as_ref())
-            .is_some_and(|crypto| crypto.actor().get_id() == id)
-        {
+        } else if state.crypto.actor().get_id() == id {
             Child::Other("the crypto actor".to_string())
         } else if state
             .client
@@ -959,13 +986,18 @@ impl Actor for InfrastructureSupervisor {
             tracing::warn!("InfrastructureSupervisor: the log filters: {why}");
         }
 
+        // The crypto actor: every agent's, started before anything that uses a key, Cassini's client among them
+        // (docs/plans/crypto-actor.md). It is told the client once there is one.
+        let crypto =
+            Self::spawn_crypto(&args.config, args.wants_crypto, myself_cell.clone()).await?;
+
         let (mut client, self_test) = if args.with_client {
             let (client, self_test) = Self::spawn_client_parts(
                 &myself,
                 &args.service_name,
                 ClientSetup {
                     subscriptions: args.subscriptions,
-                    wants_crypto: args.wants_crypto,
+                    crypto: crypto.clone(),
                     wants_signer: args.wants_signer,
                     state_agent: args.state_agent.clone(),
                     self_test: args.self_test,
@@ -1061,6 +1093,7 @@ impl Actor for InfrastructureSupervisor {
             commands,
             authority,
             client,
+            crypto: crypto.handle,
             healthcheck,
             service_name: args.service_name,
             shutdown: ShutdownMachine::new(),
@@ -3572,6 +3605,28 @@ mod tests {
             answers.last().unwrap().report.status,
             polar_health::ReportStatus::Draining
         );
+    }
+
+    /// docs/plans/crypto-actor.md: every agent has a crypto actor, encrypting or not, linked to the infrastructure (its end
+    /// ends the agent); one that does not encrypt is not handed it.
+    #[tokio::test]
+    async fn every_agent_has_a_crypto_actor_and_one_that_does_not_encrypt_is_not_handed_it() {
+        let rig = Rig::new("infra-plain-crypto", Duration::from_secs(20), &[], false).await;
+        assert!(rig.resources.crypto.is_none());
+        let crypto: Vec<_> = rig
+            .infra
+            .get_children()
+            .into_iter()
+            .filter(|child| child.is_message_type_of::<polar_crypto::CryptoMessage>() == Some(true))
+            .collect();
+        assert_eq!(crypto.len(), 1, "one crypto actor");
+        assert!(
+            crypto[0].get_name().is_none(),
+            "unnamed: nothing finds it by name"
+        );
+        crypto[0].kill();
+        rig.settle().await;
+        assert_eq!(rig.events(), ["prepare_shutdown"]);
     }
 
     #[tokio::test]

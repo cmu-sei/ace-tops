@@ -383,6 +383,50 @@ mod tests {
         actor.stop(None);
     }
 
+    /// The crypto actor starts before the agent's Cassini client: until it is given the client, what needs the credentials
+    /// agent is answered NotConnected and nothing is subscribed; once given it, it subscribes when the client registers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_crypto_actor_started_before_cassini_is_connected_later() {
+        let (actor, _) = ractor::Actor::spawn(
+            None,
+            crate::CryptoActor,
+            crate::CryptoActorArgs::unconnected().with_settings(
+                crate::environment::CryptoSettings {
+                    own_certificate_path: String::new(),
+                    custody_socket: None,
+                    ca_cert_path: String::new(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        let retrieved = ractor::call!(actor, |reply| crate::CryptoMessage::RetrieveSecret {
+            name: "x".to_string(),
+            reply
+        })
+        .unwrap();
+        assert!(
+            matches!(retrieved, Err(crate::CryptoError::NotConnected)),
+            "{retrieved:?}"
+        );
+        actor.cast(crate::CryptoMessage::ClientRegistered).unwrap();
+
+        let subscribed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tcp_client, _) = ractor::Actor::spawn(None, Subscriptions(subscribed.clone()), ())
+            .await
+            .unwrap();
+        let (router, _) = ractor::Actor::spawn(None, polar_router::RouterActor, ())
+            .await
+            .unwrap();
+        actor
+            .cast(crate::CryptoMessage::Connect { tcp_client, router })
+            .unwrap();
+        actor.cast(crate::CryptoMessage::ClientRegistered).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(subscribed.lock().unwrap().len(), crate::REPLY_TOPICS.len());
+        actor.stop(None);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn with_no_daemon_a_record_is_unavailable() {
         let client = Arc::new(CustodyClient::new("/nonexistent/custody.sock"));

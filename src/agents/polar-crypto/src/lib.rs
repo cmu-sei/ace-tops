@@ -119,6 +119,12 @@ pub enum CryptoError {
     Timeout,
     #[error("reply channel closed with no reply")]
     NoReply,
+    /// Asked for what needs the credentials agent before the agent's Cassini client was given to the actor.
+    #[error("the crypto actor is not connected to Cassini yet")]
+    NotConnected,
+    /// Asked to escrow or retrieve with no identity of its own: an agent that does not escrow is given none.
+    #[error("the crypto actor has no identity of its own: this agent does not escrow secrets")]
+    NoIdentity,
     #[error("failed to serialize request: {0}")]
     Serialization(String),
     #[error("encryption failed: {0}")]
@@ -464,6 +470,12 @@ pub enum CryptoMessage {
     /// construction. Sent on every registration, so a reconnect
     /// restores them too. Subscribing again is harmless.
     ClientRegistered,
+    /// The agent's Cassini client and router, once they exist: the crypto actor starts before them, since Cassini's own
+    /// connection is the crypto actor's to sign for (docs/plans/crypto-actor.md).
+    Connect {
+        tcp_client: ActorRef<TcpClientMessage>,
+        router: ActorRef<polar_router::RouterMessage>,
+    },
     /// `record` signed with the pod's signing key, as the evidence document it is ([`records`]): the builder's signer
     /// handle's, for an agent with the `signing` capability.
     SignRecord {
@@ -572,7 +584,7 @@ pub struct CryptoActorArgs {
     /// shared, not a second connection. See
     /// credentials-agent-architecture.md's own "CryptoActor" section
     /// for why this must stay fire-and-forget in both directions.
-    pub tcp_client: ActorRef<TcpClientMessage>,
+    pub tcp_client: Option<ActorRef<TcpClientMessage>>,
     /// The consuming supervisor's own, already-spawned RouterActor --
     /// the same one its own, real topics are already registered
     /// with, not a second one. CryptoActor registers its own
@@ -580,7 +592,9 @@ pub struct CryptoActorArgs {
     /// subscribing to a broadcast-style OutputPort<ClientEvent> (the
     /// earlier, real design, before RouterActor existed) -- see this
     /// crate's own, top-level doc comment for the full reasoning.
-    pub router: ActorRef<polar_router::RouterMessage>,
+    /// With `tcp_client`, or both given later by [`CryptoMessage::Connect`]: the crypto actor starts before the agent's
+    /// Cassini client (docs/plans/crypto-actor.md).
+    pub router: Option<ActorRef<polar_router::RouterMessage>>,
     /// The certificate, CA and custody-socket paths, already read and judged. The agent builder supplies
     /// them from its snapshot of the environment. `None` is for agents not yet on the
     /// builder: the actor then reads the process.
@@ -601,8 +615,21 @@ impl CryptoActorArgs {
         router: ActorRef<polar_router::RouterMessage>,
     ) -> Self {
         Self {
-            tcp_client,
-            router,
+            tcp_client: Some(tcp_client),
+            router: Some(router),
+            settings: None,
+            escrow_retry: (Duration::from_secs(1), Duration::from_secs(30)),
+            credential_pass: None,
+            escrow: true,
+        }
+    }
+
+    /// An actor not yet connected to Cassini: it is given the agent's client and router by [`CryptoMessage::Connect`]
+    /// once they exist, and until then answers what needs them [`CryptoError::NotConnected`].
+    pub fn unconnected() -> Self {
+        Self {
+            tcp_client: None,
+            router: None,
             settings: None,
             escrow_retry: (Duration::from_secs(1), Duration::from_secs(30)),
             credential_pass: None,
@@ -637,7 +664,8 @@ impl CryptoActorArgs {
 }
 
 pub struct CryptoActorState {
-    tcp_client: ActorRef<TcpClientMessage>,
+    /// The agent's Cassini client, once it is given ([`CryptoMessage::Connect`]).
+    tcp_client: Option<ActorRef<TcpClientMessage>>,
     /// Whether it hears the credentials agent's replies ([`CryptoActorArgs::escrow`]).
     escrow: bool,
     escrow_key_reply_router: Arc<ReplyRouter<credentials_agent_common::escrow_key::EscrowKeyReply>>,
@@ -669,7 +697,7 @@ pub struct CryptoActorState {
     /// doc comment).
     cached_recipient_public_keys:
         Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
-    own_identity: String,
+    own_identity: Option<String>,
     /// What the actor read on disk at its start.
     paths: KeyPaths,
     /// The secrets that reached this agent, by name, each with the binding that says where it may go
@@ -727,12 +755,17 @@ impl Actor for CryptoActor {
             None => environment::CryptoSettings::from_env(&polar_env::ProcessEnv)
                 .map_err(ActorProcessingErr::from)?,
         };
-        let own_identity = {
-            let path = &settings.own_certificate_path;
-            let certificate_pem = std::fs::read_to_string(path)
-                .map_err(|e| ActorProcessingErr::from(format!("failed to read {path}: {e}")))?;
-            cert_issuer_common::permission::extract_own_identity(&certificate_pem)
-                .map_err(|e| ActorProcessingErr::from(e.to_string()))?
+        // An agent that does not escrow is given no certificate to take an identity from: it needs none.
+        let own_identity = match settings.own_certificate_path.as_str() {
+            "" => None,
+            path => {
+                let certificate_pem = std::fs::read_to_string(path)
+                    .map_err(|e| ActorProcessingErr::from(format!("failed to read {path}: {e}")))?;
+                Some(
+                    cert_issuer_common::permission::extract_own_identity(&certificate_pem)
+                        .map_err(|e| ActorProcessingErr::from(e.to_string()))?,
+                )
+            }
         };
 
         // Registers each of this actor's own, real reply topics
@@ -745,26 +778,8 @@ impl Actor for CryptoActor {
         // itself do the real, per-topic deserialization/routing --
         // mirroring kube-consumer's own, established
         // register_kube_topics pattern exactly.
-        for topic in REPLY_TOPICS {
-            let myself_for_deliver = myself.clone();
-            if let Err(e) = args
-                .router
-                .send_message(polar_router::RouterMessage::Register {
-                    topic: topic.to_string(),
-                    deliver: Box::new(move |incoming: polar_router::IncomingMessage| {
-                        if let Err(e) =
-                            myself_for_deliver.send_message(CryptoMessage::RoutedReply {
-                                topic: incoming.topic,
-                                payload: incoming.payload,
-                            })
-                        {
-                            warn!("CryptoActor: failed to deliver routed reply to self: {e}");
-                        }
-                    }),
-                })
-            {
-                error!("CryptoActor failed to register topic {topic} with RouterActor: {e}");
-            }
+        if let Some(router) = &args.router {
+            register_replies(&myself, router);
         }
 
         // Subscriptions are not sent here: the Cassini client drops any
@@ -789,6 +804,7 @@ impl Actor for CryptoActor {
             own_identity,
             paths: KeyPaths {
                 pinned_ca: match std::fs::read_to_string(&settings.ca_cert_path) {
+                    _ if settings.ca_cert_path.is_empty() => None,
                     Ok(pem) => Some(pem),
                     Err(e) => {
                         warn!(
@@ -852,14 +868,22 @@ impl Actor for CryptoActor {
                     });
                 }
             },
+            CryptoMessage::Connect { tcp_client, router } => {
+                register_replies(&myself, &router);
+                state.tcp_client = Some(tcp_client);
+            }
             CryptoMessage::ClientRegistered => {
                 // Subscribes to the *_REPLIES_TOPIC constants specifically --
                 // CryptoActor is a requester here, not a responder, so it
                 // needs the reply topics, not the request topics (easy to
                 // transpose by accident, worth being explicit about). An agent
                 // that only signs records asks the credentials agent nothing.
+                let Some(tcp_client) = &state.tcp_client else {
+                    warn!("CryptoActor: told the client registered before it was given the client");
+                    return Ok(());
+                };
                 for topic in REPLY_TOPICS.iter().filter(|_| state.escrow) {
-                    if let Err(e) = state.tcp_client.send_message(TcpClientMessage::Subscribe {
+                    if let Err(e) = tcp_client.send_message(TcpClientMessage::Subscribe {
                         topic: topic.to_string(),
                         trace_ctx: None,
                     }) {
@@ -939,7 +963,10 @@ impl Actor for CryptoActor {
                 // replies need to be processed by. See this crate's
                 // own README/commit history for the deadlock this
                 // caused before being caught.
-                let tcp_client = state.tcp_client.clone();
+                let Some(tcp_client) = state.tcp_client.clone() else {
+                    let _ = reply.send(Err(CryptoError::NotConnected));
+                    return Ok(());
+                };
                 let escrow_key_reply_router = state.escrow_key_reply_router.clone();
                 let store_secret_reply_router = state.store_secret_reply_router.clone();
                 let cached_key = state.cached_credentials_agent_escrow_key.clone();
@@ -968,7 +995,13 @@ impl Actor for CryptoActor {
             } => {
                 // Spawned, not awaited inline, for the same reason as the arms around it: the daemon is asked to
                 // unwrap, and the secret is escrowed over the broker.
-                let shared = state.shared();
+                let shared = match state.shared() {
+                    Ok(shared) => shared,
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                        return Ok(());
+                    }
+                };
                 tokio::spawn(async move {
                     let result =
                         register_secret(shared, name, section, secret, context, username, binding)
@@ -981,7 +1014,13 @@ impl Actor for CryptoActor {
                 section,
                 reply,
             } => {
-                let shared = state.shared();
+                let shared = match state.shared() {
+                    Ok(shared) => shared,
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
+                        return Ok(());
+                    }
+                };
                 tokio::spawn(async move {
                     let result = load_secret(shared, name, section).await;
                     let _ = reply.send(result);
@@ -1164,7 +1203,10 @@ impl Actor for CryptoActor {
             } => {
                 // Same reasoning as StoreSecret's own arm above --
                 // spawned, not awaited inline.
-                let tcp_client = state.tcp_client.clone();
+                let Some(tcp_client) = state.tcp_client.clone() else {
+                    let _ = reply.send(Err(CryptoError::NotConnected));
+                    return Ok(());
+                };
                 let agent_escrow_key_reply_router = state.agent_escrow_key_reply_router.clone();
                 let cached_recipient_public_keys = state.cached_recipient_public_keys.clone();
                 let pinned_ca = state.paths.pinned_ca.clone();
@@ -1183,7 +1225,10 @@ impl Actor for CryptoActor {
             }
             CryptoMessage::RetrieveSecret { name, reply } => {
                 // Spawned, not awaited inline, for the same reason as StoreSecret above.
-                let tcp_client = state.tcp_client.clone();
+                let Some(tcp_client) = state.tcp_client.clone() else {
+                    let _ = reply.send(Err(CryptoError::NotConnected));
+                    return Ok(());
+                };
                 let retrieve_secret_reply_router = state.retrieve_secret_reply_router.clone();
                 let escrow_key = state.escrow_key.clone();
                 tokio::spawn(async move {
@@ -1371,6 +1416,31 @@ async fn open_escrowed(
         .map_err(|e| CryptoError::DecryptFailed(e.to_string()))
 }
 
+/// Registers each of this actor's reply topics with the agent's router: it is a requester of the credentials agent, so
+/// it registers the reply topics, not the request topics. Each is forwarded to this actor as RoutedReply, which `handle`
+/// reads per topic.
+fn register_replies(
+    myself: &ActorRef<CryptoMessage>,
+    router: &ActorRef<polar_router::RouterMessage>,
+) {
+    for topic in REPLY_TOPICS {
+        let myself_for_deliver = myself.clone();
+        if let Err(e) = router.send_message(polar_router::RouterMessage::Register {
+            topic: topic.to_string(),
+            deliver: Box::new(move |incoming: polar_router::IncomingMessage| {
+                if let Err(e) = myself_for_deliver.send_message(CryptoMessage::RoutedReply {
+                    topic: incoming.topic,
+                    payload: incoming.payload,
+                }) {
+                    warn!("CryptoActor: failed to deliver routed reply to self: {e}");
+                }
+            }),
+        }) {
+            error!("CryptoActor failed to register topic {topic} with RouterActor: {e}");
+        }
+    }
+}
+
 /// What the tasks started for the registry need from the actor, cloned out of its state: they run outside the
 /// mailbox, since they wait on the credentials agent.
 #[derive(Clone)]
@@ -1389,19 +1459,20 @@ struct Shared {
 }
 
 impl CryptoActorState {
-    fn shared(&self) -> Shared {
-        Shared {
-            tcp_client: self.tcp_client.clone(),
+    /// What the registry's tasks need: the Cassini client and the actor's own identity, or why they are not there.
+    fn shared(&self) -> Result<Shared, CryptoError> {
+        Ok(Shared {
+            tcp_client: self.tcp_client.clone().ok_or(CryptoError::NotConnected)?,
             escrow_key_reply_router: self.escrow_key_reply_router.clone(),
             store_secret_reply_router: self.store_secret_reply_router.clone(),
             retrieve_secret_reply_router: self.retrieve_secret_reply_router.clone(),
             cached_key: self.cached_credentials_agent_escrow_key.clone(),
             escrow_key: self.escrow_key.clone(),
-            own_identity: self.own_identity.clone(),
+            own_identity: self.own_identity.clone().ok_or(CryptoError::NoIdentity)?,
             registry: self.registry.clone(),
             escrow_tasks: self.escrow_tasks.clone(),
             escrow_retry: self.escrow_retry,
-        }
+        })
     }
 }
 

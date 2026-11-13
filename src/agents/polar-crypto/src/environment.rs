@@ -86,6 +86,26 @@ impl CryptoSettings {
     }
 }
 
+impl CryptoSettings {
+    /// Reads from `env` for an agent that escrows secrets (`escrow`), as [`from_env`](Self::from_env), or for one that
+    /// does not: every agent has a crypto actor (docs/plans/crypto-actor.md), and one that does not escrow takes no
+    /// identity or pinned CA from it, so neither is read; only the custody daemon's socket.
+    pub fn from_env_for(env: &dyn Env, escrow: bool) -> Result<Self, String> {
+        if escrow {
+            return Self::from_env(env);
+        }
+        let custody_socket = CUSTODY_SOCKET
+            .read(env)
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.trim().is_empty());
+        Ok(Self {
+            own_certificate_path: String::new(),
+            custody_socket,
+            ca_cert_path: String::new(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +116,39 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// An agent that does not escrow takes no identity or pinned CA from its crypto actor, set or not; one that escrows
+    /// must have both.
+    #[test]
+    fn an_agent_that_does_not_escrow_needs_no_identity_or_pinned_ca() {
+        let none = CryptoSettings::from_env_for(&env(&[]), false).unwrap();
+        assert_eq!(
+            (
+                none.own_certificate_path.as_str(),
+                none.ca_cert_path.as_str(),
+                none.custody_socket
+            ),
+            ("", "", None)
+        );
+        assert!(CryptoSettings::from_env_for(&env(&[]), true).is_err());
+        let given = CryptoSettings::from_env_for(
+            &env(&[
+                ("TLS_CLIENT_CERT", "/c/cert.pem"),
+                ("TLS_CA_CERT", "/c/ca.pem"),
+                ("POLAR_CUSTODY_SOCKET", "/s"),
+            ]),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                given.own_certificate_path.as_str(),
+                given.ca_cert_path.as_str(),
+                given.custody_socket.as_deref()
+            ),
+            ("", "", Some("/s"))
+        );
     }
 
     #[test]
