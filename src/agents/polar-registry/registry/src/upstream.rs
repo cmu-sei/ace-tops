@@ -26,11 +26,15 @@
 //! does every request an agent makes (docs/architecture/protocol-handlers.md). So applying the catalog signs off where
 //! the cache goes, and a fault reaches nowhere else.
 
-use crate::faults::{Fetch, Upstream};
+use crate::faults::{Fetch, PIECES_WAITING, Pieces, Upstream};
 use polar_agent_builder::protocol::http::{Http, Reply, Request, StatusCode};
 use polar_agent_builder::protocol::{
     Location, Operation, OperationDecl, ProtocolHandle, ProtocolKind, ReadFailure,
 };
+use std::time::Duration;
+
+/// The longest an archive coming in pieces may go without one before the fault gives it up.
+pub const STALL: Duration = Duration::from_secs(60);
 
 /// The upstream cache's variable, by name.
 pub const UPSTREAM_VAR: &str = "POLAR_REGISTRY_NIX_UPSTREAM";
@@ -94,5 +98,48 @@ impl Fetch for Handled {
             StatusCode::NOT_FOUND => Ok(None),
             other => Err(format!("the upstream answered {other}")),
         }
+    }
+
+    /// The archive in pieces (`Request::in_pieces`), each handed on as it arrives: the handler reads the next only once the
+    /// content store has taken the last.
+    async fn archive(
+        &self,
+        upstream: &Upstream,
+        path: &str,
+        limit: u64,
+    ) -> Result<Option<Pieces>, String> {
+        if upstream.via != NIX_UPSTREAM.name {
+            return Err(format!(
+                "no operation of this agent's reaches {}",
+                upstream.url
+            ));
+        }
+        let mut pieces = self
+            .0
+            .pieces(Get(Request::get(path).in_pieces(limit, STALL)))
+            .map_err(|ended| ended.to_string())?;
+        let (status, _) = match pieces.next().await {
+            Some(head) => head.map_err(|failure| failure.to_string())?,
+            None => return Err("the handler gave no reply".into()),
+        };
+        match status {
+            StatusCode::OK => {}
+            StatusCode::NOT_FOUND => return Ok(None),
+            other => return Err(format!("the upstream answered {other}")),
+        }
+        let (give, taken) = tokio::sync::mpsc::channel(PIECES_WAITING);
+        tokio::spawn(async move {
+            // A failure is the last the handler says, so the loop ends after it; it ends as well when nobody takes what
+            // it gives, and dropping `pieces` ends the request.
+            while let Some(piece) = pieces.next().await {
+                let piece = piece
+                    .map(|(_, body)| body)
+                    .map_err(|failure| failure.to_string());
+                if give.send(piece).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Some(taken))
     }
 }

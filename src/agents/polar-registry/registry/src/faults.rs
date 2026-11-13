@@ -31,8 +31,9 @@
 //! Faults can be switched off. Then a path not held is refused, and the refusal is recorded: with faults off, the record
 //! is the list of what a build lacked.
 //!
-//! Fetching is `Fetch`'s, so the cache goes out only as its agent does (the builder's protocol handlers, which give a
-//! body whole: an archive is held in memory, at most `max_archive` bytes, until they stream).
+//! Fetching is `Fetch`'s, so the cache goes out only as its agent does (the builder's protocol handlers). A narinfo comes
+//! whole; an archive comes in pieces, each written into the content store as it arrives, so what a fault holds in memory
+//! is a few pieces, not the archive.
 
 use crate::nix_cache::{Archive, NixCache, PathInfo};
 use polar_registry_nix::narinfo::NarInfo;
@@ -61,6 +62,65 @@ pub trait Fetch: Send + Sync {
         path: &str,
         limit: u64,
     ) -> Result<Option<Vec<u8>>, String>;
+
+    /// The archive at `path` under `upstream`, in pieces, at most `limit` bytes in all; `None` when the upstream does not
+    /// hold it. Unless a way out says otherwise, the body whole, as one piece.
+    async fn archive(
+        &self,
+        upstream: &Upstream,
+        path: &str,
+        limit: u64,
+    ) -> Result<Option<Pieces>, String> {
+        let Some(body) = self.get(upstream, path, limit).await? else {
+            return Ok(None);
+        };
+        let (give, pieces) = tokio::sync::mpsc::channel(1);
+        give.try_send(Ok(body)).expect("a channel of one holds one");
+        Ok(Some(pieces))
+    }
+}
+
+/// An archive as it arrives: its pieces in order, the stream closing after the last; a failure is the last it says.
+pub type Pieces = tokio::sync::mpsc::Receiver<Result<Vec<u8>, String>>;
+
+/// How many pieces of an archive wait between the network and the content store.
+pub const PIECES_WAITING: usize = 4;
+
+/// Reads an archive's pieces as one stream of bytes, for the content store, which writes on a thread of its own: each
+/// piece is taken off the channel only when the last has been read.
+pub struct PieceReader {
+    pieces: Pieces,
+    piece: Vec<u8>,
+    at: usize,
+}
+
+impl PieceReader {
+    pub fn new(pieces: Pieces) -> Self {
+        Self {
+            pieces,
+            piece: Vec::new(),
+            at: 0,
+        }
+    }
+}
+
+impl io::Read for PieceReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        while self.at == self.piece.len() {
+            match self.pieces.blocking_recv() {
+                None => return Ok(0),
+                Some(Ok(piece)) => {
+                    self.piece = piece;
+                    self.at = 0;
+                }
+                Some(Err(why)) => return Err(io::Error::other(why)),
+            }
+        }
+        let n = buf.len().min(self.piece.len() - self.at);
+        buf[..n].copy_from_slice(&self.piece[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
 }
 
 /// Fetches nothing: a cache with no upstreams.
@@ -297,7 +357,7 @@ impl Faults {
         }
         let archive = self
             .fetch
-            .get(upstream, &format!("/{}", info.url), max_archive)
+            .archive(upstream, &format!("/{}", info.url), max_archive)
             .await?
             .ok_or_else(|| "its narinfo is held and its archive is not".to_string())?;
         let path = PathInfo {
@@ -311,7 +371,7 @@ impl Faults {
         };
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
-            let archive = &archive[..];
+            let archive = PieceReader::new(archive);
             cache.enter(
                 path,
                 if zstd {
@@ -358,5 +418,41 @@ impl Faults {
         })
         .await
         .map_err(io::Error::other)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn pieces_read_as_one_stream_through_any_buffer_and_a_failure_is_an_error() {
+        let (give, pieces) = tokio::sync::mpsc::channel(8);
+        for piece in [b"0123456789".to_vec(), Vec::new(), b"abc".to_vec()] {
+            give.try_send(Ok(piece)).unwrap();
+        }
+        drop(give);
+        let mut reader = PieceReader::new(pieces);
+        let mut read = Vec::new();
+        let mut buf = [0u8; 3];
+        loop {
+            let n = reader.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            read.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(read, b"0123456789abc");
+
+        let (give, pieces) = tokio::sync::mpsc::channel(8);
+        give.try_send(Ok(b"part".to_vec())).unwrap();
+        give.try_send(Err("the upstream went silent".into()))
+            .unwrap();
+        let mut whole = Vec::new();
+        let err = PieceReader::new(pieces)
+            .read_to_end(&mut whole)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "the upstream went silent");
     }
 }

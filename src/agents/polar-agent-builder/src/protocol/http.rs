@@ -55,6 +55,9 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// The most a reply may hold. A reply is whole in memory for `read`, so this is what one host can cost this agent.
 pub const MAX_BODY: usize = 256 * 1024 * 1024;
+/// The longest a reply asked for in pieces ([`Request::in_pieces`]) may take, from the request to its last piece: its own
+/// bound is how long it may go without a piece, and this only ends one that never stops coming.
+pub const PIECES_DEADLINE: Duration = Duration::from_secs(60 * 60);
 /// The most hops a request follows, as a browser would.
 pub const MAX_HOPS: usize = 10;
 /// The most a registry's auth host may answer with: a token, and what comes with it.
@@ -70,6 +73,15 @@ pub struct Request {
     body: Option<Vec<u8>>,
     /// For a request at a container registry, what its token is asked to allow.
     registry_scope: Option<String>,
+    /// For a reply taken in pieces, its bounds.
+    pieces: Option<InPieces>,
+}
+
+/// The bounds of a reply taken in pieces: the most it may hold in all, and the longest it may go without a piece.
+#[derive(Debug, Clone, Copy)]
+struct InPieces {
+    most: u64,
+    stall: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +142,17 @@ impl Request {
         self
     }
 
+    /// The reply comes in pieces, for one too large to hold whole, or too slow to wait for whole: through
+    /// [`super::ProtocolHandle::pieces`], first its head (its status and headers, and no body), then each piece of its
+    /// body as it arrives, and the stream closes after the last. It may hold `most` bytes in all, and go `stall` without a
+    /// piece, and either past its bound ends it with a failure; [`MAX_BODY`] and the whole-request timeout are not its
+    /// bounds, [`PIECES_DEADLINE`] is. Each piece goes to the domain only once it has finished with the last, so what it
+    /// costs in memory is a piece, not the reply.
+    pub fn in_pieces(mut self, most: u64, stall: Duration) -> Self {
+        self.pieces = Some(InPieces { most, stall });
+        self
+    }
+
     /// With this header as well. The credential is not one to add: the handler attaches it.
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((name.into(), value.into()));
@@ -143,6 +166,7 @@ impl Request {
             headers: Vec::new(),
             body: None,
             registry_scope: None,
+            pieces: None,
         }
     }
 }
@@ -513,6 +537,9 @@ impl Protocol for Http {
             if let Some(body) = &body {
                 outgoing = outgoing.body(body.clone());
             }
+            if request.pieces.is_some() {
+                outgoing = outgoing.timeout(PIECES_DEADLINE);
+            }
             let (outgoing, presented, credential_looks_base64) =
                 attach(outgoing, presenting.take())?;
             let (presented, credential_looks_base64) =
@@ -575,6 +602,17 @@ impl Protocol for Http {
             }
 
             let headers = response.headers().clone();
+            let head = Reply {
+                status,
+                headers,
+                body: Vec::new(),
+                presented,
+                credential_looks_base64,
+            };
+            if let Some(pieces) = request.pieces {
+                return in_pieces(&mut response, pieces, head, exchange).await;
+            }
+            let Reply { headers, .. } = head;
             let whole = whole_body(&mut response, MAX_BODY).await?;
             exchange
                 .reply(Reply {
@@ -590,6 +628,53 @@ impl Protocol for Http {
         Err(Failure::Transient(format!(
             "more than {MAX_HOPS} redirects"
         )))
+    }
+}
+
+/// A reply in pieces: its head, then each piece of its body as it arrives, each handed on once the domain has finished with
+/// the last; past its bounds it is a failure, and no more is read. It stops early, and well, when nobody is listening.
+async fn in_pieces(
+    response: &mut reqwest::Response,
+    bounds: InPieces,
+    head: Reply,
+    exchange: &mut Exchange<Http>,
+) -> Result<(), Failure> {
+    let (status, presented, credential_looks_base64) =
+        (head.status, head.presented, head.credential_looks_base64);
+    if !exchange.reply(head).await {
+        return Ok(());
+    }
+    let mut total = 0u64;
+    loop {
+        let chunk = match tokio::time::timeout(bounds.stall, response.chunk()).await {
+            Err(_) => {
+                return Err(Failure::Transient(format!(
+                    "no piece of the reply came in {}s",
+                    bounds.stall.as_secs()
+                )));
+            }
+            Ok(chunk) => chunk.map_err(transport)?,
+        };
+        let Some(chunk) = chunk else {
+            return Ok(());
+        };
+        total += chunk.len() as u64;
+        if total > bounds.most {
+            return Err(Failure::Transient(format!(
+                "the reply holds more than {} bytes",
+                bounds.most
+            )));
+        }
+        let piece = Reply {
+            status,
+            headers: HeaderMap::new(),
+            body: chunk.to_vec(),
+            presented,
+            credential_looks_base64,
+        };
+        if !exchange.reply(piece).await {
+            return Ok(());
+        }
     }
 }
 
@@ -2264,5 +2349,136 @@ mod tests {
             let probed = probe_of("https://outside.example.org/", egress).await;
             assert_eq!(probed.reach, Reach::Proxy, "{proxy}: {probed:?}");
         }
+    }
+
+    /// What a reply in pieces gave: its head, then its pieces, then how it ended (`None`: whole).
+    async fn pulled<O: Operation<Output = Read>>(
+        site: &Site,
+        operation: O,
+    ) -> (Read, Vec<Vec<u8>>, Option<Failure>) {
+        let mut pieces = site.handle.pieces(operation).unwrap();
+        let head = pieces.next().await.unwrap().unwrap();
+        let mut body = Vec::new();
+        while let Some(piece) = pieces.next().await {
+            match piece {
+                Ok(piece) => body.push(piece.body),
+                Err(failure) => {
+                    assert!(
+                        pieces.next().await.is_none(),
+                        "a failure is the last a reply says"
+                    );
+                    return (head, body, Some(failure));
+                }
+            }
+        }
+        (head, body, None)
+    }
+
+    #[tokio::test]
+    async fn a_reply_in_pieces_is_its_head_then_its_body_piece_by_piece_and_then_it_ends() {
+        let f = fixture(SecretKind::Token).await;
+        let body: Vec<u8> = (0..(3u32 << 20)).map(|i| (i % 251) as u8).collect();
+        Mock::given(method("GET"))
+            .and(path("/big"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-fact", "told")
+                    .set_body_bytes(body.clone()),
+            )
+            .mount(&f.server)
+            .await;
+        let asked =
+            ConfiguredRead(Request::get("/big").in_pieces(4 << 20, Duration::from_secs(10)));
+        let (head, pieces, failure) = pulled(&f.site, asked).await;
+        assert!(failure.is_none(), "{failure:?}");
+        assert_eq!(
+            (head.status, head.body.len(), head.fact.as_deref()),
+            (StatusCode::OK, 0, Some("told"))
+        );
+        assert_eq!(head.presented, Presented::Bearer);
+        assert!(
+            pieces.len() > 1,
+            "a 3 MiB body came in {} pieces",
+            pieces.len()
+        );
+        assert_eq!(pieces.concat(), body);
+        // One request, judged and recorded once, however many pieces it came in.
+        let records = f.site.records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].verdict, "allowed");
+    }
+
+    #[tokio::test]
+    async fn a_reply_in_pieces_past_its_most_ends_with_a_failure() {
+        let f = fixture(SecretKind::Token).await;
+        Mock::given(method("GET"))
+            .and(path("/big"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7u8; 1 << 20]))
+            .mount(&f.server)
+            .await;
+        let asked = ConfiguredRead(Request::get("/big").in_pieces(1000, Duration::from_secs(10)));
+        let (_, pieces, failure) = pulled(&f.site, asked).await;
+        assert!(pieces.concat().len() <= 1000);
+        let failure = failure.unwrap().to_string();
+        assert!(failure.contains("more than 1000 bytes"), "{failure}");
+        // Exactly at its most, it is whole.
+        let asked =
+            ConfiguredRead(Request::get("/big").in_pieces(1 << 20, Duration::from_secs(10)));
+        let (_, pieces, failure) = pulled(&f.site, asked).await;
+        assert!(failure.is_none(), "{failure:?}");
+        assert_eq!(pieces.concat().len(), 1 << 20);
+    }
+
+    #[tokio::test]
+    async fn a_reply_in_pieces_that_goes_silent_ends_with_a_failure() {
+        // A site that sends its head and a little of a body it says is longer, and then nothing.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nsome")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let site = http_handle_for(
+            &ca().pem,
+            &DECLARED,
+            vec![("SITE_URL", format!("http://127.0.0.1:{port}"))],
+            None,
+        )
+        .await;
+        let asked = OpenRead(Request::get("/slow").in_pieces(1 << 20, Duration::from_millis(500)));
+        let started = std::time::Instant::now();
+        let (head, pieces, failure) = pulled(&site, asked).await;
+        assert_eq!(head.status, StatusCode::OK);
+        assert_eq!(pieces.concat(), b"some");
+        let failure = failure.unwrap().to_string();
+        assert!(
+            failure.contains("no piece of the reply came in"),
+            "{failure}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn a_request_with_one_reply_pulled_as_pieces_gives_that_one_and_ends() {
+        let f = fixture(SecretKind::Token).await;
+        Mock::given(method("GET"))
+            .and(path("/small"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("whole"))
+            .mount(&f.server)
+            .await;
+        let mut pieces = f
+            .site
+            .handle
+            .pieces(ConfiguredRead(Request::get("/small")))
+            .unwrap();
+        assert_eq!(pieces.next().await.unwrap().unwrap().body, b"whole");
+        assert!(pieces.next().await.is_none());
     }
 }

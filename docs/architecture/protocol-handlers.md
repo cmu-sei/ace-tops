@@ -294,6 +294,20 @@ and has never had `GRAPH_PASSWORD`. The trait is checked against it; moving it i
   and it is what delivers configuration. Proposed, to review;
 - what runs before or outside the builder: `polar-init`'s handshake, the admin tools, `polar-sign`; and `polar-git-server`, which serves git.
 
+- **An HTTP reply can come in pieces** (2026-11-13; the maintainer, "I feel like making the handler stream is important
+  now", for Polar's registry, whose faults bring Nix archives larger than a reply may be held whole). Decided while
+  building, to review: a request asks for it (`http::Request::in_pieces(most, stall)`), and the reply goes through the
+  stream the framework already has: its head first (status and headers, no body), then each piece of the body as it
+  arrives, each through `Exchange::reply` and so paced by the domain as a watch is. Its bounds are its own: `most` bytes
+  in all and `stall` without a piece, either past it a failure, with `PIECES_DEADLINE` (an hour) in place of the
+  whole-request timeout; `MAX_BODY` is not its bound, since nothing holds it whole. It is one request, judged and
+  recorded once, however many pieces. A domain that reads a reply where it works rather than in an actor's mailbox pulls
+  it with `ProtocolHandle::pieces`, beside `ask` and `stream`: a channel of one, so the next piece is read off the wire
+  only once the last was taken; it closes after the last piece, a failure is the last it says, and dropping it ends the
+  request. No type changed: `Reply` is what it was, so nothing that builds one (the resolver's tests) moves. Seen: a 320
+  MiB archive faulted in through the real handler with the process at a peak of 25 to 36 MiB over two runs
+  (`polar-registry/registry/tests/upstream.rs`, run in release).
+
 ### Callbacks and the actor rule (proposed, for review)
 
 A callback runs domain code inside infrastructure, and actors exchange messages and never touch each other's state (`AGENTS.md`). So:

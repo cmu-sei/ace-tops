@@ -30,7 +30,6 @@
 
 use crate::faults::Upstream;
 use crate::upstream::{NIX_UPSTREAM, UPSTREAM_VAR};
-use polar_agent_builder::protocol::http::MAX_BODY;
 use polar_env::{Access, Config, Defaulted, Described, Env, Required, Section};
 use polar_registry_nix::signature::PublicKey;
 
@@ -78,9 +77,9 @@ pub static FAULTS: Defaulted<bool> = Defaulted::flag(
 
 pub static MAX_ARCHIVE: Defaulted<u64> = Defaulted::number(
     "POLAR_REGISTRY_NIX_MAX_ARCHIVE",
-    "the largest archive a fault fetches, in bytes, as it is sent: at least 1, and no more than the builder's HTTP \
-     handler reads of a reply",
-    "268435456",
+    "the largest archive a fault fetches, in bytes, as it is sent: at least 1. It comes in pieces, written to the volume \
+     as they arrive, so this bounds the volume a fault may fill, not the memory",
+    "4294967296",
 )
 .dynamic();
 
@@ -125,13 +124,8 @@ fn relations(env: &dyn Env) -> Vec<String> {
             UPSTREAM.name()
         ));
     }
-    if let Ok(bytes) = MAX_ARCHIVE.read(env)
-        && (bytes == 0 || bytes > MAX_BODY as u64)
-    {
-        problems.push(format!(
-            "{} must be at least 1 and at most {MAX_BODY}, what the HTTP handler reads of a reply",
-            MAX_ARCHIVE.name()
-        ));
+    if MAX_ARCHIVE.read(env) == Ok(0) {
+        problems.push(format!("{} must be at least 1", MAX_ARCHIVE.name()));
     }
     problems
 }
@@ -255,7 +249,7 @@ mod tests {
             tuning(&config).unwrap(),
             Tuning {
                 faults: false,
-                max_archive: MAX_BODY as u64
+                max_archive: 4 << 30
             }
         );
     }
@@ -268,7 +262,6 @@ mod tests {
             ("POLAR_REGISTRY_NIX_UPSTREAM", "https://cache.nixos.org/nix"),
             ("POLAR_REGISTRY_NIX_UPSTREAM", "https://"),
             ("POLAR_REGISTRY_NIX_MAX_ARCHIVE", "0"),
-            ("POLAR_REGISTRY_NIX_MAX_ARCHIVE", "268435457"),
         ] {
             assert!(
                 !config(&[(name, value)]).check().is_empty(),
@@ -278,6 +271,7 @@ mod tests {
         for (name, value) in [
             ("POLAR_REGISTRY_NIX_UPSTREAM", "http://127.0.0.1:8080"),
             ("POLAR_REGISTRY_NIX_MAX_ARCHIVE", "1"),
+            ("POLAR_REGISTRY_NIX_MAX_ARCHIVE", "68719476736"),
         ] {
             assert!(
                 config(&[(name, value)]).check().is_empty(),

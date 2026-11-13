@@ -223,3 +223,117 @@ async fn a_reply_is_taken_to_its_limit_and_no_further() {
         Ok(None)
     );
 }
+
+/// Bytes no compressor shrinks, the same each time: xorshift, read as a stream so that nothing holds them whole.
+struct Noise {
+    left: u64,
+    state: u64,
+}
+
+impl Noise {
+    fn new(size: u64) -> Self {
+        Self {
+            left: size,
+            state: 0x9E37_79B9_7F4A_7C15,
+        }
+    }
+}
+
+impl std::io::Read for Noise {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = (buf.len() as u64).min(self.left) as usize & !7;
+        let n = if n == 0 {
+            (buf.len() as u64).min(self.left) as usize
+        } else {
+            n
+        };
+        for chunk in buf[..n].chunks_mut(8) {
+            self.state ^= self.state << 13;
+            self.state ^= self.state >> 7;
+            self.state ^= self.state << 17;
+            chunk.copy_from_slice(&self.state.to_le_bytes()[..chunk.len()]);
+        }
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+/// The most this process has held in memory at once, from the kernel's own count.
+fn peak_resident() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let line = status.lines().find(|l| l.starts_with("VmHWM:")).unwrap();
+    line.split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        * 1024
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "release only, as it moves 320 MiB: cargo test --release -p polar-registry --test upstream -- --ignored"]
+async fn an_archive_larger_than_a_whole_reply_may_be_faults_in_piece_by_piece() {
+    const SIZE: u64 = 320 << 20;
+    let mut hashing = polar_registry_nix::hash::Hashing::new(std::io::sink());
+    std::io::copy(&mut Noise::new(SIZE), &mut hashing).unwrap();
+    let (nar_hash, nar_size, _) = hashing.finish();
+    let path: polar_registry_nix::store_path::StorePath =
+        "/nix/store/0c1pnia4x2gwdsfpi6d98mjrqh6ma91n-polar-registry-large"
+            .parse()
+            .unwrap();
+    let info = polar_registry::nix_cache::PathInfo {
+        store_path: path.clone(),
+        nar_hash,
+        nar_size,
+        references: Default::default(),
+        deriver: None,
+        ca: None,
+        sigs: Vec::new(),
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let up = dir.path().join("upstream");
+    let blobs = Arc::new(Blobs::open(&up, 1).unwrap());
+    let cache = Arc::new(NixCache::open(&up, blobs, upstream_key(), PRIORITY).unwrap());
+    let entered = cache.enter(info, Archive::Plain(Noise::new(SIZE))).unwrap();
+    assert!(
+        entered.file_size.unwrap() > polar_agent_builder::protocol::http::MAX_BODY as u64,
+        "the archive must be larger than a whole reply may be"
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(serve(listener, no_faults(&up, cache)));
+
+    let site = http_handle(
+        &git_ca().pem,
+        OPERATIONS,
+        vec![(UPSTREAM_VAR, upstream.clone())],
+        None,
+    )
+    .await;
+    let faults = registry(
+        &dir.path().join("polar"),
+        &upstream,
+        Handled(site.handle.clone()),
+    );
+    faults.set_max_archive(1 << 30);
+    let before = peak_resident();
+    let held = faults
+        .lookup(path.hash_part(), None)
+        .await
+        .unwrap()
+        .expect("faulted in");
+    assert_eq!((held.nar_hash, held.nar_size), (nar_hash, SIZE));
+    let peak = peak_resident();
+    eprintln!(
+        "peak resident: {} MiB before the fault, {} MiB after",
+        before >> 20,
+        peak >> 20
+    );
+    assert!(
+        peak < 160 << 20,
+        "the fault held {} MiB at once",
+        peak >> 20
+    );
+    assert_eq!(site.records.lock().unwrap().len(), 2);
+}

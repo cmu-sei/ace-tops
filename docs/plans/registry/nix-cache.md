@@ -146,7 +146,9 @@ Little of it, and none in a cluster:
   then missing is recorded too. It has faulted a path in from `cache.nixos.org` exactly as Nix holds it.
 - An archive compressed with xz, as older paths on `cache.nixos.org` are, is refused for now, with that reason.
 - The registry is a Polar agent. It goes out by one declared operation, to the upstream cache its signed settings
-  name, and the builder's protocol handler judges and records each request; nothing else in it reaches out. Whether
+  name, and the builder's protocol handler judges and records each request; nothing else in it reaches out. An archive
+  comes in pieces, each written to the volume as it arrives, so a fault holds a few pieces in memory, never the
+  archive, and an archive may be as large as its signed bound allows. Whether
   faults are taken, and the largest archive one fetches, are signed run-time settings; faults are off unless a setting
   turns them on.
 - No cache runs in Polar's clusters, the host's store is not yet an upstream, and a build pod cannot run Nix.
@@ -156,9 +158,6 @@ Little of it, and none in a cluster:
 - **The five steps above.**
 - **Nix in a build pod,** a feature of its own: the pod's own Nix needs a store it can write, inside a pod that may not
   write its image or use its node, and it needs to trust Polar's key alone.
-- **Archives held whole in memory while they are fetched,** up to a bound, until the builder's way out can stream.
-  The builder's handler reads at most 256 MiB of a reply and gives a request two minutes, so a larger archive, or a
-  slower one, cannot be faulted in yet.
 - **Clients remember a cache's answers.** Nix keeps a cache's narinfos for a month, by its address. A registry that is
   reset at the same address meets clients asking for archives it no longer holds; a build pod starts with an empty
   Nix and is unaffected.

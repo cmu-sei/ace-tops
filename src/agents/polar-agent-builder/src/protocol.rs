@@ -720,6 +720,21 @@ pub struct Streaming {
     _end: tokio::sync::oneshot::Sender<()>,
 }
 
+/// A reply taken in pieces, as the domain pulls it ([`ProtocolHandle::pieces`]). Each piece is read off the wire only once
+/// the last has been taken, so it goes at the pace of the domain; it ends when this is dropped.
+#[derive(Debug)]
+pub struct Pieces<T> {
+    taken: tokio::sync::mpsc::Receiver<Result<T, Failure>>,
+    _end: tokio::sync::oneshot::Sender<()>,
+}
+
+impl<T> Pieces<T> {
+    /// The next piece; `None` once the reply has ended whole. A failure is the last a reply says.
+    pub async fn next(&mut self) -> Option<Result<T, Failure>> {
+        self.taken.recv().await
+    }
+}
+
 /// The handler has ended, so the agent is ending.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("the protocol handler has ended")]
@@ -787,6 +802,29 @@ impl ProtocolHandle {
             })))
             .map_err(|_| ended())?;
         told.await.map_err(|_| ended())?
+    }
+
+    /// Makes `operation`'s request and gives what comes of it to be pulled, one reply at a time, for a domain that reads a
+    /// reply in pieces where it works rather than in an actor's mailbox (`http::Request::in_pieces`): the next is not read
+    /// until the last was taken, and dropping the [`Pieces`] ends it. A request with one reply gives that one, then ends.
+    pub fn pieces<O: Operation>(&self, operation: O) -> Result<Pieces<O::Output>, HandlerEnded> {
+        let (give, taken) = tokio::sync::mpsc::channel(1);
+        let send: Deliver<O::Output> = Arc::new(move |result| {
+            let give = give.clone();
+            Box::pin(async move { give.send(result).await.is_ok() })
+        });
+        let (end, ended) = tokio::sync::oneshot::channel::<()>();
+        self.actor
+            .cast(ProtocolMessage::Run(Box::new(move |shared| {
+                Box::pin(async move {
+                    tokio::select! {
+                        () = run(shared, operation, send) => {}
+                        _ = ended => {}
+                    }
+                })
+            })))
+            .map_err(|_| HandlerEnded)?;
+        Ok(Pieces { taken, _end: end })
     }
 
     /// Announces what became of each version of the `credentials` section, once the CryptoActor has it: the moment a

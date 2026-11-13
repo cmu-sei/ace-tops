@@ -192,6 +192,25 @@ maintainer's "write up the proposal and then just start implementing this" (2026
   supervisor handle → Ok, its Registered and TransportError arms, handle_supervisor_evt → Ok. To be exercised in NC5
   (the git server's and orchestrator's supervisors are in the same position).
   NOT RUN: the supervisor (needs Cassini and a cluster: NC5).
+- NC3c STREAMING (2026-11-13, maintainer: "I feel like making the handler stream is important now"). DONE:
+  polar-agent-builder: `http::Request::in_pieces(most, stall)`; perform → `in_pieces()`: head Reply (status, headers,
+  empty body) then each `response.chunk()` as a Reply (empty headers), each via Exchange::reply (paced), stall per
+  chunk via tokio::time::timeout, total > most → Failure, per-request `.timeout(PIECES_DEADLINE)` (1 h) overriding the
+  client's 120 s; MAX_BODY not its bound. `ProtocolHandle::pieces(op) -> Pieces<T>` (mpsc(1) + end oneshot, `next()`),
+  closes after the last piece; failure is the last item (run() always sends Err before returning on failure). No
+  struct changed (resolver tests build Reply literally; acp may too) — additive. Docs: protocol-handlers.md, "An HTTP
+  reply can come in pieces". Builder tests (http.rs): 3 MiB → head + >1 pieces, one record allowed; most=1000 →
+  failure, exact most whole; raw TCP site sends head + "some" then silence → failure "no piece... came in" fast;
+  plain request via pieces → one then None. Registry: Fetch::archive (default = get as one piece), Pieces =
+  mpsc::Receiver<Result<Vec<u8>,String>>, PieceReader (blocking_recv) feeds enter() in spawn_blocking; Handled::archive
+  = pieces(Get(in_pieces(limit, STALL 60 s))), head status 200/404/other, forwarding task into mpsc(PIECES_WAITING 4).
+  POLAR_REGISTRY_NIX_MAX_ARCHIVE default now 4 GiB (mine, for review; bounds the volume a fault fills, not memory),
+  only ≥ 1 checked. EVIDENCE (release, #[ignore] test): 320 MiB incompressible archive (> MAX_BODY) faulted through the
+  real handler, process peak RSS (VmHWM) 20 MiB before → 25 MiB after (36 MiB on a rerun after the forwarder change); 2 handler records.
+  Checks: builder suite 689 pass; workspace `cargo check --all-targets` clean; builder mutants (in place: its tests
+  read ../../../../infra/seeds, outside the copy cargo-mutants makes) on in_pieces/pieces/next: 18, 12 caught, 6
+  unviable; registry mutants on faults/upstream/settings: 2 missed → PieceReader small-buffer test added, the
+  forwarder's redundant `|| failed` removed (a failure is always last); recheck 22: 18 caught, 2 timeouts, 2 unviable.
 - NC4 host mode.
 - NC5 catalog workload (ns polar-registry), PVC, key, settings, builds' policy port, u7c.
 
