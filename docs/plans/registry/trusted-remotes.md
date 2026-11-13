@@ -21,7 +21,7 @@
   DM26-0670
 -->
 
-# Trusted remotes: where Polar's registry fetches from, signed, and sealed where the remote itself is a secret
+# Trusted remotes: where Polar's registry fetches from, signed, and sealed where the remote itself is a secret; and credentials used without being seen
 
 > **This document has a twin.** [`trusted-remotes.claude.md`](trusted-remotes.claude.md) says the same thing, written for
 > Claude. This one is written for people. They are two sides of one plan, and they are changed together.
@@ -36,6 +36,11 @@ Polar's registry fetches what it does not hold from remotes it trusts: a binary 
 developer's own machine, and in time caches that are not public. Which remotes it trusts, and how far, is a decision
 someone signs, and it changes while the registry runs.
 
+A credential is the whole of what lets its holder in: a username and its password together, a token, a key. Polar
+promises that an agent's own code never has one, and holds to it. But its protocol handler is handed each credential in
+plain text for the length of a request, and a username is written in plain text in the signed configuration, beside
+the hosts its credential may go to. Credentials should be used without being seen, by anything but what holds them.
+
 Some remotes are secrets in themselves. A non-public cache's address, its name, even that it exists, can say more than
 should be written anywhere a reader of Polar's configuration can see. For such a remote, everything about it (its
 address, the key its contents are signed with, how its server is recognized, and the credential that opens it) has to
@@ -46,11 +51,27 @@ stay sealed, so that the registry's own code reaches it by a name that says noth
 - **Building the Nix cache's faults.** Its one upstream is fixed when the registry is deployed, as two settings, its
   address and its key; there is no list of remotes, and changing one means deploying again.
 - **Planning the host's own Nix store as an upstream,** which makes a second remote, with a key of its own.
+- **Asking where a credential is seen.** The handler gets a request's credential in plain text, to attach it; the design
+  records moving it out as a seam left for later. And a username is not sealed with its password.
 - **Asking what a non-public cache needs.** Its access credential is a secret, which Polar already seals. But in Polar's
   `credentials` section, only the secret is sealed: the hosts a credential may go to are written in plain text beside
   it. For a remote that is itself a secret, that is not enough.
 
 ## 3. The plan
+
+**First, credentials are used without being seen.**
+
+- **Sealed means the whole credential:** a username is sealed with its password, and nothing in the signed
+  configuration says who a credential logs in as. Sections written the old way are moved over, once, by re-sealing.
+- **A key is used by signing, never handed out.** An ssh key, a client certificate and the registry's own Nix signing
+  key are held by the custody daemon, a process apart from the agent, which signs what proving possession needs; no
+  part of the agent ever has the key.
+- **A shared secret is sent by what holds it.** A token, or a username and password, has to travel inside the request
+  itself, so whatever writes those bytes holds the secret. That is the agent's crypto actor, which already keeps the
+  opened secrets: the protocol handler gives it the judged request and the credential's name, it sends the request
+  with the credential and gives back only the response. The handler and the agent's code never have the secret.
+
+**Then the remotes.**
 
 **A signed `remotes` section for each agent that fetches,** delivered as every signed section is and replaced whole by
 each version, so a remote left out is withdrawn. Each remote has a name, which is all anyone sees of a sealed one, and
@@ -89,16 +110,25 @@ place of its two deployment settings, and change while it runs.
 
 In steps, each tested before the next:
 
-1. **The section,** plain remotes only, judged when it arrives; the registry reads its upstreams from it; each path held
+1. **Whole credentials sealed,** and existing sections moved over.
+2. **Shared secrets sent by the crypto actor,** for HTTP and for git over HTTPS; the handler no longer receives them.
+3. **Keys signed by custody:** ssh keys, client certificates, and the registry's Nix signing key.
+4. **The section,** plain remotes only, judged when it arrives; the registry reads its upstreams from it; each path held
    records the remote it came from, and a remote dropped puts its paths under quarantine.
-2. **The handler's way to a remote by name,** for plain remotes: judged, recorded, each remote's own trust and
+5. **The handler's way to a remote by name,** for plain remotes: judged, recorded, each remote's own trust and
    credential applied.
-3. **Sealed remotes:** the sealed entry, made by `polar-sign` as a credential's secret is; opened in escrow; the handler
+6. **Sealed remotes:** the sealed entry, made by `polar-sign` as a credential's secret is; opened in escrow; the handler
    resolving a sealed name without the address leaving escrow; records naming it by name.
-4. **The host's Nix store as a remote,** the first one after `cache.nixos.org`.
+7. **The host's Nix store as a remote,** the first one after `cache.nixos.org`.
 
 ## 4. Alternatives considered
 
+- **The custody daemon sending requests that carry a shared secret,** so the secret never exists in the agent's
+  process. Stronger, since it holds against code running inside the agent; set aside for now, because custody, small
+  and the most sensitive process Polar has, would then open connections and read servers' replies. It is the next step
+  of the work against a foothold in an agent.
+- **The handler attaching the credential, as now.** Polar's own code never misuses it, but it is in plain text in the
+  handler for each request, beyond what holds it.
 - **Each upstream as a deployment setting,** as now. Simple for one, and it puts every change through a deployment,
   with no place for a secret remote.
 - **The address in plain text, only the credential sealed,** as credentials work now. Enough for most remotes, which is
@@ -127,13 +157,19 @@ In steps, each tested before the next:
 
 ## 6. How much of the need is met now
 
+- An agent's own code has no way to a credential, closed by what it can reach rather than by convention.
+- The handler receives a credential in plain text for each request it makes with one, and a username is in plain text
+  in the signed configuration.
 - The Nix cache has one upstream, its address and key fixed when the registry is deployed.
 - Credentials are sealed, with the hosts each may go to in plain text.
 - No remote can be sealed, and the handler has no way to a host named by a signed list.
 
 ## 7. What is left before this is met
 
-- **The four steps above.**
+- **The seven steps above.**
+- **How git over HTTPS goes through the crypto actor:** the git library makes its own requests, so the crypto actor
+  must stand in its path, for instance as a local proxy that adds the credential, rather than being handed a request.
+  Settled in its step.
 - **What a remote may be used for:** which kinds of content (Nix paths, crates, images), and for which builds. A first
   form is part of step 1; how far it goes is to be settled with the registry's other faces.
 - **The registry's own signing key in custody,** signing with Ed25519, before the registry is deployed to any cluster;

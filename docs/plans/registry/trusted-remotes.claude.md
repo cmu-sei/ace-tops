@@ -97,6 +97,30 @@ same provenance field in the CAS's records.
 Decided by standing rules (for review): order = list order; a fault in flight when its remote is dropped finishes,
 then its path is quarantined with the rest; quarantine records name the remotes version that dropped it.
 
+## CREDENTIALS FIRST (maintainer, 2026-11-13)
+Asked "So the configuration actor delivers updates to both the protocol actor and the cryptoactor, right?" → no: config
+→ ProtocolActor (SectionChanged, protocol.rs:917) → apply_section reads version (937) → credentials::apply →
+SectionKeeper::register_secret on CryptoActor (970; ciphertext + binding, nothing kept). Then: "the protocol actor
+should not directly hold a username and password, right?"; then "A credential is a combo of a username and a password,
+not just a password. The idea was supposed to be that credentials were handled with kids gloves and the protocol actor
+itself provides or perhaps the domain side, registers a callback that assists with usage of that credential but they
+never actually see it." Found: domain has no route (protocol-handlers.md "No way to the credential", table, built
+2026-11-04), BUT handler gets plaintext per request via UseCredential + CredentialPass (perform attaches; doc: "Moving
+them there would mean the daemon also makes the request, which is the seam below and not this work"), AND username is
+clear in the signed `credentials` section (binding). Maintainer: "sigh..." — the earlier work recorded the seam and the
+public username without asking. Then: "I want to be clear on what you mean by 'The holder uses it'" → explained keys
+(signing oracle: custody, like the git server's TLS server slot / ssh-agent) vs shared secrets (must go on the wire:
+holder makes the request; CryptoActor in-process vs custody out-of-process). Maintainer: "Ok, let's go with that."
+DECIDED: keys → custody signs; shared secrets → CryptoActor sends the credentialed request (handler gives judged
+request + credential name, gets response only); custody-sent requests recorded as the stronger option for the
+foothold work. Whole credential sealed (username inside); migration for existing sections (post-3.0.0 rule).
+Steps: C1 seal whole + migrate (polar-sign re-seal; breaking: main first, tell polar-cc — acp's sections/agents use
+credentials: git observer, jira, gitlab, orchestrator); C2 CryptoActor sends HTTP; git over HTTPS needs a path
+(candidate: in-process proxy the CryptoActor owns that injects Authorization and makes the upstream TLS connection,
+libgit2 pointed at it; or gitoxide-based fetch with a request hook); C3 custody signing: ssh (libgit2 ssh-agent
+credential via a custody agent socket? git2-rs Cred::ssh_key_from_agent; or gitoxide ssh), client certs (custody client
+slot, today only a server slot), Ed25519 for Nix (prereq for NC5). Then R1.. as before.
+
 ## OPEN
 - `uses` vocabulary (nix|crates|oci|git; per-build scoping) — settle with other faces.
 - Certificate-as-credential kind (mTLS client auth to a remote) — new SecretKind.
