@@ -29,7 +29,7 @@
 >
 > A **feature-level plan**, part of [the crypto actor](../crypto-actor.md). It describes Polar's `main` as it is.
 
-**Status: a proposal, not decided, nothing built.**
+**Status: a proposal, read against the code and found ready; for the maintainer to clear. Nothing built.**
 
 ## 1. The need
 
@@ -80,16 +80,25 @@ is opened only here. No new key is made.
 
 **Custody records each open.** How often each credential is opened, and when, becomes something Polar can see. A
 credential opened when no request went out, or far more often than the agent's traffic explains, is evidence of
-someone in the agent asking for it.
+someone in the agent asking for it. First as a log line: one for each open, naming the key, the caller and a digest of
+the sealed credential (of the ciphertext, never of anything opened). The crypto actor logs each credentialed request
+with the same digest, so the two can be paired. Next, a count for each sealed credential in custody's answer about its
+own state. Custody gains no topic for it: an event is published only once something consumes it.
 
 **The secrets stay out of a dump, and the dump stays whole.** An agent's crash is evidence: the attestation agent
 reports it, and diagnosing it (something the case missed, tampering, a hardware fault, or unexplained) may need the core
 file. So an agent stays dumpable, and only the pages that hold an opened credential or key are kept out:
 
 - they are marked never to be dumped, so a core file is complete for diagnosis and never holds a secret;
-- they are locked, so they are never written to swap. Only those pages are locked, not the whole agent;
+- they are locked, so they are never written to swap. Only those pages are locked, not the whole agent, and they are
+  few: a handful of pages, not megabytes, since how much a process may lock differs from cluster to cluster;
 - where the kernel offers memory that is never dumped and is hidden even from the kernel's own mappings, they come from
-  there instead.
+  there instead, still marked never to be dumped;
+- where a cluster lets the process lock less than it needs, the pages are used unlocked, still kept out of dumps, and
+  the agent says so once, as custody does when it cannot lock.
+
+Since an agent stays dumpable, a core file written during a request would hold the credential that request had open,
+if it were anywhere else. That is why these pages matter: they are the one place an opened credential or key lives.
 
 **Tests first.** Properties: at rest, nothing the crypto actor holds is a credential in the clear; every request that
 carries one gets it opened once and wiped after; the opens custody records match the requests sent. A measurement of the
@@ -134,15 +143,19 @@ cost per request in a release build.
 - Custody's memory is locked and it is undumpable. The crypto actor's secrets are neither locked nor kept out of a
   dump.
 - Every agent's seccomp lock already refuses `ptrace` and reading or writing another process's memory.
-- What still needs checking before the hardening is built: how much memory a pod may lock (the default limit in its
-  container), and whether the nodes' kernels offer memory hidden from the kernel's own mappings.
+- Measured on the development cluster, in a pod shaped as Polar's: the pod may lock without limit, and both locking
+  pages and locking the whole process succeed; the nodes' kernels offer memory hidden from the kernel's own mappings,
+  and it works under the runtime's default system-call filter. The first is that cluster's inherited setting, not a
+  promise: another cluster may allow the kernel's default of a few megabytes or less, which is why the pages are few and
+  work unlocked if they must.
 
 ## 7. What is left before this is met
 
 - **Credentials kept sealed,** opened per request and wiped, with registration opening each once to check it.
 - **The user name sealed with its credential.**
 - **Registry tokens sealed when they arrive.**
-- **Custody's record of each open,** and a way to read it.
+- **Custody's record of each open:** a log line per open, paired with the crypto actor's line per request by the sealed
+  credential's digest; then a count in custody's answer about its state.
 - **The opened credentials' and keys' pages locked and kept out of dumps,** the agent itself left dumpable.
 - **The measurement** of a credentialed request's cost, in a release build.
 - **The ssh key** given to the git transport: whether it can be opened per connection in the same way.

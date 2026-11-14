@@ -26,8 +26,8 @@
 PAIR: `ephemeral-credentials.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../crypto-actor.claude.md` (step E). AS-OF main 246317eb (R1), 2026-11-14. Re-verify `file:line`.
-STATUS: PROPOSAL, nothing built. Written by polar-cc at the maintainer's request; for polar-f1's read against main, then
-the maintainer clears it.
+STATUS: PROPOSAL, nothing built. Written by polar-cc at the maintainer's request; REVIEWED READY by polar-f1
+(2026-11-14, after the maintainer's dumpable correction and the u7c measurements below); for the maintainer to clear.
 
 ## ORIGIN (the maintainer, 2026-11-14)
 - Idea: "crypto actor could access stored credentials ephemerally, encrypting them with a key from the custodian when
@@ -68,6 +68,12 @@ the maintainer clears it.
 - ptrace: the builder's seccomp lock REFUSED list (polar-agent-builder/src/lock.rs:59-70) refuses ptrace,
   process_vm_readv, process_vm_writev (and memfd_create) whatever their arguments, in every agent. memfd_secret
   (SYS 447) is not on the list. Agents share no PID namespace with their pod's other containers (key-custody.md).
+- MEASURED on u7c (polar-f1, 2026-11-14): a probe pod shaped as Polar's (uid 1000, caps dropped,
+  readOnlyRootFilesystem, RuntimeDefault seccomp; containerd 2.4.1; kernels 7.3.0):
+  - RLIMIT_MEMLOCK unlimited; mlock and custody's mlockall succeed. containerd's inherited limit there, NOT a promise:
+    other clusters (Brent's dev pod, a customer's) may have the kernel's 8 MiB default or less.
+  - memfd_secret (SYS 447) works under the runtime's default seccomp: fd returned; ftruncate, mmap, write succeed. Its
+    pages count against RLIMIT_MEMLOCK.
 - ssh keys: CredentialSource::git gives an ssh key to the git transport (lib.rs :270, :437-438, :1476): the one stated
   exception to "sent, never given" (step 2c).
 
@@ -80,17 +86,20 @@ E2 User name sealed with it: keep the sealed user name (SealedPart) as received;
    String. The binding at rest carries no user name.
 E3 Registry tokens: on arrival, seal to the pod's own escrow public key (the CryptoActor already seals to a
    recipient's escrow key for escrow: reuse that path, recipient = self); keep only the sealed form; open per send.
-E4 Custody records each Unwrap: who (SO_PEERCRED), when, which wrapped (digest, never content). Open count/rate per
-   credential as a detection signal (attestation threat model: detection first). How it's read: custody log line first;
-   a counter the health actor exposes later, decided when built.
+E4 Custody records each Unwrap (SETTLED with polar-f1): one INFO line per open with the slot, the caller's uid
+   (SO_PEERCRED) and a digest of the sealed blob (the ciphertext's, never anything of the plaintext). The CryptoActor
+   logs each credentialed request with the same digest, so the two pair. Next: a per-blob count in custody's status
+   answer. A published event only once something consumes it: custody stays a keyring, no topic now.
 E5 Secrets out of the dump, dump whole (NOT PR_SET_DUMPABLE 0 for agents):
-   - A small arena for opened data keys and plaintexts (and the CryptoActor's held keys: the record key, the checkpoint
-     key, the witness key): its pages mlock'd + MADV_DONTDUMP; from memfd_secret(2) where present (never dumped,
-     removed from the kernel's direct map; Linux >= 5.14, some distros need `secretmem.enable`; not refused by the
-     seccomp lock). The agent stays dumpable, so a crash's core file is whole for diagnosis and holds no secret.
+   - A SMALL arena (pages, not MiB) for opened data keys and plaintexts (and the CryptoActor's held keys: the record
+     key, the checkpoint key, the witness key): from memfd_secret(2) where present (removed from the kernel's direct
+     map; not refused by the builder's seccomp lock), else anonymous pages; mlock'd; MADV_DONTDUMP on them EITHER way
+     (harmless, and independent of how a kernel treats secretmem in dumps).
+   - If mlock (or memfd_secret's charge to RLIMIT_MEMLOCK) fails: use the pages unlocked, still MADV_DONTDUMP, and WARN
+     once, as custody's harden() does (SETTLED with polar-f1).
+   - The agent stays dumpable: a core file written mid-request holds whatever credential the request had open, UNLESS
+     it is in these pages. That is why they are the only place an opened credential or key lives.
    - NOT whole-process mlockall (an agent is large; MCL_FUTURE past RLIMIT_MEMLOCK makes allocations fail).
-   - CHECK: RLIMIT_MEMLOCK in u7c pods (containerd default), nix-usernetes node kernels for memfd_secret, and whether the
-     render sets a memlock limit for agents (from what the machine has).
 E6 Tests first: properties (no plaintext credential in the registry at rest; each credentialed send opens exactly once
    and wipes; recorded opens == sends); a release-build bench of a credentialed request with and without E1.
 
@@ -106,6 +115,7 @@ RLIMIT_MEMLOCK).
 - ssh key to the git transport (2c exception): whether gix can take a per-connection opened key; follows trusted-remotes
   C3 (custody signs for ssh), which removes it.
 
-## OPEN (for the maintainer only if two answers stay open; else decide by precedent)
-- E4's surface: log line vs counter (decide when built).
-- E5 memory: the arena's size and the memlock limit the render sets (from what the machine has; a hint never widens).
+## OPEN
+- E5: the arena's exact size (pages), set when built from what it must hold.
+- WITHDRAWN (2026-11-14): "does anything read an agent's core file": the maintainer's answer is that crash diagnosis may
+  need it, so the dump stays whole by design.
