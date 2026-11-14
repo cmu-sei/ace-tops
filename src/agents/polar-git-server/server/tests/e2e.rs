@@ -1101,9 +1101,47 @@ async fn a_reader_of_the_evidence_repository_reads_the_evidence_log_as_tiles() {
     .unwrap();
 
     let eve = client(&h.ca, h.dir.path(), "eve");
+    // Readers require the witness's co-signature (record-store.md, "Bite 5"): until it is given, no checkpoint.
+    let (status, body) = h.get(&eve, "/logs/evidence/checkpoint").await;
+    assert_eq!(status, 503);
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        "the log is not yet witnessed\n"
+    );
+    let witness = polar_log::checkpoint::Cosigner::new(
+        "attestation-agent/witness",
+        p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap(),
+    )
+    .unwrap();
+    let witness_key = NoteVerifier::parse(&witness.verifier_key()).unwrap();
+    let submission = ractor::call!(h.logs, |reply| LogsMessage::Submission {
+        log: "evidence".to_string(),
+        old: 0,
+        reply,
+    })
+    .unwrap()
+    .unwrap();
+    let (submitted, _) = open(&submission.checkpoint, std::slice::from_ref(&pinned)).unwrap();
+    let line = witness.cosign_line(&submitted, 1_731_300_000);
+    let kept = ractor::call!(h.logs, |reply| LogsMessage::KeepCosigned {
+        log: "evidence".to_string(),
+        checkpoint: submission.checkpoint.clone(),
+        line,
+        witness: witness_key.clone(),
+        reply,
+    })
+    .unwrap();
+    assert_eq!(kept, Ok(300));
     let (status, note) = h.get(&eve, "/logs/evidence/checkpoint").await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&note));
-    let (text, _) = open(&String::from_utf8(note).unwrap(), &[pinned]).unwrap();
+    let (text, by) = open(&String::from_utf8(note).unwrap(), &[pinned, witness_key]).unwrap();
+    assert_eq!(
+        by,
+        [
+            submission_signer(&submission.checkpoint),
+            "attestation-agent/witness".to_string()
+        ]
+    );
     let checkpoint = Checkpoint::parse(&text).unwrap();
     assert_eq!(checkpoint.size, 300);
     let mut fetched = Vec::new();
@@ -1181,4 +1219,15 @@ async fn a_repository_named_logs_is_still_served() {
             .await;
         assert!(ok, "{url}: {text}");
     }
+}
+
+/// The name the store's checkpoint key signs under, as its note's signature line names it.
+fn submission_signer(note: &str) -> String {
+    let line = &note[note.rfind("\n\n").unwrap() + 2..];
+    line.trim_start_matches('\u{2014}')
+        .trim()
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_string()
 }

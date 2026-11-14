@@ -74,6 +74,15 @@ pub static REPOS: Required<String> = Required::text(
      {\"admins\": [..], \"repos\": [{\"name\", \"readers\", \"writers\", \"seed\"}]}",
 );
 
+/// The witness the store's logs are brought to (src/witness.rs).
+pub static WITNESS_KEY: Optional<String> = Optional::text(
+    "POLAR_GIT_SERVER_WITNESS_KEY",
+    "the witness's verifier key (`<identity>/witness+<id>+<key>`), as the attestation agent logs it at its start; the \
+     store submits each log's checkpoints to it and serves only what it co-signed (docs/architecture/record-store.md, \
+     \"Bite 5\"). Signed at run time; unset, nothing is witnessed and readers are served no checkpoint",
+)
+.dynamic();
+
 const KEY_DOC: &str = "path to the private key (PEM) for the server's certificate; this or POLAR_CUSTODY_SOCKET, the custody daemon holding it, not both";
 
 pub static CA_CERT: Required<String> = Required::path(
@@ -106,6 +115,7 @@ static VARIABLES: &[&dyn Described] = &[
     &ADMINS,
     &CA_CERT,
     &DEPLOYMENT_CA,
+    &WITNESS_KEY,
 ];
 
 pub static SECTION: Section = Section {
@@ -187,6 +197,19 @@ mod tests {
         ("TLS_SERVER_KEY", "/c/key.pem"),
         ("POLAR_GIT_SERVER_CA_CERT", "/c/ca.pem"),
     ];
+
+    /// The witness's key is pinned in its signed settings (infra/seed.nu, `witness_pins`): with the sections it
+    /// registers, an update naming it is taken.
+    #[test]
+    fn the_witness_s_key_is_a_settings_update_it_takes() {
+        let witness = "attestation-agent.polar.serviceaccount.cluster.local/witness+00000000+AAAA";
+        let mut config = config(&ALL);
+        assert_eq!(
+            config.apply_overrides(&[(WITNESS_KEY.desc().name, witness)]),
+            Ok(vec![WITNESS_KEY.desc().name])
+        );
+        assert_eq!(WITNESS_KEY.read(&config).unwrap().as_deref(), Some(witness));
+    }
 
     #[test]
     fn the_section_is_sound_and_its_defaults_parse() {

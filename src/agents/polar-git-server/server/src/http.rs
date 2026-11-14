@@ -169,7 +169,8 @@ fn log_unavailable(why: impl std::fmt::Display) -> Response {
     refuse(StatusCode::SERVICE_UNAVAILABLE, "the log could not be read")
 }
 
-/// The log's checkpoint, signed; never cached past now, since the log grows.
+/// The log's latest checkpoint the witness co-signed (record-store.md, "Bite 5": readers require it); never cached past
+/// now, since the log grows. Before the witness first co-signed one, there is none to serve.
 async fn log_checkpoint(
     State(state): State<ServerState>,
     axum::Extension(who): axum::Extension<PeerIdentity>,
@@ -179,16 +180,19 @@ async fn log_checkpoint(
         Ok(logs) => logs,
         Err(r) => return *r,
     };
-    match ractor::call!(logs, |reply| crate::logs::LogsMessage::Checkpoint {
+    match ractor::call!(logs, |reply| crate::logs::LogsMessage::Cosigned {
         log: log.clone(),
         reply
     }) {
-        Ok(Ok(note)) => log_response(
+        Ok(Some(note)) => log_response(
             "text/plain; charset=utf-8",
             "no-cache, max-age=0",
             note.into_bytes(),
         ),
-        Ok(Err(why)) => log_unavailable(why),
+        Ok(None) => refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the log is not yet witnessed",
+        ),
         Err(e) => log_unavailable(e),
     }
 }

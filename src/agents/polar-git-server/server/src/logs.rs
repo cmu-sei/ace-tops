@@ -31,7 +31,7 @@
 //! that is not one is never appended; a checkpoint is the log's origin, size and root, signed. Admission beyond the
 //! envelope (signatures, policy) is the caller's, per log (bite 3).
 
-use polar_log::checkpoint::Checkpoint;
+use polar_log::checkpoint::{Checkpoint, NoteVerifier, open, open_signed};
 use polar_log::entry::{Entry, Leaf};
 use polar_log::file::{FileLog, LogError, Replayed};
 use polar_log::merkle::{Hash, consistency_proof, inclusion_proof, root};
@@ -59,6 +59,12 @@ pub enum LogsError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("the co-signed checkpoint is not kept: {0}")]
+    NotCosigned(String),
+    #[error(
+        "{path}: the co-signed checkpoint kept is not one of its log's ({why}): the log is not served"
+    )]
+    Kept { path: PathBuf, why: String },
     #[error("{path}: the frame of leaf {seq} is malformed ({why}): the log is not served")]
     Malformed {
         path: PathBuf,
@@ -76,11 +82,33 @@ pub fn is_log_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// A checkpoint signed for the witness, with what the witness needs to check it against what it co-signed last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Submission {
+    /// The size the store believes the witness holds.
+    pub old: u64,
+    /// The consistency proof from `old` to `size`; empty from 0, and between equal sizes.
+    pub proof: Vec<Hash>,
+    /// The signed checkpoint, a note.
+    pub checkpoint: String,
+    pub size: u64,
+}
+
+/// The file a log's latest co-signed checkpoint is kept in, beside it.
+fn kept_path(root: &Path, name: &str) -> PathBuf {
+    root.join(format!("{name}.cosigned"))
+}
+
 /// The store's logs.
 pub struct Logs {
     root: PathBuf,
     origin: String,
+    /// The store's checkpoint verifier key, as the crypto actor gives it: what a kept co-signed checkpoint must open
+    /// under, beside the witness's. A public key: the store holds no private one.
+    own: NoteVerifier,
     logs: BTreeMap<String, FileLog>,
+    /// For each log witnessed, its latest co-signed checkpoint and its size: what readers are served.
+    cosigned: BTreeMap<String, (String, u64)>,
     /// For each log, the digest of each entry it holds and where: so the same entry is appended once.
     seen: BTreeMap<String, std::collections::HashMap<Hash, u64>>,
 }
@@ -99,13 +127,19 @@ fn digest(entry: &[u8]) -> Hash {
 }
 
 impl Logs {
-    /// The logs under `root`, made if it is new, each log's checkpoints naming `origin/<log>`. Every log there is
-    /// replayed now: one that is damaged, or holds a malformed leaf, refuses the store's start, said with where.
-    pub fn open(root: &Path, origin: &str) -> Result<Self, LogsError> {
+    /// The logs under `root`, made if it is new, each log's checkpoints naming `origin/<log>` and signed under the
+    /// verifier key `own`. Every log there is replayed now: one that is damaged, or holds a malformed leaf, refuses the
+    /// store's start, said with where; so does a kept co-signed checkpoint that is not the store's of the log beside it.
+    pub fn open(root: &Path, origin: &str, own: &str) -> Result<Self, LogsError> {
         let io = |source| LogsError::Io {
             path: root.to_path_buf(),
             source,
         };
+        let own = NoteVerifier::parse(own).map_err(|e| {
+            LogsError::Range(format!(
+                "the store's checkpoint key {own} does not read: {e}"
+            ))
+        })?;
         std::fs::create_dir_all(root).map_err(io)?;
         let mut logs = BTreeMap::new();
         let mut seen = BTreeMap::new();
@@ -147,12 +181,126 @@ impl Logs {
             seen.insert(name.to_string(), digests);
             logs.insert(name.to_string(), opened.log);
         }
-        Ok(Self {
+        let mut held = Self {
             root: root.to_path_buf(),
             origin: origin.to_string(),
+            own,
             logs,
+            cosigned: BTreeMap::new(),
             seen,
-        })
+        };
+        // A kept checkpoint was checked under the witness's key when it was kept; here it must still be the store's
+        // checkpoint of the log beside it, or the two are not one log's, and neither is served.
+        let names: Vec<String> = held.logs.keys().cloned().collect();
+        for name in names {
+            let path = kept_path(root, &name);
+            let note = match std::fs::read_to_string(&path) {
+                Ok(note) => note,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(LogsError::Io { path, source }),
+            };
+            let size = held
+                .of_this_log(&name, &note)
+                .map_err(|why| LogsError::Kept { path, why })?;
+            held.cosigned.insert(name, (note, size));
+        }
+        Ok(held)
+    }
+
+    /// The size of the checkpoint `note` states, when the store's key signed it and it is this log's, as it stands or
+    /// as it stood.
+    fn of_this_log(&self, name: &str, note: &str) -> Result<u64, String> {
+        let (text, _) = open(note, std::slice::from_ref(&self.own)).map_err(|e| e.to_string())?;
+        let checkpoint = Checkpoint::parse(&text).map_err(|e| e.to_string())?;
+        if checkpoint.origin != format!("{}/{name}", self.origin) {
+            return Err(format!("its origin is {}", checkpoint.origin));
+        }
+        let root = self
+            .root_at(name, checkpoint.size)
+            .map_err(|e| e.to_string())?;
+        if root != checkpoint.root {
+            return Err(format!(
+                "its root of {} leaves is not the log's",
+                checkpoint.size
+            ));
+        }
+        Ok(checkpoint.size)
+    }
+
+    /// The log's checkpoint now, unsigned, for the witness, which co-signed `old` last: its text, the proof from there,
+    /// and its size. The crypto actor signs the text ([`LogsMessage::Submission`]).
+    pub fn submission(&self, name: &str, old: u64) -> Result<(String, Vec<Hash>, u64), LogsError> {
+        let text = self.checkpoint_text(name)?;
+        let size = self.logs.get(name).map_or(0, FileLog::size);
+        let proof = if old == 0 || old == size {
+            Vec::new()
+        } else {
+            self.consistency(name, old, size)?
+        };
+        Ok((text, proof, size))
+    }
+
+    /// Keeps the witness's co-signature `line` over the store's signed `checkpoint` of the log `name`, when the store's
+    /// key and the pinned `witness` key both verify it, it is this log's, and it is no older than the one kept: written
+    /// to a new file, synced and renamed over, before it is served. Its size.
+    pub fn keep_cosigned(
+        &mut self,
+        name: &str,
+        checkpoint: &str,
+        line: &str,
+        witness: &NoteVerifier,
+    ) -> Result<u64, LogsError> {
+        let refused = |why: String| LogsError::NotCosigned(why);
+        if !witness.is_cosigner() {
+            return Err(refused(format!(
+                "{} is not a witness's key",
+                witness.name()
+            )));
+        }
+        let note = format!("{checkpoint}{line}");
+        let opened = open_signed(&note, &[self.own.clone(), witness.clone()])
+            .map_err(|e| refused(e.to_string()))?;
+        // Only the two keys are trusted, each at most once: both signed when two did.
+        if opened.by.len() < 2 {
+            return Err(refused(
+                "it is not signed by both the store's key and the witness's".to_string(),
+            ));
+        }
+        let size = self.of_this_log(name, &note).map_err(refused)?;
+        if let Some((_, kept)) = self.cosigned.get(name)
+            && size < *kept
+        {
+            return Err(refused(format!(
+                "it is of {size} leaves, older than the {kept} kept"
+            )));
+        }
+        let path = kept_path(&self.root, name);
+        let fresh = self.root.join(format!("{name}.cosigned.new"));
+        let io = |path: &Path| {
+            let path = path.to_path_buf();
+            move |source| LogsError::Io { path, source }
+        };
+        {
+            let mut file = std::fs::File::create(&fresh).map_err(io(&fresh))?;
+            std::io::Write::write_all(&mut file, note.as_bytes()).map_err(io(&fresh))?;
+            file.sync_all().map_err(io(&fresh))?;
+        }
+        std::fs::rename(&fresh, &path).map_err(io(&path))?;
+        std::fs::File::open(&self.root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(io(&self.root))?;
+        self.cosigned.insert(name.to_string(), (note, size));
+        Ok(size)
+    }
+
+    /// The log's latest co-signed checkpoint, what readers are served; none before the witness first co-signed it.
+    pub fn cosigned(&self, name: &str) -> Option<&str> {
+        self.cosigned.get(name).map(|(note, _)| note.as_str())
+    }
+
+    /// The size of the log's latest co-signed checkpoint.
+    pub fn cosigned_size(&self, name: &str) -> Option<u64> {
+        self.cosigned.get(name).map(|(_, size)| *size)
     }
 
     /// The names of the logs held.
@@ -400,10 +548,26 @@ pub enum LogsMessage {
         submitter: String,
         reply: ractor::RpcReplyPort<Result<Appended, String>>,
     },
-    /// The log's checkpoint, signed.
-    Checkpoint {
+    /// The log's latest co-signed checkpoint, what readers are served; none before the witness first co-signed it.
+    Cosigned {
         log: String,
-        reply: ractor::RpcReplyPort<Result<String, String>>,
+        reply: ractor::RpcReplyPort<Option<String>>,
+    },
+    /// Each log's name, its size, and the size of its latest co-signed checkpoint: what the witness has yet to see.
+    Witnessing(ractor::RpcReplyPort<Vec<(String, u64, Option<u64>)>>),
+    /// The log's checkpoint now, signed, for a witness that co-signed `old` last, with the proof from there.
+    Submission {
+        log: String,
+        old: u64,
+        reply: ractor::RpcReplyPort<Result<Submission, String>>,
+    },
+    /// Keeps the witness's co-signature over a checkpoint the store submitted, when the pinned key verifies it: its size.
+    KeepCosigned {
+        log: String,
+        checkpoint: String,
+        line: String,
+        witness: NoteVerifier,
+        reply: ractor::RpcReplyPort<Result<u64, String>>,
     },
     /// The leaf at a sequence.
     Leaf {
@@ -462,8 +626,8 @@ impl ractor::Actor for LogsActor {
         _: ractor::ActorRef<Self::Msg>,
         args: LogsArgs,
     ) -> Result<Self::State, ractor::ActorProcessingErr> {
-        let logs = Logs::open(&args.root, &args.origin)?;
         let key = args.signer.verifier_key().await?;
+        let logs = Logs::open(&args.root, &args.origin, &key)?;
         tracing::info!(root = %args.root.display(), %key, "the store's logs are open");
         Ok(LogsState {
             logs,
@@ -501,16 +665,46 @@ impl ractor::Actor for LogsActor {
                         .map_err(|e| e.to_string()),
                 );
             }
-            LogsMessage::Checkpoint { log, reply } => {
-                let signed = match logs.checkpoint_text(&log) {
-                    Ok(text) => state
-                        .signer
-                        .sign_line(text.clone())
-                        .await
-                        .map(|line| format!("{text}\n{line}")),
+            LogsMessage::Cosigned { log, reply } => {
+                let _ = reply.send(logs.cosigned(&log).map(str::to_string));
+            }
+            LogsMessage::Witnessing(reply) => {
+                let sizes = logs
+                    .logs
+                    .iter()
+                    .map(|(name, log)| (name.clone(), log.size(), logs.cosigned_size(name)))
+                    .collect();
+                let _ = reply.send(sizes);
+            }
+            LogsMessage::Submission { log, old, reply } => {
+                let submitted = match logs.submission(&log, old) {
+                    Ok((text, proof, size)) => {
+                        state
+                            .signer
+                            .sign_line(text.clone())
+                            .await
+                            .map(|line| Submission {
+                                old,
+                                proof,
+                                checkpoint: format!("{text}\n{line}"),
+                                size,
+                            })
+                    }
                     Err(e) => Err(e.to_string()),
                 };
-                let _ = reply.send(signed);
+                let _ = reply.send(submitted);
+            }
+            LogsMessage::KeepCosigned {
+                log,
+                checkpoint,
+                line,
+                witness,
+                reply,
+            } => {
+                let _ = reply.send(
+                    logs.keep_cosigned(&log, &checkpoint, &line, &witness)
+                        .map_err(|e| e.to_string()),
+                );
             }
             LogsMessage::Tile { log, path, reply } => {
                 let _ = reply.send(logs.tile(&log, &path).map_err(|e| e.to_string()));
@@ -576,6 +770,18 @@ mod tests {
     fn signed(logs: &Logs, name: &str) -> String {
         signer().sign(&logs.checkpoint_text(name).unwrap())
     }
+
+    /// The log's submission for a witness that co-signed `old` last, signed as the logs actor has the crypto actor sign
+    /// it.
+    fn submit(logs: &Logs, name: &str, old: u64) -> Submission {
+        let (text, proof, size) = logs.submission(name, old).unwrap();
+        Submission {
+            old,
+            proof,
+            checkpoint: signer().sign(&text),
+            size,
+        }
+    }
     use polar_log::merkle::{leaf_hash, verify_consistency, verify_inclusion};
 
     const ORIGIN: &str = "polar-git-server.polar.serviceaccount.cluster.local";
@@ -597,7 +803,7 @@ mod tests {
     #[test]
     fn the_log_read_from_its_tiles_is_the_log_its_checkpoint_states() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         let pinned = NoteVerifier::parse(&signer().verifier_key()).unwrap();
         let (text, _) = open(&signed(&logs, "evidence"), std::slice::from_ref(&pinned)).unwrap();
         let empty = Checkpoint::parse(&text).unwrap();
@@ -660,9 +866,9 @@ mod tests {
     #[test]
     fn a_log_file_never_written_to_is_an_empty_log() {
         let dir = tempfile::tempdir().unwrap();
-        drop(Logs::open(dir.path(), ORIGIN).unwrap());
+        drop(Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap());
         std::fs::write(dir.path().join("evidence.log"), b"").unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(logs.size("evidence").unwrap(), 0);
         assert_eq!(logs.append("evidence", &entry(0), AGENT, 7).unwrap(), 0);
         assert_eq!(logs.leaf("evidence", 0).unwrap().unwrap().admitted_at_ms, 7);
@@ -671,7 +877,7 @@ mod tests {
     #[test]
     fn a_leaf_longer_than_a_bundle_carries_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         let mut long = Entry::decode(&entry(0)).unwrap();
         long.event = vec![0; MAX_ENTRY];
         assert!(matches!(
@@ -718,7 +924,7 @@ mod tests {
     #[test]
     fn a_log_only_grows_and_each_leaf_says_when_it_was_admitted_and_from_whom() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(logs.append("evidence", &entry(0), AGENT, 1_000).unwrap(), 0);
         assert_eq!(logs.append("evidence", &entry(1), AGENT, 2_000).unwrap(), 1);
         let leaf = logs.leaf("evidence", 1).unwrap().unwrap();
@@ -726,7 +932,7 @@ mod tests {
         assert_eq!(leaf.admitted_at_ms, 2_000);
         assert_eq!(leaf.submitter, AGENT);
         drop(logs);
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(logs.size("evidence").unwrap(), 2);
         // A clock stepped back does not take the log's time back with it.
         assert_eq!(logs.append("evidence", &entry(2), AGENT, 1_500).unwrap(), 2);
@@ -745,7 +951,7 @@ mod tests {
     #[test]
     fn what_is_not_an_entry_or_a_log_s_name_is_refused_and_nothing_appended() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert!(matches!(
             logs.append("evidence", b"not an entry", AGENT, 1),
             Err(LogsError::NotAnEntry(_))
@@ -772,11 +978,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("checkpoint-key.pem"), "a key").unwrap();
         std::fs::write(dir.path().join("checkpoint-key.chain.pem"), "a chain").unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(logs.names().count(), 0);
         logs.append("evidence", &entry(1), AGENT, 1).unwrap();
         drop(logs);
-        let logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(logs.names().collect::<Vec<_>>(), ["evidence"]);
         assert_eq!(
             std::fs::read_to_string(dir.path().join("checkpoint-key.pem")).unwrap(),
@@ -792,7 +998,7 @@ mod tests {
     #[test]
     fn a_checkpoint_opens_with_the_pinned_key_and_proves_inclusion_and_growth() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         for n in 0..3 {
             logs.append("evidence", &entry(n), AGENT, 1_000).unwrap();
         }
@@ -834,7 +1040,7 @@ mod tests {
     #[test]
     fn the_same_entry_is_appended_once() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(
             logs.append_once("evidence", &entry(0), AGENT, 1).unwrap(),
             (0, true)
@@ -854,7 +1060,7 @@ mod tests {
             (0, true)
         );
         drop(logs);
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         assert_eq!(
             logs.append_once("evidence", &entry(1), AGENT, 5).unwrap(),
             (1, false)
@@ -884,7 +1090,7 @@ mod tests {
     #[test]
     fn what_the_log_misses_is_appended_once_known_by_what_it_says() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         logs.append("evidence", &entry(0), AGENT, 1).unwrap();
         let missing: BTreeMap<String, Vec<u8>> = [
             (
@@ -915,7 +1121,7 @@ mod tests {
     #[test]
     fn what_the_log_cannot_take_is_left_out_and_said_and_the_rest_appended() {
         let dir = tempfile::tempdir().unwrap();
-        let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
         let mut long = Entry::decode(&entry(2)).unwrap();
         long.event = vec![7; MAX_ENTRY];
         let missing: BTreeMap<String, Vec<u8>> = [
@@ -948,7 +1154,7 @@ mod tests {
             old_writer in proptest::bool::ANY,
         ) {
             let dir = tempfile::tempdir().unwrap();
-            let mut logs = Logs::open(dir.path(), ORIGIN).unwrap();
+            let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
             for (t, n) in held.iter().enumerate() {
                 let bytes = if old_writer { written(*n, "3.0.0 x86_64-unknown-linux-musl") } else { entry(*n) };
                 logs.append("evidence", &bytes, AGENT, t as u64).unwrap();
@@ -987,8 +1193,208 @@ mod tests {
         .unwrap();
         drop(log);
         assert!(matches!(
-            Logs::open(dir.path(), ORIGIN),
+            Logs::open(dir.path(), ORIGIN, &signer().verifier_key()),
             Err(LogsError::Malformed { seq: 0, .. })
+        ));
+    }
+
+    const WITNESS: &str = "attestation-agent.polar.serviceaccount.cluster.local/witness";
+
+    fn witness() -> (polar_log::checkpoint::Cosigner, NoteVerifier) {
+        let cosigner = polar_log::checkpoint::Cosigner::new(
+            WITNESS,
+            p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap(),
+        )
+        .unwrap();
+        let pinned = NoteVerifier::parse(&cosigner.verifier_key()).unwrap();
+        (cosigner, pinned)
+    }
+
+    /// The witness's answer to a submission: its co-signature line over the submitted checkpoint.
+    fn cosign(cosigner: &polar_log::checkpoint::Cosigner, submitted: &str, time: u64) -> String {
+        let (text, _) = submitted.split_at(submitted.rfind("\n\n").unwrap() + 1);
+        cosigner.cosign_line(text, time)
+    }
+
+    /// docs/architecture/record-store.md, "Bite 5": readers require the witness's co-signature, so a log serves no
+    /// checkpoint until one is kept, and then the latest co-signed one, which opens under both keys.
+    #[test]
+    fn a_log_serves_its_latest_co_signed_checkpoint_and_none_before_it_is_witnessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        let (cosigner, pinned) = witness();
+        let store = NoteVerifier::parse(&signer().verifier_key()).unwrap();
+        logs.append("evidence", &entry(0), AGENT, 1).unwrap();
+        assert_eq!(logs.cosigned("evidence"), None);
+
+        let first = submit(&logs, "evidence", 0);
+        assert_eq!((first.old, first.size), (0, 1));
+        assert!(first.proof.is_empty(), "from 0 the proof is empty");
+        let line = cosign(&cosigner, &first.checkpoint, 100);
+        assert_eq!(
+            logs.keep_cosigned("evidence", &first.checkpoint, &line, &pinned)
+                .unwrap(),
+            1
+        );
+        let served = logs.cosigned("evidence").unwrap().to_string();
+        assert_eq!(served, format!("{}{line}", first.checkpoint));
+        let opened =
+            polar_log::checkpoint::open_signed(&served, &[store.clone(), pinned.clone()]).unwrap();
+        assert_eq!(opened.by.len(), 2);
+
+        // The log grows; until the next co-signature the last co-signed checkpoint is what is served.
+        logs.append("evidence", &entry(1), AGENT, 2).unwrap();
+        logs.append("evidence", &entry(2), AGENT, 3).unwrap();
+        assert_eq!(logs.cosigned("evidence").unwrap(), served);
+        let next = submit(&logs, "evidence", 1);
+        assert_eq!((next.old, next.size), (1, 3));
+        let (old_root, new_root) = (
+            logs.root_at("evidence", 1).unwrap(),
+            logs.root_at("evidence", 3).unwrap(),
+        );
+        assert!(verify_consistency(1, 3, &old_root, &new_root, &next.proof));
+        let line = cosign(&cosigner, &next.checkpoint, 101);
+        assert_eq!(
+            logs.keep_cosigned("evidence", &next.checkpoint, &line, &pinned)
+                .unwrap(),
+            3
+        );
+        assert_eq!(logs.cosigned_size("evidence"), Some(3));
+        // The same size co-signed again, later, is kept: the latest co-signature is served.
+        let again = submit(&logs, "evidence", 3);
+        assert!(
+            again.proof.is_empty(),
+            "between equal sizes the proof is empty"
+        );
+        let later = cosign(&cosigner, &again.checkpoint, 102);
+        assert_eq!(
+            logs.keep_cosigned("evidence", &again.checkpoint, &later, &pinned)
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            logs.cosigned("evidence").unwrap(),
+            format!("{}{later}", again.checkpoint)
+        );
+    }
+
+    /// The store keeps only a co-signature that verifies under the pinned witness key over what it submitted, and never
+    /// one for a checkpoint older than the one it keeps.
+    #[test]
+    fn a_co_signature_that_does_not_verify_or_goes_back_is_never_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        let (cosigner, pinned) = witness();
+        logs.append("evidence", &entry(0), AGENT, 1).unwrap();
+        let one = submit(&logs, "evidence", 0);
+        // Another witness key's line, and the witness's over another checkpoint.
+        let (stranger, _) = (
+            polar_log::checkpoint::Cosigner::new(
+                WITNESS,
+                p256::ecdsa::SigningKey::from_slice(&[8; 32]).unwrap(),
+            )
+            .unwrap(),
+            (),
+        );
+        let theirs = cosign(&stranger, &one.checkpoint, 100);
+        assert!(matches!(
+            logs.keep_cosigned("evidence", &one.checkpoint, &theirs, &pinned),
+            Err(LogsError::NotCosigned(_))
+        ));
+        logs.append("evidence", &entry(1), AGENT, 2).unwrap();
+        let two = submit(&logs, "evidence", 0);
+        let over_two = cosign(&cosigner, &two.checkpoint, 100);
+        assert!(matches!(
+            logs.keep_cosigned("evidence", &one.checkpoint, &over_two, &pinned),
+            Err(LogsError::NotCosigned(_))
+        ));
+        // A checkpoint the store's key did not sign.
+        let forged = one.checkpoint.replacen("\n1\n", "\n2\n", 1);
+        let over_forged = cosign(&cosigner, &forged, 100);
+        assert!(matches!(
+            logs.keep_cosigned("evidence", &forged, &over_forged, &pinned),
+            Err(LogsError::NotCosigned(_))
+        ));
+        // A key that is not a witness's, though its line verifies over the note's text.
+        let plain = NoteSigner::new(
+            WITNESS,
+            p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap(),
+        )
+        .unwrap();
+        let plain_key = NoteVerifier::parse(&plain.verifier_key()).unwrap();
+        let (text, _) = two
+            .checkpoint
+            .split_at(two.checkpoint.rfind("\n\n").unwrap() + 1);
+        assert!(matches!(
+            logs.keep_cosigned(
+                "evidence",
+                &two.checkpoint,
+                &plain.sign_line(text),
+                &plain_key
+            ),
+            Err(LogsError::NotCosigned(_))
+        ));
+        // A log the store does not hold.
+        assert!(matches!(
+            logs.keep_cosigned("schedules", &two.checkpoint, &over_two, &pinned),
+            Err(LogsError::NotCosigned(_))
+        ));
+        assert_eq!(logs.cosigned("evidence"), None);
+        // Size 2 kept, then size 1 offered: refused, and 2 is still served.
+        logs.keep_cosigned("evidence", &two.checkpoint, &over_two, &pinned)
+            .unwrap();
+        let back = cosign(&cosigner, &one.checkpoint, 101);
+        assert!(matches!(
+            logs.keep_cosigned("evidence", &one.checkpoint, &back, &pinned),
+            Err(LogsError::NotCosigned(_))
+        ));
+        assert_eq!(logs.cosigned_size("evidence"), Some(2));
+    }
+
+    /// The kept checkpoint is the store's to serve after a restart; a kept file that is not a checkpoint of the log
+    /// beside it is damage, and the store does not start.
+    #[test]
+    fn the_kept_checkpoint_outlives_a_restart_and_one_not_of_its_log_refuses_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cosigner, pinned) = witness();
+        let served = {
+            let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+            logs.append("evidence", &entry(0), AGENT, 1).unwrap();
+            let one = submit(&logs, "evidence", 0);
+            let line = cosign(&cosigner, &one.checkpoint, 100);
+            logs.keep_cosigned("evidence", &one.checkpoint, &line, &pinned)
+                .unwrap();
+            logs.cosigned("evidence").unwrap().to_string()
+        };
+        let logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        assert_eq!(logs.cosigned("evidence"), Some(served.as_str()));
+        assert_eq!(logs.cosigned_size("evidence"), Some(1));
+        drop(logs);
+
+        // Another root for size 1, under the store's own key: not this log's checkpoint.
+        let kept = dir.path().join("evidence.cosigned");
+        let other = {
+            let other_dir = tempfile::tempdir().unwrap();
+            let mut other = Logs::open(other_dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+            other.append("evidence", &entry(7), AGENT, 1).unwrap();
+            submit(&other, "evidence", 0).checkpoint
+        };
+        std::fs::write(&kept, &other).unwrap();
+        assert!(matches!(
+            Logs::open(dir.path(), ORIGIN, &signer().verifier_key()),
+            Err(LogsError::Kept { .. })
+        ));
+        std::fs::write(&kept, "not a note").unwrap();
+        assert!(matches!(
+            Logs::open(dir.path(), ORIGIN, &signer().verifier_key()),
+            Err(LogsError::Kept { .. })
+        ));
+        // A kept file that cannot be read is not taken for one never written.
+        std::fs::remove_file(&kept).unwrap();
+        std::fs::create_dir(&kept).unwrap();
+        assert!(matches!(
+            Logs::open(dir.path(), ORIGIN, &signer().verifier_key()),
+            Err(LogsError::Io { .. })
         ));
     }
 }

@@ -89,6 +89,11 @@ pub enum GitServerSupervisorMessage {
         payload: Vec<u8>,
         published_by: Option<String>,
     },
+    /// The witness's answer to a checkpoint the store submitted.
+    WitnessAnswer {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
 }
 
 pub struct GitServerSupervisor;
@@ -107,6 +112,8 @@ pub struct GitServerSupervisorState {
     intake: Option<ractor::ActorRef<IntakeMessage>>,
     /// Answers reads; only with Cassini.
     reader: Option<ractor::ActorRef<ReadMessage>>,
+    /// Brings each log's checkpoints to the witness; only with Cassini.
+    witness: Option<ractor::ActorRef<crate::witness::WitnessMessage>>,
 }
 
 #[async_trait]
@@ -125,67 +132,83 @@ impl Actor for GitServerSupervisor {
         let settings = GitServerSettings::read(configured.config())?;
         // In a cluster the deployment provides Cassini and the server is a client of the broker;
         // on its own it has the health check and the shutdown handshake and no broker.
-        let (healthcheck, infrastructure, tcp_client, tls, checkpoints, policy) = if configured
-            .cassini_enabled()
-        {
-            let deliver_to = myself.clone();
-            let records = Subscription::new(
-                polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
-                move |incoming| {
-                    if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::EvidenceRecord {
-                        payload: incoming.payload,
-                        published_by: incoming.published_by,
-                    }) {
-                        warn!("failed to hand an evidence record to the supervisor: {e}");
-                    }
-                },
-            );
-            let deliver_to = myself.clone();
-            let reads = Subscription::new(
-                polar_git_server_common::READ_REQUESTS_TOPIC,
-                move |incoming| {
-                    if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::Read {
-                        payload: incoming.payload,
-                        published_by: incoming.published_by,
-                    }) {
-                        warn!("failed to hand a read to the supervisor: {e}");
-                    }
-                },
-            );
-            let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
-                .with_lifecycle_handler(|event| {
-                    Some(GitServerSupervisorMessage::ClientEvent { event })
-                })
-                .with_subscription(records)
-                .with_subscription(reads)
-                .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
-                .into_configured(configured)
-                .build()
-                .await?;
-            (
-                resources.healthcheck,
-                resources.infrastructure,
-                Some(resources.tcp_client),
-                resources.tls,
-                resources.checkpoints,
-                Some(resources.authority.policy()),
-            )
-        } else {
-            info!("{SERVICE_NAME} is running on its own: pushes are logged, not published");
-            let resources = ServiceBuilder::new(myself.clone(), SERVICE_NAME)
-                .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
-                .into_configured(configured)
-                .build()
-                .await?;
-            (
-                resources.healthcheck,
-                resources.infrastructure,
-                None,
-                resources.tls,
-                resources.checkpoints,
-                None,
-            )
-        };
+        let (healthcheck, infrastructure, tcp_client, tls, checkpoints, policy, configuration) =
+            if configured.cassini_enabled() {
+                let deliver_to = myself.clone();
+                let records = Subscription::new(
+                    polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+                    move |incoming| {
+                        if let Err(e) =
+                            deliver_to.cast(GitServerSupervisorMessage::EvidenceRecord {
+                                payload: incoming.payload,
+                                published_by: incoming.published_by,
+                            })
+                        {
+                            warn!("failed to hand an evidence record to the supervisor: {e}");
+                        }
+                    },
+                );
+                let deliver_to = myself.clone();
+                let reads = Subscription::new(
+                    polar_git_server_common::READ_REQUESTS_TOPIC,
+                    move |incoming| {
+                        if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::Read {
+                            payload: incoming.payload,
+                            published_by: incoming.published_by,
+                        }) {
+                            warn!("failed to hand a read to the supervisor: {e}");
+                        }
+                    },
+                );
+                let deliver_to = myself.clone();
+                let witnessed = Subscription::new(
+                    attestation_common::witness::STORE_WITNESS_REPLIES_TOPIC,
+                    move |incoming| {
+                        if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::WitnessAnswer {
+                            payload: incoming.payload,
+                            published_by: incoming.published_by,
+                        }) {
+                            warn!("failed to hand the witness's answer to the supervisor: {e}");
+                        }
+                    },
+                );
+                let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
+                    .with_lifecycle_handler(|event| {
+                        Some(GitServerSupervisorMessage::ClientEvent { event })
+                    })
+                    .with_subscription(records)
+                    .with_subscription(reads)
+                    .with_subscription(witnessed)
+                    .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
+                    .into_configured(configured)
+                    .build()
+                    .await?;
+                (
+                    resources.healthcheck,
+                    resources.infrastructure,
+                    Some(resources.tcp_client),
+                    resources.tls,
+                    resources.checkpoints,
+                    Some(resources.authority.policy()),
+                    Some(resources.configuration),
+                )
+            } else {
+                info!("{SERVICE_NAME} is running on its own: pushes are logged, not published");
+                let resources = ServiceBuilder::new(myself.clone(), SERVICE_NAME)
+                    .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
+                    .into_configured(configured)
+                    .build()
+                    .await?;
+                (
+                    resources.healthcheck,
+                    resources.infrastructure,
+                    None,
+                    resources.tls,
+                    resources.checkpoints,
+                    None,
+                    None,
+                )
+            };
 
         let file = ServerFile::parse(&settings.repos)?.with_admins(settings.admins.clone());
 
@@ -289,6 +312,25 @@ impl Actor for GitServerSupervisor {
             }
             None => None,
         };
+        let witness = match (&tcp_client, configuration) {
+            (Some(client), Some(configuration)) => {
+                let (witness, _) = Actor::spawn_linked(
+                    Some(format!("{SERVICE_NAME}.witness")),
+                    crate::witness::WitnessActor,
+                    crate::witness::WitnessArgs {
+                        origin,
+                        logs: logs.clone(),
+                        client: client.as_actor_ref().clone(),
+                        configuration,
+                    },
+                    myself.get_cell(),
+                )
+                .await
+                .map_err(|e| format!("the witness client did not start: {e}"))?;
+                Some(witness)
+            }
+            _ => None,
+        };
         let app = router(ServerState {
             store,
             authorizer: acl.clone(),
@@ -331,6 +373,7 @@ impl Actor for GitServerSupervisor {
             listener: Some(Listener { stop, active, task }),
             intake,
             reader,
+            witness,
         })
     }
 
@@ -400,6 +443,20 @@ impl Actor for GitServerSupervisor {
                     }
                 }
                 None => warn!("a read arrived with no reader to answer it"),
+            },
+            GitServerSupervisorMessage::WitnessAnswer {
+                payload,
+                published_by,
+            } => match &state.witness {
+                Some(witness) => {
+                    if let Err(e) = witness.cast(crate::witness::WitnessMessage::Answer {
+                        payload,
+                        published_by,
+                    }) {
+                        warn!("failed to hand the witness's answer to the witness client: {e}");
+                    }
+                }
+                None => warn!("a witness's answer arrived with no witness client to take it"),
             },
         }
         Ok(())

@@ -57,6 +57,15 @@ impl PolarAgent for GitServer {
             "what became of the attestation agent's record, on its own topic",
         )
         .because(&[Cause::Topic(polar_git_server_common::EVIDENCE_REQUESTS_TOPIC)]),
+        TopicDecl::publish(
+            attestation_common::witness::WITNESS_REQUESTS_TOPIC,
+            "each log's checkpoint, signed, for the attestation agent's witness to co-sign (record-store.md, \"Bite 5\")",
+        )
+        .because(&[Cause::Timer(crate::witness::CADENCE_NAME)]),
+        TopicDecl::subscribe(
+            attestation_common::witness::STORE_WITNESS_REPLIES_TOPIC,
+            "the witness's co-signature of a checkpoint the store submitted, or why not, on the store's own topic",
+        ),
         TopicDecl::subscribe(
             polar_git_server_common::READ_REQUESTS_TOPIC,
             "a request for what a repository's main holds, from an agent that may read it",

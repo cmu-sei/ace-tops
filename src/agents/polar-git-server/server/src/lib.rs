@@ -41,3 +41,4 @@ pub mod signed;
 pub mod store;
 pub mod supervisor;
 pub mod tls;
+pub mod witness;

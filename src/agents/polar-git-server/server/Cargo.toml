@@ -49,6 +49,8 @@ polar-agent-builder.workspace = true
 polar-crypto.workspace = true
 polar-env.workspace = true
 polar-git-server-common.workspace = true
+# The witness's wire form, which the store submits its checkpoints in (src/witness.rs; record-store.md, "Bite 5").
+attestation-common.workspace = true
 # The store's signed logs (docs/architecture/record-store.md, bite 2); their checkpoints are signed by the crypto actor.
 polar-log.workspace = true
 # The policy actor the intake asks who may record what (src/evidence.rs).
