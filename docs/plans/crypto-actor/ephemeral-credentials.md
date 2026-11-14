@@ -89,7 +89,8 @@ own state. Custody gains no topic for it: an event is published only once someth
 reports it, and diagnosing it (something the case missed, tampering, a hardware fault, or unexplained) may need the core
 file. So an agent stays dumpable, and only the pages that hold an opened credential or key are kept out:
 
-- they are marked never to be dumped, so a core file is complete for diagnosis and never holds a secret;
+- they are marked never to be dumped, so a core file is complete for diagnosis and holds no credential at rest and none
+  from the crypto actor's own copy;
 - they are locked, so they are never written to swap. Only those pages are locked, not the whole agent, and they are
   few: a handful of pages, not megabytes, since how much a process may lock differs from cluster to cluster;
 - where the kernel offers memory that is never dumped and is hidden even from the kernel's own mappings, they come from
@@ -97,8 +98,10 @@ file. So an agent stays dumpable, and only the pages that hold an opened credent
 - where a cluster lets the process lock less than it needs, the pages are used unlocked, still kept out of dumps, and
   the agent says so once, as custody does when it cannot lock.
 
-Since an agent stays dumpable, a core file written during a request would hold the credential that request had open,
-if it were anywhere else. That is why these pages matter: they are the one place an opened credential or key lives.
+Since an agent stays dumpable, these pages are where the crypto actor keeps an opened credential or key, so its own copy
+is never in a core file. They do not cover every copy: while a request is in flight, the credential also passes through
+the HTTP client's header values and its TLS record buffers, and a core file written at that moment can hold it from
+there (what is left, below).
 
 **Tests first.** Properties: at rest, nothing the crypto actor holds is a credential in the clear; every request that
 carries one gets it opened once and wiped after; the opens custody records match the requests sent. A measurement of the

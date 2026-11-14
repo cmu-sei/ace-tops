@@ -26,7 +26,7 @@
 PAIR: `ephemeral-credentials.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../crypto-actor.claude.md` (step E). AS-OF main 246317eb (R1), 2026-11-14. Re-verify `file:line`.
-STATUS: PROPOSAL, nothing built. Written by polar-cc at the maintainer's request; REVIEWED READY by polar-f1
+STATUS: CLEARED by the maintainer 2026-11-14 ("Cleared; polar-89 builds"); polar-89 builds it as crypto-actor step E. Was: PROPOSAL, nothing built. Written by polar-cc at the maintainer's request; REVIEWED READY by polar-f1
 (2026-11-14, after the maintainer's dumpable correction and the u7c measurements below); for the maintainer to clear.
 
 ## ORIGIN (the maintainer, 2026-11-14)
@@ -97,8 +97,9 @@ E5 Secrets out of the dump, dump whole (NOT PR_SET_DUMPABLE 0 for agents):
      (harmless, and independent of how a kernel treats secretmem in dumps).
    - If mlock (or memfd_secret's charge to RLIMIT_MEMLOCK) fails: use the pages unlocked, still MADV_DONTDUMP, and WARN
      once, as custody's harden() does (SETTLED with polar-f1).
-   - The agent stays dumpable: a core file written mid-request holds whatever credential the request had open, UNLESS
-     it is in these pages. That is why they are the only place an opened credential or key lives.
+   - The agent stays dumpable: these pages hold the crypto actor's own copy of an opened credential, so that copy is
+     never in a core file. NOT every copy: in flight, the HTTP client's header values and TLS record buffers hold it
+     too, and a core file at that moment can (§7). Overclaim corrected at polar-f1's read, 2026-11-14.
    - NOT whole-process mlockall (an agent is large; MCL_FUTURE past RLIMIT_MEMLOCK makes allocations fail).
 E6 Tests first: properties (no plaintext credential in the registry at rest; each credentialed send opens exactly once
    and wipes; recorded opens == sends); a release-build bench of a credentialed request with and without E1.
