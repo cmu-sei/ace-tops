@@ -68,6 +68,16 @@ pub const SERVER_KEY_FILE: Optional<String> = Optional::path(
     "path to the private key of the agent's server certificate; this or POLAR_CUSTODY_SOCKET, not both",
 );
 
+/// Where a workload keeps a log's checkpoint key, on its own volume: the crypto actor makes it there once if it is not
+/// there, and never replaces it, since readers and witnesses pin it (docs/plans/record-store/to-main.md). Only a workload
+/// with the `checkpoints` capability is given it.
+pub const STORE_CHECKPOINT_KEY: Optional<String> = Optional::path(
+    "POLAR_STORE_CHECKPOINT_KEY",
+    Access::WriteFile,
+    "path to the private key (PKCS#8 PEM, P-256) the agent signs its logs' checkpoints with; its crypto actor makes it \
+     there once if it is not there, and never replaces it",
+);
+
 // The client certificate (TLS_CLIENT_CERT) is the Cassini client's to declare and require: it is the agent's identity
 // certificate, which every Cassini client is given; read here by its name.
 static KEY_VARIABLES: &[&dyn Described] = &[
@@ -75,6 +85,7 @@ static KEY_VARIABLES: &[&dyn Described] = &[
     &CLIENT_KEY_FILE,
     &SERVER_CERT_FILE,
     &SERVER_KEY_FILE,
+    &STORE_CHECKPOINT_KEY,
 ];
 
 /// Where the agent's keys are: the custody daemon's socket, or, where a cluster runs without the daemon, its key files.
@@ -85,6 +96,20 @@ pub static KEYS: Section = Section {
     name: "keys",
     vars: KEY_VARIABLES,
     relations: key_relations,
+};
+
+/// What an agent with the `checkpoints` capability needs of `keys`: where its checkpoint key is.
+pub static CHECKPOINTS: Section = Section {
+    name: "checkpoints",
+    vars: &[],
+    relations: |env| match STORE_CHECKPOINT_KEY.read(env) {
+        Ok(Some(_)) => Vec::new(),
+        Ok(None) => vec![format!(
+            "{} is not set: an agent that keeps a log's checkpoint key is told where it is",
+            STORE_CHECKPOINT_KEY.name()
+        )],
+        Err(e) => vec![e.to_string()],
+    },
 };
 
 /// A key file goes with its certificate file, and never with the custody daemon's socket: the daemon holds the key, or
@@ -120,6 +145,9 @@ fn key_relations(env: &dyn Env) -> Vec<String> {
 pub struct KeyFiles {
     pub client: Option<(String, String)>,
     pub server: Option<(String, String)>,
+    /// A log's checkpoint key, for an agent that keeps one: a key file wherever the custody daemon runs, until custody
+    /// can hold a named key that outlives its pod.
+    pub checkpoint: Option<String>,
 }
 
 impl KeyFiles {
@@ -130,6 +158,7 @@ impl KeyFiles {
         Ok(Self {
             client: pair(read(&CLIENT_CERT_FILE)?, read(&CLIENT_KEY_FILE)?),
             server: pair(read(&SERVER_CERT_FILE)?, read(&SERVER_KEY_FILE)?),
+            checkpoint: read(&STORE_CHECKPOINT_KEY)?,
         })
     }
 }
@@ -196,11 +225,18 @@ impl CryptoSettings {
             .read(env)
             .map_err(|e| e.to_string())?
             .filter(|s| !s.trim().is_empty());
+        let key_files = KeyFiles::from_env(env)?;
+        // A checkpoint names its log by the agent's identity, so an agent that keeps a checkpoint key reads its own
+        // certificate for it, as one that escrows does.
+        let own_certificate_path = match &key_files.checkpoint {
+            Some(_) => TLS_CLIENT_CERT.read(env).unwrap_or_default(),
+            None => String::new(),
+        };
         Ok(Self {
-            own_certificate_path: String::new(),
+            own_certificate_path,
             custody_socket,
             ca_cert_path: String::new(),
-            key_files: KeyFiles::from_env(env)?,
+            key_files,
         })
     }
 }

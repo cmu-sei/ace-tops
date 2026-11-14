@@ -59,6 +59,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod cassini;
+pub mod checkpoints;
 pub mod environment;
 pub mod recipient;
 pub mod records;
@@ -71,10 +72,14 @@ use cassini_client::TcpClientMessage;
 use credentials_agent_common::agent_escrow_key::{AgentEscrowKeyReply, AgentEscrowKeyRequest};
 use credentials_agent_common::escrow_key::EscrowKeyRequest;
 use credentials_agent_common::escrow_secret::EscrowedSecret;
+use credentials_agent_common::key_certification::{
+    KeyCertificationReply, KeyCertificationRequest, KeyPurpose,
+};
 use credentials_agent_common::secret::{StoreRefusalReason, StoreSecretReply, StoreSecretRequest};
 use credentials_agent_common::{
     CREDENTIALS_AGENT_ESCROW_KEY_REPLIES_TOPIC, CREDENTIALS_AGENT_ESCROW_KEY_REQUESTS_TOPIC,
     CREDENTIALS_ESCROW_KEY_REPLIES_TOPIC, CREDENTIALS_ESCROW_KEY_REQUESTS_TOPIC,
+    CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC, CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC,
     CREDENTIALS_RETRIEVE_SECRET_REPLIES_TOPIC, CREDENTIALS_RETRIEVE_SECRET_REQUESTS_TOPIC,
     CREDENTIALS_STORE_SECRET_REPLIES_TOPIC, CREDENTIALS_STORE_SECRET_REQUESTS_TOPIC,
 };
@@ -112,6 +117,26 @@ pub const REPLY_TOPICS: [&str; 4] = [
 /// same conservative-but-bounded spirit as this codebase's other
 /// request/reply timeouts elsewhere.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long after a failed try for the checkpoint key's certificate the next is made, and the least time before any.
+const CHECKPOINT_RETRY: Duration = Duration::from_secs(30);
+
+/// How long from `now` until a checkpoint certificate that expires at `expires_at` (Unix seconds) is asked for again: at
+/// half the time it has left, so one is always asked for well before the last expires. None yet, or one past its end,
+/// is asked for now.
+fn checkpoint_renewal(expires_at: Option<i64>, now: i64) -> Duration {
+    match expires_at {
+        Some(at) if at > now => Duration::from_secs(((at - now) / 2) as u64),
+        _ => Duration::ZERO,
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
@@ -497,6 +522,22 @@ pub enum CryptoMessage {
         record: records::EvidenceRecord,
         reply: RpcReplyPort<Result<polar_signing::Document, records::SignError>>,
     },
+    /// `text`'s signature line under the agent's checkpoint key, if it is a checkpoint of one of the agent's own logs
+    /// ([`checkpoints::judge`]): for an agent with the `checkpoints` capability.
+    SignCheckpoint {
+        text: String,
+        reply: RpcReplyPort<Result<String, checkpoints::CheckpointRefusal>>,
+    },
+    /// The checkpoint key's verifier key, which readers and witnesses pin, and its certificate with its CA chain (PEM)
+    /// once the credentials agent has certified it; `None` for an agent that keeps no checkpoint key.
+    CheckpointKey {
+        reply: RpcReplyPort<Option<(String, Option<String>)>>,
+    },
+    /// Ask the credentials agent to certify the checkpoint key: sent by the actor to itself once the client registers,
+    /// and again at half the certificate's life, or after a try that failed.
+    CertifyCheckpointKey,
+    /// What the credentials agent answered, or why it did not.
+    CheckpointKeyCertified(Result<KeyCertificationReply, String>),
     /// A general secret to escrow -- e.g. an access token an observer
     /// holds and wants the Credentials Agent to store on its behalf.
     /// Not the agent's own escrow private key, which the custody
@@ -685,6 +726,9 @@ pub struct CryptoActorState {
     escrow: bool,
     /// The agent's key files, for its TLS where no custody daemon holds its keys.
     key_files: environment::KeyFiles,
+    /// The log's checkpoint key, for an agent that keeps one and has an identity to name its logs by.
+    checkpoint: Option<checkpoints::CheckpointKey>,
+    key_certification_reply_router: Arc<ReplyRouter<KeyCertificationReply>>,
     escrow_key_reply_router: Arc<ReplyRouter<credentials_agent_common::escrow_key::EscrowKeyReply>>,
     store_secret_reply_router: Arc<ReplyRouter<StoreSecretReply>>,
     agent_escrow_key_reply_router: Arc<ReplyRouter<AgentEscrowKeyReply>>,
@@ -795,8 +839,20 @@ impl Actor for CryptoActor {
         // itself do the real, per-topic deserialization/routing --
         // mirroring kube-consumer's own, established
         // register_kube_topics pattern exactly.
+        // The checkpoint key is made, or read, now: an agent that keeps one and cannot open it cannot do its work.
+        let checkpoint = match (&settings.key_files.checkpoint, &own_identity) {
+            (None, _) => None,
+            (Some(path), Some(identity)) => Some(
+                checkpoints::CheckpointKey::open(std::path::Path::new(path), identity)
+                    .map_err(ActorProcessingErr::from)?,
+            ),
+            (Some(path), None) => {
+                warn!(%path, "a checkpoint key is named, but the agent has no identity to name its logs by: it signs no checkpoint");
+                None
+            }
+        };
         if let Some(router) = &args.router {
-            register_replies(&myself, router);
+            register_replies(&myself, router, checkpoint.is_some());
         }
 
         // Subscriptions are not sent here: the Cassini client drops any
@@ -807,6 +863,8 @@ impl Actor for CryptoActor {
             tcp_client: args.tcp_client,
             escrow: args.escrow,
             key_files: settings.key_files.clone(),
+            checkpoint,
+            key_certification_reply_router: Arc::new(ReplyRouter::new()),
             escrow_key_reply_router: Arc::new(ReplyRouter::new()),
             store_secret_reply_router: Arc::new(ReplyRouter::new()),
             agent_escrow_key_reply_router: Arc::new(ReplyRouter::new()),
@@ -864,6 +922,88 @@ impl Actor for CryptoActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
+            CryptoMessage::SignCheckpoint { text, reply } => {
+                let signed = match &state.checkpoint {
+                    Some(key) => key.sign(&text),
+                    None if state.key_files.checkpoint.is_some() => {
+                        Err(checkpoints::CheckpointRefusal::NoIdentity)
+                    }
+                    None => Err(checkpoints::CheckpointRefusal::NoKey),
+                };
+                if let Err(e) = &signed {
+                    warn!("a checkpoint was not signed: {e}");
+                }
+                let _ = reply.send(signed);
+            }
+            CryptoMessage::CheckpointKey { reply } => {
+                let _ = reply.send(
+                    state
+                        .checkpoint
+                        .as_ref()
+                        .map(|key| (key.verifier_key(), key.certificate().map(str::to_string))),
+                );
+            }
+            CryptoMessage::CertifyCheckpointKey => {
+                let (Some(key), Some(tcp_client)) = (&state.checkpoint, &state.tcp_client) else {
+                    return Ok(());
+                };
+                let csr_pem = match key.csr() {
+                    Ok(csr) => csr,
+                    Err(e) => {
+                        error!("the checkpoint key cannot be certified: {e}");
+                        return Ok(());
+                    }
+                };
+                let (tcp_client, router) = (
+                    tcp_client.clone(),
+                    state.key_certification_reply_router.clone(),
+                );
+                let myself = myself.clone();
+                tokio::spawn(async move {
+                    let answer = request_reply(
+                        &tcp_client,
+                        &router,
+                        CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC,
+                        "the checkpoint key's certificate",
+                        KeyCertificationRequest {
+                            csr_pem,
+                            purpose: KeyPurpose::Checkpoint,
+                        },
+                        REPLY_TIMEOUT,
+                    )
+                    .await
+                    .map_err(|e| e.to_string());
+                    let _ = myself.send_message(CryptoMessage::CheckpointKeyCertified(answer));
+                });
+            }
+            CryptoMessage::CheckpointKeyCertified(answer) => {
+                let Some(key) = state.checkpoint.as_mut() else {
+                    return Ok(());
+                };
+                let kept = match answer {
+                    Ok(KeyCertificationReply::Certified {
+                        certificate_pem,
+                        ca_chain_pem,
+                        ..
+                    }) => key
+                        .keep_certificate(&format!("{certificate_pem}{ca_chain_pem}"))
+                        .map(|()| info!("the checkpoint key is certified")),
+                    Ok(KeyCertificationReply::Refused { reason }) => {
+                        Err(format!("the credentials agent refused: {reason:?}"))
+                    }
+                    Err(e) => Err(e),
+                };
+                let next = match kept {
+                    Ok(()) => checkpoint_renewal(key.expires_at(), unix_now()),
+                    Err(e) => {
+                        warn!("the checkpoint key was not certified, and is asked for again: {e}");
+                        CHECKPOINT_RETRY
+                    }
+                };
+                myself.send_after(next.max(CHECKPOINT_RETRY), || {
+                    CryptoMessage::CertifyCheckpointKey
+                });
+            }
             CryptoMessage::SignRecord { record, reply } => match state.escrow_key.clone() {
                 None => {
                     let _ = reply.send(Err(records::SignError::Unavailable(
@@ -907,7 +1047,7 @@ impl Actor for CryptoActor {
                 });
             }
             CryptoMessage::Connect { tcp_client, router } => {
-                register_replies(&myself, &router);
+                register_replies(&myself, &router, state.checkpoint.is_some());
                 state.tcp_client = Some(tcp_client);
             }
             CryptoMessage::ClientRegistered => {
@@ -920,13 +1060,27 @@ impl Actor for CryptoActor {
                     warn!("CryptoActor: told the client registered before it was given the client");
                     return Ok(());
                 };
-                for topic in REPLY_TOPICS.iter().filter(|_| state.escrow) {
+                let checkpoint_replies = state
+                    .checkpoint
+                    .is_some()
+                    .then_some(CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC);
+                for topic in REPLY_TOPICS
+                    .iter()
+                    .filter(|_| state.escrow)
+                    .chain(checkpoint_replies.iter())
+                {
                     if let Err(e) = tcp_client.send_message(TcpClientMessage::Subscribe {
                         topic: topic.to_string(),
                         trace_ctx: None,
                     }) {
                         error!("CryptoActor failed to subscribe to {topic}: {e}");
                     }
+                }
+                // A checkpoint key with no certificate, or one past half its life, is certified now.
+                if state.checkpoint.as_ref().is_some_and(|key| {
+                    checkpoint_renewal(key.expires_at(), unix_now()) == Duration::ZERO
+                }) {
+                    let _ = myself.send_message(CryptoMessage::CertifyCheckpointKey);
                 }
             }
             CryptoMessage::RoutedReply { topic, payload }
@@ -979,6 +1133,20 @@ impl Actor for CryptoActor {
                         .deliver(&envelope.correlation_id, envelope.payload),
                     Err(e) => {
                         warn!("CryptoActor failed to deserialize agent escrow-key reply: {e}")
+                    }
+                }
+            }
+            CryptoMessage::RoutedReply { topic, payload }
+                if topic == CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC =>
+            {
+                match rkyv::from_bytes::<Envelope<KeyCertificationReply>, rkyv::rancor::Error>(
+                    &payload,
+                ) {
+                    Ok(envelope) => state
+                        .key_certification_reply_router
+                        .deliver(&envelope.correlation_id, envelope.payload),
+                    Err(e) => {
+                        warn!("CryptoActor failed to deserialize a key certification reply: {e}")
                     }
                 }
             }
@@ -1460,8 +1628,10 @@ async fn open_escrowed(
 fn register_replies(
     myself: &ActorRef<CryptoMessage>,
     router: &ActorRef<polar_router::RouterMessage>,
+    checkpoint: bool,
 ) {
-    for topic in REPLY_TOPICS {
+    let checkpoint_replies = checkpoint.then_some(CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC);
+    for topic in REPLY_TOPICS.into_iter().chain(checkpoint_replies) {
         let myself_for_deliver = myself.clone();
         if let Err(e) = router.send_message(polar_router::RouterMessage::Register {
             topic: topic.to_string(),
@@ -4468,5 +4638,258 @@ mod tests {
             other => panic!("expected Err(RecipientKeyNotFound(_)), got {other:?}"),
         }
         stop_and_release_key(&crypto_actor).await;
+    }
+
+    /// A log's checkpoint key in the crypto actor (docs/plans/record-store/to-main.md).
+    mod checkpoint_key {
+        use super::*;
+        use credentials_agent_common::key_certification::KeyCertificationRefusal;
+
+        const STORE: &str = "polar-git-server.polar.serviceaccount.cluster.local";
+
+        /// The credentials agent's side, as far as the actor sees it: each request it is sent is counted, and answered
+        /// in turn from `answers` (`true` certifies the CSR's key under a CA of its own, `false` refuses), then always
+        /// certified.
+        struct Certifier {
+            router: ActorRef<polar_router::RouterMessage>,
+            asked: Arc<std::sync::atomic::AtomicUsize>,
+            answers: std::sync::Mutex<std::collections::VecDeque<bool>>,
+        }
+
+        #[async_trait]
+        impl Actor for Certifier {
+            type Msg = TcpClientMessage;
+            type State = ();
+            type Arguments = ();
+
+            async fn pre_start(
+                &self,
+                _: ActorRef<Self::Msg>,
+                _: (),
+            ) -> Result<(), ActorProcessingErr> {
+                Ok(())
+            }
+
+            async fn handle(
+                &self,
+                _: ActorRef<Self::Msg>,
+                message: Self::Msg,
+                _: &mut (),
+            ) -> Result<(), ActorProcessingErr> {
+                let TcpClientMessage::Publish { topic, payload, .. } = message else {
+                    return Ok(());
+                };
+                assert_eq!(topic, CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC);
+                let envelope = rkyv::from_bytes::<
+                    Envelope<KeyCertificationRequest>,
+                    rkyv::rancor::Error,
+                >(&payload)
+                .unwrap();
+                assert_eq!(envelope.payload.purpose, KeyPurpose::Checkpoint);
+                self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let certify = self.answers.lock().unwrap().pop_front().unwrap_or(true);
+                let reply = if certify {
+                    let ca_key = rcgen::KeyPair::generate().unwrap();
+                    let ca = rcgen::CertificateParams::new(Vec::<String>::new())
+                        .unwrap()
+                        .self_signed(&ca_key)
+                        .unwrap();
+                    let issuer = rcgen::Issuer::new(rcgen::CertificateParams::default(), ca_key);
+                    let leaf =
+                        rcgen::CertificateSigningRequestParams::from_pem(&envelope.payload.csr_pem)
+                            .unwrap()
+                            .signed_by(&issuer)
+                            .unwrap();
+                    KeyCertificationReply::Certified {
+                        certificate_pem: leaf.pem(),
+                        ca_chain_pem: ca.pem(),
+                        expires_at: 0,
+                    }
+                } else {
+                    KeyCertificationReply::Refused {
+                        reason: KeyCertificationRefusal::NotPermitted,
+                    }
+                };
+                let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&Envelope {
+                    correlation_id: envelope.correlation_id,
+                    payload: reply,
+                })
+                .unwrap()
+                .to_vec();
+                let _ = self.router.send_message(polar_router::RouterMessage::Route(
+                    polar_router::IncomingMessage {
+                        topic: CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC.to_string(),
+                        payload: bytes,
+                        published_by: None,
+                        published_instance: None,
+                        trace_ctx: None,
+                    },
+                ));
+                Ok(())
+            }
+        }
+
+        struct Store {
+            actor: ActorRef<CryptoMessage>,
+            asked: Arc<std::sync::atomic::AtomicUsize>,
+            dir: tempfile::TempDir,
+            _identity: tempfile::NamedTempFile,
+        }
+
+        /// A connected crypto actor keeping a checkpoint key in a directory of its own, as `STORE`; or, with
+        /// `keeps` false, keeping none.
+        async fn store(keeps: bool, answers: &[bool]) -> Store {
+            let (router, _) = Actor::spawn(None, polar_router::RouterActor, ())
+                .await
+                .unwrap();
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (certifier, _) = Actor::spawn(
+                None,
+                Certifier {
+                    router: router.clone(),
+                    asked: asked.clone(),
+                    answers: std::sync::Mutex::new(answers.iter().copied().collect()),
+                },
+                (),
+            )
+            .await
+            .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let identity = write_test_agent_certificate(STORE);
+            let (actor, _) = Actor::spawn(
+                None,
+                CryptoActor,
+                CryptoActorArgs::new(certifier, router)
+                    .with_settings(environment::CryptoSettings {
+                        own_certificate_path: identity.path().to_string_lossy().into_owned(),
+                        key_files: environment::KeyFiles {
+                            checkpoint: keeps.then(|| {
+                                dir.path()
+                                    .join("logs/checkpoint-key.pem")
+                                    .to_string_lossy()
+                                    .into_owned()
+                            }),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .with_escrow(false),
+            )
+            .await
+            .unwrap();
+            Store {
+                actor,
+                asked,
+                dir,
+                _identity: identity,
+            }
+        }
+
+        async fn key(actor: &ActorRef<CryptoMessage>) -> Option<(String, Option<String>)> {
+            ractor::call!(actor, |reply| CryptoMessage::CheckpointKey { reply }).unwrap()
+        }
+
+        async fn sign(
+            actor: &ActorRef<CryptoMessage>,
+            text: String,
+        ) -> Result<String, checkpoints::CheckpointRefusal> {
+            ractor::call!(actor, |reply| CryptoMessage::SignCheckpoint { text, reply }).unwrap()
+        }
+
+        fn checkpoint(origin: &str) -> String {
+            polar_log::checkpoint::Checkpoint {
+                origin: origin.to_string(),
+                size: 3,
+                root: [1; 32],
+            }
+            .text()
+        }
+
+        /// It signs its own logs' checkpoints under the key it made, pinned by its verifier key, and nothing else.
+        #[tokio::test]
+        async fn the_actor_signs_its_own_logs_checkpoints_and_nothing_else() {
+            let store = store(true, &[]).await;
+            let (verifier, certificate) = key(&store.actor).await.expect("it keeps a key");
+            assert_eq!(certificate, None, "not certified before it has asked");
+            assert!(store.dir.path().join("logs/checkpoint-key.pem").exists());
+            let text = checkpoint(&format!("{STORE}/evidence"));
+            let line = sign(&store.actor, text.clone()).await.unwrap();
+            let verifier = polar_log::checkpoint::NoteVerifier::parse(&verifier).unwrap();
+            polar_log::checkpoint::open(&format!("{text}\n{line}"), &[verifier]).unwrap();
+            assert!(matches!(
+                sign(&store.actor, checkpoint("someone-else/evidence")).await,
+                Err(checkpoints::CheckpointRefusal::NotItsLog(_))
+            ));
+            store.actor.stop(None);
+        }
+
+        #[tokio::test]
+        async fn an_actor_that_keeps_no_checkpoint_key_signs_none_and_asks_for_no_certificate() {
+            let store = store(false, &[]).await;
+            assert_eq!(key(&store.actor).await, None);
+            assert_eq!(
+                sign(&store.actor, checkpoint(&format!("{STORE}/evidence"))).await,
+                Err(checkpoints::CheckpointRefusal::NoKey)
+            );
+            store
+                .actor
+                .send_message(CryptoMessage::ClientRegistered)
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(store.asked.load(std::sync::atomic::Ordering::SeqCst), 0);
+            store.actor.stop(None);
+        }
+
+        /// Once the client registers, the actor asks for its key's certificate and keeps it beside the key; one that
+        /// is refused is asked for again.
+        #[tokio::test(start_paused = true)]
+        async fn the_key_is_certified_once_the_client_registers_and_asked_for_again_when_refused() {
+            let store = store(true, &[false]).await;
+            store
+                .actor
+                .send_message(CryptoMessage::ClientRegistered)
+                .unwrap();
+            for _ in 0..50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(store.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                key(&store.actor).await.unwrap().1,
+                None,
+                "refused: nothing kept"
+            );
+            tokio::time::sleep(CHECKPOINT_RETRY + Duration::from_secs(1)).await;
+            for _ in 0..50 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(store.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+            let certificate = key(&store.actor).await.unwrap().1.expect("certified");
+            assert_eq!(
+                std::fs::read_to_string(checkpoints::chain_path(
+                    &store.dir.path().join("logs/checkpoint-key.pem")
+                ))
+                .unwrap(),
+                certificate
+            );
+            store.actor.stop(None);
+        }
+
+        proptest::proptest! {
+            /// A certificate is always asked for again before it expires, and one that has none, or is past its end,
+            /// is asked for now.
+            #[test]
+            fn a_certificate_is_asked_for_again_before_it_expires(
+                now in 0i64..4_000_000_000,
+                left in -1_000_000i64..100_000_000,
+            ) {
+                let delay = checkpoint_renewal(Some(now + left), now).as_secs() as i64;
+                if left > 0 {
+                    proptest::prop_assert!(delay < left, "{delay} >= {left}");
+                } else {
+                    proptest::prop_assert_eq!(delay, 0);
+                }
+                proptest::prop_assert_eq!(checkpoint_renewal(None, now), Duration::ZERO);
+            }
+        }
     }
 }

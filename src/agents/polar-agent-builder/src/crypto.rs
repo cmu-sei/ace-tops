@@ -187,6 +187,38 @@ impl TlsHandle {
     }
 }
 
+/// The agent's checkpoint key, for an agent with the `checkpoints` capability (docs/plans/record-store/to-main.md): what
+/// its domain is given in place of the key. It asks to sign a checkpoint of one of the agent's own logs, and for the
+/// key's verifier key and certificate, and nothing else of the actor; the actor judges what it is asked to sign.
+#[derive(Clone)]
+pub struct CheckpointHandle {
+    actor: ActorRef<CryptoMessage>,
+}
+
+impl CheckpointHandle {
+    pub(crate) fn new(actor: ActorRef<CryptoMessage>) -> Self {
+        Self { actor }
+    }
+
+    /// `text`'s signature line, if it is a checkpoint of one of the agent's own logs.
+    pub async fn sign(&self, text: String) -> Result<String, String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::SignCheckpoint {
+            text,
+            reply
+        })
+        .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+        .map_err(|e| e.to_string())
+    }
+
+    /// The key's verifier key, which readers and witnesses pin, and its certificate with its CA chain (PEM) once the
+    /// credentials agent has certified it.
+    pub async fn key(&self) -> Result<(String, Option<String>), String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::CheckpointKey { reply })
+            .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+            .ok_or_else(|| "the agent keeps no checkpoint key".to_string())
+    }
+}
+
 /// Flattens ractor::call!'s own, real, outer RactorErr (a genuine
 /// messaging/mailbox failure, distinct from CryptoError itself, which
 /// only ever describes the real, remote Credentials Agent flow's own

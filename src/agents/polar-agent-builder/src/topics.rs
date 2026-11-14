@@ -222,6 +222,8 @@ pub struct Facts<'a> {
     pub encryption: bool,
     /// The agent has the `SoftState` capability: it declares a graph read.
     pub soft_state: bool,
+    /// The agent has the `Checkpoints` capability: it keeps a log's checkpoint key.
+    pub checkpoints: bool,
 }
 
 /// The topics a rule implies for an agent.
@@ -295,6 +297,16 @@ pub fn implied_by(rule: Rule, name: &str) -> Vec<(String, Access)> {
             soft_state_common::REQUESTS_TOPIC.to_string(),
             Access::Publish,
         )],
+        Rule::Checkpoints => vec![
+            (
+                credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC.to_string(),
+                Access::Publish,
+            ),
+            (
+                credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC.to_string(),
+                Access::Subscribe,
+            ),
+        ],
     }
 }
 
@@ -396,6 +408,21 @@ fn implied_causes(rule: Rule, name: &str) -> BTreeMap<(String, Access), Causes> 
                 ..Causes::default()
             },
         )]),
+        // Its replies, as the crypto actor's escrow replies, are heard and answer nothing the agent takes.
+        Rule::Checkpoints => BTreeMap::from([(
+            (
+                credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC.to_string(),
+                Access::Publish,
+            ),
+            Causes {
+                unprompted: Some(
+                    "its crypto actor asks for its checkpoint key's certificate once it registers, and again at half \
+                     the certificate's life"
+                        .to_string(),
+                ),
+                ..Causes::default()
+            },
+        )]),
     }
 }
 
@@ -427,6 +454,9 @@ pub fn rules_for(facts: &Facts) -> Vec<Rule> {
         }
         if facts.soft_state {
             rules.push(Rule::SoftState);
+        }
+        if facts.checkpoints {
+            rules.push(Rule::Checkpoints);
         }
     }
     rules
@@ -733,6 +763,7 @@ mod tests {
             self_test: true,
             encryption: false,
             soft_state: false,
+            checkpoints: false,
         }
     }
 
@@ -744,6 +775,36 @@ mod tests {
             "what the resolver found",
         ),
     ];
+
+    /// An agent that keeps a log's checkpoint key is in the `checkpoints` group, which implies asking for its key's
+    /// certificate and hearing the answer, and nothing more; one that does not has neither.
+    #[test]
+    fn keeping_a_checkpoint_key_implies_asking_for_its_certificate_and_nothing_more() {
+        let requests = credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC;
+        let replies = credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC;
+        let without = agent("polar-git-server");
+        let with = Facts {
+            checkpoints: true,
+            ..without
+        };
+        let (set, plain) = (
+            TopicSet::compute(&with, &[]),
+            TopicSet::compute(&without, &[]),
+        );
+        assert!(set.allows(requests, Access::Publish));
+        assert!(set.allows(replies, Access::Subscribe));
+        assert!(!set.allows(requests, Access::Subscribe));
+        assert!(!set.allows(replies, Access::Publish));
+        assert!(!plain.allows(requests, Access::Publish));
+        assert!(!plain.allows(replies, Access::Subscribe));
+        assert!(groups_for(&with).contains(&"checkpoints"));
+        assert!(!groups_for(&without).contains(&"checkpoints"));
+        assert_eq!(
+            implied_topics("polar-git-server", &["checkpoints"]).len(),
+            2,
+            "the group implies the two topics and no other"
+        );
+    }
 
     #[test]
     fn an_agent_uses_its_own_configuration_and_command_topics_and_the_authority_topics() {
@@ -1044,9 +1105,10 @@ mod tests {
         })
     }
 
-    fn facts_strategy() -> impl Strategy<Value = (String, bool, bool, bool, bool)> {
+    fn facts_strategy() -> impl Strategy<Value = (String, bool, bool, bool, bool, bool)> {
         (
             "[a-z][a-z0-9-]{0,16}",
+            any::<bool>(),
             any::<bool>(),
             any::<bool>(),
             any::<bool>(),
@@ -1074,10 +1136,10 @@ mod tests {
         #[test]
         fn the_set_does_not_depend_on_the_order_of_the_declarations(
             raw in decls(),
-            (name, cassini, self_test, encryption, soft_state) in facts_strategy(),
+            (name, cassini, self_test, encryption, soft_state, checkpoints) in facts_strategy(),
             seed in any::<u64>(),
         ) {
-            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state };
+            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state, checkpoints };
             let declared = leak(&raw);
             let mut shuffled = declared.clone();
             // A deterministic permutation from the seed.
@@ -1125,9 +1187,9 @@ mod tests {
         /// of the set the agent computes, for any agent.
         #[test]
         fn the_broker_s_implied_topics_are_the_agent_s(
-            (name, cassini, self_test, encryption, soft_state) in facts_strategy(),
+            (name, cassini, self_test, encryption, soft_state, checkpoints) in facts_strategy(),
         ) {
-            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state };
+            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state, checkpoints };
             let from_certificate: std::collections::BTreeSet<(String, Access)> =
                 implied_topics(&name, &groups_for(&facts)).into_iter().map(|(key, _)| key).collect();
             let from_agent: std::collections::BTreeSet<(String, Access)> = TopicSet::compute(&facts, &[])
@@ -1143,9 +1205,9 @@ mod tests {
         #[test]
         fn the_set_is_the_union_of_the_declared_and_the_implied(
             raw in decls(),
-            (name, cassini, self_test, encryption, soft_state) in facts_strategy(),
+            (name, cassini, self_test, encryption, soft_state, checkpoints) in facts_strategy(),
         ) {
-            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state };
+            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state, checkpoints };
             let declared = leak(&raw);
             let set = TopicSet::compute(&facts, &declared);
             let implied: std::collections::BTreeSet<(String, Access)> = rules_for(&facts)
@@ -1366,9 +1428,9 @@ mod tests {
         /// an entry the agent takes. For any agent.
         #[test]
         fn the_topics_used_by_rule_meet_the_checks_on_causes(
-            (name, cassini, self_test, encryption, soft_state) in facts_strategy(),
+            (name, cassini, self_test, encryption, soft_state, checkpoints) in facts_strategy(),
         ) {
-            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state };
+            let facts = Facts { name: &name, cassini_client: cassini, self_test, encryption, soft_state, checkpoints };
             prop_assert!(cause_problems(&TopicSet::compute(&facts, &[]).entries()).is_empty());
             for entry in TopicSet::compute(&facts, &[]).entries() {
                 if entry.access == Access::Publish {

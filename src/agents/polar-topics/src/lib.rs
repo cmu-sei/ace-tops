@@ -118,15 +118,19 @@ pub enum Rule {
     /// agent; it hears the answer on its own reply topic, which the `Agent` rule gives every client
     /// (docs/architecture/soft-state.md).
     SoftState,
+    /// An agent with the `Checkpoints` capability keeps a log's checkpoint key, which its crypto actor has the
+    /// credentials agent certify (docs/plans/record-store/to-main.md).
+    Checkpoints,
 }
 
 impl Rule {
     /// Every rule there is.
-    pub const ALL: [Rule; 4] = [
+    pub const ALL: [Rule; 5] = [
         Rule::Agent,
         Rule::SelfTest,
         Rule::Encryption,
         Rule::SoftState,
+        Rule::Checkpoints,
     ];
 
     /// The group whose members the rule applies to (docs/architecture/policy-enforcement.md, "Decisions"): the
@@ -137,6 +141,7 @@ impl Rule {
             Rule::SelfTest => "self-test",
             Rule::Encryption => "encryption",
             Rule::SoftState => "soft-state",
+            Rule::Checkpoints => "checkpoints",
         }
     }
 
@@ -151,6 +156,7 @@ impl Rule {
             Rule::SelfTest => "the agent's self-test is on",
             Rule::Encryption => "the agent needs encryption (its crypto actor)",
             Rule::SoftState => "the agent reads its own soft state (its state actor)",
+            Rule::Checkpoints => "the agent keeps a log's checkpoint key (its crypto actor)",
         }
     }
 }

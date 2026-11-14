@@ -287,7 +287,7 @@ async fn a_signing_certificate_for_anyone_but_the_caller_is_refused_before_the_c
     }
 }
 
-// ---- a checkpoint certificate: the caller's own, naming nothing else, never a pod's ----
+// ---- a checkpoint certificate: a workload's, naming nothing else, never a pod's ----
 
 const WORKLOAD: &str = "attestation.polar.serviceaccount.cluster.local";
 const POD: &str = "pod-uid-1";
@@ -320,9 +320,32 @@ async fn an_internal_caller_is_signed_a_checkpoint_certificate_for_itself_for_th
     }
 }
 
+/// The credentials agent certifies a workload's checkpoint key once it has judged the workload's
+/// (docs/plans/record-store/to-main.md): the certificate names that workload, for the server lifetime.
 #[tokio::test]
-async fn a_checkpoint_certificate_for_anyone_but_the_caller_or_naming_more_is_refused_before_the_ca()
- {
+async fn an_internal_caller_is_signed_a_checkpoint_certificate_for_a_workload_it_names() {
+    let h = handler(real_ca(), vec![ALLOWED_CALLER]);
+    let response = h
+        .handle_internal_issue(
+            Some(ALLOWED_CALLER),
+            checkpoint_request_for(TARGET_IDENTITY),
+        )
+        .await;
+
+    assert_eq!(response.status, 200);
+    match response.body {
+        HandlerBody::Success(issued) => {
+            let names =
+                cert_issuer_common::permission::extract_own_identity(&issued.certificate_pem)
+                    .unwrap();
+            assert_eq!(names, TARGET_IDENTITY);
+        }
+        other => panic!("expected success, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_checkpoint_certificate_for_a_pod_or_naming_more_is_refused_before_the_ca() {
     let h = handler(Arc::new(PanicCa), vec![ALLOWED_CALLER, TARGET_IDENTITY]);
     let for_a_pod = InternalIssueRequest {
         instance_binding: Some(POD.to_string()),
@@ -334,12 +357,6 @@ async fn a_checkpoint_certificate_for_anyone_but_the_caller_or_naming_more_is_re
         ..checkpoint_request_for(ALLOWED_CALLER)
     };
     for (what, request, status, outcome) in [
-        (
-            "another identity",
-            checkpoint_request_for(TARGET_IDENTITY),
-            403,
-            IssueOutcome::CallerNotAuthorized,
-        ),
         (
             "a pod, on its custodian's behalf",
             for_a_pod,

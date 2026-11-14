@@ -60,7 +60,13 @@ p256.workspace = true
 # Every TLS configuration the agent uses is made here, from its own keys (src/tls.rs).
 rustls.workspace = true
 
+# A log's checkpoint key: its checkpoints and signed notes, and the key made once (src/checkpoints.rs).
+polar-log.workspace = true
+rand.workspace = true
+
 [dev-dependencies]
+# Time that the tests move on themselves: a certificate asked for again after a refusal.
+tokio = { workspace = true, features = ["test-util"] }
 # The credentials agent's escrow key, and a recipient's, RSA in the tests.
 rsa.workspace = true
 rand.workspace = true

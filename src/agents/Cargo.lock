@@ -7323,6 +7323,7 @@ dependencies = [
  "polar",
  "polar-custody",
  "polar-env",
+ "polar-log",
  "polar-router",
  "polar-signing",
  "proptest",

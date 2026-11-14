@@ -567,6 +567,7 @@ fn topic_facts<A: PolarAgent>() -> Facts<'static> {
         self_test: A::SELF_TEST,
         encryption: needs_of::<A>().contains(&Capability::Encryption),
         soft_state: needs_of::<A>().contains(&Capability::SoftState),
+        checkpoints: needs_of::<A>().contains(&Capability::Checkpoints),
     }
 }
 
@@ -738,15 +739,28 @@ pub fn landlock_plan_of<A: PolarAgent>(config: &dyn Env) -> crate::landlock::Pla
     )
 }
 
-/// Makes each directory `A` writes that does not exist yet, so the lock can grant it: a cache root inside its claim.
+/// Makes each directory `A` writes that does not exist yet, so the lock can grant it: a cache root inside its claim, and
+/// the directory of a file it writes, which the lock grants in the file's stead (a checkpoint key its crypto actor makes
+/// on a new volume).
 fn make_written_directories<A: PolarAgent>(config: &dyn Env) -> Result<(), String> {
     for (name, access, value) in paths_of::<A>(config) {
-        if let (polar_env::Access::WriteDir, Some(path)) = (access, value) {
-            std::fs::create_dir_all(path.trim())
-                .map_err(|e| format!("{name}={path} cannot be made: {e}"))?;
+        if let Some(dir) = written_directory(access, value.as_deref()) {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("{name}={} cannot be made: {e}", value.unwrap_or_default()))?;
         }
     }
     Ok(())
+}
+
+/// The directory a path used as `access` needs to exist before the lock: the path itself for a directory written, the
+/// one it is in for a file written, and none for anything read.
+fn written_directory(access: polar_env::Access, value: Option<&str>) -> Option<&std::path::Path> {
+    let path = std::path::Path::new(value?.trim());
+    match access {
+        polar_env::Access::WriteDir => Some(path),
+        polar_env::Access::WriteFile => path.parent().filter(|dir| !dir.as_os_str().is_empty()),
+        _ => None,
+    }
 }
 
 /// How the builder's graph controller serves `A`: as a writer for `graph-write`, a reader for `graph-read`, and not at
@@ -1671,6 +1685,32 @@ mod tests {
         async fn start(_: Configured) -> Result<(), StartError> {
             Ok(())
         }
+    }
+
+    /// A directory written, and the directory of a file written, are made before the lock so it can grant them; nothing
+    /// read is.
+    #[test]
+    fn the_directories_written_in_are_the_ones_made_before_the_lock() {
+        use polar_env::Access;
+        let made =
+            |access, value| written_directory(access, value).map(|p| p.display().to_string());
+        assert_eq!(
+            made(Access::WriteDir, Some("/v/data")).as_deref(),
+            Some("/v/data")
+        );
+        assert_eq!(
+            made(Access::WriteFile, Some("/v/logs/checkpoint-key.pem")).as_deref(),
+            Some("/v/logs")
+        );
+        assert_eq!(
+            made(Access::WriteFile, Some("key.pem")),
+            None,
+            "no directory to make"
+        );
+        for read in [Access::ReadFile, Access::ReadDir, Access::Socket] {
+            assert_eq!(made(read, Some("/v/logs/x")), None);
+        }
+        assert_eq!(made(Access::WriteDir, None), None);
     }
 
     #[test]

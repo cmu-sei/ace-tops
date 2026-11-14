@@ -831,20 +831,23 @@ impl Handler {
             }
         }
 
-        // ---- Step 1.5, for a checkpoint certificate: the caller's own, naming nothing else ----
+        // ---- Step 1.5, for a checkpoint certificate: a workload's, naming nothing else, never a pod's ----
         //
         // The key that signs a log's checkpoints is its keeper's (docs/architecture/record-store.md, "L2,
-        // checkpoints"): the caller's alone, for no pod, and with no name that would let it stand for anything more.
+        // checkpoints"): the workload's, for no pod, and with no name that would let it stand for anything more. The
+        // internal caller asserts whose, as it does every identity here: its own, or a workload's whose key it has
+        // judged (the credentials agent, for a workload the authority model puts in the `checkpoints` group;
+        // docs/plans/record-store/to-main.md).
         if request.cert_type == cert_issuer_common::CertType::Checkpoint {
-            if request.identity != caller || request.instance_binding.is_some() {
+            if request.instance_binding.is_some() {
                 warn!(
                     peer_identity = %caller,
                     identity = %request.identity,
-                    "internal issuance refused: a checkpoint certificate that is not the caller's own"
+                    "internal issuance refused: a checkpoint certificate for a pod"
                 );
                 return error_response(
                     IssueOutcome::CallerNotAuthorized,
-                    "a checkpoint certificate is issued only for the caller's own identity",
+                    "a checkpoint certificate is a workload's, never a pod's",
                 );
             }
             if !request.extra_sans.is_empty() {

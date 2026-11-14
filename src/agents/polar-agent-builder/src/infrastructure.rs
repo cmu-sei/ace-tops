@@ -210,6 +210,19 @@ impl TcpClientSpawner for CassiniSpawner {
     }
 }
 
+/// The checkpoint key's handle, for an agent its deployment gives one (`POLAR_STORE_CHECKPOINT_KEY`, which the
+/// `checkpoints` capability requires); none otherwise.
+fn checkpoint_handle(
+    config: &polar_env::Config,
+    crypto: &CryptoHandle,
+) -> Option<crate::crypto::CheckpointHandle> {
+    matches!(
+        config.read(&polar_crypto::environment::STORE_CHECKPOINT_KEY),
+        Ok(Some(_))
+    )
+    .then(|| crate::crypto::CheckpointHandle::new(crypto.actor()))
+}
+
 pub struct InfrastructureSupervisorArgs {
     pub service_name: String,
     /// The agent's crypto actor, when it was started before the infrastructure (`ConfiguredAgent::tls`): linked, not
@@ -1378,6 +1391,7 @@ impl Actor for InfrastructureSupervisor {
                         healthcheck: state.healthcheck.clone(),
                         crypto: client.crypto.clone().filter(|_| client.escrow),
                         tls: crate::crypto::TlsHandle::new(state.crypto.actor()),
+                        checkpoints: checkpoint_handle(&state.config, &state.crypto),
                         signer: client.signer.clone(),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
@@ -1404,6 +1418,7 @@ impl Actor for InfrastructureSupervisor {
                     config: state.config.clone(),
                     configuration: state.configuration.clone(),
                     tls: crate::crypto::TlsHandle::new(state.crypto.actor()),
+                    checkpoints: checkpoint_handle(&state.config, &state.crypto),
                 });
             }
         }

@@ -158,6 +158,7 @@ const AGENT_ESCROW_KEYPAIR_BOOTSTRAP_ACTOR_NAME: &str =
     "polar.credentials-agent.agent-escrow-keypair-bootstrap";
 const AGENT_ESCROW_ISSUANCE_ACTOR_NAME: &str = "polar.credentials-agent.agent-escrow-issuance";
 const CUSTODIAN_ISSUANCE_ACTOR_NAME: &str = "polar.credentials-agent.custodian-issuance";
+const KEY_CERTIFICATION_ACTOR_NAME: &str = "polar.credentials-agent.key-certification";
 const AGENT_ESCROW_KEY_ACTOR_NAME: &str = "polar.credentials-agent.agent-escrow-key";
 const DECRYPT_ON_BEHALF_OF_ACTOR_NAME: &str = "polar.credentials-agent.decrypt-on-behalf-of";
 
@@ -559,6 +560,28 @@ impl ConsumerSupervisor {
         }
     }
 
+    /// A workload's crypto actor asking for a key it keeps to be certified, forwarded with the broker-verified
+    /// published_by, which is the workload.
+    fn dispatch_key_certification_request(payload: Vec<u8>, published_by: Option<String>) {
+        use credentials_agent_common::key_certification::KeyCertificationRequest;
+        match rkyv::from_bytes::<Envelope<KeyCertificationRequest>, rkyv::rancor::Error>(&payload) {
+            Ok(envelope) => match where_is(KEY_CERTIFICATION_ACTOR_NAME.to_string()) {
+                Some(actor) => {
+                    if let Err(e) =
+                        actor.send_message(crate::key_certification::KeyCertificationDispatch {
+                            envelope,
+                            published_by,
+                        })
+                    {
+                        warn!("Failed to forward a key certification request to actor: {e}");
+                    }
+                }
+                None => warn!("Key certification actor not yet registered, dropping request"),
+            },
+            Err(e) => warn!("Failed to deserialize a key certification request: {e}"),
+        }
+    }
+
     /// Mirrors dispatch_store_secret_request's own reasoning exactly
     /// -- see its own doc comment. Deserializes and forwards to
     /// AgentEscrowKeypairBootstrapActor, bundled with the
@@ -825,6 +848,8 @@ impl ConsumerSupervisor {
                 published_by,
                 published_instance,
             );
+        } else if topic == credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC {
+            ConsumerSupervisor::dispatch_key_certification_request(payload, published_by);
         } else {
             ConsumerSupervisor::deserialize_and_dispatch(topic, payload);
         }
@@ -1141,6 +1166,19 @@ impl Actor for ConsumerSupervisor {
                         escrow_keypair: escrow_keypair.clone(),
                         authority_model: authority_model.clone(),
                     },
+                },
+                myself.get_cell(),
+            )
+            .await
+            .map_err(ActorProcessingErr::from)?;
+        // A workload's crypto actor asking for a key it keeps to be certified (docs/plans/record-store/to-main.md).
+        let (_key_certification_actor, _) =
+            crate::key_certification::KeyCertificationActor::spawn_linked(
+                Some(KEY_CERTIFICATION_ACTOR_NAME.to_string()),
+                crate::key_certification::KeyCertificationActor,
+                crate::key_certification::KeyCertificationHandler {
+                    cert_issuer: make_cert_issuer_client().await?,
+                    authority_model: authority_model.clone(),
                 },
                 myself.get_cell(),
             )
@@ -3342,9 +3380,9 @@ mod builder_wiring_tests {
     }
 
     #[test]
-    fn there_are_fourteen_distinct_request_topics_and_none_takes_a_raw_ledger_event() {
+    fn there_are_fifteen_distinct_request_topics_and_none_takes_a_raw_ledger_event() {
         let distinct: HashSet<&str> = REQUEST_TOPICS.iter().copied().collect();
-        assert_eq!(REQUEST_TOPICS.len(), 14);
+        assert_eq!(REQUEST_TOPICS.len(), 15);
         for removed in [
             "credentials-grants",
             "credentials-revocations",
@@ -3354,7 +3392,7 @@ mod builder_wiring_tests {
         }
         assert_eq!(
             distinct.len(),
-            14,
+            15,
             "a topic is listed twice: {REQUEST_TOPICS:?}"
         );
     }
@@ -3368,6 +3406,7 @@ mod builder_wiring_tests {
             CREDENTIALS_RETRIEVE_SECRET_REQUESTS_TOPIC,
             CREDENTIALS_RETRIEVE_AGENT_ESCROW_KEYPAIR_REQUESTS_TOPIC,
             CREDENTIALS_DECRYPT_ON_BEHALF_OF_REQUESTS_TOPIC,
+            credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC,
         ] {
             assert!(
                 REQUEST_TOPICS.contains(&topic),

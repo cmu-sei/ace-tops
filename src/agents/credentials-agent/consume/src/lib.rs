@@ -58,6 +58,7 @@ pub mod instance_check;
 pub mod introspection;
 pub mod issuance;
 pub mod issuance_actor;
+pub mod key_certification;
 pub mod ledger;
 pub mod ledger_call;
 pub mod ledger_checkpoint;

@@ -69,6 +69,10 @@ pub enum Capability {
     /// events and the build workload's PodTemplate, and nothing else (docs/architecture/build-orchestrator.md). Never
     /// listed by hand: the builder adds it for an agent whose cluster operations declare a write.
     JobRun,
+    /// Keeps a log's checkpoint key, which its crypto actor makes once on the workload's volume, signs checkpoints with
+    /// and has the credentials agent certify (docs/plans/record-store/to-main.md). The deployment says where the key is
+    /// (`POLAR_STORE_CHECKPOINT_KEY`).
+    Checkpoints,
 }
 
 /// What a capability lets an agent do to the Kubernetes API, as its RBAC rules in `capabilities.nuon` say.
@@ -212,7 +216,7 @@ pub fn role_namespaces_of(
 
 impl Capability {
     /// Every capability, in the order the catalog lists them.
-    pub const ALL: [Capability; 9] = [
+    pub const ALL: [Capability; 10] = [
         Capability::Cassini,
         Capability::GraphWrite,
         Capability::GraphRead,
@@ -222,6 +226,7 @@ impl Capability {
         Capability::PodRead,
         Capability::SoftState,
         Capability::JobRun,
+        Capability::Checkpoints,
     ];
 
     /// The one namespace its Kubernetes role is in, by its key in the cluster's namespaces, for a capability held to one;
@@ -270,6 +275,7 @@ impl Capability {
             Capability::PodRead => "pod-read",
             Capability::SoftState => "soft-state",
             Capability::JobRun => "job-run",
+            Capability::Checkpoints => "checkpoints",
         }
     }
 }

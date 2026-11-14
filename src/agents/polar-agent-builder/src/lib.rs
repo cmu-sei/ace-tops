@@ -157,6 +157,8 @@ pub struct AgentResources {
     pub crypto: Option<crate::crypto::CryptoHandle>,
     /// The agent's TLS, from its own keys: every TLS configuration it uses comes from here (docs/plans/crypto-actor.md).
     pub tls: crate::crypto::TlsHandle,
+    /// The agent's checkpoint key, for one the deployment gives one (the `checkpoints` capability).
+    pub checkpoints: Option<crate::crypto::CheckpointHandle>,
     /// What the agent signs its evidence records with, for one with the `signing` capability ([`signer`]).
     pub signer: Option<crate::signer::SignerHandle>,
     /// The agent's way to the outside, for one that declares operations or credentials ([`protocol::ProtocolHandle`]).
@@ -704,6 +706,8 @@ pub struct ServiceResources {
     pub configuration: crate::configuration::ConfigurationHandle,
     /// The service's TLS, from its own keys. See [`AgentResources::tls`].
     pub tls: crate::crypto::TlsHandle,
+    /// The service's checkpoint key. See [`AgentResources::checkpoints`].
+    pub checkpoints: Option<crate::crypto::CheckpointHandle>,
 }
 
 /// The infrastructure of a service that is not a Cassini client: the broker itself, or any

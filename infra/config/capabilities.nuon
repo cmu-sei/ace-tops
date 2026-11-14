@@ -159,6 +159,23 @@
     resources: {}
   }
 
+  # The agent keeps a log's checkpoint key (docs/plans/record-store/to-main.md): its crypto actor makes it once on the
+  # workload's own volume (`persistent-data`, which such an agent also declares), never replaces it, signs checkpoints
+  # with it and has the credentials agent certify it. The builder puts the agent in the `checkpoints` group, which
+  # implies its two certification topics and is what the credentials agent certifies for. A key file until custody can
+  # hold a named key that outlives its pod; its path is today's, so a key already there is kept.
+  checkpoints: {
+    pod: {
+      env: [
+        { name: "POLAR_STORE_CHECKPOINT_KEY", value: "/var/lib/{workload}/logs/checkpoint-key.pem" }
+      ]
+    }
+    identity: {}
+    dependency: {}
+    init: {}
+    resources: {}
+  }
+
   # Reads the Kubernetes API across the cluster with the workload's own ServiceAccount token (a Secret, mounted where
   # Kubernetes clients look for it): a ClusterRole holding what its cluster operations declare, which never includes
   # Secrets (polar-agent-builder/src/capability.rs, `role_of`). The Job leaves automountServiceAccountToken unset

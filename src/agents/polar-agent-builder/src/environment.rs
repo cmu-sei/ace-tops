@@ -156,6 +156,7 @@ pub fn sections_for(capabilities: &[Capability]) -> Vec<&'static Section> {
             Capability::Signing => Some(&crate::signer::SECTION),
             Capability::KubeApiRead | Capability::PodRead | Capability::JobRun => None,
             Capability::SoftState => Some(&crate::state::SECTION),
+            Capability::Checkpoints => Some(&polar_crypto::environment::CHECKPOINTS),
         })
         .collect()
 }

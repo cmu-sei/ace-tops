@@ -128,6 +128,7 @@ mod tests {
                 self_test: true,
                 encryption: false,
                 soft_state: false,
+                checkpoints: false,
             },
             &[TopicDecl::publish(
                 "kubernetes.cluster.consumer.Pod",

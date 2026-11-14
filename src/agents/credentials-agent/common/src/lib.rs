@@ -46,6 +46,7 @@ pub mod events;
 pub mod graph;
 pub mod identity;
 pub mod issuance;
+pub mod key_certification;
 pub mod ledger;
 pub mod observer;
 pub mod retrieve_secret;
@@ -160,6 +161,13 @@ pub const CREDENTIALS_CUSTODIAN_ISSUANCE_REQUESTS_TOPIC: &str =
 pub const CREDENTIALS_CUSTODIAN_ISSUANCE_REPLIES_TOPIC: &str =
     "credentials-custodian-issuance-replies";
 
+/// A workload's crypto actor asking for a key it keeps for one purpose to be certified (key_certification.rs): a log's
+/// checkpoint key. The builder implies both for an agent in the `checkpoints` group (polar-topics' `Rule::Checkpoints`).
+pub const CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC: &str =
+    "credentials-key-certification-requests";
+pub const CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC: &str =
+    "credentials-key-certification-replies";
+
 /// What a custodian publishes and subscribes to, and nothing else (docs/architecture/key-custody.md, "Part A's bootstrap:
 /// the custodian"): its own requests and their replies, and the authority. The floor every agent and the broker read
 /// from a certificate gives a custodian's identity these and no more (`polar_agent_builder::Floor`).
@@ -195,7 +203,7 @@ pub const CREDENTIALS_DECRYPT_ON_BEHALF_OF_REPLIES_TOPIC: &str =
 /// Every topic the credentials agent serves a request on: its consumer subscribes to each, and unsubscribes from each
 /// when shutdown begins; its request gate and the authority model judge `Action::"request"` on each
 /// (docs/architecture/authority-model.md, slice 9).
-pub const REQUEST_TOPICS: [&str; 14] = [
+pub const REQUEST_TOPICS: [&str; 15] = [
     CREDENTIALS_ADMIN_ACTION_REQUESTS_TOPIC,
     CREDENTIALS_ACCOUNT_REQUESTS_TOPIC,
     CREDENTIALS_ISSUANCE_REQUESTS_TOPIC,
@@ -210,4 +218,5 @@ pub const REQUEST_TOPICS: [&str; 14] = [
     CREDENTIALS_DECRYPT_ON_BEHALF_OF_REQUESTS_TOPIC,
     CREDENTIALS_WORKLOAD_ISSUANCE_REQUESTS_TOPIC,
     CREDENTIALS_CUSTODIAN_ISSUANCE_REQUESTS_TOPIC,
+    CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC,
 ];

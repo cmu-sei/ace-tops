@@ -114,6 +114,10 @@ impl PolarAgent for CredentialsConsumer {
         )
         .waiting("a custodian publishes it, and custodians are not catalog workloads: their topics are their identity's (CUSTODIAN_PUBLISHES)"),
         TopicDecl::subscribe(
+            credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC,
+            "a workload's crypto actor asking for a key it keeps (a log's checkpoint key) to be certified",
+        ),
+        TopicDecl::subscribe(
             credentials_agent_common::authority_update::AUTHORITY_SNAPSHOT_REQUESTS_TOPIC,
             "an agent asking for the current policy and permissions",
         ),
@@ -239,6 +243,11 @@ impl PolarAgent for CredentialsConsumer {
         )
         .because(&[Cause::Topic(credentials_agent_common::CREDENTIALS_CUSTODIAN_ISSUANCE_REQUESTS_TOPIC)])
         .waiting("a custodian reads it, and custodians are not catalog workloads: their topics are their identity's (CUSTODIAN_SUBSCRIBES)"),
+        TopicDecl::publish(
+            credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REPLIES_TOPIC,
+            "a workload's key's certificate, or why not",
+        )
+        .because(&[Cause::Topic(credentials_agent_common::CREDENTIALS_KEY_CERTIFICATION_REQUESTS_TOPIC)]),
         TopicDecl::publish(
             credentials_agent_common::authority_update::AUTHORITY_UPDATES_TOPIC,
             "a signed change of policy, groups or revoked serials",

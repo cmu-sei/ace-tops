@@ -150,14 +150,39 @@ K2b-2 custody's daemon drops is_tls13_certificate_verify from its Sign arm (and 
 GAP (recorded 2026-11-13, store-to-main review point 6): polar-sign and polar-running-config sign a person's documents
    with identity.key_pem directly (polar_signing::sign_in), not through a CryptoActor. Theirs to move with the passkey
    work (people sign with WebAuthn); no new direct key-PEM signing meanwhile.
-S1 (record store bite 1's crypto pieces, docs/plans/record-store/to-main.claude.md): POLAR_STORE_CHECKPOINT_KEY in
-   `keys` (Optional, WriteFile, no default; render sets it for polar-git-server only); the CryptoActor makes the key
-   if absent (PKCS#8 PEM P-256, 0600, create_new, never replaced: acp's format, so u7c's key loads), SignCheckpoint
-   (Checkpoint::parse; origin == <own_identity>/<log>; NoteSigner named <own_identity>/checkpoint); own identity read
-   when a checkpoint key is given even without escrow. Certification: Agent::CHECKPOINTS (build fact) -> scaffold ->
-   resolver -> authority model Workload.checkpoints -> the credentials agent certifies a checkpoint key only for such
-   a workload (broker-stamped identity), via cert-issuer CertType::Checkpoint; the builder implies the two topics
-   CREDENTIALS_KEY_CERTIFICATION_{REQUESTS,REPLIES}_TOPIC for it (DECIDED: the model path records-like, for review).
+S1 DONE 2026-11-13 (record store bite 1's crypto pieces, docs/plans/record-store/to-main.claude.md):
+   - polar_crypto::environment::STORE_CHECKPOINT_KEY (POLAR_STORE_CHECKPOINT_KEY, Optional, WriteFile, no default) in
+     `keys`; KeyFiles.checkpoint; the CHECKPOINTS section requires it for the capability. from_env_for reads the own
+     certificate when a checkpoint key is given, even without escrow (the logs are named by identity).
+   - polar_crypto::checkpoints: load_or_make_key (PKCS#8 PEM P-256, 0600, create_new, never replaced; acp's format, so
+     u7c's key loads), judge(identity, text) (Checkpoint::parse, text in its one form, origin `<identity>/<log>`, log
+     a-z0-9-), CheckpointKey {open, sign, verifier_key, csr, certificate, expires_at, keep_certificate} with the chain
+     kept beside the key as `<stem>.chain.pem` only when it certifies this key for this identity.
+   - CryptoMessage::SignCheckpoint{text} -> Result<sig line, CheckpointRefusal>; CheckpointKey -> Option<(verifier key,
+     Option<chain>)>; CertifyCheckpointKey / CheckpointKeyCertified (internal): on ClientRegistered it subscribes to the
+     reply topic and asks when there is no certificate or it is past half its remaining life; renewal at half the time
+     left, retry 30 s.
+   - Capability::Checkpoints ("checkpoints"; catalog env POLAR_STORE_CHECKPOINT_KEY=/var/lib/{workload}/logs/
+     checkpoint-key.pem) -> Facts.checkpoints -> polar-topics Rule::Checkpoints, group `checkpoints`, implying publish
+     credentials-key-certification-requests and subscribe -replies (requests unprompted; replies answer nothing, as the
+     escrow replies). The certificate carries g:checkpoints; the model's Workload.groups carries it (no new model field:
+     DECIDED, the group IS the build fact the credentials agent reads; for review).
+   - credentials-agent-common::key_certification {CHECKPOINTS_GROUP, KeyPurpose::Checkpoint, KeyCertificationRequest
+     {csr_pem, purpose}, KeyCertificationReply {Certified {certificate_pem, ca_chain_pem, expires_at} | Refused
+     {NotPermitted | SigningFailed}}}; consume::key_certification handler + actor: certifies only when the broker-stamped
+     identity's model entry is in the group, via /internal/issue CertType::Checkpoint, no instance, no extra names. No new
+     ledger event: cert-issuer's certificates-reported records it (persisted format unchanged; acp compatible).
+   - cert-issuer: an internal caller may now ask for a checkpoint certificate for another identity (was: its own only),
+     still never for a pod and naming nothing else (DECIDED by the cleared plan + "workload keys go through the
+     credentials agent"; for review).
+   - Builder: make_written_directories also makes a written FILE's directory before the lock (a fresh volume has no
+     logs/ dir; Landlock leaves a missing path ungranted).
+   - The domain's way to it: polar_agent_builder::crypto::CheckpointHandle {sign(text) -> sig line, key() -> (verifier
+     key, Option<chain>)}, in AgentResources.checkpoints and ServiceResources.checkpoints, Some when the deployment names
+     POLAR_STORE_CHECKPOINT_KEY. credentials-key-certification-requests joined credentials_agent_common::REQUEST_TOPICS
+     (15), so the request gate judges Action::"request" on it and the drain lets it go.
+   - For bite 1 (polar-cc): the git server declares NEEDS Checkpoints (and persistent-data) and signs through
+     resources.checkpoints; nothing on main declares Checkpoints yet.
 K4 Dependency test: cargo metadata; only polar-crypto, polar-init, polar-health, polar-custody-daemon (and polar-custody
    itself) may depend on polar-custody. Builder loses its direct dependency.
 K5 Degraded key files held by the CryptoActor (same shape).
