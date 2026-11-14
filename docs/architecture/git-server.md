@@ -125,6 +125,99 @@ and no Cassini variables to set. It then keeps the health check and the shutdown
 it publishes no `RepoChanged`. When `cassini` is provided, the client's settings become required
 as for any agent, and a half-configured server refuses to start. How to run it: the crate's `README.md`.
 
+## Inside the boundary (the maintainer, 2026-11-09)
+
+**Decided:** where an agent and a service Polar built are both inside Polar's boundary, the agent reaches the service
+through Cassini, never by a direct connection; and the degraded paths (another git remote, a key file to reach the
+service) are not valid for Polar's own use. A deployment has a Polar git server. Why: what traverses Cassini is
+observable, judged by the broker-stamped identity, and needs no key outside the custody daemon; a direct connection is
+none of these, and the server announces only the pushes it accepts, not what it serves.
+
+*Its scope, as read by the agent that recorded it, for review:* it governs Polar's services inside the boundary, which
+today means this server. It does not govern Polar's edges, which are what direct connections are for: Neo4j, the
+Kubernetes API, and an observer's outside sources; nor bootstrap, where `polar-init` has no certificate to join Cassini
+with yet. Running the server on its own ("Running on its own", above) is unchanged: that is the server outside a
+cluster, not an agent inside one.
+
+*What it changes, tracked:*
+- **The scheduler observer's reads** of `polar-schedules` and the deployment repository, until then `git` over mTLS on a
+  key file (`key-custody.md`: the one pod on key files), come through Cassini from this server ("Reads over Cassini",
+  below). Its polling of another remote goes with it. *Built 2026-11-10 (O2):* it names the repositories
+  (`POLAR_SCHEDULER_SCHEDULES_REPO`, `POLAR_SCHEDULER_DEPLOYMENT_REPO`) where it named URLs, and runs `git` only for the
+  deployment copy's push until `up.nu` makes the copy (O3). *Built (O3):* `up.nu` copies the deployment as an
+  administrator, and the observer runs no git.
+- **Evidence records** reach `polar-evidence` over Cassini: a collector that is a workload (the attestation agent first)
+  sends its signed records, and this server verifies each in the evidence domain, takes them only from identities
+  allowed to add evidence, commits them to its own repository under the add-only rule, and announces the commit as it
+  does every push (`record-store.md`, "Attestation verdicts as records").
+- People still push with `git` and their own certificates, as `polar-sign` does: they are outside the boundary, and each
+  push is announced.
+
+### Evidence records over Cassini, built (2026-11-09, bite A)
+
+- **The topics** (`polar-git-server-common`): a collector publishes `Envelope<AddRecord>`, the signed record as its
+  signer wrote it, on `polar-git-evidence-requests`; the answer goes to the sender's own topic,
+  `polar-git-evidence-replies.<workload>`, named per sender as the attestation agent's askers are, so the server's
+  certificate carries no family (the attestation agent's). The answer is `Committed { path, commit }`,
+  `AlreadyThere { path }`, `Refused { why }` (never as it is: the sender may not add evidence, or it is no verifying
+  record) or `NotNow { why }` (the repository could not be written: the sender keeps it and sends it again).
+- **Who may add** is who may write `polar-evidence`, by the server's own access list, judged on the identity the broker
+  stamped; a reader is refused, and a request with no stamped identity, or one that names no workload, has nobody to
+  answer and is dropped with a warning. The record must also be the sender's own, of a type its signing certificate
+  may record (below).
+- **What is added** (`src/evidence.rs`, `place`): a record that verifies in the evidence domain under the CA the server's
+  clients chain to, at `<type>/<the subject's values, sorted by key>/<sha256 of its bytes>.json`, as polar-sign
+  places its own. The keys are sorted in the code: whether serde_json keeps an object's written order depends
+  on the build's features, and here it does (a test caught it). A segment that is empty, starts with `.`, or holds `/`,
+  a backslash or a control character is refused.
+- **How it is committed** (`RepoStore::add_file`): one commit by `polar-git-server` on `main`, built in an index of its
+  own beside the bare repository (no working tree), never over a file that is there; `main` is moved only from the
+  commit read (`git update-ref` with the old value), so a push in between is never lost, and the addition is made again
+  on top of it, five times at most. A test races five additions at once and loses none; with the old value left out, it
+  fails. The commit is announced as `RepoChanged` with the sender as pusher, and written to `push-log.jsonl`, as a push
+  is.
+- **The actor** (`IntakeActor`): one at a time, so additions never race each other; its answers carry the server's
+  identity, for the sender to check who answered. Only with Cassini; on its own the server takes none.
+- **Tests:** the messages over the wire; `place` for each refusal; the intake committing, answering with the
+  correlation id and announcing once, the same record again already there, a reader and a stranger refused, a record
+  under another CA refused, nobody to answer, and a repository that cannot be written answered not now; the store's
+  addition, its refusals of paths, and the race; the declared topics.
+- **The sender's own** (built 2026-11-10, `key-custody.md`, "Workload signing keys", item 8): a record is taken only
+  when its signer is the sender, under a signing certificate (never the pod's mTLS one) whose `c:record-evidence`
+  allows its type (`place_senders`, `polar_signing::workload_certificate_refusal`, then policy, the certificate where
+  policy is silent).
+- **Into the evidence log** (`record-store.md`, "Bite 3"): each record the intake takes is appended to the store's
+  evidence log before it is committed, and a push to `polar-evidence` feeds the log before any ref moves; at start the
+  log catches up with what the repository holds.
+- **Pushed commits about now** (built 2026-11-10, item 7): a push to `polar-evidence` is refused when a commit it brings
+  is dated more than ten minutes from the server's clock, or not at all, since readers verify a record as of the commit
+  that added it (`check_pushed_times`, in the push's quarantine, over the commits signed repositories check).
+- **Not yet:** the rest of the add-only rule for what people push with `git` (no file changed or removed).
+
+### Reads over Cassini, built (2026-11-10, slice C, C2, O1)
+
+- **The topics** (`polar-git-server-common`): an agent publishes `Envelope<ReadMain>` on `polar-git-read-requests`: a
+  repository, the paths it wants (each a file, or a directory and all under it, segment by segment; none, every file), and
+  the commit it has, if any. The answer goes to the sender's own topic, `polar-git-read-replies.<workload>`, named per
+  reader as the evidence intake names its senders (the scheduler observer's first): `Files { commit, files }` (each with
+  its path, whether it is plain, executable or a link, and its bytes, by path), `Unchanged { commit }` when `main` is
+  still the commit it has, `NoMain`, `Refused { why }` (it may not read the repository, there is none, or the answer is more
+  than one message carries: ask for less) or `NotNow { why }` (the repository could not be read: ask again).
+- **Who may read** is the repository's readers, judged on the identity the broker stamped, as a fetch over HTTP is on its
+  certificate's. A refusal comes before whether the repository exists, so a sender learns nothing of one it may not read;
+  a request with no stamped identity, or one that names no workload, has nobody to answer and is dropped with a warning.
+- **What is read** (`RepoStore::read_main`): `main`'s tree, entered only where it leads to a path asked for, each blob
+  read in process; a submodule's commit is passed over. Reading stops once the files and their paths pass the bound, and
+  the whole answer is held to it again before it is sent: Cassini's payload bound (64 MiB less the envelope's allowance,
+  `cassini_types::MAX_PAYLOAD_BYTES`).
+- **The actor** (`ReadActor`, `server/src/read.rs`): one read at a time, beside the evidence intake, so a read never waits
+  on an addition. Only with Cassini.
+- **Tests:** the wire types' round trip for every request and answer (a property), garbage refused; the store's read
+  (the whole tree, a directory, files, a prefix of a name that is not a path, unchanged, no `main`, file kinds, too large),
+  and a property that a read enters every directory above a wanted file and takes only wanted files; the reader answering
+  on the sender's topic, a stranger refused before anything is said of the repository, a reader told a declared repository
+  is not there, too large refused, nobody to answer; the declared topics.
+
 ## Authorship, and degraded mode
 
 The server's own record of pushes says who pushed what and when: `push-log.jsonl` beside the

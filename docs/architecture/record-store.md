@@ -24,7 +24,17 @@
 # The record store: Polar's signed logs, presented as git
 
 Status, 2026-11-10: designed with the maintainer, and **cleared as written** by the maintainer the same day, the
-choices marked *(for review)* included. Nothing is built. Decisions the maintainer made are dated
+choices marked *(for review)* included. Built first on the agentic-control-plane branch, and coming to main in bites
+(the maintainer, 2026-11-13: "Bring the store to main"; `docs/plans/record-store/to-main.md`).
+
+**On main (2026-11-13):** bite 1 of that plan: the store's logs in the git server, served to people as tiles; the
+evidence intake over Cassini, each record appended to the evidence log, a push to `polar-evidence` too, and the log
+caught up with the repository at start; and the attestation agent's records (below, "Attestation verdicts as
+records"). The checkpoint key is the crypto actor's (`docs/plans/crypto-actor.md`): it makes it once beside the logs,
+signs every checkpoint and has the credentials agent certify it, so the store holds no key of its own. **Still to come
+on main**, each a bite of the plan: the witness (bite 5 below), schedules on the log (bite 6), people's tools over
+Cassini, and `polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
+branch), describes that branch until its bite lands. Decisions the maintainer made are dated
 and attributed; the rest are this session's, by the design principles (`AGENTS.md`), and marked *(for review)*. Owner:
 the agentic-control-plane session (the maintainer, 2026-11-10). The research on formats and Merkle logs is polar-89's,
 in main's `docs/architecture/ledger-evolution.md`, and is cited here, not redone.
@@ -707,10 +717,82 @@ building, for review:*
   none, so the line reads "the certificate for `` is not valid at the time of checking". It is cosmetic, and left as
   it is.
 
-**L3, checkpoints into the store, outlined.** A `ledger` log in the store. A checkpoint is admitted over Cassini
-when its note verifies under the ledger key's certificate and a consistency proof from the last one admitted holds.
-So the store refuses a rewritten ledger, and the store's own checkpoints and the witness cover what it admitted.
-`polar-eden` can read it.
+**L3, checkpoints into the store: the plan (2026-11-12, for the maintainer to clear).** Read for it: the store's
+`logs.rs` (logs made at their first append, `AppendOnce`, `governing_repo`), `evidence.rs` (the intake: a sender the
+broker stamped, answered on a topic named for it), `witness.rs` and bite 5's plan above (the store submitting its
+checkpoints), `log_read.rs` and `http.rs` (who reads a log), `polar_git_server_common` (the wire types and topics), and
+the credentials agent's `revocation_evidence.rs`, which already sends the store records over Cassini.
+
+*The shape:* the ledger submits its checkpoints to the store as the store submits its own to the witness. The store
+holds, for each ledger, the last checkpoint it admitted, and takes a new one only when it follows on from it. So the
+store refuses a rewritten ledger, and its own checkpoints and the witness cover what it admitted.
+
+1. *A `ledger` log in the store*, made at its first entry, as every log is. Its entries are of the kind
+   `ledger-checkpoint`, version 1, critical. The event is a fixed CBOR map, written by hand as the envelope is:
+   `0` the signed note, `1` the ledger key's certificate (PEM). It is witnessed as every log is. It is served, as
+   tiles and over Cassini, to whoever may read `polar-evidence` (`governing_repo`): a checkpoint says nothing secret,
+   and it is evidence about the credentials agent. *For review.*
+2. *The request.* On `polar-ledger-checkpoint-requests`, the agent sends
+   `AddLedgerCheckpoint { old, proof, checkpoint, certificate }`: the size it believes the store last admitted, the
+   consistency proof from there, its signed checkpoint, and its key's certificate. It is answered on
+   `polar-ledger-checkpoint-replies.<workload>`, with the request's correlation ID. The types live in
+   `polar_git_server_common`, in rkyv, in the shared envelope, as the evidence intake's do.
+3. *Admission*, in order, refusing at the first that fails:
+   - the sender is one the broker stamped;
+   - the certificate is a checkpoint certificate of that sender's identity, under the CA the store trusts, now
+     (`verify_checkpoint_certificate`);
+   - the note opens under the key it certifies;
+   - its origin is `<the sender's identity>/ledger`;
+   - it follows on from the last checkpoint the store admitted of that origin: `old` is that checkpoint's size, and
+     the proof holds from its root to the new one. The first of an origin is taken whole, and the store pins it.
+
+   An admitted checkpoint is appended as an entry, and the sender is its submitter. The last admitted checkpoint of
+   each origin is read from the log when the store starts; there is no second record of it.
+4. *The answers:* `Admitted { size }`; `Conflict { size }`, when `old` is not the size the store admitted last, and
+   the agent sends again from that size; `Refused { why }`; and `NotNow { why }`, when the log does not take it.
+   A checkpoint the store holds already is `Admitted`, so an answer that was lost costs nothing.
+5. *What the agent does.* A `LedgerSubmitter` actor sends the ledger's latest checkpoint once the agent has
+   started, and then at most once a minute while it grows. It asks the ledger actor for the checkpoint and the proof,
+   as the store's witness client asks its logs. It starts from `old = 0`, so the store's first answer to a new agent is
+   a `Conflict` naming the size it holds. A minute bounds what a rewrite could take away before the store saw it; a
+   second, the ledger's own cadence, would put up to 86,400 entries a day in the store. *For review.*
+   - On `Admitted`, it is said at debug.
+   - On `Conflict`, it sends again at once, from the store's size.
+   - On `NotNow`, or no answer, it is said once per outage and tried again at the next minute.
+   - A refusal because the ledger does not follow on from what the store admitted is said as an error every time. The
+     agent keeps serving. This is as the store does when the witness refuses its proof (bite 5), and stopping would let
+     a store that misbehaves shut down the credentials agent. *For review.*
+   - The agent's catalog entry gains the request topic to publish and its replies topic to subscribe, and the store's
+     gains the reverse.
+6. *A reader for an auditor.* `polar-eden fetch-log` mirrors the `ledger` log as it mirrors the others, held to both
+   keys. `polar-ledger --against-store <mirror> --log-key <the store's key> --witness-key <the witness's>` reads the
+   mirror (`polar_log::tiles`), takes the last checkpoint the store admitted of the ledger's origin, and checks that
+   the ledger on the volume follows on from it.
+
+*Open, decided to come later (the maintainer, 2026-11-12):* a person who accepts an older ledger (L2's way back,
+removing `ledger.checkpoint`) is then refused by the store at every submission, since the store's log keeps the
+history it admitted. Accepting it there takes an administrator's signed "new start" for that origin, appended to the
+`ledger` log, after which the next checkpoint is taken whole. That is a bite of its own. Until it is built, such a
+ledger is refused and said.
+
+*Tests first:*
+- Admission refuses another sender's checkpoint, a certificate of another type or identity, a note the certified key
+  did not sign, another origin, and a proof that does not hold. It takes the first whole, and the same one twice.
+- `Conflict` and the resend from the store's size.
+- After a restart, the store's last admitted checkpoint is read from the log.
+- The submitter's cadence, and its outage said once.
+- `polar-ledger --against-store` takes a ledger that follows on, and refuses one rewritten behind what was admitted.
+- Properties: the store admits a checkpoint exactly when it follows on from the last one admitted of its origin; for
+  any sequence of submissions, the admitted checkpoints of an origin are each consistent with the one before.
+
+*Live, on u7c:*
+- The store's first admitted checkpoint, and a minute later the next.
+- The `ledger` log co-signed by the witness.
+- `polar-eden fetch-log` of it, and `polar-ledger --against-store` on copies.
+- The refusal, on copies. Only the credentials agent can send as itself, so a test client sending to u7c's store
+  would be refused for who it is, before its checkpoint is looked at. Instead, the deployed commit's admission is run
+  here against a copy of the store's `ledger` log and an older copy of u7c's ledger, signed with a throwaway key
+  certified as in the tests. It must say the checkpoint does not follow on, and append nothing.
 
 ## Built
 
@@ -919,6 +1001,30 @@ client said one warning, before the pins (no witness key yet), and nothing after
 left change only what is logged (the observer's once-said and handed-on lines, the witness client's "co-signs again"
 line) or are older code that moved: the observer's first-read backoff, the tile fetch's NotFound guard in
 `verified_leaves`, and `files_of`'s size bound.
+
+## Attestation verdicts as records
+
+*Decided (the maintainer, 2026-11-09; built 2026-11-10 on the agentic-control-plane branch, on main 2026-11-13).* The
+attestation agent's verdicts lived only in its logs and in other agents' state: a refusal and an unattested issuance in
+the credentials agent's ledger, a finding as an `AttestationReported` there, a lasting drift as an ERROR line. None was
+evidence a claim could bind. So:
+
+1. **The attestation agent signs its own records,** in the evidence domain, with a key of its own per pod, never
+   escrowed, under a signing certificate carrying `c:record-evidence:attestation-report,attestation`
+   (`key-custody.md`, "Workload signing keys"). On main it signs through its crypto actor (`SignRecord`).
+2. **Two kinds of record.** `attestation-report`, one for each finding as it is published on `attestation-reports` (an
+   alteration, a crash by a signal, a panic: a container that exits 101), with `under_test`. And `attestation`, the
+   cluster's standing, subject `target=<the deployment record's target>`, three verdicts by id with their witnesses:
+   `agent-proved-itself`, `pods-genuine`, `deployments-match-record`. Written whenever a verdict changes, and once a day
+   regardless, so a reader sees it is fresh (`attestation/agent/src/evidence.rs`).
+3. **They reach `polar-evidence` through the git server, over Cassini** (`git-server.md`, "Inside the boundary"): no
+   agent pushes with `git`. The builder's recorder (`polar-agent-builder/src/recorder.rs`) sends them one at a time and
+   in order, keeps one the server cannot take now and sends it again, at most 1000 kept; one refused for good, or past
+   the bound, is said at ERROR, never lost silently. A finding before a deployment record is held waits for the
+   record's target, within the bound.
+
+A crash still shown in a pod's status is found again after the agent restarts, and recorded again (a signature differs
+each time, so the file does too); a reader tells them apart by the pod's UID, the container and when it ended.
 
 ## What a rollback needs
 
