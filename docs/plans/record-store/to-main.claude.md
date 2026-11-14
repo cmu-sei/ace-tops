@@ -185,6 +185,28 @@ RACE (polar-f1's bite-4 review, 2026-11-14), fixed on store-bite-4 (covers B3's 
   covers the other direction). Left as is.
 - acp has the same race (its schedules.rs/http.rs are the source of this port); acp's merge of main resolves it by
   taking main's version of these files.
+B5 (store-bite-5, 2026-11-14, on store-bite-4 f06c4022), from acp f79af58d + 2cfc9fa2 + 7822a2bd:
+- polar-git: settings drop POLAR_GIT_CERT/POLAR_GIT_KEY, polar_custody ServerKey/one_key and read_key; the catalog's
+  source-git sets TLS_SERVER_CERT_CHAIN/TLS_SERVER_KEY (key_of: server), declared by `keys`. Its section's relation
+  requires TLS_SERVER_CERT_CHAIN (polar_crypto::environment::SERVER_CERT_FILE), since it serves nothing without one; the
+  key-or-socket choice is the crypto actor's at start, as for every server (no one_key, per the coordinator). Listener:
+  polar_git_server::tls::server_config(&resources.tls, ca, None). Dep polar-custody → polar-crypto (polar-git is
+  NOT_THE_DOMAIN in domain_has_no_way_out, as acp listed it). Tests build the server config with
+  polar_crypto::tls::server_config(KeySource::Files), as polar-git-server's e2e does.
+- git-remote-polar: NOT through polar_crypto::cassini::standalone. It never uses Cassini and never opens a key: it
+  hands git `http.sslCert/sslKey/sslCAInfo` paths and git's curl does TLS. acp's polar-git-push dep (a polar-eden
+  crate, D2) replaced by its 3-line git_config, inlined.
+- Path-valued variables: POLAR_GIT_REPO_ROOT path WriteDir, POLAR_GIT_CA_CERT path ReadFile; no text path. Render
+  check without a cluster (25 scaffolds, polar-git included): all checks pass through Landlock, cert-issuer, CA; stops
+  at image pinning only.
+- capability.rs DEPLOYMENT_ONLY gains "source-git" (removed in B4, B5's). Seed policy gains the polar-git rules after
+  the People-on-Cassini rules; groups.json's repo-developers from acp. polar-git.nuon's header named git-server.nuon
+  too (acp copy slip): fixed.
+- STATE: new workload polar-git, its own persistent-data PVC (repos), certificates from the credentials agent
+  (sandbox-local issuer). u7c (read 2026-11-14): acp's polar-git deployment was pruned when main took the cluster, and
+  its claim polar-git-data (pvc-e8e267d3, 2d11h) is still Bound; main's render names the same claim
+  (persistent-data, `<workload>-data`), so its repositories open as found. Policy v3+/groups v2 with repo-developers
+  are already in force on u7c, so the seed writes nothing.
 
 ## RISKS
 size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching

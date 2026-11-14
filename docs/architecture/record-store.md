@@ -43,7 +43,8 @@ checkpoint, and on `main` the crypto actor signs it when it is asked, since the 
 (2026-11-14):** bite 4, people's tools over Cassini (below, "People's tools over Cassini"): a person's floor, Cedar told
 whom a topic is addressed to, the store answering a person and taking their signed sections, and `polar-sign`'s pushes
 through `polar-records-client` when no git repository is named, its TLS from a crypto actor over the person's files.
-`polar-eden`'s use of the client is the other branch's. **Still to come on main:** `polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
+`polar-eden`'s use of the client is the other branch's. **On main (2026-11-14):** bite 5, `polar-git` and its git
+client, `git-remote-polar` (`polar-git.md`, which says how main differs). Every bite of the plan is on `main`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
 branch), describes that branch until its bite lands. Decisions the maintainer made are dated
 and attributed; the rest are this session's, by the design principles (`AGENTS.md`), and marked *(for review)*. Owner:
 the agentic-control-plane session (the maintainer, 2026-11-10). The research on formats and Merkle logs is polar-89's,
