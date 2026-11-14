@@ -474,6 +474,134 @@ protection, and then a pod without it is refused its certificate. Probed on whit
 5. *N1 and N2*, the builds' policy and its canary.
 6. *C5, the session bound to the pod's address* through its certificate.
 
+### The witness of the store's logs: the plan (2026-11-11, cleared as written by the maintainer the same day)
+
+The record store's bite 5 (`record-store.md`, decision 6 and "Bite 5, the witness: the plan", which is the store's
+side and the co-signature's form; this is the witness's). The attestation agent co-signs each checkpoint of each of the
+store's logs, so a store that rewrites, forks or rolls back a log is caught by a second party and not only by a
+reader who happens to compare. Read: C2SP tlog-witness, tlog-cosignature and signed-note (the editor's copies,
+2026-11-11). *Decided (the maintainer, 2026-11-11):* the co-signature is P-256, outside C2SP's two algorithms, so only
+Polar's code checks it; the store makes a checkpoint at its start and at most once a second while entries arrive;
+readers require the witness's co-signature; the witness's key is a file on a volume of the agent's own; plan, then build.
+
+**It reads no entries.** The store brings it each checkpoint as tlog-witness's `add-checkpoint`, and it checks a
+proof, keeps a size and signs. What a log holds is a monitor's to check, a later bite.
+
+**What it is.** A domain actor of the attestation agent, the witness, beside the supervisor: its held checkpoints are
+its own state, which nothing outside reads (`soft-state.md`, "Self-state and introspection"). One request at a time,
+so its check and its write are one step, as tlog-witness requires (two requests overlapping must never roll the held
+size back).
+
+**Over Cassini.** The store asks on `attestation-witness-requests` and is answered on its own topic,
+`attestation-witness-replies.polar-git-server`, named for it as the instance check's askers' are
+(`attestation_common::protocol`); both in `attestation-common`, rkyv in the shared envelope. A request is
+`AddCheckpoint { old, proof, checkpoint }`: the size the store believes the witness holds, the consistency proof from
+it, and the signed checkpoint as a note. The answer names the checkpoint's origin and size, so the store matches it to
+what it asked, and is one of: `Cosigned(line)`; `Conflict(size)` (409: the size the witness holds); `Refused(why)`, with
+tlog-witness's reasons, `Malformed` (400: `old` beyond the checkpoint's size), `Untrusted` (403: no verifying signature
+from the store's pinned key), `UnknownOrigin` (404: an origin not under the pinned store's name) and `Inconsistent`
+(422: the proof fails, two roots for one size, a proof from size 0, an empty tree whose root is not the empty one). A
+request whose sender the broker did not stamp, or stamped as another identity than the store's, is dropped with a
+warning, as an unverified question is (`supervisor.rs`, `reply_topic_for`).
+
+**The checks, in tlog-witness's order**: the checkpoint verifies under the store's pinned key; `old` is at most its
+size; `old` is the size held for that origin (none held: 0); an empty tree has the empty root; the proof is empty from
+0 and holds otherwise; equal sizes have equal roots. Then the new checkpoint is kept, and only then signed and answered.
+Every origin under the store's name is witnessed, each on its own; the first submission for one is from 0.
+
+**Its key and what it holds**, on a claim of its own (`persistent-data`, `/var/lib/attestation-agent/witness`; one pod,
+replaced by `Recreate`, as `rules.nu` requires of a claim):
+- *The key*: P-256, `witness-key.pem`, 0600, made at its first start and never replaced, as the store's
+  `checkpoint-key.pem` is. *On main* the crypto actor makes and holds it (`POLAR_WITNESS_COSIGNING_KEY`, the `keys`
+  section) and the witness co-signs through its `CosignHandle`, so the domain holds no key. Named `<identity>/witness`, its identity from its certificate, as
+  the store's key is `<origin>/checkpoint`. It signs co-signatures and nothing else; the agent's evidence records are
+  signed in custody, by a key per pod (`key-custody.md`, "Workload signing keys"), which readers could not pin.
+- *What it holds*: one file of every origin's last co-signed checkpoint and its time, written whole to a new file,
+  synced, renamed over, the directory synced, before the answer goes. The key and the file are made together: a key
+  with no file, or a file that does not read or whose checkpoints its own key did not sign, is damage, and the witness
+  answers nothing and says so (held, never started again from 0, which would co-sign whatever came next). A lost claim
+  loses the key with the state, so readers, who pin the key, refuse what a new witness signs until a person pins it
+  again: losing its memory can never pass for consistency.
+- *Its time*, T in each co-signature: its clock in seconds, never before the last T it signed for that origin, as the
+  store's admission time never goes back. A reader refusing a T a minute in its future is the store's plan's.
+- *Signing*: with polar-log's co-signature code (`0xff` and `polar.dev/cosignature/p256/v1`, the store's plan), never
+  one of its own.
+
+**Whom it witnesses.** The store's verifier key, in the agent's section as a `Dynamic` variable
+(`POLAR_ATTESTATION_WITNESSED_STORE`), set by a signed runtime section via polar-schedules, the design principle for what
+an agent must know of another; until the credentials agent certifies the store's key and the witness's (decision 5).
+Unset, it refuses every request as `UnknownOrigin` and says so once. The store learns the witness's key the same way
+(its plan). So a first deployment has one step for a person: both start and log their verifier keys, and an
+administrator signs the update that pins each in the other. *Decided (the maintainer, 2026-11-11): up.nu does it, on
+any target, as the `--user` who runs it:* it waits for both keys to be logged and signs the update, which is the
+record, as it would be by hand.
+
+**What it does with misbehaviour.** It sees and reports; it never acts. A conflict alone (409) is not misbehaviour (an
+answer lost, a store restored from its own last co-signed checkpoint) and is said at info. A checkpoint the store's key
+signed that cannot follow what the witness co-signed is: an inconsistent one (422), or one smaller than the size held
+(a signed rollback, answered 400 after the store's 409 retry). For those it signs nothing, logs an error, publishes a
+finding on `attestation-reports` (a new `Finding::LogInconsistent`, carrying the origin, the held size and root, and the
+offered ones) and records it as an `attestation-report`, a type its certificate names already. The record goes
+through the store it reports on, which may drop it; the report and the log line do not. *The new finding changes the
+report's wire type, which the credentials agent decodes: both are built from one tree and deployed together.*
+
+**Tests first.** Each check and its answer, by example; the key and the file made together, and each damage refusing;
+the write before the answer (an answer is never sent for a checkpoint a restart would not find). Properties, as a
+state machine: for any sequence of submissions, honest, forked, rolled back, repeated or out of order, the witness never
+co-signs two checkpoints of one origin that are not consistent, its co-signed size and T never go back, and a restart
+between any two changes neither. Live on u7c, after the store's side: the pin step, a co-signed checkpoint served,
+`polar-eden fetch-log` holding both keys, and the agent's pod deleted and replaced, its key and held sizes the same and
+the next checkpoint co-signed.
+
+*Built (2026-11-11), the witness's side; live on u7c waits for the store's:* `attestation_common::witness`, the wire
+form; `attestation-agent`'s `witness.rs`, the judgement (`judge`), what it keeps (`Kept`: the holding made first, then
+the key; either alone is damage), its co-signature through polar-log's `Cosigner`, each held checkpoint's line checked
+against its own key at start (`check_holding`), and the actor, one request at a time, which follows
+`POLAR_ATTESTATION_WITNESSED_STORE` from its own start; the supervisor hands it what arrives on
+`attestation-witness-requests` and turns its misbehaviour into a `LogInconsistent` report of the store's pod, published
+and recorded as the agent's other findings are. The catalog gives the agent `persistent-data` and
+`POLAR_ATTESTATION_WITNESS_ROOT`. *Decided while building, for review:* a pin naming another store than the one the
+agent's own certificate implies (`polar_agent_builder::recorder::server_identity`) is said and not taken, so a signed
+section cannot point the witness at another workload's key; a pin that is a witness's key named like a store's is
+refused, since only a key of type `0x02` signs checkpoints; a co-signature that could not be kept is not sent, and the
+store asks again at its next checkpoint; with what it keeps damaged the agent runs on without its witness, and says so
+once a checkpoint arrives, rather than holding its other work. *Tests:* each check and its answer; a co-signature
+verified by a reader holding both keys, with the witness's time; the store alone answered; a fork refused and handed
+on; a pin of another store not taken; a misbehaviour said of the store's pod alone; the state-machine property above,
+which fails with the consistency check removed or the time taken from the clock alone.
+
+*The pins, in up.nu's seed (2026-11-11):* `seed_witness_pins` reads each key where its owner logs it at start (the store's
+"the store's logs are open", the witness's "the witness of the store's logs is ready", each a `key` field), waiting up to
+three minutes for each, and signs it as the other agent's first settings (`permanent/<agent>/configuration.dhall`) as
+the one who runs up.nu, in the seed's commit. *Decided while building, for review:* a pin is signed only when the agent
+has no settings yet, and is left as it is otherwise, said: pinning again on every run would let a witness (or a store)
+that lost its key and memory pass for the one readers trust, which the plan makes a person's step; a key not said in
+time is noted, and the next run pins it. *Tests* (`infra/tests/seed.nu`): the key read from a coloured line, the last
+said, and no other field; each pin the other's key; only a missing one signed.
+
+*Live on u7c (2026-11-11, agentic-control-plane 4af66add, a whole up.nu run, before the witness came to main).* The attestation agent's claim was made
+and its witness key with it; the seed read both keys from the two logs and signed both pins as djshepard ("pinned in
+attestation-agent", "pinned in polar-git-server"); each agent took its pin as a signed update (`witnessing=true`,
+`pinned=true`). The store submitted the evidence log, 13 leaves, from 0; the witness co-signed it, and
+`polar-eden fetch-log` with both keys fetched it, the checkpoint carrying both signatures, and held it to the checkpoint
+remembered from the day before. After the attestation agent's pod was deleted and replaced, its key was the same, it held
+the evidence log at 13, took its pin again on start, and co-signed the next checkpoint (14 leaves), which `fetch-log`
+read. 26 pods running, no restarts, no attestation findings, no warning from either side's witness actor but the store's
+one before the pins.
+
+*On main (2026-11-14, the record store's bite 2, `docs/plans/record-store/to-main.md`).* The witness as built above, with
+its key the crypto actor's: the actor makes `witness-key.pem` under `POLAR_WITNESS_COSIGNING_KEY` (the catalog sets it
+to `<POLAR_ATTESTATION_WITNESS_ROOT>/witness-key.pem`, where acp made it, so the pins on u7c hold), follows
+`POLAR_ATTESTATION_WITNESSED_STORE` itself and refuses to co-sign for any other store, and gives each co-signature's T
+from its clock. The pin is declared once, by the `keys` section, not by the agent's own. Since the witness no longer
+makes the key, "a key with no file" cannot be judged by the file's presence: the holding (`witnessed.json`) now
+records the verifier key it was made under, `{ key, origins }`, and a holding recorded under another key than
+`CosignHandle::key()` is damage. A holding in the earlier form (the origins alone) is taken once every line in it
+verifies under the actor's key, and written again with the key. A T that would go back on what is held for an origin
+is neither kept nor sent. *The gap (for review):* a holding lost while the key survives (the file deleted, the volume
+kept) now starts empty under the same key, which the domain cannot tell from a first start; the actor would have to
+make the key and the holding together for the witness to refuse it.
+
 ### For the maintainer
 
 1. *The address check.* Raised and set aside: a token the API signs is inside the trust base ("Not a gap", above).

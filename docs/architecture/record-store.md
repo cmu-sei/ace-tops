@@ -31,9 +31,12 @@ choices marked *(for review)* included. Built first on the agentic-control-plane
 evidence intake over Cassini, each record appended to the evidence log, a push to `polar-evidence` too, and the log
 caught up with the repository at start; and the attestation agent's records (below, "Attestation verdicts as
 records"). The checkpoint key is the crypto actor's (`docs/plans/crypto-actor.md`): it makes it once beside the logs,
-signs every checkpoint and has the credentials agent certify it, so the store holds no key of its own. **Still to come
-on main**, each a bite of the plan: the witness (bite 5 below), schedules on the log (bite 6), people's tools over
-Cassini, and `polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
+signs every checkpoint and has the credentials agent certify it, so the store holds no key of its own. **On main
+(2026-11-14):** bite 2, the witness (bite 5 below): the attestation agent co-signs each checkpoint through its crypto
+actor, the store keeps each co-signed checkpoint beside its log and serves only those, and up.nu's seed pins each key
+in the other's settings (`runtime-attestation.md`, "The witness of the store's logs", which says how main differs).
+**Still to come on main**, each a bite of the plan: schedules on the log (bite 6), people's tools over Cassini, and
+`polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
 branch), describes that branch until its bite lands. Decisions the maintainer made are dated
 and attributed; the rest are this session's, by the design principles (`AGENTS.md`), and marked *(for review)*. Owner:
 the agentic-control-plane session (the maintainer, 2026-11-10). The research on formats and Merkle logs is polar-89's,
