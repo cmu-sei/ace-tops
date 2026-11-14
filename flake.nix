@@ -283,6 +283,7 @@
           nuInitImage = polarPkgs.nuInit.image;
           gitServerImage = polarPkgs.gitServer.image;
           polarGitServerImage = polarPkgs.polarGitServer.image;
+          polarGitImage = polarPkgs.polarGit.image;
           secretHarnessOwnerImage = polarPkgs.secretHarness.ownerImage;
           secretHarnessIntruderImage = polarPkgs.secretHarness.intruderImage;
           polarInitImage = polarPkgs.polarInit.image;

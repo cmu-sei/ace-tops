@@ -29,6 +29,7 @@
 #   polar-sign          sign, seal and push configuration
 #   polar-admin-grant   provision and claim accounts, bootstrap the CA
 #   polar-running-config  ask a running agent what configuration is in force (a binary of the polar-sign package)
+#   git-remote-polar    plain git against polar-git: `git clone polar://<repository>` (docs/architecture/polar-git.md)
 #   cassini-c2          ask the broker to shut down
 #   cassini-client      the broker's client, for applications that are not written in Rust
 #   user-cert-fetcher   self-service user certificate issuance
@@ -66,6 +67,7 @@ let
 
   packages = [
     "polar-sign"
+    "git-remote-polar"
     "polar-admin-grant"
     "cassini-c2"
     "cassini-client"

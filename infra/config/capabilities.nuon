@@ -361,6 +361,26 @@
     resources: {}
   }
 
+  # polar-git's identity and arrangements: a server certificate for its Service name, in a directory of its own, the paths
+  # and port it reads, and people's repositories on the persistent volume `persistent-data` provides. Its key is its crypto
+  # actor's (`keys` declares TLS_SERVER_CERT_CHAIN and TLS_SERVER_KEY); it declares the rest itself (`polar-git
+  # --scaffold`, section polar-git; docs/architecture/polar-git.md).
+  source-git: {
+    pod: {
+      env: [
+        { name: "TLS_SERVER_CERT_CHAIN", value: "/etc/tls/polar-git/cert.pem" }
+        { name: "TLS_SERVER_KEY",        value: "/etc/tls/polar-git/key.pem", key_of: "server" }
+        { name: "POLAR_GIT_CA_CERT",   value: "/etc/tls/polar-git/ca.pem" }
+        { name: "POLAR_GIT_PORT",      value: "{polar-git.port}" }
+        { name: "POLAR_GIT_REPO_ROOT", value: "/var/lib/{workload}/repos" }
+      ]
+    }
+    identity: { certs: [ { dir: "/etc/tls/polar-git", volume: "polar-git-certs", read_only: true, kind: "server", san: "{polar-git.dns}", watch: ["cert.pem", "ca.pem"] } ] }
+    dependency: {}
+    init: {}
+    resources: {}
+  }
+
   # A directory the workload may write that need not outlive the pod: an emptyDir mounted at
   # /var/lib/<workload>. The scheduler observer keeps its checkout of the schedules repository
   # here; it clones again when the pod is replaced.

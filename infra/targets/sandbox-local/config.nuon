@@ -82,6 +82,8 @@
       # Group 4: its client certificate and its server certificate, one of each, come from the credentials agent.
       issuer: "credentials-agent"
     }
+    # People's source code (docs/architecture/polar-git.md): its certificates from the credentials agent, as the store's.
+    polar-git: { issuer: "credentials-agent" }
     # The OCI registry resolver is not part of this cluster (2026-10-14). It is in the catalog, and the
     # `local` target still runs it.
     attestation-agent: { issuer: "credentials-agent" }

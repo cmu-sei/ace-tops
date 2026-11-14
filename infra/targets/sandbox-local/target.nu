@@ -146,6 +146,8 @@ def main [] {
                 "soft-state-processor.yaml"
                 "polar-git-server-resources.yaml"
                 "polar-git-server.yaml"
+                "polar-git-resources.yaml"
+                "polar-git.yaml"
                 "polar-scheduler-observer-resources.yaml"
                 "polar-scheduler-observer.yaml"
                 "polar-scheduler-resources.yaml"

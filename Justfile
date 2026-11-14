@@ -624,6 +624,9 @@ port-forwards-up *only:
     start_pf jaeger   polar       jaeger-svc                   "4318:4318 16686:16686" /tmp/pf-jaeger.log
     start_pf observer polar       credentials-agent-observer   "8081:8080"             /tmp/pf-credentials-observer.log
     start_pf git      polar       polar-git-server             "8443:8443"             /tmp/pf-polar-git-server.log
+    # polar-git, people's source code: git-remote-polar reaches it with POLAR_GIT_HOST=polar-git.polar.svc.cluster.local:8444
+    # and POLAR_GIT_RESOLVE=polar-git.polar.svc.cluster.local:8444:127.0.0.1 (docs/architecture/polar-git.md).
+    start_pf polar-git polar      polar-git                    "8444:8443"             /tmp/pf-polar-git.log
     start_pf broker   polar       cassini-ip-svc               "18081:8080"            /tmp/pf-broker.log
     if [[ "$ONLY" == *" registry "* ]]; then
         start_pf registry polar-registry registry "${POLAR_REGISTRY_FORWARD_PORT:-5000}:5000" /tmp/pf-registry.log

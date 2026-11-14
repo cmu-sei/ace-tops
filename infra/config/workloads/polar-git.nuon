@@ -1,0 +1,43 @@
+# ACE Tool
+#
+# Copyright 2026 Carnegie Mellon University.
+#
+# NO WARRANTY. THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE MATERIAL IS
+# FURNISHED ON AN "AS-IS" BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO WARRANTIES OF ANY KIND, EITHER
+# EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR
+# PURPOSE OR MERCHANTABILITY, EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE
+# MELLON UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM PATENT,
+# TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+#
+# Licensed under a MIT (SEI)-style license, please see license.txt or contact permission@sei.cmu.edu
+# for full terms.
+#
+# [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited
+# distribution.  Please see Copyright notice for non-US Government use and distribution.
+#
+# This Software includes and/or makes use of Third-Party Software each subject to its own license.
+#
+# DM26-0670
+
+# infra/config/workloads/polar-git.nuon
+#
+# polar-git: people's source code over git smart HTTP, the one service inside the boundary that people connect to
+# directly, every git operation judged by Cedar policy and reported over Cassini. A PolarAgent: it says in its own code
+# what it requires and how long it drains (`polar-git --scaffold`). Design: docs/architecture/polar-git.md.
+[
+  {
+    name: "polar-git"
+    kind: "agent"
+    pool: "core"
+    image: "polar-git"
+    config: "document"
+    # People's repositories are history that must survive the pod (persistent-data); the rest is its listener certificate
+    # and paths (source-git).
+    provides: ["source-git", "persistent-data"]
+    # What git, through git-remote-polar, connects to. Reached by port-forward in development; never terminated.
+    service: {
+      name: "{polar-git.name}"
+      ports: [ { name: "git-https", port: "{polar-git.port}" } ]
+    }
+  }
+]

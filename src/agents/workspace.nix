@@ -254,6 +254,12 @@ let
       healthcheckDrv = healthcheck;
     };
 
+    polarGit = import ./polar-git/package.nix {
+      inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
+      crateArgs = individualCrateArgs;
+      healthcheckDrv = healthcheck;
+    };
+
     secretHarness = import ./secret-harness/package.nix {
       inherit pkgs craneLib workspaceFileset nix-container-lib inputs system;
       crateArgs = individualCrateArgs;
@@ -304,5 +310,5 @@ let
     };
 in
 {
-        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarInit buildFetch buildOrchestrator polarCustody polarTools healthcheck credentialsAgent secretHarness;
+        inherit scudo workspacePackages attestation gitlabAgent cassini kubeAgent webAgent ociResolver scheduler jiraAgent gitAgent softState buildProcessor certIssuer nuInit gitServer polarGitServer polarGit polarInit buildFetch buildOrchestrator polarCustody polarTools healthcheck credentialsAgent secretHarness;
 }
