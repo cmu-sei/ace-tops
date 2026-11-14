@@ -40,8 +40,9 @@ pub static DEPLOYMENT_CA: Required<String> = Required::path(
 
 /// Where the witness of the store's logs keeps its key and what it holds: a directory on the agent's own volume
 /// (docs/architecture/runtime-attestation.md, "The witness of the store's logs").
-pub static WITNESS_ROOT: Required<String> = Required::text(
+pub static WITNESS_ROOT: Required<String> = Required::path(
     "POLAR_ATTESTATION_WITNESS_ROOT",
+    polar_env::Access::WriteDir,
     "the directory on the agent's own volume where the witness of the store's logs keeps its key and the checkpoints it co-signed (docs/architecture/runtime-attestation.md, \"The witness of the store's logs\")",
 );
 
@@ -111,6 +112,16 @@ mod tests {
         assert!(relations(&given(" , ")).len() == 1);
         assert!(relations(&given("polar")).is_empty());
         assert!(namespaces(&|_: &str| None).is_err());
+    }
+
+    /// The witness writes what it holds under its root, so the agent's lock must grant the directory: it is declared as
+    /// one it writes, and the render's lock check finds no path declared as text (infra/rules.nu).
+    #[test]
+    fn the_witness_root_is_a_directory_it_writes() {
+        assert_eq!(
+            WITNESS_ROOT.desc().access,
+            Some(polar_env::Access::WriteDir)
+        );
     }
 
     /// The store it witnesses is pinned in its signed settings (infra/seed.nu, `witness_pins`): with the sections it
