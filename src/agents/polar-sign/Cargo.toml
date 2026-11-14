@@ -42,6 +42,9 @@ credentials-agent-model.workspace = true
 polar-topics.workspace = true
 # Asking the running agents what they hold in force (`check --ask`, and the polar-running-config tool).
 polar-running-config = { path = "../polar-running-config" }
+# Its pushes, at nominal, over Cassini as the person (record-store.md, "People's tools over Cassini").
+polar-records-client = { path = "../polar-records-client" }
+polar-git-server-common.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # A deployment's rendered manifests, where the authority model is; a CA's certificate, to name it by its digest.
 serde_yaml.workspace = true

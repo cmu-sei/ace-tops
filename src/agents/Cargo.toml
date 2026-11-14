@@ -80,6 +80,7 @@ members = [
     "polar-custody",
     "polar-custody/daemon",
     "polar-signing",
+    "polar-records-client",
     "polar-sign",
     "polar-running-config",
     "polar-cypher",

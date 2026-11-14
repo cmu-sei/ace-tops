@@ -7681,6 +7681,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "polar-records-client"
+version = "1.0.0"
+dependencies = [
+ "cassini-client",
+ "cassini-types",
+ "cert-issuer-common",
+ "polar-git-server-common",
+ "polar-running-config",
+ "ractor",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "polar-registry"
 version = "1.0.0"
 dependencies = [
@@ -7828,8 +7842,10 @@ dependencies = [
  "hex",
  "polar-env",
  "polar-escrow",
+ "polar-git-server-common",
  "polar-policy",
  "polar-projection",
+ "polar-records-client",
  "polar-running-config",
  "polar-scheduler-common",
  "polar-scudo",

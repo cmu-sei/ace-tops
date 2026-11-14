@@ -545,6 +545,90 @@ fn read_answer(
     serde_json::from_str(&text).context("that is not what polar-running-config prints")
 }
 
+/// Where people's tools find the broker: POLAR_BROKER_ADDR, or the forward `just port-forwards-up broker` starts; and the
+/// name on its certificate, POLAR_BROKER_NAME or the usual one.
+fn broker() -> (String, String) {
+    (
+        env_var("POLAR_BROKER_ADDR").unwrap_or_else(|| "127.0.0.1:18081".to_string()),
+        env_var("POLAR_BROKER_NAME")
+            .unwrap_or_else(|| polar_records_client::BROKER_NAME.to_string()),
+    )
+}
+
+/// How long a person's tool waits for the store's answer.
+const STORE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Sends a signed section of polar-schedules to its place over Cassini, as `user` (record-store.md, "People's tools over
+/// Cassini").
+fn send_section(
+    dir: &std::path::Path,
+    user: &str,
+    relative: &str,
+    content: &[u8],
+    what: &str,
+) -> Result<()> {
+    use polar_git_server_common::SectionAdded;
+    let (addr, name) = broker();
+    let identity = polar_records_client::identity_of(dir, user).map_err(anyhow::Error::msg)?;
+    // The person's TLS is a crypto actor's of this process, over their files (docs/plans/crypto-actor.md).
+    let answer = tokio::runtime::Runtime::new()?
+        .block_on(async {
+            let (crypto, config) = polar_records_client::client_config(dir, user, &addr, &name)
+                .await
+                .map_err(|e| e.to_string())?;
+            let answer =
+                polar_records_client::add_section(config, &identity, relative, content, STORE_WAIT)
+                    .await;
+            crypto.stop(None);
+            answer
+        })
+        .map_err(anyhow::Error::msg)?;
+    match answer {
+        SectionAdded::Committed { commit } => {
+            eprintln!("sent {relative} ({what}) over Cassini; the store committed it as {commit}")
+        }
+        SectionAdded::AlreadyThere => {
+            eprintln!("{relative} already holds exactly this file; nothing was sent")
+        }
+        SectionAdded::Refused { why } => bail!("the store refused {relative}: {why}"),
+        SectionAdded::NotNow { why } => {
+            bail!("the store could not take {relative} now, so send it again: {why}")
+        }
+    }
+    Ok(())
+}
+
+/// Sends a signed evidence record over Cassini, as `user`: the store places it.
+fn send_record(dir: &std::path::Path, user: &str, record: &str, what: &str) -> Result<()> {
+    use polar_git_server_common::RecordAdded;
+    let (addr, name) = broker();
+    let identity = polar_records_client::identity_of(dir, user).map_err(anyhow::Error::msg)?;
+    let answer = tokio::runtime::Runtime::new()?
+        .block_on(async {
+            let (crypto, config) = polar_records_client::client_config(dir, user, &addr, &name)
+                .await
+                .map_err(|e| e.to_string())?;
+            let answer =
+                polar_records_client::add_record(config, &identity, record, STORE_WAIT).await;
+            crypto.stop(None);
+            answer
+        })
+        .map_err(anyhow::Error::msg)?;
+    match answer {
+        RecordAdded::Committed { path, commit } => {
+            eprintln!("sent {what} over Cassini; the store committed it at {path} as {commit}")
+        }
+        RecordAdded::AlreadyThere { path } => {
+            eprintln!("{path} already holds this record; nothing was sent")
+        }
+        RecordAdded::Refused { why } => bail!("the store refused {what}: {why}"),
+        RecordAdded::NotNow { why } => {
+            bail!("the store could not take {what} now, so send it again: {why}")
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     polar_version::exit_if_asked("polar-sign");
     match Cli::parse().command {
@@ -655,33 +739,45 @@ fn main() -> Result<()> {
             if push_it {
                 let (signer, _) =
                     verify_source(&signed.dhall, &trust, now).map_err(anyhow::Error::msg)?;
-                let remote = repo.or_else(|| env_var("POLAR_SCHEDULES_URL")).context(
-                    "--push needs the schedules repository: --repo, or POLAR_SCHEDULES_URL",
-                )?;
-                let workdir = workdir_for(workdir, "schedules")?;
-                let config = git_config_for(&remote, &dir, &user, &git_config)?;
-                let relative = push::place(&signed.agent, signed.section.as_deref());
-                let username = signer.username.clone().unwrap_or_else(|| user.clone());
-                let message = push::message(
-                    &signed.agent,
-                    signed.section.as_deref(),
-                    signed.version,
-                    &username,
-                );
-                let plan = push::Plan {
-                    remote: &remote,
-                    workdir: &workdir,
-                    relative: &relative,
-                    content: &signed.dhall,
-                    message: &message,
-                    author_name: &username,
-                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
-                    git_config: &config,
-                };
-                match push::push(&plan).map_err(anyhow::Error::msg)? {
-                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
-                    push::Pushed::Unchanged => {
-                        eprintln!("{relative} already holds exactly this file; nothing was pushed")
+                // No git repository named: Polar at nominal, over Cassini as this person (record-store.md, "People's tools over
+                // Cassini"). One named: git, for degraded mode and a site's own server.
+                match repo.or_else(|| env_var("POLAR_SCHEDULES_URL")) {
+                    None => send_section(
+                        &dir,
+                        &user,
+                        &push::place(&signed.agent, signed.section.as_deref()),
+                        signed.dhall.as_bytes(),
+                        &what,
+                    )?,
+                    Some(remote) => {
+                        let workdir = workdir_for(workdir, "schedules")?;
+                        let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                        let relative = push::place(&signed.agent, signed.section.as_deref());
+                        let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                        let message = push::message(
+                            &signed.agent,
+                            signed.section.as_deref(),
+                            signed.version,
+                            &username,
+                        );
+                        let plan = push::Plan {
+                            remote: &remote,
+                            workdir: &workdir,
+                            relative: &relative,
+                            content: &signed.dhall,
+                            message: &message,
+                            author_name: &username,
+                            author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                            git_config: &config,
+                        };
+                        match push::push(&plan).map_err(anyhow::Error::msg)? {
+                            push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                            push::Pushed::Unchanged => {
+                                eprintln!(
+                                    "{relative} already holds exactly this file; nothing was pushed"
+                                )
+                            }
+                        }
                     }
                 }
                 if let Some(path) = out {
@@ -939,31 +1035,38 @@ fn main() -> Result<()> {
             if push_it {
                 let (signer, _) =
                     evidence::verify_record(&signed, &trust, now).map_err(anyhow::Error::msg)?;
-                let remote = repo.or_else(|| env_var("POLAR_EVIDENCE_URL")).context(
-                    "--push needs the evidence repository: --repo, or POLAR_EVIDENCE_URL",
-                )?;
-                let workdir = workdir_for(workdir, "evidence")?;
-                let config = git_config_for(&remote, &dir, &user, &git_config)?;
-                let relative = polar_sign::instance::place(&facts.instance.target, &signed);
-                let username = signer.username.clone().unwrap_or_else(|| user.clone());
-                let message =
-                    polar_sign::instance::message(&facts.instance.target, &checked, &username);
-                let plan = push::Plan {
-                    remote: &remote,
-                    workdir: &workdir,
-                    relative: &relative,
-                    content: &signed,
-                    message: &message,
-                    author_name: &username,
-                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
-                    git_config: &config,
-                };
-                match push::push(&plan).map_err(anyhow::Error::msg)? {
-                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
-                    push::Pushed::Unchanged => {
-                        eprintln!(
-                            "{relative} already holds exactly this record; nothing was pushed"
-                        )
+                // No git repository named: Polar at nominal, over Cassini as this person (record-store.md, "People's tools over
+                // Cassini"). One named: git, for degraded mode and a site's own server.
+                match repo.or_else(|| env_var("POLAR_EVIDENCE_URL")) {
+                    None => send_record(&dir, &user, &signed, &what)?,
+                    Some(remote) => {
+                        let workdir = workdir_for(workdir, "evidence")?;
+                        let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                        let relative = polar_sign::instance::place(&facts.instance.target, &signed);
+                        let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                        let message = polar_sign::instance::message(
+                            &facts.instance.target,
+                            &checked,
+                            &username,
+                        );
+                        let plan = push::Plan {
+                            remote: &remote,
+                            workdir: &workdir,
+                            relative: &relative,
+                            content: &signed,
+                            message: &message,
+                            author_name: &username,
+                            author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                            git_config: &config,
+                        };
+                        match push::push(&plan).map_err(anyhow::Error::msg)? {
+                            push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                            push::Pushed::Unchanged => {
+                                eprintln!(
+                                    "{relative} already holds exactly this record; nothing was pushed"
+                                )
+                            }
+                        }
                     }
                 }
             } else {
@@ -1000,30 +1103,40 @@ fn main() -> Result<()> {
                 let trust = read_trust(&dir.join("ca.pem"))?;
                 let (signer, _) =
                     verify_source(&signed, &trust, now()?).map_err(anyhow::Error::msg)?;
-                let remote = repo.or_else(|| env_var("POLAR_SCHEDULES_URL")).context(
-                    "--push needs the schedules repository: --repo, or POLAR_SCHEDULES_URL",
-                )?;
-                let workdir = workdir_for(workdir, "schedules")?;
-                let config = git_config_for(&remote, &dir, &user, &git_config)?;
-                let relative = format!("migrations/{agent}/{id}.applied.dhall");
-                let username = signer.username.clone().unwrap_or_else(|| user.clone());
-                let message = format!(
-                    "chore({agent}): migration {id} applied\n\n{report}\n\nSigned by {username} with polar-sign."
-                );
-                let plan = push::Plan {
-                    remote: &remote,
-                    workdir: &workdir,
-                    relative: &relative,
-                    content: &signed,
-                    message: &message,
-                    author_name: &username,
-                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
-                    git_config: &config,
-                };
-                match push::push(&plan).map_err(anyhow::Error::msg)? {
-                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
-                    push::Pushed::Unchanged => {
-                        eprintln!("{relative} already holds exactly this record")
+                // No git repository named: Polar at nominal, over Cassini as this person (record-store.md, "People's tools over
+                // Cassini"). One named: git, for degraded mode and a site's own server.
+                match repo.or_else(|| env_var("POLAR_SCHEDULES_URL")) {
+                    None => send_section(
+                        &dir,
+                        &user,
+                        &format!("migrations/{agent}/{id}.applied.dhall"),
+                        signed.as_bytes(),
+                        &what,
+                    )?,
+                    Some(remote) => {
+                        let workdir = workdir_for(workdir, "schedules")?;
+                        let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                        let relative = format!("migrations/{agent}/{id}.applied.dhall");
+                        let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                        let message = format!(
+                            "chore({agent}): migration {id} applied\n\n{report}\n\nSigned by {username} with polar-sign."
+                        );
+                        let plan = push::Plan {
+                            remote: &remote,
+                            workdir: &workdir,
+                            relative: &relative,
+                            content: &signed,
+                            message: &message,
+                            author_name: &username,
+                            author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                            git_config: &config,
+                        };
+                        match push::push(&plan).map_err(anyhow::Error::msg)? {
+                            push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                            push::Pushed::Unchanged => {
+                                eprintln!("{relative} already holds exactly this record")
+                            }
+                        }
                     }
                 }
             } else {
@@ -1099,30 +1212,35 @@ fn main() -> Result<()> {
             if push_it {
                 let (signer, _) =
                     evidence::verify_record(&signed, &trust, now).map_err(anyhow::Error::msg)?;
-                let remote = repo.or_else(|| env_var("POLAR_EVIDENCE_URL")).context(
-                    "--push needs the evidence repository: --repo, or POLAR_EVIDENCE_URL",
-                )?;
-                let workdir = workdir_for(workdir, "evidence")?;
-                let config = git_config_for(&remote, &dir, &user, &git_config)?;
-                let relative = evidence::place(&tested.agent, &section, &signed);
-                let username = signer.username.clone().unwrap_or_else(|| user.clone());
-                let message = evidence::message(&tested.agent, &section, &tested, &username);
-                let plan = push::Plan {
-                    remote: &remote,
-                    workdir: &workdir,
-                    relative: &relative,
-                    content: &signed,
-                    message: &message,
-                    author_name: &username,
-                    author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
-                    git_config: &config,
-                };
-                match push::push(&plan).map_err(anyhow::Error::msg)? {
-                    push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
-                    push::Pushed::Unchanged => {
-                        eprintln!(
-                            "{relative} already holds exactly this record; nothing was pushed"
-                        )
+                // No git repository named: Polar at nominal, over Cassini as this person (record-store.md, "People's tools over
+                // Cassini"). One named: git, for degraded mode and a site's own server.
+                match repo.or_else(|| env_var("POLAR_EVIDENCE_URL")) {
+                    None => send_record(&dir, &user, &signed, &what)?,
+                    Some(remote) => {
+                        let workdir = workdir_for(workdir, "evidence")?;
+                        let config = git_config_for(&remote, &dir, &user, &git_config)?;
+                        let relative = evidence::place(&tested.agent, &section, &signed);
+                        let username = signer.username.clone().unwrap_or_else(|| user.clone());
+                        let message =
+                            evidence::message(&tested.agent, &section, &tested, &username);
+                        let plan = push::Plan {
+                            remote: &remote,
+                            workdir: &workdir,
+                            relative: &relative,
+                            content: &signed,
+                            message: &message,
+                            author_name: &username,
+                            author_email: signer.email.as_deref().unwrap_or("polar-sign@invalid"),
+                            git_config: &config,
+                        };
+                        match push::push(&plan).map_err(anyhow::Error::msg)? {
+                            push::Pushed::Pushed => eprintln!("pushed {relative} ({what})"),
+                            push::Pushed::Unchanged => {
+                                eprintln!(
+                                    "{relative} already holds exactly this record; nothing was pushed"
+                                )
+                            }
+                        }
                     }
                 }
             } else {
