@@ -7410,6 +7410,7 @@ dependencies = [
  "gix-serve",
  "hyper-util",
  "polar-agent-builder",
+ "polar-crypto",
  "polar-custody",
  "polar-env",
  "polar-git-server-common",

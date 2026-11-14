@@ -70,7 +70,7 @@ make_cert alice  alice           clientAuth     # alice's identity is "alice"
 
 | Variable | Meaning |
 |---|---|
-| `POLAR_GIT_SERVER_CERT`, `POLAR_GIT_SERVER_KEY` | the server's certificate and key; the key a file, or, with `POLAR_CUSTODY_SOCKET` and no `POLAR_GIT_SERVER_KEY`, the custody daemon's (`docs/architecture/key-custody.md`) |
+| `TLS_SERVER_CERT_CHAIN`, `TLS_SERVER_KEY` | the server's certificate and key files; or, with `POLAR_CUSTODY_SOCKET` and neither, the custody daemon's server slot. Its crypto actor presents them (`docs/plans/crypto-actor.md`) |
 | `POLAR_GIT_SERVER_CA_CERT` | the CA that client certificates must chain to |
 | `POLAR_GIT_SERVER_REPO_ROOT` | where the repositories live; created if missing |
 | `POLAR_GIT_SERVER_REPOS` | what it hosts, as JSON (below) |
@@ -90,7 +90,7 @@ directory per repository, committed as its first commit, is optional.
 ### 3. Start it and use it
 
 ```bash
-POLAR_GIT_SERVER_CERT=server.pem POLAR_GIT_SERVER_KEY=server.key \
+TLS_SERVER_CERT_CHAIN=server.pem TLS_SERVER_KEY=server.key \
 POLAR_GIT_SERVER_CA_CERT=ca.pem POLAR_GIT_SERVER_REPO_ROOT=/var/lib/git \
 POLAR_GIT_SERVER_REPOS='{"admins":["alice"],"repos":[{"name":"demo","readers":["alice"],"writers":["alice"]}]}' \
   polar-git-server

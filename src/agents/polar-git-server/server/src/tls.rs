@@ -31,10 +31,10 @@ use crate::http::PeerIdentity;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
-use polar_custody::client::ServerKey;
-use rustls::pki_types::CertificateDer;
+use polar_agent_builder::crypto::TlsHandle;
+use rustls::RootCertStore;
 use rustls::server::WebPkiClientVerifier;
-use rustls::{RootCertStore, ServerConfig};
+use rustls::server::danger::ClientCertVerifier;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -44,23 +44,34 @@ use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 use tracing::{debug, warn};
 
-/// Builds the server configuration: the server's certificate chain (PEM), its key (a PEM file, or the custody
-/// daemon's server slot, which offers TLS 1.3 alone: docs/architecture/key-custody.md, step 4), and the CA that client
-/// certificates must chain to.
-pub fn server_config(
-    cert: &Path,
-    key: &ServerKey,
+/// Smart HTTP over HTTP/1.1 is all git needs.
+pub fn alpn() -> Vec<Vec<u8>> {
+    vec![b"http/1.1".to_vec()]
+}
+
+/// Builds the server configuration from the agent's crypto actor, which presents the server's certificate with its key
+/// (the custody daemon's server slot, or its files: docs/plans/crypto-actor.md), verifying clients against the CA and
+/// the deployment CA.
+pub async fn server_config(
+    tls: &TlsHandle,
     ca: &Path,
     deployment_ca: Option<&Path>,
-) -> Result<Arc<ServerConfig>, String> {
+) -> Result<Arc<rustls::ServerConfig>, String> {
+    Ok(Arc::new(
+        tls.server_config(client_verifier(ca, deployment_ca)?, alpn())
+            .await?,
+    ))
+}
+
+/// What a client certificate must chain to: the CA, or the deployment CA.
+pub fn client_verifier(
+    ca: &Path,
+    deployment_ca: Option<&Path>,
+) -> Result<Arc<dyn ClientCertVerifier>, String> {
     // Another component may have installed it already.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()));
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut read(cert)?.as_slice())
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("bad server certificate: {e}"))?;
-
     let mut roots = RootCertStore::empty();
     for file in std::iter::once(ca).chain(deployment_ca) {
         for ca in rustls_pemfile::certs(&mut read(file)?.as_slice()) {
@@ -69,14 +80,9 @@ pub fn server_config(
                 .map_err(|e| format!("cannot trust the CA certificate: {e}"))?;
         }
     }
-    let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+    WebPkiClientVerifier::builder(Arc::new(roots))
         .build()
-        .map_err(|e| format!("cannot build the client verifier: {e}"))?;
-
-    let mut config = polar_custody::client::server_config(verifier, certs, key)?;
-    // Smart HTTP over HTTP/1.1 is all git needs.
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(Arc::new(config))
+        .map_err(|e| format!("cannot build the client verifier: {e}"))
 }
 
 /// What marks an identity as the deployment PKI's: the two CAs' names are kept apart, so that one cannot speak for the other.
@@ -274,9 +280,9 @@ mod tests {
 
     use super::*;
 
-    // Smart HTTP over HTTP/1.1, whichever holds the key (docs/architecture/key-custody.md, step 4).
+    // Smart HTTP over HTTP/1.1, presenting the key the crypto actor holds (docs/plans/crypto-actor.md): here its files.
     #[test]
-    fn the_server_speaks_http_1_1_with_a_key_file_or_the_daemon_s() {
+    fn the_server_speaks_http_1_1() {
         let dir = tempfile::tempdir().unwrap();
         let key = rcgen::KeyPair::generate().unwrap();
         let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
@@ -291,13 +297,15 @@ mod tests {
         std::fs::write(&cert_path, cert.pem()).unwrap();
         std::fs::write(&key_path, key.serialize_pem()).unwrap();
         std::fs::write(&ca_path, cert.pem()).unwrap();
-        for key in [
-            ServerKey::File(key_path.display().to_string()),
-            // Built without asking the daemon: it is asked in each handshake.
-            ServerKey::Custody(dir.path().join("custody.sock").display().to_string()),
-        ] {
-            let config = server_config(&cert_path, &key, &ca_path, None).unwrap();
-            assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()], "{key:?}");
-        }
+        let config = polar_crypto::tls::server_config(
+            client_verifier(&ca_path, None).unwrap(),
+            alpn(),
+            &polar_crypto::tls::KeySource::Files {
+                certificate: cert_path.display().to_string(),
+                key: key_path.display().to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()]);
     }
 }

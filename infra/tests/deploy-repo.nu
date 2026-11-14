@@ -102,7 +102,7 @@ def main [] {
             name: "the server judges its health by its own certificate, which the image's default path is not"
             body: {
                 let e = (server_env "t")
-                assert equal $e.POLAR_HEALTH_CERTS $e.POLAR_GIT_SERVER_CERT
+                assert equal $e.POLAR_HEALTH_CERTS $e.TLS_SERVER_CERT_CHAIN
             }
         }
         {

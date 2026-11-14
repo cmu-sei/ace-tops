@@ -483,7 +483,8 @@ What is there, read for this:
   - `TLS_CLIENT_KEY` (the `cassini` capability, and `Constants.commonClientEnv`, which polar-init is given too);
   - `GRAPH_CLIENT_KEY` (`graph-write`, the same file);
   - `TLS_SERVER_KEY` (`cassini-server`, the broker's listener, `cassini/broker/src/listener.rs`, `with_single_cert`);
-  - `POLAR_GIT_SERVER_KEY` (`git-server`, its listener, `polar-git-server/server/src/tls.rs`).
+  - `POLAR_GIT_SERVER_KEY` (`git-server`, its listener, `polar-git-server/server/src/tls.rs`); since the crypto actor
+    (`docs/plans/crypto-actor.md`, K3) it is `TLS_SERVER_KEY`, as the broker's is.
 
   Each certificate is one `--cert` built in `resolve.nu` (`$"($cert_kind):($c.dir):ecdsa-p256:($san)"`). The git
   server holds a client and a server certificate; every other workload holds one.
@@ -649,8 +650,9 @@ no environment, names its four variables and exits 2. `infra/tests/images.nu` pa
   builder refuses a variable declared twice, so the git server reads the socket through the Cassini client's section,
   which it registers; the broker, which is not a Cassini client, declares it in its own.
 - *The broker* (`cassini/broker/src/settings.rs`, `read_server_key`; `listener.rs`) and *the git server*
-  (`polar-git-server/server/src/settings.rs`, `read_key`; `tls.rs`, which still sets its ALPN) take
-  `TLS_SERVER_KEY` / `POLAR_GIT_SERVER_KEY` or the socket.
+  (`polar-git-server/server/src/settings.rs`; `tls.rs`, which sets its ALPN) require `TLS_SERVER_KEY` or the socket.
+  Since the crypto actor (`docs/plans/crypto-actor.md`, K3) both take their TLS from it, and the variables are declared
+  once, by polar-crypto's `keys` section.
 - *The git server's clients include the git CLI* through libcurl, not rustls alone, as item 5 first said. TLS 1.3 alone
   still holds: current OpenSSL and GnuTLS speak it.
 - *Tests:*

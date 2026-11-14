@@ -101,8 +101,8 @@ export def repos_json [target: string] {
 # exits after 30 seconds.
 export def server_env [target: string] {
     {
-        POLAR_GIT_SERVER_CERT: "/pki/server.pem"
-        POLAR_GIT_SERVER_KEY: "/pki/server.key"
+        TLS_SERVER_CERT_CHAIN: "/pki/server.pem"
+        TLS_SERVER_KEY: "/pki/server.key"
         POLAR_GIT_SERVER_CA_CERT: "/pki/ca.pem"
         POLAR_GIT_SERVER_REPO_ROOT: "/repos"
         POLAR_GIT_SERVER_REPOS: (repos_json $target)

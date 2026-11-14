@@ -352,7 +352,7 @@ def main [] {
             let git = (resolve_for "sandbox-local" "polar-git-server")
             assert equal ($git.certs | length) 2
             assert ($git.certs | all {|c| $c | str contains ":custody:" }) $"($git.certs)"
-            assert equal (env_value $git "POLAR_GIT_SERVER_KEY") null
+            assert equal (env_value $git "TLS_SERVER_KEY") null
         }
 
         "cert-issuer has no daemon, and a workload that says custody false keeps its key files": {

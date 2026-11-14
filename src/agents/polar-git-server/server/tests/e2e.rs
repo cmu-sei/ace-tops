@@ -29,7 +29,7 @@ use polar_git_server::http::{ServerState, router};
 use polar_git_server::notify::{PushLog, Recorder, RepoChanged, Tee};
 use polar_git_server::signed::{CommitPolicy, SignedRepos};
 use polar_git_server::store::RepoStore;
-use polar_git_server::tls::{ClientIdentities, serve_tls, server_config};
+use polar_git_server::tls::{ClientIdentities, alpn, client_verifier, serve_tls};
 use polar_signing::testing::{CommitSigner, commit_signer};
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, SanType,
@@ -193,15 +193,18 @@ impl Harness {
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let acceptor = TlsAcceptor::from(
-            server_config(
-                &cert,
-                &polar_custody::client::ServerKey::File(key.display().to_string()),
-                &ca_file,
-                Some(&deployment_ca_file),
+        // The configuration the server's crypto actor makes from its key files (docs/plans/crypto-actor.md).
+        let acceptor = TlsAcceptor::from(std::sync::Arc::new(
+            polar_crypto::tls::server_config(
+                client_verifier(&ca_file, Some(&deployment_ca_file)).unwrap(),
+                alpn(),
+                &polar_crypto::tls::KeySource::Files {
+                    certificate: cert.display().to_string(),
+                    key: key.display().to_string(),
+                },
             )
             .unwrap(),
-        );
+        ));
         let identities = ClientIdentities::new(Some(&deployment_ca_file)).unwrap();
         let stop = Arc::new(Notify::new());
         tokio::spawn(serve_tls(

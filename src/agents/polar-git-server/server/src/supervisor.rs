@@ -116,7 +116,7 @@ impl Actor for GitServerSupervisor {
         let settings = GitServerSettings::read(configured.config())?;
         // In a cluster the deployment provides Cassini and the server is a client of the broker;
         // on its own it has the health check and the shutdown handshake and no broker.
-        let (healthcheck, infrastructure, tcp_client) = if configured.cassini_enabled() {
+        let (healthcheck, infrastructure, tcp_client, tls) = if configured.cassini_enabled() {
             let deliver_to = myself.clone();
             let reads = Subscription::new(
                 polar_git_server_common::READ_REQUESTS_TOPIC,
@@ -142,6 +142,7 @@ impl Actor for GitServerSupervisor {
                 resources.healthcheck,
                 resources.infrastructure,
                 Some(resources.tcp_client),
+                resources.tls,
             )
         } else {
             info!("{SERVICE_NAME} is running on its own: pushes are logged, not published");
@@ -150,7 +151,12 @@ impl Actor for GitServerSupervisor {
                 .into_configured(configured)
                 .build()
                 .await?;
-            (resources.healthcheck, resources.infrastructure, None)
+            (
+                resources.healthcheck,
+                resources.infrastructure,
+                None,
+                resources.tls,
+            )
         };
 
         let file = ServerFile::parse(&settings.repos)?.with_admins(settings.admins.clone());
@@ -209,11 +215,11 @@ impl Actor for GitServerSupervisor {
         });
 
         let tls = server_config(
-            Path::new(&settings.cert),
-            &settings.key,
+            &tls,
             Path::new(&settings.ca_cert),
             settings.deployment_ca.as_deref().map(Path::new),
-        )?;
+        )
+        .await?;
         let identities = Arc::new(ClientIdentities::new(
             settings.deployment_ca.as_deref().map(Path::new),
         )?);

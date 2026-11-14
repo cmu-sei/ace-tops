@@ -325,8 +325,8 @@
   git-server: {
     pod: {
       env: [
-        { name: "POLAR_GIT_SERVER_CERT",      value: "/etc/tls/git-server/cert.pem" }
-        { name: "POLAR_GIT_SERVER_KEY",       value: "/etc/tls/git-server/key.pem", key_of: "server" }
+        { name: "TLS_SERVER_CERT_CHAIN",      value: "/etc/tls/git-server/cert.pem" }
+        { name: "TLS_SERVER_KEY",             value: "/etc/tls/git-server/key.pem", key_of: "server" }
         { name: "POLAR_GIT_SERVER_CA_CERT",   value: "/etc/tls/git-server/ca.pem" }
         { name: "POLAR_GIT_SERVER_PORT",      value: "{polar-git-server.port}" }
         { name: "POLAR_GIT_SERVER_REPO_ROOT", value: "/var/lib/{workload}/repos" }

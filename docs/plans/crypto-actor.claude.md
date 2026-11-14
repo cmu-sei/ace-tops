@@ -119,8 +119,18 @@ K3a DONE 2026-11-13 (polar-crypto + builder handle; call sites are K3b). polar-c
 K3 TLS from the CryptoActor: polar-crypto offers client/server rustls configs (or a sync `TlsKeys` handle) built from
    the agent's cert, custody signer, trust; the TLS-1.3-shape check moves from custody's daemon (custody.rs Sign arm,
    is_tls13_certificate_verify) into the signer polar-crypto makes. Five call sites switch. u7c bring-up.
+K3b DONE 2026-11-13 (main): every agent's Cassini client, its graph client, the credentials agent's cert-issuer client,
+   the broker's listener and the git server's listener take their TLS from the CryptoActor (TlsHandle). KEYS registered in
+   the builder's base sections; cassini-client declares TLS_CLIENT_CERT only, the broker and the git server none of the
+   key names (each keeps a rule that it has a server key: one_key on TLS_SERVER_KEY or the socket). The git server's
+   POLAR_GIT_SERVER_CERT/KEY are TLS_SERVER_CERT_CHAIN/TLS_SERVER_KEY (capabilities.nuon, deploy-repo.nu). With custody,
+   a server's certificate is the slot's, so TLS_SERVER_CERT_CHAIN is required only beside a key file (`keys`). NOT done
+   in K3b: custody's daemon-side TLS-shape check. The Cassini client still builds its own TLS over custody's signer when
+   not handed one (cassini/client/src/lib.rs, the standalone processes), so the check goes at the end of K2b.
 K2b Standalone processes: CLI daemon, c2, polar-running-config, cert-issuer, polar-init each start a CryptoActor;
-   TCPClientConfig loses its own key reading; `polar::cassini` removed.
+   TCPClientConfig loses its own key reading; `polar::cassini` removed. Then custody's daemon drops
+   is_tls13_certificate_verify from its Sign arm (and Refusal::NotTls13Handshake), and polar_custody::client's own
+   rustls signers/configs go; own.rs (the daemon's own session, in process) stays.
 K4 Dependency test: cargo metadata; only polar-crypto, polar-init, polar-health, polar-custody-daemon (and polar-custody
    itself) may depend on polar-custody. Builder loses its direct dependency.
 K5 Degraded key files held by the CryptoActor (same shape).

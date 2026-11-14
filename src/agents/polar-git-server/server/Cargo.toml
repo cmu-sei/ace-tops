@@ -43,6 +43,7 @@ gix.workspace = true
 gix-serve.workspace = true
 hyper-util.workspace = true
 polar-agent-builder.workspace = true
+polar-crypto.workspace = true
 polar-env.workspace = true
 polar-git-server-common.workspace = true
 polar-signing.workspace = true
