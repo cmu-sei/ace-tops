@@ -865,31 +865,42 @@ def seed_git [username: string, args: list<string>] {
 def seed_witness_pins [username: string, repo: string, existing: list<string>, work: string, sign: list<string>] {
     let scaffolds = ($work | path join "scaffolds")
     let missing = (seed pins_missing (seed witness_pins) $existing)
-    let pinned = (seed witness_pins | where {|p| $p not-in $missing })
-    for p in $pinned { note $"($p.agent) has signed settings already: its pin is left as it is" }
+    let pinned = (seed witness_pins | where {|p| $p not-in $missing } | get agent | uniq)
+    for agent in $pinned { note $"($agent) has signed settings already: its pins are left as they are" }
     mut added = []
-    for p in $missing {
-        let deadline = ((date now) + 3min)
-        mut key: any = null
-        loop {
-            let logs = (do { ^kubectl logs -n $POLAR $"deploy/($p.key_of.deployment)" -c $p.key_of.deployment --tail=-1 } | complete)
-            $key = (seed key_in_logs ($logs.stdout | lines) $p.key_of.says)
-            if $key != null or (date now) > $deadline { break }
-            print $"  waiting for ($p.key_of.deployment) to say its key..."
-            sleep 5sec
+    # Each agent's pins in one document, its first settings: signed only when every key it pins has been said.
+    for group in ($missing | group-by agent | transpose agent pins) {
+        mut keys = {}
+        mut lacking = null
+        for p in $group.pins {
+            let deadline = ((date now) + 3min)
+            mut key: any = null
+            loop {
+                let logs = (do { ^kubectl logs -n $POLAR $"deploy/($p.key_of.deployment)" -c $p.key_of.deployment --tail=-1 } | complete)
+                $key = (seed key_in_logs ($logs.stdout | lines) $p.key_of.says)
+                if $key != null or (date now) > $deadline { break }
+                print $"  waiting for ($p.key_of.deployment) to say its key..."
+                sleep 5sec
+            }
+            if $key == null {
+                $lacking = $p.key_of.deployment
+                break
+            }
+            $keys = ($keys | insert $p.variable $key)
         }
-        if $key == null {
-            note $"($p.key_of.deployment) has not said its key: ($p.agent) is not pinned yet, and the next run pins it"
+        if $lacking != null {
+            note $"($lacking) has not said its key: ($group.agent) is not pinned yet, and the next run pins it"
             continue
         }
-        let input = ($work | path join $"($p.agent)-pin.json")
-        seed pin_settings $p.agent $p.variable $key | to json | save --force $input
-        let out = ($repo | path join (seed settings_path $p.agent))
+        let input = ($work | path join $"($group.agent)-pin.json")
+        seed pin_settings $group.agent $keys | to json | save --force $input
+        let out = ($repo | path join (seed settings_path $group.agent))
         mkdir ($out | path dirname)
-        let r = (do { ^($sign | first) ...($sign | skip 1) sign $input --user $username --scaffold ($scaffolds | path join $"($p.agent).json") --out $out } | complete)
-        if $r.exit_code != 0 { fail $"polar-sign could not sign ($p.agent)'s pin: ($r.stderr | str trim)" }
-        note $"pinned in ($p.agent): ($p.key_of.deployment)'s key ($key | split row '+' | first)"
-        $added = ($added | append { path: (seed settings_path $p.agent), section: $"($p.agent)'s pin of ($p.key_of.deployment)'s key" })
+        let r = (do { ^($sign | first) ...($sign | skip 1) sign $input --user $username --scaffold ($scaffolds | path join $"($group.agent).json") --out $out } | complete)
+        if $r.exit_code != 0 { fail $"polar-sign could not sign ($group.agent)'s pins: ($r.stderr | str trim)" }
+        let whose = ($group.pins | get key_of.deployment | str join " and ")
+        note $"pinned in ($group.agent): ($whose)'s keys"
+        $added = ($added | append { path: (seed settings_path $group.agent), section: $"($group.agent)'s pins of ($whose)'s keys" })
     }
     $added
 }

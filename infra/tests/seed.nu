@@ -519,13 +519,14 @@ def main [] {
             name: "each pin is the other's key in its agent's first settings, signed only when the agent has none"
             body: {
                 let pins = (witness_pins)
-                assert equal ($pins | get agent | sort) ["attestation-agent" "polar-git-server"]
-                # Each agent's key comes from the other.
+                assert equal ($pins | get agent | uniq | sort) ["attestation-agent" "polar-git-server" "polar-scheduler-observer"]
+                # Each agent's key comes from another; the observer pins both the store's and the witness's.
                 for p in $pins { assert ($p.key_of.deployment != $p.agent) }
-                let doc = (pin_settings "attestation-agent" "POLAR_ATTESTATION_WITNESSED_STORE" "k")
-                assert equal $doc { agent: "attestation-agent", version: 1, settings: { POLAR_ATTESTATION_WITNESSED_STORE: "k" } }
-                assert equal (pins_missing $pins [] | length) 2
-                let missing = (pins_missing $pins ["permanent/polar-git-server/configuration.dhall" "permanent/other/configuration.dhall"])
+                assert equal ($pins | where agent == "polar-scheduler-observer" | get key_of.deployment | sort) ["attestation-agent" "polar-git-server"]
+                let doc = (pin_settings "polar-scheduler-observer" { POLAR_SCHEDULER_STORE_KEY: "s", POLAR_SCHEDULER_WITNESS_KEY: "w" })
+                assert equal $doc { agent: "polar-scheduler-observer", version: 1, settings: { POLAR_SCHEDULER_STORE_KEY: "s", POLAR_SCHEDULER_WITNESS_KEY: "w" } }
+                assert equal (pins_missing $pins [] | length) 4
+                let missing = (pins_missing $pins ["permanent/polar-git-server/configuration.dhall" "permanent/polar-scheduler-observer/configuration.dhall" "permanent/other/configuration.dhall"])
                 assert equal ($missing | get agent) ["attestation-agent"]
                 assert equal (pins_missing $pins ($pins | each {|p| settings_path $p.agent })) []
             }
