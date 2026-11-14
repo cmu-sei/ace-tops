@@ -141,6 +141,29 @@ c43cafe2:
 - polar-scheduler-common running.rs: acp's diff is test-only (answer round trip), unrelated to B3; not ported.
 - Store start: evidence catch-up, then schedules catch-up (both before serving). On u7c the schedules log (acp-written)
   opens as found; pushes made while main ran B1/B2 (no schedules hook) are appended at the first B3 start as the store's.
+B3 rebased onto main 7a6363de (2026-11-14; WITNESS_ROOT made Required::path WriteDir after u7c's render refused a
+  path declared as text). Bites 3+4 checked for the same class: their only new text variables are
+  POLAR_SCHEDULER_{STORE,WITNESS}_KEY (verifier keys); no catalog values added. RENDER CHECK WITHOUT A CLUSTER: build
+  the agent bins (debug, capped), ask each `<bin> --scaffold` with POLAR_SERVED_WORKLOADS = served(workloads), save
+  `<workload>.json` (bins: credentials-agent→credentials-agent-consumer, cassini→cassini-server,
+  oci-registry-resolver→oci-resolver, else the workload's name), then POLAR_SCAFFOLD_DIR=<dir> nu infra/render.nu
+  sandbox-local. All checks through Landlock/cert-issuer/CA pass; it stops at image pinning (no image lock in a
+  worktree). A local polar-git-server build has SEED_ROOT=/nonexistent/... (option_env POLAR_GIT_SERVER_BUILT_SEED_ROOT
+  unset), which the lock check flags; build with that set to a /nix/store path, as the image is.
+B4 (store-bite-4, 2026-11-14), from acp 3c6938fa + b1e7f270:
+- Ported: person floor (floor.rs), Facts.addressed + topic_gate::addressed_to (the broker asks through topic_gate::ask,
+  so it computes it too), the store's reply.rs / person evidence / section intake (SCHEDULES_REQUESTS_TOPIC) /
+  put_file, polar-records-client, polar-sign pushes over Cassini.
+- polar-records-client re-exports main's polar_running_config::client_config, which returns (crypto, config) from
+  polar_crypto::cassini::standalone; polar-sign stops the crypto actor after each answer (as its running-config
+  survey already does). No polar_custody use; no new key-PEM signing.
+- Seed policy.cedar gains only the two People-on-Cassini rules; acp's polar-git rules (repo-developers, owner) are B5.
+  u7c runs acp's policy v4 already; the seed writes nothing there.
+- NOT ported: polar-eden (D2), acp's source-git capability name in capability.rs's test list (B5), the
+  owned-repository store test (create_owned, B5), Cargo members polar-git / git-remote-polar / polar-git-push (B5).
+- Finding: cassini-broker's a_client_that_publishes_and_never_acknowledges_is_spared_once_and_then_ended failed once
+  under the full workspace run ("the stopped broker still holds 1 names") and passed 3/3 alone; timing under load,
+  not B4's code (B4 touches only topic_gate::ask's facts). Reported, not changed.
 
 ## RISKS
 size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching

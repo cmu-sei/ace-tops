@@ -39,8 +39,11 @@ in the other's settings (`runtime-attestation.md`, "The witness of the store's l
 schedules log before any ref moves, the log is caught up with polar-schedules' `main` at the store's start, and the
 scheduler observer reads the log over Cassini, held to its two pins, which up.nu's seed signs in its settings. As on
 the other branch, but for one thing: until the witness has co-signed a log, the store answers a reader with its own
-checkpoint, and on `main` the crypto actor signs it when it is asked, since the store holds no key. **Still to come on
-main**, each a bite of the plan: people's tools over Cassini, and `polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
+checkpoint, and on `main` the crypto actor signs it when it is asked, since the store holds no key. **On main
+(2026-11-14):** bite 4, people's tools over Cassini (below, "People's tools over Cassini"): a person's floor, Cedar told
+whom a topic is addressed to, the store answering a person and taking their signed sections, and `polar-sign`'s pushes
+through `polar-records-client` when no git repository is named, its TLS from a crypto actor over the person's files.
+`polar-eden`'s use of the client is the other branch's. **Still to come on main:** `polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
 branch), describes that branch until its bite lands. Decisions the maintainer made are dated
 and attributed; the rest are this session's, by the design principles (`AGENTS.md`), and marked *(for review)*. Owner:
 the agentic-control-plane session (the maintainer, 2026-11-10). The research on formats and Merkle logs is polar-89's,
