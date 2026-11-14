@@ -30,6 +30,9 @@ polar-scudo.workspace = true
 polar-version.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
+# Its own crypto actor, which makes its Cassini client's TLS (docs/plans/crypto-actor.md).
+polar-crypto.workspace = true
+polar-env.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry.workspace = true

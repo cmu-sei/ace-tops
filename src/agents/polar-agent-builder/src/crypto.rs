@@ -155,6 +155,11 @@ impl TlsHandle {
         Self { actor }
     }
 
+    /// The actor, for this crate alone.
+    pub(crate) fn actor(&self) -> ActorRef<CryptoMessage> {
+        self.actor.clone()
+    }
+
     /// A client configuration presenting the agent's client key, verifying the server with `verifier`.
     pub async fn client_config(
         &self,

@@ -32,10 +32,7 @@ pub mod time;
 pub mod topics;
 pub use events::*;
 
-use cassini_client::{
-    OfflineBehavior, PublishRequest, TCPClientConfig, TcpClientActor, TcpClientArgs,
-    TcpClientMessage,
-};
+use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
 pub use polar_health;
 pub use polar_health as health;
@@ -127,43 +124,6 @@ pub async fn spawn_linked_unless_running<A: Actor>(
         .await
         .map_err(ActorProcessingErr::from)?;
     Ok(spawned)
-}
-
-/// Spawn a TCP client to connect to the Cassini message broker.
-///
-/// CAUTION: There is a known bug in the ractor framework that makes output
-/// ports drop messages and freeze under high load.
-/// See: https://github.com/slawlor/ractor/issues/225
-#[deprecated = "There is a known bug in the ractor framework that makes output ports drop messages and freeze under high load. Functionality moved to TcpClient::spawn()"]
-pub async fn spawn_tcp_client<M, F>(
-    service_name: &str,
-    supervisor: ActorRef<M>,
-    map_event: F,
-) -> Result<ActorRef<TcpClientMessage>, ActorProcessingErr>
-where
-    M: Send + 'static,
-    F: Fn(ClientEvent) -> Option<M> + Send + Sync + 'static,
-{
-    let events_output = std::sync::Arc::new(OutputPort::default());
-
-    events_output.subscribe(supervisor.clone(), map_event);
-
-    let config = TCPClientConfig::new()?;
-
-    let (tcp_client, _) = Actor::spawn_linked(
-        Some(format!("{service_name}.tcp")),
-        TcpClientActor,
-        TcpClientArgs {
-            config,
-            registration_id: None,
-            delivery: cassini_client::DeliveryMode::Broadcast(events_output),
-            answers: None,
-        },
-        supervisor.into(),
-    )
-    .await?;
-
-    Ok(tcp_client)
 }
 
 // ── Provenance emission helper ─────────────────────────────────────────────────

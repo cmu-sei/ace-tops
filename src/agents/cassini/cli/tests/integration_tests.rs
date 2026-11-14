@@ -31,14 +31,13 @@
 //! Assumptions — adjust if these don't match the actual workspace layout:
 //!   - The binary target is named `cassini-client`
 //!     (`env!("CARGO_BIN_EXE_cassini-client")`).
-//!   - The library crate is `cassini_client` (per the `use` statements in
-//!     `main.rs`), and `cli::{daemon_is_reachable, ipc_read_response,
-//!     IpcRequest, IpcResponse}` are reachable from `cassini_client::cli`.
+//!   - The library crate is `cassini_cli`, and `cli::{daemon_is_reachable, ipc_read_response,
+//!     IpcRequest, IpcResponse}` are reachable from `cassini_cli::cli`.
 //!   - `tempfile` is available as a dev-dependency.
 //!   - Unix-only: the IPC transport is a Unix domain socket and shutdown is
 //!     verified via SIGTERM, neither of which exist on Windows.
 
-use cassini_client::cli::{IpcRequest, IpcResponse, daemon_is_reachable, ipc_read_response};
+use cassini_cli::cli::{IpcRequest, IpcResponse, daemon_is_reachable, ipc_read_response};
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;

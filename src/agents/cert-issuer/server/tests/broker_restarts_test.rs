@@ -356,12 +356,12 @@ fn issuance_through_held_requests_survives_the_broker_restarting_again_and_again
             None,
             TcpClientFacade,
             FacadeArgs {
-                config: TCPClientConfig::from_values(
+                // Its TLS as the credentials agent's crypto actor makes it, over its key files
+                // (docs/plans/crypto-actor.md).
+                config: TCPClientConfig::new(
                     broker.addr.clone(),
                     "localhost".to_string(),
-                    ca.clone(),
-                    cert.to_string_lossy().into_owned(),
-                    key.to_string_lossy().into_owned(),
+                    Arc::new(client_tls(&ca, &cert, &key)),
                 ),
                 delivery: DeliveryMode::Broadcast(events.clone()),
                 transport_name: "credentials-agent-transport".to_string(),
@@ -526,4 +526,25 @@ fn issuance_through_held_requests_survives_the_broker_restarting_again_and_again
         });
     }
     runtime.block_on(broker.stop());
+}
+
+/// A client's TLS as a crypto actor makes it from key files, the broker verified under the CA at `ca`.
+fn client_tls(ca: &str, cert: &std::path::Path, key: &std::path::Path) -> rustls::ClientConfig {
+    use rustls::pki_types::pem::PemObject as _;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in rustls::pki_types::CertificateDer::pem_file_iter(ca).unwrap() {
+        roots.add(certificate.unwrap()).unwrap();
+    }
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .unwrap();
+    polar_crypto::tls::client_config(
+        verifier,
+        &polar_crypto::tls::KeySource::Files {
+            certificate: cert.to_string_lossy().into_owned(),
+            key: key.to_string_lossy().into_owned(),
+        },
+    )
+    .unwrap()
 }

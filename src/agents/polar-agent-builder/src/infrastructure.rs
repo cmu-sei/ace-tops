@@ -56,7 +56,7 @@ use crate::crypto::CryptoHandle;
 use crate::health::HealthHandle;
 use crate::shutdown::{self, Action, Child, Death, ProcessExit, ShutdownMachine};
 use crate::{AgentResources, Subscription, build_lifecycle_handler};
-use cassini_client::TCPClientConfig;
+use cassini_client::CassiniSettings;
 use cassini_types::ClientEvent;
 use polar::cassini::TcpClient;
 use polar_health::{HealthCheckActor, HealthCheckArgs, HealthVerdict};
@@ -163,7 +163,7 @@ pub(crate) trait TcpClientSpawner: Send + Sync {
         supervisor: ActorRef<InfrastructureSupervisorMessage>,
         lifecycle: LifecycleHandler,
         router: ActorRef<polar_router::RouterMessage>,
-        config: TCPClientConfig,
+        settings: CassiniSettings,
         tls: crate::crypto::TlsHandle,
     ) -> Result<TcpClient, ActorProcessingErr>;
 }
@@ -182,14 +182,14 @@ impl TcpClientSpawner for CassiniSpawner {
         supervisor: ActorRef<InfrastructureSupervisorMessage>,
         lifecycle: LifecycleHandler,
         router: ActorRef<polar_router::RouterMessage>,
-        mut config: TCPClientConfig,
+        settings: CassiniSettings,
         tls: crate::crypto::TlsHandle,
     ) -> Result<TcpClient, ActorProcessingErr> {
         // The connection's TLS is the crypto actor's, from the agent's own key (docs/plans/crypto-actor.md, step K3):
         // the client is given it whole, and reads no key of its own.
-        config.tls = Some(Arc::new(
-            cassini_tls(&tls, &config.ca_certificate_path).await?,
-        ));
+        let config = polar_crypto::cassini::client_config(&tls.actor(), &settings)
+            .await
+            .map_err(ActorProcessingErr::from)?;
         // What the agent was refused comes back here: to ask for the authority, and for its health file.
         let told = supervisor.clone();
         let watch: cassini_client::facade::RefusalWatch = Arc::new(move |news| {
@@ -208,31 +208,6 @@ impl TcpClientSpawner for CassiniSpawner {
         )
         .await
     }
-}
-
-/// The Cassini client's TLS: the crypto actor's client configuration, verifying the broker under the CA at `ca_path`.
-async fn cassini_tls(
-    tls: &crate::crypto::TlsHandle,
-    ca_path: &str,
-) -> Result<rustls::ClientConfig, ActorProcessingErr> {
-    use rustls::pki_types::CertificateDer;
-    use rustls::pki_types::pem::PemObject as _;
-    let mut roots = rustls::RootCertStore::empty();
-    for certificate in CertificateDer::pem_file_iter(ca_path)
-        .map_err(|e| ActorProcessingErr::from(format!("reading the CA from {ca_path}: {e}")))?
-    {
-        let certificate = certificate
-            .map_err(|e| ActorProcessingErr::from(format!("reading the CA from {ca_path}: {e}")))?;
-        roots
-            .add(certificate)
-            .map_err(|e| ActorProcessingErr::from(format!("the CA at {ca_path}: {e}")))?;
-    }
-    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
-        .build()
-        .map_err(|e| ActorProcessingErr::from(format!("the broker's verifier: {e}")))?;
-    tls.client_config(verifier)
-        .await
-        .map_err(|e| ActorProcessingErr::from(format!("the Cassini client's TLS: {e}")))
 }
 
 pub struct InfrastructureSupervisorArgs {
@@ -718,9 +693,9 @@ impl InfrastructureSupervisor {
             }),
         ));
 
-        let client_config =
-            TCPClientConfig::from_env(&*setup.config).map_err(ActorProcessingErr::from)?;
-        let one_of_many = names_an_instance(&client_config.client_certificate_path);
+        let client_settings =
+            CassiniSettings::from_env(&*setup.config).map_err(ActorProcessingErr::from)?;
+        let one_of_many = names_an_instance(&client_settings.client_certificate_path);
         let tcp_client = setup
             .tcp_spawner
             .spawn(
@@ -728,7 +703,7 @@ impl InfrastructureSupervisor {
                 myself.clone(),
                 lifecycle_handler,
                 router.clone(),
-                client_config,
+                client_settings,
                 crate::crypto::TlsHandle::new(setup.crypto.handle.actor()),
             )
             .await?;
@@ -1541,7 +1516,7 @@ mod tests {
         /// Clients hand what they publish back to the router.
         clients_echo: AtomicBool,
         /// The configuration each client was started with, in order.
-        configs: Mutex<Vec<TCPClientConfig>>,
+        configs: Mutex<Vec<CassiniSettings>>,
         /// What every client published.
         published: Published,
         /// How many times every client was told to judge its refusals again.
@@ -1558,10 +1533,10 @@ mod tests {
             supervisor: ActorRef<InfrastructureSupervisorMessage>,
             _lifecycle: LifecycleHandler,
             router: ActorRef<polar_router::RouterMessage>,
-            config: TCPClientConfig,
+            settings: CassiniSettings,
             _tls: crate::crypto::TlsHandle,
         ) -> Result<TcpClient, ActorProcessingErr> {
-            self.configs.lock().unwrap().push(config);
+            self.configs.lock().unwrap().push(settings);
             if self.fail_next_spawn.swap(false, Ordering::SeqCst) {
                 return Err(ActorProcessingErr::from(
                     "the fake spawner was made to fail",

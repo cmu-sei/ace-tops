@@ -892,19 +892,24 @@ fn main() -> Result<()> {
                 let server_name = server_name
                     .or_else(|| env_var("POLAR_BROKER_NAME"))
                     .unwrap_or_else(|| "cassini-ip-svc.polar.svc.cluster.local".to_string());
-                let config =
-                    polar_running_config::client_config(&dir, &user, &broker, &server_name)
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                 eprintln!("asking {} agents, for {wait} s", asked.len());
                 let heard = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()
                     .context("cannot start the runtime that asks")?
-                    .block_on(polar_running_config::survey(
-                        questions,
-                        config,
-                        std::time::Duration::from_secs(wait),
-                    ))
+                    .block_on(async {
+                        let (crypto, config) =
+                            polar_running_config::client_config(&dir, &user, &broker, &server_name)
+                                .await?;
+                        let heard = polar_running_config::survey(
+                            questions,
+                            config,
+                            std::time::Duration::from_secs(wait),
+                        )
+                        .await;
+                        crypto.stop(None);
+                        heard
+                    })
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 facts.running = Some(polar_sign::instance::Running { asked, heard });
             }

@@ -245,16 +245,10 @@ impl WatcherState {
                 return;
             }
         };
-        let config = TCPClientConfig::from_values(
-            self.args.broker.clone(),
-            self.args.server_name.clone(),
-            String::new(),
-            String::new(),
-            String::new(),
-        )
-        .with_tls(tls)
-        // Its supervisor is this actor: a lost connection ends the transport, and the next tick makes another.
-        .with_reconnect(ReconnectMode::LeaveToSupervisor);
+        let config =
+            TCPClientConfig::new(self.args.broker.clone(), self.args.server_name.clone(), tls)
+                // Its supervisor is this actor: a lost connection ends the transport, and the next tick makes another.
+                .with_reconnect(ReconnectMode::LeaveToSupervisor);
         let events = Arc::new(OutputPort::default());
         events.subscribe(myself.clone(), |event| Some(WatcherMessage::Event(event)));
         match Actor::spawn_linked(

@@ -105,13 +105,15 @@ pub fn question(
     })
 }
 
-/// A Cassini client's settings from a person's files: `<dir>/<user>.crt`, `.key` and `ca.pem`.
-pub fn client_config(
+/// A Cassini client's configuration from a person's files, `<dir>/<user>.crt`, `.key` and `ca.pem`: its TLS made by a
+/// crypto actor of this process's own over those files, as every process that uses a key has one
+/// (docs/plans/crypto-actor.md). The caller stops the actor when it is done asking.
+pub async fn client_config(
     dir: &Path,
     user: &str,
     broker: &str,
     server_name: &str,
-) -> Result<TCPClientConfig, AskError> {
+) -> Result<(ActorRef<polar_crypto::CryptoMessage>, TCPClientConfig), AskError> {
     let path = |name: String| dir.join(name).to_string_lossy().to_string();
     let env: HashMap<String, String> = HashMap::from([
         ("TLS_CLIENT_CERT".to_string(), path(format!("{user}.crt"))),
@@ -120,7 +122,9 @@ pub fn client_config(
         ("BROKER_ADDR".to_string(), broker.to_string()),
         ("CASSINI_SERVER_NAME".to_string(), server_name.to_string()),
     ]);
-    TCPClientConfig::from_env(&env).map_err(AskError::Client)
+    polar_crypto::cassini::standalone(&env)
+        .await
+        .map_err(AskError::Client)
 }
 
 struct Asker;
@@ -618,7 +622,9 @@ mod tests {
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let broker = free.local_addr().unwrap().to_string();
         drop(free);
-        let config = client_config(dir.path(), "alice", &broker, "cassini.example").unwrap();
+        let (crypto, config) = client_config(dir.path(), "alice", &broker, "cassini.example")
+            .await
+            .unwrap();
         let identity = Identity {
             chain: vec![signer.cert_pem.clone()],
             key_pem: signer.key_pem.clone(),
@@ -627,6 +633,7 @@ mod tests {
         let got = ask(asked, config, Duration::from_secs(1))
             .await
             .unwrap_err();
+        crypto.stop(None);
         // However the client gives up, it is said, and never hangs.
         assert!(
             matches!(

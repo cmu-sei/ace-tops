@@ -25,12 +25,12 @@
 //!
 //! The actor derives its own identity from the client certificate the pod was issued, believes a
 //! recipient's key under the pod's pinned CA, and asks the pod's custody daemon to unwrap what is
-//! sealed to its escrow key. All three are the Cassini client's variables (`TLS_CLIENT_CERT`,
-//! `TLS_CA_CERT`, `POLAR_CUSTODY_SOCKET`), declared once by `cassini-client`; this crate declares
-//! nothing of its own since the workload stopped fetching its escrow key itself
-//! (docs/architecture/key-custody.md, step 9).
+//! sealed to its escrow key. The certificate and the CA are the Cassini client's variables (`TLS_CLIENT_CERT`,
+//! `TLS_CA_CERT`), declared once by `cassini-client`; the custody socket, `POLAR_CUSTODY_SOCKET`, is declared by
+//! `polar-custody` and registered here, in [`KEYS`].
 
-use cassini_client::environment::{CUSTODY_SOCKET, TLS_CA_CERT, TLS_CLIENT_CERT};
+use cassini_client::environment::{TLS_CA_CERT, TLS_CLIENT_CERT};
+use polar_custody::environment::CUSTODY_SOCKET;
 use polar_env::{Access, Described, Env, Optional, Section};
 
 static VARIABLES: &[&dyn Described] = &[];

@@ -271,7 +271,7 @@ impl InitSettings {
         let observer_url = optional(OBSERVER_URL.read(env), &mut note);
         let credentials_agent = optional(CREDENTIALS_AGENT_IDENTITY.read(env), &mut note);
         let custody_socket = optional(
-            cassini_client::environment::CUSTODY_SOCKET.read(env),
+            polar_custody::environment::CUSTODY_SOCKET.read(env),
             &mut note,
         );
         let start_marker = optional(START_MARKER.read(env), &mut note);

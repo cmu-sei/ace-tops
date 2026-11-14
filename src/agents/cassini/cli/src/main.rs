@@ -22,15 +22,40 @@
 */
 
 use anyhow::Result;
+use cassini_cli::cli::*;
 use cassini_client::TCPClientConfig;
 use cassini_client::TcpClientMessage;
-use cassini_client::cli::*;
 use cassini_tracing::shutdown_tracing;
 use cassini_types::ControlOp;
 use clap::Parser;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::time::Duration;
 // ===== Helpers =====
+
+/// The process's environment, with what the command line overrides: what the client and its crypto actor read.
+fn environment(cli: &Cli) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    for (name, value) in [
+        ("BROKER_ADDR", &cli.broker_addr),
+        ("TLS_CA_CERT", &cli.ca_cert),
+        ("TLS_CLIENT_CERT", &cli.client_cert),
+        ("TLS_CLIENT_KEY", &cli.client_key),
+        ("CASSINI_SERVER_NAME", &cli.server_name),
+    ] {
+        if let Some(value) = value {
+            env.insert(name.to_string(), value.clone());
+        }
+    }
+    env
+}
+
+/// The client's configuration, its TLS made by this process's own crypto actor from the keys `env` names: the
+/// custody daemon's, or the key files (docs/plans/crypto-actor.md). The actor lives as long as the process.
+async fn client_config(env: &HashMap<String, String>) -> Result<TCPClientConfig, String> {
+    let (_crypto, config) = polar_crypto::cassini::standalone(env).await?;
+    Ok(config)
+}
 
 fn resolve_socket_path(override_path: Option<&PathBuf>) -> PathBuf {
     if let Some(p) = override_path {
@@ -69,19 +94,15 @@ async fn main() -> Result<()> {
     // Daemon start path — no subcommand needed.
     if cli.daemon {
         // Load config optionally — daemon starts regardless of broker availability.
-        let client_config = TCPClientConfig::from_cli_or_env(
-            cli.broker_addr.clone(),
-            cli.ca_cert.clone(),
-            cli.client_cert.clone(),
-            cli.client_key.clone(),
-            cli.server_name.clone(),
-        );
-
-        if client_config.is_none() {
-            eprintln!(
-                "Warning: broker config not available — daemon will queue messages until broker is reachable"
-            );
-        }
+        let client_config = match client_config(&environment(&cli)).await {
+            Ok(config) => Some(config),
+            Err(why) => {
+                eprintln!(
+                    "Warning: broker config not available ({why}) — daemon will queue messages until broker is reachable"
+                );
+                None
+            }
+        };
 
         let result = run_daemon(
             socket_path,
@@ -101,7 +122,8 @@ async fn main() -> Result<()> {
     }
 
     // For non-daemon commands, load config normally — these require a live broker.
-    let client_config = TCPClientConfig::new()
+    let client_config = client_config(&environment(&cli))
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to load config from environment: {e}"))?;
 
     let command = match cli.command {

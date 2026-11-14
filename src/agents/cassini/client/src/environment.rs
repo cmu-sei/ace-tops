@@ -29,8 +29,7 @@
 //! for, and [`SECTION`] lets anything that judges an environment (the agent builder at
 //! startup, the render-time checker for the pod a workload will get) judge these too.
 
-use crate::ClientKey;
-use polar_env::{Described, Env, EnvError, Optional, Required, Section};
+use polar_env::{Described, Env, Optional, Required, Section};
 
 pub const TLS_CLIENT_CERT: Required<String> = Required::path(
     "TLS_CLIENT_CERT",
@@ -38,17 +37,18 @@ pub const TLS_CLIENT_CERT: Required<String> = Required::path(
     "path to this agent's client certificate, which it presents to the broker",
 );
 
-const TLS_CLIENT_KEY_DOC: &str = "path to the private key for this agent's client certificate; this or POLAR_CUSTODY_SOCKET, not both";
-
-pub const TLS_CLIENT_KEY: Optional<String> = Optional::path(
+// Read here by name, to say a client has its key; declared by the crypto actor's `keys` section, which the client never
+// reads a key through (docs/plans/crypto-actor.md).
+const TLS_CLIENT_KEY: Optional<String> = Optional::path(
     "TLS_CLIENT_KEY",
     polar_env::Access::ReadFile,
-    TLS_CLIENT_KEY_DOC,
+    "path to the private key for this agent's client certificate",
 );
-
-/// The custody daemon's socket (docs/architecture/key-custody.md), declared once in `polar-custody` for every component
-/// that may be given the daemon's key.
-pub use polar_custody::environment::CUSTODY_SOCKET;
+const CUSTODY_SOCKET: Optional<String> = Optional::path(
+    "POLAR_CUSTODY_SOCKET",
+    polar_env::Access::Socket,
+    "path to the custody daemon's socket",
+);
 
 pub const TLS_CA_CERT: Required<String> = Required::path(
     "TLS_CA_CERT",
@@ -85,28 +85,26 @@ static VARIABLES: &[&dyn Described] = &[
 pub static SECTION: Section = Section {
     name: "cassini-client",
     vars: VARIABLES,
-    relations: |env| {
-        read_client_key(env)
-            .err()
-            .map(|e| e.to_string())
-            .into_iter()
-            .collect()
-    },
+    relations: |env| key_problem(env).into_iter().collect(),
 };
 
-/// Where the client key is: a file, or the custody daemon. Exactly one of the two is given.
-pub fn read_client_key(env: &dyn Env) -> Result<ClientKey, EnvError> {
-    use polar_custody::environment::{KeyGiven, one_key};
-    Ok(match one_key(env, &TLS_CLIENT_KEY, TLS_CLIENT_KEY_DOC)? {
-        KeyGiven::File(path) => ClientKey::File(path),
-        KeyGiven::Socket(socket) => ClientKey::Custody(socket),
+/// That a client is given its key, a file or the custody daemon's, or what is wrong; that it is not given both is the
+/// `keys` section's to say.
+pub fn key_problem(env: &dyn Env) -> Option<String> {
+    let given = |var: &Optional<String>| matches!(var.read(env), Ok(Some(_)));
+    (!given(&TLS_CLIENT_KEY) && !given(&CUSTODY_SOCKET)).then(|| {
+        format!(
+            "neither {} nor {} is set: the client's key is a file, or the custody daemon holds it",
+            TLS_CLIENT_KEY.name(),
+            CUSTODY_SOCKET.name()
+        )
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClientKey, TCPClientConfig};
+    use crate::CassiniSettings;
     use std::collections::HashMap;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -126,9 +124,8 @@ mod tests {
 
     #[test]
     fn a_complete_environment_gives_the_client_its_coordinates() {
-        let config = TCPClientConfig::from_env(&env(ALL)).unwrap();
+        let config = CassiniSettings::from_env(&env(ALL)).unwrap();
         assert_eq!(config.client_certificate_path, "/c/cert.pem");
-        assert_eq!(config.client_key, ClientKey::File("/c/key.pem".into()));
         assert_eq!(config.ca_certificate_path, "/c/ca.pem");
         assert_eq!(config.broker_endpoint, "cassini:8080");
         assert_eq!(config.server_name, "cassini.local");
@@ -137,7 +134,7 @@ mod tests {
     #[test]
     fn every_missing_variable_is_named_with_what_it_is_for() {
         let error =
-            TCPClientConfig::from_env(&env(&[("BROKER_ADDR", "cassini:8080")])).unwrap_err();
+            CassiniSettings::from_env(&env(&[("BROKER_ADDR", "cassini:8080")])).unwrap_err();
         for name in [
             "TLS_CLIENT_CERT",
             "TLS_CLIENT_KEY",
@@ -155,14 +152,14 @@ mod tests {
         let mut pairs = ALL.to_vec();
         pairs.retain(|(k, _)| *k != "BROKER_ADDR");
         pairs.push(("BROKER_ADDR", "  "));
-        let error = TCPClientConfig::from_env(&env(&pairs)).unwrap_err();
+        let error = CassiniSettings::from_env(&env(&pairs)).unwrap_err();
         assert!(error.contains("BROKER_ADDR"), "{error}");
     }
 
     #[test]
     fn the_section_checks_the_same_things_the_client_needs() {
         assert!(SECTION.check(&env(ALL)).is_empty());
-        // The four required; the key is judged with the socket once they are given, as a relation.
+        // The four required; that the client has a key, a file or the socket, is judged once they are given, as a relation.
         let problems = SECTION.check(&env(&[]));
         assert_eq!(problems.len(), 4, "{problems:?}");
         let mut pairs = ALL.to_vec();
@@ -173,10 +170,11 @@ mod tests {
         assert!(problems[0].contains("POLAR_CUSTODY_SOCKET"), "{problems:?}");
     }
 
-    /// Every way the two can be given (unset, blank, a path): exactly one is, and that one is the key; the section
-    /// judges each as the client reads it.
+    /// Every way the two can be given (unset, blank, a path): the client has a key when either is, and the section and
+    /// the reading say the same. That not both are given is the crypto actor's `keys` section's to say, not the client's;
+    /// the client reads no key, so which one it is is not its business.
     #[test]
-    fn exactly_one_of_a_key_file_and_the_custody_socket_is_given() {
+    fn a_client_has_its_key_when_a_key_file_or_the_custody_socket_is_given() {
         let states = [None, Some("  "), Some("/given")];
         let given = |v: Option<&str>| v.is_some_and(|v| !v.trim().is_empty());
         for key in states {
@@ -185,21 +183,17 @@ mod tests {
                 pairs.retain(|(k, _)| *k != "TLS_CLIENT_KEY");
                 pairs.extend(key.map(|v| ("TLS_CLIENT_KEY", v)));
                 pairs.extend(socket.map(|v| ("POLAR_CUSTODY_SOCKET", v)));
-                let read = TCPClientConfig::from_env(&env(&pairs));
+                let read = CassiniSettings::from_env(&env(&pairs));
                 let judged = SECTION.check(&env(&pairs));
                 assert_eq!(judged.is_empty(), read.is_ok(), "{pairs:?}: {judged:?}");
-                match (given(key), given(socket), read) {
-                    (true, false, Ok(config)) => {
-                        assert_eq!(config.client_key, ClientKey::File("/given".into()))
-                    }
-                    (false, true, Ok(config)) => {
-                        assert_eq!(config.client_key, ClientKey::Custody("/given".into()))
-                    }
-                    (true, true, Err(error)) | (false, false, Err(error)) => {
-                        assert!(error.contains("TLS_CLIENT_KEY"), "{error}");
-                        assert!(error.contains("POLAR_CUSTODY_SOCKET"), "{error}");
-                    }
-                    (_, _, read) => panic!("{pairs:?}: {read:?}"),
+                assert_eq!(
+                    read.is_ok(),
+                    given(key) || given(socket),
+                    "{pairs:?}: {read:?}"
+                );
+                if let Err(error) = read {
+                    assert!(error.contains("TLS_CLIENT_KEY"), "{error}");
+                    assert!(error.contains("POLAR_CUSTODY_SOCKET"), "{error}");
                 }
             }
         }

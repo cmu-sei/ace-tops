@@ -29,6 +29,8 @@ license.workspace = true
 # The asking, as a library: the tool that asks is `polar-sign`'s binary `polar-running-config`, so that `polar-sign check`
 # can ask as well without the two packages depending on each other.
 [dependencies]
+# Its own crypto actor, which makes its Cassini client's TLS from the person's key files (docs/plans/crypto-actor.md).
+polar-crypto.workspace = true
 cassini-client.workspace = true
 cassini-types.workspace = true
 cert-issuer-common = { path = "../cert-issuer/common" }

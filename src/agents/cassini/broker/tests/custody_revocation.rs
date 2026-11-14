@@ -31,7 +31,6 @@
 mod credentials;
 mod support;
 
-use cassini_client::{ClientKey, TCPClientConfig};
 use credentials::{CREDENTIALS, CredentialsAgent};
 use polar_custody::client::{ClientError, CustodyClient};
 use polar_custody::custody::Custody;
@@ -48,12 +47,11 @@ const POD: &str = "git-repo-observer.polar.serviceaccount.cluster.local";
 const CUSTODIAN: &str = "custody.git-repo-observer.polar.serviceaccount.cluster.local";
 
 /// A pod: its daemon, serving the custody on a thread and runtime of its own, its client slot holding a certificate
-/// as polar-init leaves it, and the certificate written where the workload reads it.
+/// as polar-init leaves it, which the workload's crypto actor presents from the slot.
 struct Pod {
     _dir: tempfile::TempDir,
     custody: Arc<RwLock<Custody>>,
     socket: PathBuf,
-    certificate: PathBuf,
     serial: String,
     /// The custodian's own certificate's serial.
     custodian_serial: String,
@@ -95,14 +93,11 @@ async fn pod(broker: &TestBroker) -> Pod {
     let issued = broker.pki.certify_client_csr(&csr);
     tokio::task::block_in_place(|| daemon.install(Slot::Client, vec![issued.clone()])).unwrap();
     tokio::task::block_in_place(|| daemon.bootstrap(POD, false, None, false, false)).unwrap();
-    let certificate = dir.path().join("cert.pem");
-    std::fs::write(&certificate, &issued).unwrap();
     let serial = cert_issuer_common::serial::serial_from_pem(&issued).unwrap();
     Pod {
         _dir: dir,
         custody,
         socket,
-        certificate,
         serial,
         custodian_serial: cert_issuer_common::serial::serial_from_pem(&custodian).unwrap(),
     }
@@ -124,14 +119,15 @@ fn custodian(
 
 /// The pod's workload, its Cassini client signing through the daemon.
 async fn workload(broker: &TestBroker, pod: &Pod) -> TestClient {
-    let mut config = TCPClientConfig::from_values(
-        broker.addr.clone(),
-        "localhost".to_string(),
-        broker.pki.ca().to_string_lossy().into_owned(),
-        pod.certificate.to_string_lossy().into_owned(),
-        String::new(),
+    // Its TLS as its crypto actor makes it, over the daemon's client slot (docs/plans/crypto-actor.md).
+    let config = support::client_config(
+        &broker.addr,
+        &broker.pki.ca(),
+        &polar_crypto::tls::KeySource::Custody {
+            client: Arc::new(CustodyClient::new(&pod.socket)),
+            slot: Slot::Client,
+        },
     );
-    config.client_key = ClientKey::Custody(pod.socket.display().to_string());
     TestClient::connect_configured(config).await
 }
 
@@ -450,7 +446,6 @@ async fn the_custodian_asks_for_its_workload_s_certificate_and_installs_it_throu
         _dir: dir,
         custody: custody.clone(),
         socket: socket.clone(),
-        certificate: PathBuf::new(),
         serial: String::new(),
         custodian_serial: cert_issuer_common::serial::serial_from_pem(&custodian_certificate)
             .unwrap(),

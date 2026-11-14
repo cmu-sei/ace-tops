@@ -127,10 +127,37 @@ K3b DONE 2026-11-13 (main): every agent's Cassini client, its graph client, the 
    a server's certificate is the slot's, so TLS_SERVER_CERT_CHAIN is required only beside a key file (`keys`). NOT done
    in K3b: custody's daemon-side TLS-shape check. The Cassini client still builds its own TLS over custody's signer when
    not handed one (cassini/client/src/lib.rs, the standalone processes), so the check goes at the end of K2b.
-K2b Standalone processes: CLI daemon, c2, polar-running-config, cert-issuer, polar-init each start a CryptoActor;
-   TCPClientConfig loses its own key reading; `polar::cassini` removed. Then custody's daemon drops
-   is_tls13_certificate_verify from its Sign arm (and Refusal::NotTls13Handshake), and polar_custody::client's own
-   rustls signers/configs go; own.rs (the daemon's own session, in process) stays.
+K2b-1 DONE 2026-11-13 (main): TCPClientConfig {broker_endpoint, server_name, reconnect, tls: Arc<ClientConfig>}, TLS
+   required, no paths, no key; the env read is CassiniSettings::from_env (BROKER_ADDR, CASSINI_SERVER_NAME, TLS_CA_CERT,
+   TLS_CLIENT_CERT; plus environment::key_problem: TLS_CLIENT_KEY or POLAR_CUSTODY_SOCKET given, read by name, not
+   declared). cassini-client no longer depends on polar-custody (ClientKey, read_client_key, from_cli_or_env,
+   from_values, its own TLS build all gone). polar_crypto::cassini: client_tls(crypto, ca), client_config(crypto,
+   settings), standalone(env) -> (crypto, config) (unconnected, escrow false). Builder's spawner takes CassiniSettings
+   and asks polar_crypto::cassini::client_config. Standalone: cassini-c2, polar-running-config (a person's key files via
+   an env map; polar-sign's two callers), the git discovery harness (MOVED out of git-repo-observer to git/harness,
+   package git-discovery-harness, same bin name: the no-way-out guard forbids polar-crypto in a domain crate), and the
+   CLI daemon, which MOVED to its
+   own package cassini/cli (cassini-cli; bin name still cassini-client, so nix's `--bin cassini-client` is unchanged)
+   because polar-crypto depends on cassini-client (a package cycle otherwise; DECIDED, for review). polar::cassini
+   TcpClient::spawn takes a config; spawn_with_router and lib's deprecated spawn_tcp_client removed (no callers).
+   cert-issuer reads its key-file path from polar_crypto::environment::CLIENT_KEY_FILE. Tests: broker support's
+   client_config/files_config and cert-issuer's restart test build TLS with polar_crypto::tls::client_config, the
+   function the actor uses; the CLI's IPC/output tests moved with it (cassini/cli/tests). polar-init, polar-health and
+   cert-issuer do not build Cassini TLS (found: polar-init only named the socket; cert-issuer is a builder agent).
+K2b-2 custody's daemon drops is_tls13_certificate_verify from its Sign arm (and Refusal::NotTls13Handshake), and
+   polar_custody::client's own rustls signers/configs (client_config, server_config, ClientKey, ServerKey) go; the
+   broker's read_server_key uses one_key directly; own.rs (the daemon's own session, in process) stays.
+GAP (recorded 2026-11-13, store-to-main review point 6): polar-sign and polar-running-config sign a person's documents
+   with identity.key_pem directly (polar_signing::sign_in), not through a CryptoActor. Theirs to move with the passkey
+   work (people sign with WebAuthn); no new direct key-PEM signing meanwhile.
+S1 (record store bite 1's crypto pieces, docs/plans/record-store/to-main.claude.md): POLAR_STORE_CHECKPOINT_KEY in
+   `keys` (Optional, WriteFile, no default; render sets it for polar-git-server only); the CryptoActor makes the key
+   if absent (PKCS#8 PEM P-256, 0600, create_new, never replaced: acp's format, so u7c's key loads), SignCheckpoint
+   (Checkpoint::parse; origin == <own_identity>/<log>; NoteSigner named <own_identity>/checkpoint); own identity read
+   when a checkpoint key is given even without escrow. Certification: Agent::CHECKPOINTS (build fact) -> scaffold ->
+   resolver -> authority model Workload.checkpoints -> the credentials agent certifies a checkpoint key only for such
+   a workload (broker-stamped identity), via cert-issuer CertType::Checkpoint; the builder implies the two topics
+   CREDENTIALS_KEY_CERTIFICATION_{REQUESTS,REPLIES}_TOPIC for it (DECIDED: the model path records-like, for review).
 K4 Dependency test: cargo metadata; only polar-crypto, polar-init, polar-health, polar-custody-daemon (and polar-custody
    itself) may depend on polar-custody. Builder loses its direct dependency.
 K5 Degraded key files held by the CryptoActor (same shape).

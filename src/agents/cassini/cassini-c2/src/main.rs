@@ -42,12 +42,13 @@ enum ShutdownMsg {
 impl Actor for ShutdownController {
     type Msg = ShutdownMsg;
     type State = Option<ActorRef<TcpClientMessage>>;
-    type Arguments = ();
+    /// The client's configuration, its TLS made by this process's crypto actor.
+    type Arguments = TCPClientConfig;
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        _: (),
+        config: TCPClientConfig,
     ) -> Result<Self::State, ActorProcessingErr> {
         // Create a forwarder to convert ClientEvent to our own message type.
         let (forwarder, _) = Actor::spawn_linked(
@@ -60,9 +61,6 @@ impl Actor for ShutdownController {
             myself.clone().into(),
         )
         .await?;
-
-        // Build TCP client config from environment.
-        let config = TCPClientConfig::new()?;
 
         let events_output: std::sync::Arc<ractor::OutputPort<ClientEvent>> =
             std::sync::Arc::new(ractor::OutputPort::default());
@@ -147,15 +145,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting shutdown tool...");
 
+    // Its TLS is its own crypto actor's, from the keys the environment names (docs/plans/crypto-actor.md).
+    let (crypto, config) = polar_crypto::cassini::standalone(&polar_env::ProcessEnv).await?;
     let (_controller, handle) = Actor::spawn(
         Some("shutdown-controller".to_string()),
         ShutdownController,
-        (),
+        config,
     )
     .await?;
 
     // Wait for the controller to finish (it will stop itself after sending/acknowledging shutdown).
     handle.await?;
+    crypto.stop(None);
 
     cassini_client::shutdown_tracing();
     info!("Shutdown tool finished.");

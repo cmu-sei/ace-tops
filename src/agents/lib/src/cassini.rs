@@ -124,10 +124,13 @@ pub struct TcpClient {
 }
 
 impl TcpClient {
+    /// A client connecting with `config`, whose TLS a crypto actor made (`polar_crypto::cassini`), telling `supervisor`
+    /// its events as `map_event` maps them.
     pub async fn spawn<M, F>(
         service_name: &str,
         supervisor: ActorRef<M>,
         map_event: F,
+        config: TCPClientConfig,
     ) -> Result<Self, ActorProcessingErr>
     where
         M: Send + 'static,
@@ -135,8 +138,6 @@ impl TcpClient {
     {
         let events_output = std::sync::Arc::new(OutputPort::default());
         events_output.subscribe(supervisor.clone(), map_event);
-
-        let config = TCPClientConfig::new()?;
 
         let (inner, _) = Actor::spawn_linked(
             Some(format!("{service_name}.tcp")),
@@ -176,33 +177,6 @@ impl TcpClient {
     /// `Arc<dyn Fn(ClientEvent)>` shape `DeliveryMode::Router`'s own
     /// `lifecycle` field requires -- the caller never needs to know
     /// that detail.
-    pub async fn spawn_with_router<M, F>(
-        service_name: &str,
-        supervisor: ActorRef<M>,
-        map_event: F,
-        router: ActorRef<polar_router::RouterMessage>,
-    ) -> Result<Self, ActorProcessingErr>
-    where
-        M: Send + 'static,
-        F: Fn(ClientEvent) -> Option<M> + Send + Sync + 'static,
-    {
-        Self::spawn_with_router_config(
-            service_name,
-            supervisor,
-            map_event,
-            router,
-            TCPClientConfig::new()?,
-            None,
-            None,
-        )
-        .await
-    }
-
-    /// As [`spawn_with_router`](Self::spawn_with_router), with the broker coordinates
-    /// supplied instead of read from the process environment. The agent builder uses this,
-    /// handing the client what it read once into its snapshot, and the check each publish and
-    /// subscribe passes before it is sent (`gate`; none admits everything), and who is told what the
-    /// agent was refused (`watch`; none tells no one).
     pub async fn spawn_with_router_config<M, F>(
         service_name: &str,
         supervisor: ActorRef<M>,

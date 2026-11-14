@@ -707,7 +707,7 @@ fn custody_for(
     let socket = socket.ok_or_else(|| {
         format!(
             "a cert whose key is the custody daemon's needs {}, the daemon's socket",
-            cassini_client::environment::CUSTODY_SOCKET.name()
+            polar_custody::environment::CUSTODY_SOCKET.name()
         )
     })?;
     Ok(Some(Arc::new(CustodyClient::new(socket))))

@@ -662,13 +662,7 @@ async fn agent(
         registrar.clone(),
         Some,
         router.clone(),
-        cassini_client::TCPClientConfig::from_values(
-            broker.addr.clone(),
-            "localhost".to_string(),
-            broker.pki.ca().to_string_lossy().into_owned(),
-            cert.to_string_lossy().into_owned(),
-            key.to_string_lossy().into_owned(),
-        ),
+        support::files_config(broker, &cert, &key),
         Some(gate),
         Some(watch),
     )

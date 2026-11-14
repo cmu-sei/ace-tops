@@ -21,9 +21,11 @@
    DM26-0670
 */
 
-use crate::QueueEntry;
-use crate::{DeliveryMode, TCPClientConfig, TcpClientActor, TcpClientArgs, TcpClientMessage};
 use anyhow::Result;
+use cassini_client::QueueEntry;
+use cassini_client::{
+    DeliveryMode, TCPClientConfig, TcpClientActor, TcpClientArgs, TcpClientMessage,
+};
 use cassini_types::{ClientEvent, ControlError, ControlOp, ControlResult};
 use clap::{Parser, Subcommand, ValueEnum};
 use ractor::{Actor, ActorProcessingErr, ActorRef, async_trait};

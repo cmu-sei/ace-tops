@@ -113,8 +113,10 @@ async fn main() -> Result<()> {
         .context("the clock is before 1970")?
         .as_secs();
     let asked = question(&cli.agent, &identity, now, cli.wait)?;
-    let config = client_config(&dir, &user, &broker, &server_name)?;
-    let answer = ask(asked, config, Duration::from_secs(cli.wait)).await?;
+    let (crypto, config) = client_config(&dir, &user, &broker, &server_name).await?;
+    let answer = ask(asked, config, Duration::from_secs(cli.wait)).await;
+    crypto.stop(None);
+    let answer = answer?;
 
     match scaffold {
         Some(scaffold) => print!(

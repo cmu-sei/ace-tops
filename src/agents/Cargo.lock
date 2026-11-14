@@ -1149,6 +1149,7 @@ dependencies = [
  "opentelemetry_sdk",
  "polar",
  "polar-agent-builder",
+ "polar-crypto",
  "polar-custody",
  "polar-custody-daemon",
  "polar-env",
@@ -1186,6 +1187,8 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "polar-crypto",
+ "polar-env",
  "polar-scudo",
  "polar-version",
  "ractor",
@@ -1197,10 +1200,32 @@ dependencies = [
 ]
 
 [[package]]
-name = "cassini-client"
+name = "cassini-cli"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
+ "cassini-client",
+ "cassini-tracing",
+ "cassini-types",
+ "chrono",
+ "clap",
+ "polar-crypto",
+ "polar-scudo",
+ "polar-version",
+ "proptest",
+ "ractor",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cassini-client"
+version = "1.0.0"
+dependencies = [
  "assert_matches",
  "async-trait",
  "base64 0.22.1",
@@ -1209,10 +1234,8 @@ dependencies = [
  "chrono",
  "clap",
  "opentelemetry",
- "polar-custody",
  "polar-env",
  "polar-router",
- "polar-scudo",
  "polar-version",
  "proptest",
  "ractor",
@@ -1410,6 +1433,7 @@ dependencies = [
  "jwt_utils",
  "polar",
  "polar-agent-builder",
+ "polar-crypto",
  "polar-custody",
  "polar-env",
  "polar-health",
@@ -3249,6 +3273,24 @@ dependencies = [
  "serde",
  "serde_yaml",
  "url",
+]
+
+[[package]]
+name = "git-discovery-harness"
+version = "1.0.0"
+dependencies = [
+ "cassini-client",
+ "cassini-types",
+ "git-agent-common",
+ "polar",
+ "polar-crypto",
+ "polar-env",
+ "polar-scudo",
+ "polar-version",
+ "ractor",
+ "rkyv",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -7675,6 +7717,7 @@ dependencies = [
  "cassini-client",
  "cassini-types",
  "cert-issuer-common",
+ "polar-crypto",
  "polar-scheduler-common",
  "polar-signing",
  "proptest",

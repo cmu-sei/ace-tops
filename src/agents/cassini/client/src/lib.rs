@@ -23,7 +23,6 @@
 
 pub use cassini_tracing::{init_tracing, shutdown_tracing};
 pub use cassini_tracing::{try_set_parent_otel, try_set_parent_wire};
-pub use polar_custody::client::ClientKey;
 mod connect;
 pub mod credit;
 pub mod environment;
@@ -40,11 +39,8 @@ use ractor::concurrency::{Duration, sleep};
 use ractor::{Actor, ActorProcessingErr, ActorRef, Message, OutputPort, RpcReplyPort, async_trait};
 use rkyv::rancor::Error;
 use rustls::ClientConfig;
-use rustls::client::WebPkiServerVerifier;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::pki_types::ServerName;
 use socket2::SockRef;
-use std::env;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,8 +54,6 @@ use tokio_rustls::client::TlsStream;
 use tracing::{
     Instrument, debug, debug_span, error, info, info_span, trace, trace_span, warn, warn_span,
 };
-
-pub mod cli;
 
 pub const UNEXPECTED_DISCONNECT: &str = "UNEXPECTED_DISCONNECT";
 pub const REGISTRATION_EXPECTED: &str =
@@ -255,20 +249,27 @@ pub enum ReconnectMode {
     LeaveToSupervisor,
 }
 
-/// A basse configuration for a TCP Client actor
+/// What a TCP client actor connects with: the broker's address and the name on its certificate, what to do when the
+/// connection is lost, and the TLS it connects with. The TLS is made by the process's crypto actor
+/// (docs/plans/crypto-actor.md), which alone uses the key: a Cassini client never reads a key, or makes its own TLS.
 #[derive(Clone, Debug)]
 pub struct TCPClientConfig {
     pub broker_endpoint: String,
     pub server_name: String,
-    pub ca_certificate_path: String,
-    pub client_certificate_path: String,
-    /// The certificate's key: a file, or the custody daemon, which signs for it.
-    pub client_key: ClientKey,
     /// What the transport does when the connection is lost.
     pub reconnect: ReconnectMode,
-    /// A TLS configuration made in code, used as given in place of the CA, certificate and key files, which are then
-    /// never read: the custody daemon's own, whose key is in its own memory (docs/architecture/key-custody.md, step 5).
-    pub tls: Option<Arc<ClientConfig>>,
+    pub tls: Arc<ClientConfig>,
+}
+
+/// Where the broker is and which certificates a client is given, as the environment says: the CA its certificate is
+/// verified against, and the client's own certificate, its identity. No key: the crypto actor holds or reads it, and
+/// makes the TLS from these ([`CassiniSettings::config`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CassiniSettings {
+    pub broker_endpoint: String,
+    pub server_name: String,
+    pub ca_certificate_path: String,
+    pub client_certificate_path: String,
 }
 
 /// Why a message could not be made a frame.
@@ -299,23 +300,13 @@ pub enum RegistrationState {
 }
 
 impl TCPClientConfig {
-    /// Construct directly from values — used in tests and anywhere the
-    /// caller already has the coordinates without needing env vars.
-    pub fn from_values(
-        broker_endpoint: String,
-        server_name: String,
-        ca_certificate_path: String,
-        client_certificate_path: String,
-        client_key_path: String,
-    ) -> Self {
+    /// Connecting to `broker_endpoint`, whose certificate names `server_name`, with `tls`.
+    pub fn new(broker_endpoint: String, server_name: String, tls: Arc<ClientConfig>) -> Self {
         TCPClientConfig {
             broker_endpoint,
             server_name,
-            ca_certificate_path,
-            client_certificate_path,
-            client_key: ClientKey::File(client_key_path),
             reconnect: ReconnectMode::default(),
-            tls: None,
+            tls,
         }
     }
 
@@ -324,25 +315,19 @@ impl TCPClientConfig {
         self.reconnect = reconnect;
         self
     }
+}
 
-    /// This configuration, connecting with `tls` as given: the files it names are not read.
-    pub fn with_tls(mut self, tls: Arc<ClientConfig>) -> Self {
-        self.tls = Some(tls);
-        self
+impl CassiniSettings {
+    /// Read from the process environment.
+    pub fn from_process_env() -> Result<Self, String> {
+        Self::from_env(&polar_env::ProcessEnv)
     }
 
-    /// Read the coordinates from the process environment. If we can't read these, we can't
-    /// start, and the error names every variable that is missing.
-    pub fn new() -> Result<Self, ActorProcessingErr> {
-        Self::from_env(&polar_env::ProcessEnv).map_err(ActorProcessingErr::from)
-    }
-
-    /// As [`new`](Self::new), reading from `env`, so a snapshot or a test supplies its own.
-    /// Every problem is reported together, each naming the variable and what it is for.
+    /// Read from `env`, so a snapshot or a test supplies its own. If these cannot be read, the client cannot start:
+    /// every problem is reported together, each naming the variable and what it is for, with the key's when the
+    /// client is given none ([`environment::key_problem`]).
     pub fn from_env(env: &dyn polar_env::Env) -> Result<Self, String> {
-        use environment::{
-            BROKER_ADDR, CASSINI_SERVER_NAME, TLS_CA_CERT, TLS_CLIENT_CERT, read_client_key,
-        };
+        use environment::{BROKER_ADDR, CASSINI_SERVER_NAME, TLS_CA_CERT, TLS_CLIENT_CERT};
         let mut problems = Vec::new();
         let mut take = |read: Result<String, polar_env::EnvError>| match read {
             Ok(value) => value,
@@ -351,53 +336,23 @@ impl TCPClientConfig {
                 String::new()
             }
         };
-        let client_certificate_path = take(TLS_CLIENT_CERT.read(env));
-        let ca_certificate_path = take(TLS_CA_CERT.read(env));
-        let broker_endpoint = take(BROKER_ADDR.read(env));
-        let server_name = take(CASSINI_SERVER_NAME.read(env));
-        let client_key = match read_client_key(env) {
-            Ok(key) => Some(key),
-            Err(error) => {
-                problems.push(error.to_string());
-                None
-            }
+        let settings = CassiniSettings {
+            client_certificate_path: take(TLS_CLIENT_CERT.read(env)),
+            ca_certificate_path: take(TLS_CA_CERT.read(env)),
+            broker_endpoint: take(BROKER_ADDR.read(env)),
+            server_name: take(CASSINI_SERVER_NAME.read(env)),
         };
-        let (Some(client_key), true) = (client_key, problems.is_empty()) else {
-            return Err(problems.join("; "));
-        };
-        Ok(TCPClientConfig {
-            broker_endpoint,
-            server_name,
-            ca_certificate_path,
-            client_certificate_path,
-            client_key,
-            reconnect: ReconnectMode::default(),
-            tls: None,
-        })
+        problems.extend(environment::key_problem(env));
+        if problems.is_empty() {
+            Ok(settings)
+        } else {
+            Err(problems.join("; "))
+        }
     }
 
-    pub fn from_cli_or_env(
-        broker_addr: Option<String>,
-        ca_cert: Option<String>,
-        client_cert: Option<String>,
-        client_key: Option<String>,
-        server_name: Option<String>,
-    ) -> Option<Self> {
-        let broker_endpoint = broker_addr.or_else(|| env::var("BROKER_ADDR").ok())?;
-        let server_name = server_name.or_else(|| env::var("CASSINI_SERVER_NAME").ok())?;
-        let ca_certificate_path = ca_cert.or_else(|| env::var("TLS_CA_CERT").ok())?;
-        let client_certificate_path = client_cert.or_else(|| env::var("TLS_CLIENT_CERT").ok())?;
-        let client_key = ClientKey::File(client_key.or_else(|| env::var("TLS_CLIENT_KEY").ok())?);
-
-        Some(TCPClientConfig {
-            broker_endpoint,
-            server_name,
-            ca_certificate_path,
-            client_certificate_path,
-            client_key,
-            reconnect: ReconnectMode::default(),
-            tls: None,
-        })
+    /// The client's configuration, connecting with `tls`, made by the crypto actor from these.
+    pub fn config(&self, tls: Arc<ClientConfig>) -> TCPClientConfig {
+        TCPClientConfig::new(self.broker_endpoint.clone(), self.server_name.clone(), tls)
     }
 }
 
@@ -1668,62 +1623,8 @@ impl Actor for TcpClientActor {
         }
         drop(_g);
 
-        // A configuration made in code is used as given; otherwise it is built from the files.
-        let client_config = match &args.config.tls {
-            Some(tls) => tls.clone(),
-            None => {
-                // --- 2. Load CA certificate into root store ---
-                let _g = debug_span!("tls.load_ca_cert").entered();
-                let mut root_cert_store = rustls::RootCertStore::empty();
-                let ca_path = &args.config.ca_certificate_path;
-
-                let ca_cert = CertificateDer::from_pem_file(ca_path).map_err(|e| {
-                    ActorProcessingErr::from(anyhow::anyhow!(
-                        "Failed to read CA certificate from {ca_path}: {e}"
-                    ))
-                })?;
-
-                root_cert_store.add(ca_cert).map_err(|e| {
-                    ActorProcessingErr::from(anyhow::anyhow!(
-                        "Failed to add CA certificate to root store: {e}"
-                    ))
-                })?;
-                drop(_g);
-
-                // --- 3. Build WebPKI verifier ---
-                let _g = debug_span!("tls.build_verifier").entered();
-                let verifier = WebPkiServerVerifier::builder(Arc::new(root_cert_store))
-                    .build()
-                    .map_err(|e| {
-                        ActorProcessingErr::from(anyhow::anyhow!(
-                            "Failed to build WebPKI verifier: {e}"
-                        ))
-                    })?;
-                drop(_g);
-
-                // --- 4. Load client cert; its key is a file or the custody daemon's ---
-                let _g = debug_span!("tls.load_client_cert_key").entered();
-                let mut certs = Vec::new();
-                let cert_path = &args.config.client_certificate_path;
-
-                let client_cert = CertificateDer::from_pem_file(cert_path).map_err(|e| {
-                    ActorProcessingErr::from(anyhow::anyhow!(
-                        "Failed to read client certificate from {cert_path}: {e}"
-                    ))
-                })?;
-
-                certs.push(client_cert);
-                drop(_g);
-
-                // --- 5. Build Rustls client config ---
-                let _g = debug_span!("tls.build_client_config").entered();
-                let client_config =
-                    polar_custody::client::client_config(verifier, certs, &args.config.client_key)
-                        .map_err(|e| ActorProcessingErr::from(anyhow::anyhow!(e)))?;
-                drop(_g);
-                Arc::new(client_config)
-            }
-        };
+        // The crypto actor's TLS, as given (docs/plans/crypto-actor.md).
+        let client_config = args.config.tls.clone();
 
         // --- 6. Determine registration state ---
         let registration = match args.registration_id {
@@ -2889,21 +2790,20 @@ mod frame_tests {
     }
 }
 
+/// A TLS configuration for a test that holds one and never connects with it.
+#[cfg(test)]
+pub(crate) fn testing_tls() -> Arc<ClientConfig> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth(),
+    )
+}
+
 #[cfg(test)]
 mod tls_tests {
     use super::*;
-
-    fn nowhere() -> TCPClientConfig {
-        TCPClientConfig::from_values(
-            // Nothing listens here: the transport's connecting is not what is tested.
-            "127.0.0.1:9".into(),
-            "localhost".into(),
-            "/nowhere/ca.pem".into(),
-            "/nowhere/cert.pem".into(),
-            "/nowhere/key.pem".into(),
-        )
-        .with_reconnect(ReconnectMode::LeaveToSupervisor)
-    }
 
     async fn start(config: TCPClientConfig) -> Result<ActorRef<TcpClientMessage>, String> {
         Actor::spawn(
@@ -2921,21 +2821,18 @@ mod tls_tests {
         .map_err(|e| e.to_string())
     }
 
+    /// The client connects with the TLS it is given, made by a crypto actor (docs/plans/crypto-actor.md), and has no
+    /// file to read: it starts with nothing on disk.
     #[tokio::test]
-    async fn a_configuration_made_in_code_is_used_as_given_and_no_file_is_read() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let made = Arc::new(
-            rustls::ClientConfig::builder()
-                .with_root_certificates(rustls::RootCertStore::empty())
-                .with_no_client_auth(),
-        );
-        let transport = start(nowhere().with_tls(made))
-            .await
-            .expect("started without reading the files");
+    async fn the_client_starts_with_the_tls_it_is_given_and_reads_no_file() {
+        let config = TCPClientConfig::new(
+            // Nothing listens here: the transport's connecting is not what is tested.
+            "127.0.0.1:9".into(),
+            "localhost".into(),
+            testing_tls(),
+        )
+        .with_reconnect(ReconnectMode::LeaveToSupervisor);
+        let transport = start(config).await.expect("started with what it was given");
         transport.stop(None);
-        assert!(
-            start(nowhere()).await.is_err(),
-            "without one, the files are read, and these are not there"
-        );
     }
 }

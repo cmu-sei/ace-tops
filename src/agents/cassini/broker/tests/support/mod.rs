@@ -808,13 +808,7 @@ impl TestClient {
         let (cert, key) = broker
             .pki
             .instance_client(identity, uid, &format!("{uid}-pod"));
-        let config = TCPClientConfig::from_values(
-            broker.addr.clone(),
-            "localhost".to_string(),
-            broker.pki.ca().to_string_lossy().into_owned(),
-            cert.to_string_lossy().into_owned(),
-            key.to_string_lossy().into_owned(),
-        );
+        let config = files_config(broker, &cert, &key);
         let client = Self::spawn(config, registration_id).await;
         client
             .wait_for("a registration", Duration::from_secs(10), |c| {
@@ -842,13 +836,7 @@ impl TestClient {
         registration_id: Option<String>,
     ) -> Self {
         let (cert, key) = broker.pki.client(identity);
-        let config = TCPClientConfig::from_values(
-            broker.addr.clone(),
-            "localhost".to_string(),
-            broker.pki.ca().to_string_lossy().into_owned(),
-            cert.to_string_lossy().into_owned(),
-            key.to_string_lossy().into_owned(),
-        );
+        let config = files_config(broker, &cert, &key);
         Self::spawn(config, registration_id).await
     }
 
@@ -1161,13 +1149,7 @@ impl FacadeClient {
             None,
             TcpClientFacade,
             FacadeArgs {
-                config: TCPClientConfig::from_values(
-                    broker.addr.clone(),
-                    "localhost".to_string(),
-                    broker.pki.ca().to_string_lossy().into_owned(),
-                    cert.to_string_lossy().into_owned(),
-                    key.to_string_lossy().into_owned(),
-                ),
+                config: files_config(broker, &cert, &key),
                 delivery: DeliveryMode::Broadcast(port),
                 transport_name: transport_name.clone(),
                 spawner: Arc::new(TlsTransportSpawner),
@@ -1412,6 +1394,38 @@ impl RawConnection {
             }
         }
     }
+}
+
+/// A test client's configuration, its TLS made as an agent's crypto actor makes it (docs/plans/crypto-actor.md), over
+/// `source`, the broker verified under the CA at `ca`.
+pub fn client_config(
+    addr: &str,
+    ca: &Path,
+    source: &polar_crypto::tls::KeySource,
+) -> TCPClientConfig {
+    use rustls::pki_types::pem::PemObject as _;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in rustls::pki_types::CertificateDer::pem_file_iter(ca).unwrap() {
+        roots.add(certificate.unwrap()).unwrap();
+    }
+    let verifier = rustls::client::WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .unwrap();
+    let tls = polar_crypto::tls::client_config(verifier, source).unwrap();
+    TCPClientConfig::new(addr.to_string(), "localhost".to_string(), Arc::new(tls))
+}
+
+/// [`client_config`] over a certificate file and its key file.
+pub fn files_config(broker: &TestBroker, cert: &Path, key: &Path) -> TCPClientConfig {
+    client_config(
+        &broker.addr,
+        &broker.pki.ca(),
+        &polar_crypto::tls::KeySource::Files {
+            certificate: cert.to_string_lossy().into_owned(),
+            key: key.to_string_lossy().into_owned(),
+        },
+    )
 }
 
 pub fn pause() -> impl std::future::Future<Output = ()> {

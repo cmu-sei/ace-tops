@@ -22,13 +22,12 @@
 */
 
 use cassini_client::{
-    ClientEventForwarder, ClientEventForwarderArgs, ClientKey, RegistrationState, TCPClientConfig,
-    cli::{IpcRequest, IpcResponse, OutputFormat, print_control_result},
+    ClientEventForwarder, ClientEventForwarderArgs, RegistrationState, TCPClientConfig,
 };
-use cassini_types::{ClientEvent as CassiniClientEvent, ControlResult, SessionDetails, SessionMap};
+use cassini_types::{ClientEvent as CassiniClientEvent, ControlResult};
 use ractor::{Actor, ActorProcessingErr, ActorRef};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::sync::Arc;
 
 // ===== Mock Actor for testing ClientEventForwarder =====
 
@@ -264,63 +263,48 @@ async fn test_client_event_forwarder_filters_events() -> Result<(), ActorProcess
     Ok(())
 }
 
-// ===== Tests for TCPClientConfig::from_values =====
+// ===== Tests for TCPClientConfig::new =====
 
 #[tokio::test]
-async fn test_tcp_client_config_from_values() {
-    let config = TCPClientConfig::from_values(
+async fn test_tcp_client_config_new() {
+    let config = TCPClientConfig::new(
         "tcp://broker.example.com:5672".to_string(),
         "broker.example.com".to_string(),
-        "/path/to/ca.crt".to_string(),
-        "/path/to/client.crt".to_string(),
-        "/path/to/client.key".to_string(),
+        tls(),
     );
 
     assert_eq!(config.broker_endpoint, "tcp://broker.example.com:5672");
     assert_eq!(config.server_name, "broker.example.com");
-    assert_eq!(config.ca_certificate_path, "/path/to/ca.crt");
-    assert_eq!(config.client_certificate_path, "/path/to/client.crt");
-    assert_eq!(
-        config.client_key,
-        ClientKey::File("/path/to/client.key".into())
-    );
 }
 
 #[tokio::test]
-async fn test_tcp_client_config_from_values_empty_strings() {
-    let config = TCPClientConfig::from_values(
-        "".to_string(),
-        "".to_string(),
-        "".to_string(),
-        "".to_string(),
-        "".to_string(),
-    );
+async fn test_tcp_client_config_new_empty_strings() {
+    let config = TCPClientConfig::new("".to_string(), "".to_string(), tls());
 
     assert_eq!(config.broker_endpoint, "");
     assert_eq!(config.server_name, "");
-    assert_eq!(config.ca_certificate_path, "");
-    assert_eq!(config.client_certificate_path, "");
-    assert_eq!(config.client_key, ClientKey::File(String::new()));
 }
 
 #[tokio::test]
-async fn test_tcp_client_config_from_values_unicode() {
-    let config = TCPClientConfig::from_values(
+async fn test_tcp_client_config_new_unicode() {
+    let config = TCPClientConfig::new(
         "tcp://broker-пример.com:5672".to_string(),
         "пример.com".to_string(),
-        "/путь/к/сертификату.crt".to_string(),
-        "/путь/к/клиенту.crt".to_string(),
-        "/путь/к/ключу.key".to_string(),
+        tls(),
     );
 
     assert_eq!(config.broker_endpoint, "tcp://broker-пример.com:5672");
     assert_eq!(config.server_name, "пример.com");
-    assert_eq!(config.ca_certificate_path, "/путь/к/сертификату.crt");
-    assert_eq!(config.client_certificate_path, "/путь/к/клиенту.crt");
-    assert_eq!(
-        config.client_key,
-        ClientKey::File("/путь/к/ключу.key".into())
-    );
+}
+
+/// A TLS configuration to hold: these tests never connect, so whose it is does not matter.
+fn tls() -> Arc<rustls::ClientConfig> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth(),
+    )
 }
 
 // ===== Tests for RegistrationState variants =====
@@ -361,308 +345,5 @@ async fn test_registration_state_matches() {
         RegistrationState::Registered { registration_id } => {
             assert_eq!(registration_id, "reg-abc-123");
         }
-    }
-}
-
-// ===== Tests for IpcRequest serde roundtrips =====
-
-#[tokio::test]
-async fn test_ipc_request_publish_roundtrip() {
-    let original = IpcRequest::Publish {
-        topic: "test-topic".to_string(),
-        payload_b64: "SGVsbG8gV29ybGQ=".to_string(),
-        timeout_secs: 30,
-    };
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcRequest = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (
-            IpcRequest::Publish {
-                topic,
-                payload_b64,
-                timeout_secs,
-            },
-            IpcRequest::Publish {
-                topic: t,
-                payload_b64: pb,
-                timeout_secs: ts,
-            },
-        ) => {
-            assert_eq!(topic, t);
-            assert_eq!(payload_b64, pb);
-            assert_eq!(timeout_secs, ts);
-        }
-        _ => panic!("Expected Publish variant"),
-    }
-}
-
-#[tokio::test]
-async fn test_ipc_request_list_sessions_roundtrip() {
-    let original = IpcRequest::ListSessions { timeout_secs: 15 };
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcRequest = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (
-            IpcRequest::ListSessions { timeout_secs },
-            IpcRequest::ListSessions { timeout_secs: ts },
-        ) => {
-            assert_eq!(timeout_secs, ts);
-        }
-        _ => panic!("Expected ListSessions variant"),
-    }
-}
-
-#[tokio::test]
-async fn test_ipc_request_get_session_roundtrip() {
-    let original = IpcRequest::GetSession {
-        registration_id: "reg-123".to_string(),
-        timeout_secs: 45,
-    };
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcRequest = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (
-            IpcRequest::GetSession {
-                registration_id,
-                timeout_secs,
-            },
-            IpcRequest::GetSession {
-                registration_id: rid,
-                timeout_secs: ts,
-            },
-        ) => {
-            assert_eq!(registration_id, rid);
-            assert_eq!(timeout_secs, ts);
-        }
-        _ => panic!("Expected GetSession variant"),
-    }
-}
-
-#[tokio::test]
-async fn test_ipc_request_status_roundtrip() {
-    let original = IpcRequest::Status;
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcRequest = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (IpcRequest::Status, IpcRequest::Status) => {}
-        _ => panic!("Expected Status variant"),
-    }
-}
-
-// ===== Tests for IpcResponse serde roundtrips =====
-
-#[tokio::test]
-async fn test_ipc_response_ok_with_result_roundtrip() {
-    let original = IpcResponse::Ok {
-        result: Some(serde_json::json!({"status": "ok", "topic": "test"})),
-    };
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcResponse = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (IpcResponse::Ok { result: Some(val) }, IpcResponse::Ok { result: Some(val2) }) => {
-            assert_eq!(val, val2);
-        }
-        _ => panic!("Expected Ok variant with Some result"),
-    }
-}
-
-#[tokio::test]
-async fn test_ipc_response_ok_without_result_roundtrip() {
-    let original = IpcResponse::Ok { result: None };
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcResponse = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (IpcResponse::Ok { result: None }, IpcResponse::Ok { result: None }) => {}
-        _ => panic!("Expected Ok variant with None result"),
-    }
-}
-
-#[tokio::test]
-async fn test_ipc_response_error_roundtrip() {
-    let original = IpcResponse::Error {
-        reason: "Test error message".to_string(),
-    };
-
-    let serialized = serde_json::to_string(&original).unwrap();
-    let deserialized: IpcResponse = serde_json::from_str(&serialized).unwrap();
-
-    match (original, deserialized) {
-        (IpcResponse::Error { reason }, IpcResponse::Error { reason: r }) => {
-            assert_eq!(reason, r);
-        }
-        _ => panic!("Expected Error variant"),
-    }
-}
-
-// ===== Tests for print_control_result =====
-
-#[tokio::test]
-async fn test_print_control_result_json_format() {
-    let session_map: SessionMap = [(
-        "reg-123".to_string(),
-        SessionDetails {
-            registration_id: "reg-123".to_string(),
-            subscriptions: HashSet::new(),
-        },
-    )]
-    .into_iter()
-    .collect();
-    let result = ControlResult::SessionList(session_map);
-    let format = OutputFormat::Json;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_session_list() {
-    let session_map: SessionMap = [(
-        "reg-123".to_string(),
-        SessionDetails {
-            registration_id: "reg-123".to_string(),
-            subscriptions: HashSet::new(),
-        },
-    )]
-    .into_iter()
-    .collect();
-    let result = ControlResult::SessionList(session_map);
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_empty_session_list() {
-    let result = ControlResult::SessionList(SessionMap::new());
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_topic_list() {
-    let result = ControlResult::TopicList(HashSet::from([
-        "topic1".to_string(),
-        "topic2".to_string(),
-        "topic3".to_string(),
-    ]));
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_empty_topic_list() {
-    let result = ControlResult::TopicList(HashSet::new());
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_session_info() {
-    let result = ControlResult::SessionInfo(SessionDetails {
-        registration_id: "reg-123".to_string(),
-        subscriptions: HashSet::new(),
-    });
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_subscriber_list() {
-    let result =
-        ControlResult::SubscriberList(vec!["subscriber1".to_string(), "subscriber2".to_string()]);
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_empty_subscriber_list() {
-    let result = ControlResult::SubscriberList(vec![]);
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_pong() {
-    let result = ControlResult::Pong;
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_disconnected() {
-    let result = ControlResult::Disconnected;
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_text_format_shutdown_initiated() {
-    let result = ControlResult::ShutdownInitiated;
-    let format = OutputFormat::Text;
-
-    // Should not panic and return Ok
-    let res = print_control_result(&result, &format);
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn test_print_control_result_json_format_all_variants() {
-    let variants = [
-        ControlResult::SessionList(SessionMap::new()),
-        ControlResult::TopicList(HashSet::new()),
-        ControlResult::SessionInfo(SessionDetails {
-            registration_id: "reg-123".to_string(),
-            subscriptions: HashSet::new(),
-        }),
-        ControlResult::SubscriberList(vec![]),
-        ControlResult::Pong,
-        ControlResult::Disconnected,
-        ControlResult::ShutdownInitiated,
-    ];
-
-    for result in variants {
-        let format = OutputFormat::Json;
-        // Should not panic and return Ok for all variants
-        let res = print_control_result(&result, &format);
-        assert!(res.is_ok(), "Failed for variant: {:?}", result);
     }
 }

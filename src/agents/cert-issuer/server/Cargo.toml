@@ -27,6 +27,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Its own key file's path, where its crypto actor reads it (src/supervisor.rs).
+polar-crypto.workspace = true
 polar-scudo.workspace = true
 attestation-common.workspace = true
 tokio = { workspace = true, features = ["test-util"]}

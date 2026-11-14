@@ -58,6 +58,7 @@
 // Reading the process environment goes through polar-env (see clippy.toml).
 #![deny(clippy::disallowed_methods)]
 
+pub mod cassini;
 pub mod environment;
 pub mod recipient;
 pub mod records;
@@ -761,7 +762,7 @@ impl Actor for CryptoActor {
         // argument -- deliberately: this identity is already,
         // genuinely readable from this agent's own, already-mounted
         // mTLS client certificate (the same, real TLS_CLIENT_CERT
-        // path TCPClientConfig::new() itself already reads), and
+        // path CassiniSettings::from_env itself already reads), and
         // CryptoActor is meant to be the one, sole, real gateway for
         // every crypto-adjacent concern -- including this one --
         // rather than every, real caller needing its own, separate

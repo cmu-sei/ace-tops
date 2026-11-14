@@ -21,7 +21,7 @@
    DM26-0670
 */
 
-//! src/bin/discover_repo.rs
+//! git/harness/src/main.rs
 //!
 //! One-off harness: publishes a proposal that a repository be observed, as the Jira or GitLab consumer
 //! would, so the git controller's admission rules can be exercised end-to-end without either of them in
@@ -63,16 +63,20 @@ struct HarnessState {
 impl Actor for Harness {
     type Msg = HarnessMsg;
     type State = HarnessState;
-    type Arguments = (String, bool); // http_url to publish, and whether to publish events instead
+    // http_url to publish, whether to publish events instead, and the client's configuration
+    type Arguments = (String, bool, cassini_client::TCPClientConfig);
 
     async fn pre_start(
         &self,
         myself: ActorRef<Self::Msg>,
-        (http_url, synthetic): (String, bool),
+        (http_url, synthetic, config): (String, bool, cassini_client::TCPClientConfig),
     ) -> Result<Self::State, ActorProcessingErr> {
-        let tcp_client = TcpClient::spawn(SERVICE_NAME, myself, |event| {
-            Some(HarnessMsg::ClientEvent { event })
-        })
+        let tcp_client = TcpClient::spawn(
+            SERVICE_NAME,
+            myself,
+            |event| Some(HarnessMsg::ClientEvent { event }),
+            config,
+        )
         .await?;
         Ok(HarnessState {
             tcp_client,
@@ -164,8 +168,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "https://github.com/cmu-sei/Polar.git".to_string());
     let synthetic = std::env::args().nth(2).as_deref() == Some("--synthetic");
-    let (_actor, handle) = Actor::spawn(None, Harness, (url, synthetic)).await?;
+    // Its TLS is its own crypto actor's, from the keys the environment names (docs/plans/crypto-actor.md).
+    let (crypto, config) = polar_crypto::cassini::standalone(&polar_env::ProcessEnv).await?;
+    let (_actor, handle) = Actor::spawn(None, Harness, (url, synthetic, config)).await?;
     handle.await?;
+    crypto.stop(None);
     Ok(())
 }
 

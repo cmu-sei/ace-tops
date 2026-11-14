@@ -775,13 +775,7 @@ mod tests {
     }
 
     fn config() -> TCPClientConfig {
-        TCPClientConfig::from_values(
-            "broker:1".into(),
-            "broker".into(),
-            "/ca".into(),
-            "/cert".into(),
-            "/key".into(),
-        )
+        TCPClientConfig::new("broker:1".into(), "broker".into(), crate::testing_tls())
     }
 
     impl Rig {

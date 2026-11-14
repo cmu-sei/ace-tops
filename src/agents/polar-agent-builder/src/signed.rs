@@ -40,7 +40,7 @@
 //! ConfigurationActor and run after this. An agent that has no pinned CA to verify against refuses every
 //! document: it fails closed.
 
-use cassini_client::TCPClientConfig;
+use cassini_client::CassiniSettings;
 use polar_env::Config;
 use polar_scheduler_common::document_type;
 use polar_signing::{
@@ -641,7 +641,7 @@ impl Opened {
 /// The CA this agent pins for Cassini (`TLS_CA_CERT`), every certificate in the file an anchor: what signed documents
 /// and the credentials agent's authority key are believed under.
 pub fn pinned_trust(config: &Config) -> Result<Trust, String> {
-    let settings = TCPClientConfig::from_env(config).map_err(|e| e.to_string())?;
+    let settings = CassiniSettings::from_env(config)?;
     trust_from_file(&settings.ca_certificate_path)
 }
 

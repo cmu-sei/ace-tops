@@ -33,10 +33,6 @@ license.workspace = true
 name = "cassini_client"
 path = "src/lib.rs"
 
-[[bin]]
-name = "cassini-client"
-path = "src/main.rs"
-
 [features]
 # The load harness's slow consumer (src/hand_off.rs): a delay a connection's reader spends on each delivery before it
 # hands it over and acknowledges it. Only harness-sink enables it, and it acts only when that sink asks.
@@ -50,19 +46,16 @@ tokio = { workspace = true, features = ["test-util"] }
 proptest = { workspace = true }
 
 [dependencies]
-polar-scudo.workspace = true
 polar-version.workspace = true
 base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 chrono.workspace = true
-anyhow.workspace = true
 async-trait.workspace = true
 cassini-tracing.workspace = true
 cassini-types.workspace = true
 opentelemetry.workspace = true
-polar-custody.workspace = true
 polar-env.workspace = true
 polar-router.workspace = true
 ractor.workspace = true
