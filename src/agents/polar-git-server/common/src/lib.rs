@@ -51,6 +51,74 @@ pub struct RepoChangedEvent {
 
 pub use polar::request_reply::Envelope;
 
+/// The repository signed evidence records are kept in (docs/architecture/git-server.md, "Inside the boundary").
+pub const EVIDENCE_REPO: &str = "polar-evidence";
+
+/// Where a collector that is a workload sends a signed evidence record for the server to add to [`EVIDENCE_REPO`], so no
+/// agent pushes with `git`. Each answer goes to the sender's own topic, [`evidence_replies_topic`].
+pub const EVIDENCE_REQUESTS_TOPIC: &str = "polar-git-evidence-requests";
+
+/// The attestation agent's reply topic. Those who add evidence are named, as the attestation agent's askers are, so the
+/// server's certificate names their topics and no family over every workload.
+pub const ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC: &str =
+    "polar-git-evidence-replies.attestation-agent";
+
+/// The reply topic of the workload `workload`.
+pub fn evidence_replies_topic(workload: &str) -> String {
+    format!("polar-git-evidence-replies.{workload}")
+}
+
+/// A signed evidence record, as its signer wrote it: the server verifies it, and names its file by the digest of
+/// exactly these bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Archive)]
+pub struct AddRecord {
+    pub record: String,
+}
+
+/// What became of a record.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Archive)]
+pub enum RecordAdded {
+    /// It was committed at `path`, as `commit`.
+    Committed { path: String, commit: String },
+    /// The repository holds it already: the same bytes are at `path`.
+    AlreadyThere { path: String },
+    /// It was not added, and never will be as it is: the sender may not add evidence, or it is no verifying record.
+    Refused { why: String },
+    /// It could not be added now, through no fault of the record (the repository could not be written): the sender
+    /// keeps it and sends it again.
+    NotNow { why: String },
+}
+
+/// The bytes of a request, as it is published.
+pub fn encode_add(envelope: &Envelope<AddRecord>) -> Vec<u8> {
+    rkyv::to_bytes::<rkyv::rancor::Error>(envelope)
+        .expect("a request of owned strings always serializes")
+        .into_vec()
+}
+
+/// The bytes of an answer, as it is published.
+pub fn encode_added(envelope: &Envelope<RecordAdded>) -> Vec<u8> {
+    rkyv::to_bytes::<rkyv::rancor::Error>(envelope)
+        .expect("an answer of owned strings always serializes")
+        .into_vec()
+}
+
+/// The request in `payload`, or why it is not one. The bytes are validated before anything is read from them.
+pub fn decode_add(payload: &[u8]) -> Result<Envelope<AddRecord>, String> {
+    let mut aligned = rkyv::util::AlignedVec::<16>::new();
+    aligned.extend_from_slice(payload);
+    rkyv::from_bytes::<Envelope<AddRecord>, rkyv::rancor::Error>(&aligned)
+        .map_err(|e| format!("not a record to add: {e}"))
+}
+
+/// The answer in `payload`, or why it is not one.
+pub fn decode_added(payload: &[u8]) -> Result<Envelope<RecordAdded>, String> {
+    let mut aligned = rkyv::util::AlignedVec::<16>::new();
+    aligned.extend_from_slice(payload);
+    rkyv::from_bytes::<Envelope<RecordAdded>, rkyv::rancor::Error>(&aligned)
+        .map_err(|e| format!("not an answer about a record: {e}"))
+}
+
 /// Where an agent asks the server for what a repository's `main` holds, so no agent reads with `git`
 /// (docs/architecture/git-server.md, "Inside the boundary"). Each answer goes to the sender's own topic, [`read_replies_topic`].
 pub const READ_REQUESTS_TOPIC: &str = "polar-git-read-requests";

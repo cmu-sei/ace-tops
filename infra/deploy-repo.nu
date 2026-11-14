@@ -105,6 +105,10 @@ export def server_env [target: string] {
         TLS_SERVER_KEY: "/pki/server.key"
         POLAR_GIT_SERVER_CA_CERT: "/pki/ca.pem"
         POLAR_GIT_SERVER_REPO_ROOT: "/repos"
+        # The store's logs, on the same claim; a repository is `<name>.git`, so `logs` is never one
+        # (docs/architecture/record-store.md). Their checkpoint key, which the server's crypto actor makes once beside them.
+        POLAR_GIT_SERVER_LOG_ROOT: "/repos/logs"
+        POLAR_STORE_CHECKPOINT_KEY: "/repos/logs/checkpoint-key.pem"
         POLAR_GIT_SERVER_REPOS: (repos_json $target)
         POLAR_HEALTH_CERTS: "/pki/server.pem"
         RUST_LOG: "info"

@@ -347,6 +347,7 @@
         { name: "POLAR_GIT_SERVER_CA_CERT",   value: "/etc/tls/git-server/ca.pem" }
         { name: "POLAR_GIT_SERVER_PORT",      value: "{polar-git-server.port}" }
         { name: "POLAR_GIT_SERVER_REPO_ROOT", value: "/var/lib/{workload}/repos" }
+        { name: "POLAR_GIT_SERVER_LOG_ROOT",  value: "/var/lib/{workload}/logs" }
         { name: "POLAR_GIT_SERVER_DEPLOYMENT_CA", value: "/etc/polar-deploy-ca/ca.pem" }
       ]
       # The deployment CA's certificate, which `deploy-repo.nu ensure` puts there: what it checks a deployment commit with, and how it knows Flux

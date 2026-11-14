@@ -25,6 +25,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+testing = ["dep:p256"]
+
 [dependencies]
 # The workload an identity names, so a read is answered on its sender's own topic (src/read.rs).
 cert-issuer-common = { path = "../../cert-issuer/common" }
@@ -46,13 +49,24 @@ polar-agent-builder.workspace = true
 polar-crypto.workspace = true
 polar-env.workspace = true
 polar-git-server-common.workspace = true
+# The store's signed logs (docs/architecture/record-store.md, bite 2); their checkpoints are signed by the crypto actor.
+polar-log.workspace = true
+# The policy actor the intake asks who may record what (src/evidence.rs).
+polar-policy.workspace = true
 polar-signing.workspace = true
+# Who wrote a log's entry: this build's version (src/evidence.rs).
+polar-version.workspace = true
+# A checkpoint key held in process, for tests alone (`logs::testing`): in the store the crypto actor signs.
+p256 = { workspace = true, optional = true }
 ractor.workspace = true
 rkyv.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# An evidence record's file is named by the digest of its bytes, and a log's entry known by its own (src/evidence.rs,
+# src/logs.rs).
+sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
@@ -60,7 +74,11 @@ tracing.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
+# The git server itself with its test signer, for its integration tests (`logs::testing`).
+polar-git-server = { path = ".", features = ["testing"] }
 proptest.workspace = true
+# A policy actor needs one, in the intake's tests.
+polar-permissions.workspace = true
 polar-signing = { workspace = true, features = ["testing"] }
 rcgen.workspace = true
 tempfile.workspace = true

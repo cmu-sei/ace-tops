@@ -315,60 +315,36 @@ impl RepoStore {
             if have.as_deref() == Some(commit.as_str()) {
                 return Ok(ReadOfMain::Unchanged { commit });
             }
-            let root = repo
-                .find_commit(main)
-                .and_then(|commit| commit.tree())
-                .map_err(failed("read tree"))?
-                .id;
-            let mut files = Vec::new();
-            let mut size = 0usize;
-            let mut directories = vec![(String::new(), root)];
-            while let Some((directory, id)) = directories.pop() {
-                let tree = repo.find_tree(id).map_err(failed("read tree"))?;
-                for entry in tree.decode().map_err(failed("read tree"))?.entries {
-                    let name = entry.filename.to_str().map_err(|_| {
-                        StoreError::BadPath(format!("{directory}/{}", entry.filename))
-                    })?;
-                    let at = if directory.is_empty() {
-                        name.to_string()
-                    } else {
-                        format!("{directory}/{name}")
-                    };
-                    let kind = if entry.mode.is_tree() {
-                        if leads_to(&at, &paths) {
-                            directories.push((at, entry.oid.to_owned()));
-                        }
-                        continue;
-                    } else if entry.mode.is_commit() {
-                        continue;
-                    } else if entry.mode.is_link() {
-                        FileKind::Link
-                    } else if entry.mode.is_executable() {
-                        FileKind::Executable
-                    } else {
-                        FileKind::Plain
-                    };
-                    if !under(&at, &paths) {
-                        continue;
-                    }
-                    let content = repo
-                        .find_blob(entry.oid)
-                        .map_err(failed("read blob"))?
-                        .detach()
-                        .data;
-                    size = size.saturating_add(at.len() + content.len());
-                    if size > limit {
-                        return Ok(ReadOfMain::TooLarge { limit });
-                    }
-                    files.push(FileAt {
-                        path: at,
-                        kind,
-                        content,
-                    });
-                }
+            match files_of(&repo, main, &paths, limit)? {
+                Some(files) => Ok(ReadOfMain::Files { commit, files }),
+                None => Ok(ReadOfMain::TooLarge { limit }),
             }
-            files.sort_by(|a, b| a.path.cmp(&b.path));
-            Ok(ReadOfMain::Files { commit, files })
+        })
+        .await
+    }
+
+    /// `main`'s commit, how many commits its history holds, and every file of its tree, a submodule left out; none when
+    /// the repository has no `main` yet.
+    pub async fn main_tree(
+        &self,
+        name: &str,
+    ) -> Result<Option<(gix::ObjectId, u64, Vec<FileAt>)>, StoreError> {
+        if !self.exists(name) {
+            return Err(StoreError::Missing(name.to_string()));
+        }
+        let path = self.path(name)?;
+        blocking(move || {
+            let repo = open(&path)?;
+            let Some(main) = commit_of(&repo, MAIN) else {
+                return Ok(None);
+            };
+            let mut commits = 0u64;
+            for commit in repo.rev_walk([main]).all().map_err(failed("walk"))? {
+                commit.map_err(failed("walk"))?;
+                commits += 1;
+            }
+            let files = files_of(&repo, main, &[], usize::MAX)?.unwrap_or_default();
+            Ok(Some((main, commits, files)))
         })
         .await
     }
@@ -377,6 +353,71 @@ impl RepoStore {
         let path = self.path(name)?;
         blocking(move || any_ref(&open(&path)?)).await
     }
+}
+
+/// The files of `commit`'s tree under `paths` (none: every file), by path, a submodule left out; none when they are more
+/// than `limit` bytes, their paths counted.
+pub fn files_of(
+    repo: &gix::Repository,
+    commit: gix::ObjectId,
+    paths: &[String],
+    limit: usize,
+) -> Result<Option<Vec<FileAt>>, StoreError> {
+    let root = repo
+        .find_commit(commit)
+        .and_then(|commit| commit.tree())
+        .map_err(failed("read tree"))?
+        .id;
+    let mut files = Vec::new();
+    let mut size = 0usize;
+    let mut directories = vec![(String::new(), root)];
+    while let Some((directory, id)) = directories.pop() {
+        let tree = repo.find_tree(id).map_err(failed("read tree"))?;
+        for entry in tree.decode().map_err(failed("read tree"))?.entries {
+            let name = entry
+                .filename
+                .to_str()
+                .map_err(|_| StoreError::BadPath(format!("{directory}/{}", entry.filename)))?;
+            let at = if directory.is_empty() {
+                name.to_string()
+            } else {
+                format!("{directory}/{name}")
+            };
+            let kind = if entry.mode.is_tree() {
+                if leads_to(&at, paths) {
+                    directories.push((at, entry.oid.to_owned()));
+                }
+                continue;
+            } else if entry.mode.is_commit() {
+                continue;
+            } else if entry.mode.is_link() {
+                FileKind::Link
+            } else if entry.mode.is_executable() {
+                FileKind::Executable
+            } else {
+                FileKind::Plain
+            };
+            if !under(&at, paths) {
+                continue;
+            }
+            let content = repo
+                .find_blob(entry.oid)
+                .map_err(failed("read blob"))?
+                .detach()
+                .data;
+            size = size.saturating_add(at.len() + content.len());
+            if size > limit {
+                return Ok(None);
+            }
+            files.push(FileAt {
+                path: at,
+                kind,
+                content,
+            });
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(Some(files))
 }
 
 /// Whether the file at `path` is under one of `paths`: it is one, or in a directory one names. None names every file.

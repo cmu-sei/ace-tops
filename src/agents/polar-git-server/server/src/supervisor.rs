@@ -26,7 +26,8 @@
 //! the Cassini capability, health, the router and the Cassini client come from `AgentBuilder`
 //! and an accepted push is published on Cassini; otherwise `ServiceBuilder` gives it the health
 //! check and the shutdown handshake and a push is only logged. The mTLS listener runs under this
-//! supervisor either way. With Cassini it also answers reads (`crate::read`).
+//! supervisor either way, and the store's signed logs beside the repositories (`crate::logs`), served to people as tiles.
+//! With Cassini it also answers reads (`crate::read`) and takes evidence records (`crate::evidence`).
 //!
 //! Shutdown, in order, when the health check ends the pod's life:
 //!
@@ -39,6 +40,7 @@
 
 use crate::access::RuntimeAcl;
 use crate::config::ServerFile;
+use crate::evidence::{Intake, IntakeActor, IntakeMessage, IntakeState};
 use crate::git::GitRunner;
 use crate::http::{ServerState, router};
 use crate::notify::{CassiniNotifier, Notifier, PushLog, Tee};
@@ -77,6 +79,11 @@ pub enum GitServerSupervisorMessage {
         event: ClientEvent,
     },
     PrepareShutdown,
+    /// An evidence record sent on Cassini, for the intake.
+    EvidenceRecord {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
     /// A read sent on Cassini, for the reader.
     Read {
         payload: Vec<u8>,
@@ -96,6 +103,8 @@ pub struct GitServerSupervisorState {
     healthcheck: HealthHandle,
     infrastructure: ActorRef<InfrastructureSupervisorMessage>,
     listener: Option<Listener>,
+    /// Takes evidence records; only with Cassini.
+    intake: Option<ractor::ActorRef<IntakeMessage>>,
     /// Answers reads; only with Cassini.
     reader: Option<ractor::ActorRef<ReadMessage>>,
 }
@@ -116,7 +125,21 @@ impl Actor for GitServerSupervisor {
         let settings = GitServerSettings::read(configured.config())?;
         // In a cluster the deployment provides Cassini and the server is a client of the broker;
         // on its own it has the health check and the shutdown handshake and no broker.
-        let (healthcheck, infrastructure, tcp_client, tls) = if configured.cassini_enabled() {
+        let (healthcheck, infrastructure, tcp_client, tls, checkpoints, policy) = if configured
+            .cassini_enabled()
+        {
+            let deliver_to = myself.clone();
+            let records = Subscription::new(
+                polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+                move |incoming| {
+                    if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::EvidenceRecord {
+                        payload: incoming.payload,
+                        published_by: incoming.published_by,
+                    }) {
+                        warn!("failed to hand an evidence record to the supervisor: {e}");
+                    }
+                },
+            );
             let deliver_to = myself.clone();
             let reads = Subscription::new(
                 polar_git_server_common::READ_REQUESTS_TOPIC,
@@ -133,6 +156,7 @@ impl Actor for GitServerSupervisor {
                 .with_lifecycle_handler(|event| {
                     Some(GitServerSupervisorMessage::ClientEvent { event })
                 })
+                .with_subscription(records)
                 .with_subscription(reads)
                 .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
                 .into_configured(configured)
@@ -143,6 +167,8 @@ impl Actor for GitServerSupervisor {
                 resources.infrastructure,
                 Some(resources.tcp_client),
                 resources.tls,
+                resources.checkpoints,
+                Some(resources.authority.policy()),
             )
         } else {
             info!("{SERVICE_NAME} is running on its own: pushes are logged, not published");
@@ -156,6 +182,8 @@ impl Actor for GitServerSupervisor {
                 resources.infrastructure,
                 None,
                 resources.tls,
+                resources.checkpoints,
+                None,
             )
         };
 
@@ -175,6 +203,33 @@ impl Actor for GitServerSupervisor {
             file.acl(),
             Some(root.join("runtime-acl.json")),
         )?);
+        // The store's logs, beside the repositories (docs/architecture/record-store.md). Their checkpoints are signed by
+        // the crypto actor with the store's checkpoint key, under the store's identity, which each log's origin names.
+        let checkpoints = checkpoints.ok_or_else(|| {
+            format!("{SERVICE_NAME} keeps signed logs, and its deployment gives it no checkpoint key (the `checkpoints` capability)")
+        })?;
+        let verifier = checkpoints
+            .key()
+            .await
+            .map_err(|e| format!("the store's checkpoint key cannot be had: {e}"))?
+            .0;
+        let origin = crate::logs::origin_of(&verifier)
+            .ok_or_else(|| format!("the store's checkpoint key {verifier} names no identity"))?;
+        let (logs, _) = Actor::spawn_linked(
+            Some(format!("{SERVICE_NAME}.logs")),
+            crate::logs::LogsActor,
+            crate::logs::LogsArgs {
+                root: std::path::PathBuf::from(&settings.log_root),
+                origin: origin.clone(),
+                signer: Arc::new(checkpoints),
+            },
+            myself.get_cell(),
+        )
+        .await
+        .map_err(|e| format!("the store's logs did not open: {e}"))?;
+        // The evidence log holds every record polar-evidence holds: what a push took while the server kept no log is
+        // brought in now, as the store's.
+        crate::evidence::catch_up(&store, &logs, &origin).await?;
         let mut notifiers: Vec<Arc<dyn Notifier>> =
             vec![Arc::new(PushLog::new(root.join("push-log.jsonl")))];
         if let Some(client) = &tcp_client {
@@ -183,6 +238,36 @@ impl Actor for GitServerSupervisor {
             )));
         }
         let signed = crate::signed::SignedRepos::from_specs(&file.repos)?;
+        let notifier: Arc<dyn Notifier> = Arc::new(Tee(notifiers));
+        // Evidence records are verified under the CA the server's clients chain to.
+        let intake = match &tcp_client {
+            Some(client) => {
+                let pem = std::fs::read_to_string(&settings.ca_cert)
+                    .map_err(|e| format!("cannot read the CA at {}: {e}", settings.ca_cert))?;
+                let trust = polar_signing::Trust::from_pem(&[pem])
+                    .map_err(|e| format!("the CA at {} cannot be used: {e}", settings.ca_cert))?;
+                let (intake, _) = Actor::spawn_linked(
+                    Some(format!("{SERVICE_NAME}.evidence")),
+                    IntakeActor,
+                    IntakeState {
+                        intake: Intake {
+                            store: store.clone(),
+                            authorizer: acl.clone(),
+                            trust,
+                            notifier: notifier.clone(),
+                            policy: policy.clone(),
+                            logs: Some(logs.clone()),
+                        },
+                        client: client.as_actor_ref().clone(),
+                    },
+                    myself.get_cell(),
+                )
+                .await
+                .map_err(|e| format!("the evidence intake did not start: {e}"))?;
+                Some(intake)
+            }
+            None => None,
+        };
         let reader = match &tcp_client {
             Some(client) => {
                 let (reader, _) = Actor::spawn_linked(
@@ -209,9 +294,10 @@ impl Actor for GitServerSupervisor {
             authorizer: acl.clone(),
             runtime: acl,
             runner: GitRunner::default(),
-            notifier: Arc::new(Tee(notifiers)),
+            notifier,
             max_body: MAX_BODY,
             signed: Arc::new(signed),
+            logs: Some(logs.clone()),
         });
 
         let tls = server_config(
@@ -243,6 +329,7 @@ impl Actor for GitServerSupervisor {
             healthcheck,
             infrastructure,
             listener: Some(Listener { stop, active, task }),
+            intake,
             reader,
         })
     }
@@ -286,6 +373,20 @@ impl Actor for GitServerSupervisor {
                     .infrastructure
                     .cast(InfrastructureSupervisorMessage::ProceedWithShutdown);
             }
+            GitServerSupervisorMessage::EvidenceRecord {
+                payload,
+                published_by,
+            } => match &state.intake {
+                Some(intake) => {
+                    if let Err(e) = intake.cast(IntakeMessage::Take {
+                        payload,
+                        published_by,
+                    }) {
+                        warn!("failed to hand an evidence record to the intake: {e}");
+                    }
+                }
+                None => warn!("an evidence record arrived with no intake to take it"),
+            },
             GitServerSupervisorMessage::Read {
                 payload,
                 published_by,

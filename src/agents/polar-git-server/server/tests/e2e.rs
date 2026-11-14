@@ -26,6 +26,7 @@
 use polar_git_server::access::{RepoAcl, RuntimeAcl, StaticAcl};
 use polar_git_server::git::GitRunner;
 use polar_git_server::http::{ServerState, router};
+use polar_git_server::logs::{LogsActor, LogsArgs, LogsMessage};
 use polar_git_server::notify::{PushLog, Recorder, RepoChanged, Tee};
 use polar_git_server::signed::{CommitPolicy, SignedRepos};
 use polar_git_server::store::RepoStore;
@@ -41,6 +42,7 @@ use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
 
 const REPO: &str = "polar-schedules";
+const EVIDENCE_REPO: &str = polar_git_server_common::EVIDENCE_REPO;
 /// A repository whose every commit must be signed.
 const SIGNED_REPO: &str = "deploy-test";
 /// The name the cluster gives the server, which its certificate carries.
@@ -105,6 +107,7 @@ struct Harness {
     port: u16,
     notes: Arc<Recorder>,
     stop: Arc<Notify>,
+    logs: ractor::ActorRef<LogsMessage>,
 }
 
 /// The pipeline's certificate, and another's under its own CA. An RSA key is slow to make, so each is made once.
@@ -146,6 +149,8 @@ impl Harness {
         std::fs::write(seed.join("credentials.dhall"), "{ seeded = True }").unwrap();
         store.seed(REPO, &seed).await.unwrap();
         store.create(SIGNED_REPO).await.unwrap();
+        store.create(EVIDENCE_REPO).await.unwrap();
+        store.seed(EVIDENCE_REPO, &seed).await.unwrap();
         let signed = SignedRepos::new(
             [(
                 SIGNED_REPO.to_string(),
@@ -171,6 +176,13 @@ impl Harness {
                         writers: ["alice".to_string()].into(),
                     },
                 ),
+                (
+                    EVIDENCE_REPO.to_string(),
+                    RepoAcl {
+                        readers: ["eve".to_string()].into(),
+                        writers: ["alice".to_string()].into(),
+                    },
+                ),
             ]
             .into(),
         };
@@ -178,6 +190,19 @@ impl Harness {
         let acl = Arc::new(
             RuntimeAcl::new(acl, Some(dir.path().join("repos/runtime-acl.json"))).unwrap(),
         );
+        let (logs, _) = ractor::Actor::spawn(
+            None,
+            LogsActor,
+            LogsArgs {
+                root: dir.path().join("logs"),
+                origin: "polar-git-server.test".to_string(),
+                signer: std::sync::Arc::new(polar_git_server::logs::testing::KeySigner::new(
+                    "polar-git-server.test",
+                )),
+            },
+        )
+        .await
+        .unwrap();
         let app = router(ServerState {
             store,
             authorizer: acl.clone(),
@@ -189,6 +214,7 @@ impl Harness {
             ])),
             max_body: 64 * 1024 * 1024,
             signed: Arc::new(signed),
+            logs: Some(logs.clone()),
         });
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -223,6 +249,7 @@ impl Harness {
             port,
             notes,
             stop,
+            logs,
         }
     }
 
@@ -624,6 +651,91 @@ async fn accepted_pushes_are_recorded_and_refused_ones_are_not() {
     assert_eq!(lines[0]["ref"], "refs/heads/main");
 }
 
+// docs/architecture/key-custody.md, "Workload signing keys", item 7: a record is verified as of the commit that added it,
+// so the evidence repository takes a push only of commits made about now, by the server's clock. A commit dated far from
+// it, backdated into a certificate's life or ahead of the clock, is refused, and nothing stays or is announced.
+#[tokio::test]
+async fn the_evidence_repository_takes_only_commits_made_about_now() {
+    let h = Harness::start().await;
+    let alice = client(&h.ca, h.dir.path(), "alice");
+    let url = format!("https://127.0.0.1:{}/{EVIDENCE_REPO}.git", h.port);
+    let dest = h.dir.path().join("evidence");
+    let (ok, t) = h
+        .git(
+            h.dir.path(),
+            Some(&alice),
+            &["clone", &url, dest.to_str().unwrap()],
+        )
+        .await;
+    assert!(ok, "{t}");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    for (when, taken) in [(now - 3600, false), (now + 3600, false), (now, true)] {
+        std::fs::write(dest.join(format!("record-{when}.json")), "{}").unwrap();
+        let (ok, t) = h.git(&dest, None, &["add", "--all"]).await;
+        assert!(ok, "{t}");
+        let out = tokio::process::Command::new("git")
+            .current_dir(&dest)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_COMMITTER_DATE", format!("{when} +0000"))
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(["commit", "-m", &format!("chore: a record at {when}")])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let (ok, text) = h
+            .git(&dest, Some(&alice), &["push", "origin", "HEAD:main"])
+            .await;
+        assert_eq!(ok, taken, "{when}: {text}");
+        if !taken {
+            assert!(text.contains("server's clock"), "{text}");
+            let (ok, t) = h.git(&dest, None, &["reset", "--hard", "HEAD~1"]).await;
+            assert!(ok, "{t}");
+            assert!(h.changes().is_empty(), "a refused push is not announced");
+        }
+    }
+    assert_eq!(h.changes().len(), 1);
+    assert_eq!(h.changes()[0].repo, EVIDENCE_REPO);
+
+    // docs/architecture/record-store.md, "Pushes to the log": what a push adds is in the store's evidence log, as the
+    // pusher's; a refused push added nothing. Only records count: a README and a hidden folder's file do not.
+    let events = |leaves: Vec<polar_log::entry::Leaf>| -> Vec<(String, String)> {
+        leaves
+            .into_iter()
+            .map(|l| {
+                let entry = polar_log::entry::Entry::decode(&l.entry).unwrap();
+                assert_eq!(entry.kind, "evidence-record");
+                (l.submitter, String::from_utf8(entry.event).unwrap())
+            })
+            .collect()
+    };
+    assert_eq!(
+        events(h.logged().await),
+        [("alice".to_string(), "{}".to_string())]
+    );
+    std::fs::create_dir_all(dest.join(".hidden")).unwrap();
+    std::fs::create_dir_all(dest.join("attestation/u7c")).unwrap();
+    std::fs::write(dest.join("README.md"), "not a record").unwrap();
+    std::fs::write(dest.join(".hidden/x.json"), "{\"hidden\":1}").unwrap();
+    std::fs::write(dest.join("attestation/u7c/a.json"), "{\"a\":1}").unwrap();
+    h.commit(&dest, "attestation/u7c/a.json", "{\"a\":1}").await;
+    let (ok, text) = h
+        .git(&dest, Some(&alice), &["push", "origin", "HEAD:main"])
+        .await;
+    assert!(ok, "{text}");
+    assert_eq!(
+        events(h.logged().await),
+        [
+            ("alice".to_string(), "{}".to_string()),
+            ("alice".to_string(), "{\"a\":1}".to_string())
+        ]
+    );
+}
+
 // docs/architecture/cluster-bootstrap.md, "Handing off to Polar's git server": a deployment repository takes only what the pipeline signed.
 
 /// A checkout with nothing in it, pointed at the signed repository, and a client that may write to it.
@@ -909,4 +1021,164 @@ async fn a_polar_certificate_cannot_pose_as_the_deployment_pki() {
     let posing = client(&h.ca, h.dir.path(), "deployment:flux");
     let (ok, text) = clone_signed(&h, &posing, "posing").await;
     assert!(!ok, "{text}");
+}
+
+impl Harness {
+    /// Every leaf of the store's evidence log, in order; none when nothing was appended.
+    async fn logged(&self) -> Vec<polar_log::entry::Leaf> {
+        let mut leaves = Vec::new();
+        loop {
+            match ractor::call!(self.logs, |reply| LogsMessage::Leaf {
+                log: "evidence".to_string(),
+                seq: leaves.len() as u64,
+                reply,
+            })
+            .unwrap()
+            {
+                Ok(Some(leaf)) => leaves.push(leaf),
+                Ok(None) => return leaves,
+                Err(why) if leaves.is_empty() && why.contains("no log") => return leaves,
+                Err(why) => panic!("{why}"),
+            }
+        }
+    }
+
+    /// GETs `path` as the holder of `creds` with curl: the HTTP status and the body's bytes.
+    async fn get(&self, creds: &(PathBuf, PathBuf), path: &str) -> (u16, Vec<u8>) {
+        let body = self.dir.path().join("curl-body");
+        let out = tokio::process::Command::new("curl")
+            .args(["--silent", "--show-error", "--noproxy", "*"])
+            .args(["--cacert", self.ca_file.to_str().unwrap()])
+            .args(["--cert", creds.0.to_str().unwrap()])
+            .args(["--key", creds.1.to_str().unwrap()])
+            .args(["--output", body.to_str().unwrap()])
+            .args(["--write-out", "%{http_code}"])
+            .arg(format!("https://127.0.0.1:{}{path}", self.port))
+            .output()
+            .await
+            .unwrap();
+        let code = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        (code, std::fs::read(&body).unwrap_or_default())
+    }
+}
+
+/// docs/architecture/record-store.md, "Bite 3": a person who may read the evidence repository reads the evidence log
+/// as C2SP tiles over the server's mTLS interface, and gets back exactly what the checkpoint, signed with the store's
+/// key, states. No one else reads it, and no other log is served.
+#[tokio::test]
+async fn a_reader_of_the_evidence_repository_reads_the_evidence_log_as_tiles() {
+    use polar_log::checkpoint::{Checkpoint, NoteVerifier, open};
+    use polar_log::entry::{Entry, Leaf};
+    let h = Harness::start().await;
+    let mut entries = Vec::new();
+    for n in 0..300u32 {
+        let entry = Entry {
+            kind: "evidence-record".to_string(),
+            version: 1,
+            critical: true,
+            writer: "test".to_string(),
+            event: n.to_be_bytes().to_vec(),
+        }
+        .encode();
+        ractor::call!(h.logs, |reply| LogsMessage::AppendOnce {
+            log: "evidence".to_string(),
+            entry: entry.clone(),
+            submitter: "attestation-agent".to_string(),
+            reply,
+        })
+        .unwrap()
+        .unwrap();
+        entries.push(entry);
+    }
+    let pinned = NoteVerifier::parse(
+        &ractor::call!(h.logs, LogsMessage::VerifierKey)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+
+    let eve = client(&h.ca, h.dir.path(), "eve");
+    let (status, note) = h.get(&eve, "/logs/evidence/checkpoint").await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&note));
+    let (text, _) = open(&String::from_utf8(note).unwrap(), &[pinned]).unwrap();
+    let checkpoint = Checkpoint::parse(&text).unwrap();
+    assert_eq!(checkpoint.size, 300);
+    let mut fetched = Vec::new();
+    for tile in polar_log::tiles::entry_tiles(checkpoint.size) {
+        let (status, bytes) = h
+            .get(&eve, &format!("/logs/evidence/{}", tile.path()))
+            .await;
+        assert_eq!(status, 200, "{}", tile.path());
+        fetched.push((tile.path(), bytes));
+    }
+    let leaves = polar_log::tiles::read_log(&checkpoint, |path| {
+        Ok(fetched
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, b)| b.clone()))
+    })
+    .unwrap();
+    let held: Vec<Vec<u8>> = leaves
+        .iter()
+        .map(|l| Leaf::decode(l).unwrap().entry)
+        .collect();
+    assert_eq!(held, entries);
+    let (status, _) = h.get(&eve, "/logs/evidence/tile/0/001.p/44").await;
+    assert_eq!(status, 200);
+    for absent in [
+        "/logs/evidence/tile/0/1",
+        "/logs/evidence/tile/entries/001.p/45",
+        "/logs/schedules/checkpoint",
+    ] {
+        assert_eq!(h.get(&eve, absent).await.0, 404, "{absent}");
+    }
+
+    let mallory = client(&h.ca, h.dir.path(), "mallory");
+    assert_eq!(h.get(&mallory, "/logs/evidence/checkpoint").await.0, 403);
+    assert_eq!(
+        h.get(&mallory, "/logs/evidence/tile/entries/000").await.0,
+        403
+    );
+
+    // The logs not answering is the store's, now: unavailable, said, never an empty answer.
+    h.logs.stop(None);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    for path in [
+        "/logs/evidence/checkpoint",
+        "/logs/evidence/tile/entries/000",
+    ] {
+        let (status, body) = h.get(&eve, path).await;
+        assert_eq!(status, 503, "{path}");
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            "the log could not be read\n"
+        );
+    }
+}
+
+/// The logs' routes take no repository's place: a repository named `logs` is cloned at `/logs`, as any other is.
+#[tokio::test]
+async fn a_repository_named_logs_is_still_served() {
+    let h = Harness::start().await;
+    let root = client(&h.ca, h.dir.path(), "root");
+    let (status, body) = h
+        .admin_put(&root, "logs", r#"{"readers":[],"writers":["alice"]}"#)
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let alice = client(&h.ca, h.dir.path(), "alice");
+    for (url, into) in [("logs", "logs-bare"), ("logs.git", "logs-dotgit")] {
+        let url = format!("https://127.0.0.1:{}/{url}", h.port);
+        let work = h.dir.path().join(into);
+        let (ok, text) = h
+            .git(
+                h.dir.path(),
+                Some(&alice),
+                &["clone", &url, work.to_str().unwrap()],
+            )
+            .await;
+        assert!(ok, "{url}: {text}");
+    }
 }

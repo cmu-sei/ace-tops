@@ -106,6 +106,17 @@ def main [] {
             }
         }
         {
+            name: "the store's logs and their checkpoint key are on the repositories' claim, so they outlive the pod"
+            body: {
+                let e = (server_env "t")
+                let m = (server_manifests "t" "reg/polar-git-server@sha256:abc" { class: "managed-csi", size: "1Gi" } "fp")
+                let c = ($m | where kind == "Deployment" | first | get spec.template.spec.containers | first)
+                let claim = ($c.volumeMounts | where name == "repos" | first | get mountPath)
+                assert ($e.POLAR_GIT_SERVER_LOG_ROOT | str starts-with $"($claim)/") $e.POLAR_GIT_SERVER_LOG_ROOT
+                assert ($e.POLAR_STORE_CHECKPOINT_KEY | str starts-with $"($e.POLAR_GIT_SERVER_LOG_ROOT)/") $e.POLAR_STORE_CHECKPOINT_KEY
+            }
+        }
+        {
             name: "the server's name is its Service, in the cluster's own DNS domain"
             body: {
                 assert equal (server_name "cluster.local") $"($SERVICE).($NAMESPACE).svc.cluster.local"

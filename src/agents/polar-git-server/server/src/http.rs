@@ -59,12 +59,16 @@ pub struct ServerState {
     pub max_body: usize,
     /// The repositories whose every commit must be signed, and by whom.
     pub signed: Arc<crate::signed::SignedRepos>,
+    /// The store's logs, served to people as C2SP tlog-tiles under `/logs/<log>/`; none, and no log is served.
+    pub logs: Option<ractor::ActorRef<crate::logs::LogsMessage>>,
 }
 
 pub fn router(state: ServerState) -> Router {
     let limit = state.max_body;
     Router::new()
         .route("/admin/repos/:name", put(crate::admin::create_repo))
+        .route("/logs/:log/checkpoint", get(log_checkpoint))
+        .route("/logs/:log/tile/*path", get(log_tile))
         .route("/:repo/info/refs", get(info_refs))
         .route("/:repo/git-upload-pack", post(upload_pack))
         .route(
@@ -127,6 +131,94 @@ fn open(
         .store
         .path(repo)
         .map_err(|_| Box::new(refuse(StatusCode::NOT_FOUND, "no such repository")))
+}
+
+/// The store's logs, for `who` to read `log`: a log the store serves to people, whose repository `who` may read
+/// ([`crate::logs::governing_repo`]). Denial is reported before anything about the log.
+fn log_reader(
+    state: &ServerState,
+    who: &PeerIdentity,
+    log: &str,
+) -> Result<ractor::ActorRef<crate::logs::LogsMessage>, Box<Response>> {
+    let Some(repo) = crate::logs::governing_repo(log) else {
+        return Err(Box::new(refuse(StatusCode::NOT_FOUND, "no such log")));
+    };
+    if !state
+        .authorizer
+        .allows(&Identity(who.0.clone()), repo, Access::Read)
+    {
+        info!(who = %who.0, log, "denied a log");
+        return Err(Box::new(refuse(StatusCode::FORBIDDEN, "not permitted")));
+    }
+    state
+        .logs
+        .clone()
+        .ok_or_else(|| Box::new(refuse(StatusCode::NOT_FOUND, "no such log")))
+}
+
+fn log_response(content_type: &str, cache: &str, body: Vec<u8>) -> Response {
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, cache)
+        .body(Body::from(body))
+        .expect("a response with static headers")
+}
+
+fn log_unavailable(why: impl std::fmt::Display) -> Response {
+    warn!(%why, "a log could not be read");
+    refuse(StatusCode::SERVICE_UNAVAILABLE, "the log could not be read")
+}
+
+/// The log's checkpoint, signed; never cached past now, since the log grows.
+async fn log_checkpoint(
+    State(state): State<ServerState>,
+    axum::Extension(who): axum::Extension<PeerIdentity>,
+    Path(log): Path<String>,
+) -> Response {
+    let logs = match log_reader(&state, &who, &log) {
+        Ok(logs) => logs,
+        Err(r) => return *r,
+    };
+    match ractor::call!(logs, |reply| crate::logs::LogsMessage::Checkpoint {
+        log: log.clone(),
+        reply
+    }) {
+        Ok(Ok(note)) => log_response(
+            "text/plain; charset=utf-8",
+            "no-cache, max-age=0",
+            note.into_bytes(),
+        ),
+        Ok(Err(why)) => log_unavailable(why),
+        Err(e) => log_unavailable(e),
+    }
+}
+
+/// A tile or entry bundle of the log. What a tile holds never changes, so it may be kept; only by its reader, since
+/// reading it was authorized.
+async fn log_tile(
+    State(state): State<ServerState>,
+    axum::Extension(who): axum::Extension<PeerIdentity>,
+    Path((log, path)): Path<(String, String)>,
+) -> Response {
+    let logs = match log_reader(&state, &who, &log) {
+        Ok(logs) => logs,
+        Err(r) => return *r,
+    };
+    let path = format!("tile/{}", path.trim_start_matches('/'));
+    match ractor::call!(logs, |reply| crate::logs::LogsMessage::Tile {
+        log: log.clone(),
+        path,
+        reply
+    }) {
+        Ok(Ok(Some(bytes))) => log_response(
+            "application/octet-stream",
+            "private, max-age=31536000, immutable",
+            bytes,
+        ),
+        Ok(Ok(None)) => refuse(StatusCode::NOT_FOUND, "no such tile"),
+        Ok(Err(why)) => log_unavailable(why),
+        Err(e) => log_unavailable(e),
+    }
 }
 
 fn access_for(service: Service) -> Access {
@@ -246,17 +338,61 @@ async fn receive_pack(
     let now = crate::signed::wall_clock();
     let signed = Arc::clone(&state.signed);
     let (name, pusher) = (repo.to_string(), who.0.clone());
+    let logs = state.logs.clone();
+    let runtime = tokio::runtime::Handle::current();
     let judge = move |quarantined: &gix::Repository,
                       commands: &[gix_serve::receive_pack::Command]| {
         // What is taken is what was authorized: gix-serve read the same commands from the body.
         if !same_commands(&updates, commands) {
             return Err("the commands were not read alike".to_string());
         }
+        // A record in the evidence repository is verified as of the commit that added it: that time is the server's
+        // word (docs/architecture/key-custody.md, "Workload signing keys", item 7).
+        if name == polar_git_server_common::EVIDENCE_REPO
+            && let Err(why) = crate::evidence::check_pushed_times(quarantined, &updates, now)
+        {
+            warn!(who = %pusher, repo = %name, %why, "push refused: a commit not made about now");
+            return Err(why);
+        }
         if let Some(policy) = signed.policy_of(&name)
             && let Err(why) = crate::signed::check_push(quarantined, policy, &updates, now)
         {
             warn!(who = %pusher, repo = %name, %why, "push refused: not signed as this repository requires");
             return Err(why);
+        }
+        // Last, once nothing else refuses it: what the push adds to the evidence repository is appended to the store's
+        // evidence log, as the pusher's, before any ref moves; a record the log does not take refuses the push, so the
+        // repository never holds a record the log does not (docs/architecture/record-store.md, "Pushes to the log").
+        if name == polar_git_server_common::EVIDENCE_REPO
+            && let Some(logs) = &logs
+        {
+            for (path, bytes) in crate::evidence::pushed_records(quarantined, &updates)? {
+                let record = String::from_utf8(bytes)
+                    .map_err(|_| format!("{path} is not text, so it is no record"))?;
+                let appended = runtime.block_on(async {
+                    ractor::call!(logs, |reply| crate::logs::LogsMessage::AppendOnce {
+                        log: crate::evidence::EVIDENCE_LOG.to_string(),
+                        entry: crate::evidence::evidence_entry(&record),
+                        submitter: pusher.clone(),
+                        reply,
+                    })
+                });
+                match appended {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(why)) => {
+                        warn!(who = %pusher, repo = %name, %path, %why, "push refused: the evidence log did not take a record");
+                        return Err(format!(
+                            "{path}: the store's evidence log did not take it: {why}"
+                        ));
+                    }
+                    Err(e) => {
+                        warn!(who = %pusher, repo = %name, error = %e, "push refused: the store's logs did not answer");
+                        return Err(
+                            "the store's evidence log did not answer; push again".to_string()
+                        );
+                    }
+                }
+            }
         }
         Ok(())
     };

@@ -33,23 +33,25 @@
     pool: "core"
     image: "polar-git-server"
     config: "document"
-    # The repositories are history that must survive the pod (persistent-data); the rest is its
-    # listener certificate and paths (git-server).
-    provides: ["git-server", "persistent-data"]
+    # The repositories and the store's logs are history that must survive the pod (persistent-data); its logs'
+    # checkpoint key is kept by its crypto actor beside them and certified (checkpoints); the rest is its listener
+    # certificate and paths (git-server).
+    provides: ["git-server", "persistent-data", "checkpoints"]
     # What the git CLI connects to. Reached by port-forward in development; never terminated.
     service: {
       name: "{polar-git-server.name}"
       ports: [ { name: "git-https", port: "{polar-git-server.port}" } ]
     }
     # The repositories it creates (and seeds, once) at start, and who may read and write each. polar-evidence holds
-    # evidence records, each signed by the collector that made it (docs/architecture/http-observers.md, "Evidence");
-    # only the administrators reach it until a workload reads one.
+    # evidence records, each signed by the collector that made it (docs/architecture/http-observers.md, "Evidence"); the
+    # attestation agent adds its own over Cassini (docs/architecture/record-store.md, "Bite 3"), and people theirs with
+    # git, as the administrators grant.
     # Identities are the DNS SANs of the callers' certificates; a workload's is
     # <serviceaccount>.<namespace>.serviceaccount.<cluster domain> (cert-issuer's normalisation).
     env: [
       {
         name: "POLAR_GIT_SERVER_REPOS"
-        value: '{"admins":[],"repos":[{"name":"polar-schedules","readers":["polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"seed":"polar-schedules"},{"name":"polar-evidence","readers":[],"writers":[],"seed":"polar-evidence"},{"name":"deployment","readers":["deployment:flux","polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"signed_by":{"ca":"/etc/polar-deploy-ca/ca.pem","signer":"pipeline"}}]}'
+        value: '{"admins":[],"repos":[{"name":"polar-schedules","readers":["polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"seed":"polar-schedules"},{"name":"polar-evidence","readers":[],"writers":["attestation-agent.polar.serviceaccount.cluster.local"],"seed":"polar-evidence"},{"name":"deployment","readers":["deployment:flux","polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"signed_by":{"ca":"/etc/polar-deploy-ca/ca.pem","signer":"pipeline"}}]}'
       }
     ]
   }

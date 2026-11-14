@@ -44,6 +44,14 @@ pub static REPO_ROOT: Required<String> = Required::path(
     "the directory the bare repositories live in; it must be persistent storage",
 );
 
+pub static LOG_ROOT: Defaulted<String> = Defaulted::path(
+    "POLAR_GIT_SERVER_LOG_ROOT",
+    polar_env::Access::WriteDir,
+    "the directory the store's signed logs live in, with the checkpoint key the crypto actor keeps beside them; \
+     persistent storage, beside the repositories (docs/architecture/record-store.md)",
+    "/var/lib/polar-git-server/logs",
+);
+
 /// The seeds the image was built with: the Nix build sets the variable to the store path holding
 /// `infra/seeds`. Elsewhere there are none unless the variable is set at run time.
 pub const DEFAULT_SEED_ROOT: &str = match option_env!("POLAR_GIT_SERVER_BUILT_SEED_ROOT") {
@@ -92,6 +100,7 @@ pub static ADMINS: Optional<Vec<String>> = Optional::list(
 static VARIABLES: &[&dyn Described] = &[
     &PORT,
     &REPO_ROOT,
+    &LOG_ROOT,
     &SEED_ROOT,
     &REPOS,
     &ADMINS,
@@ -114,6 +123,7 @@ pub static SECTION: Section = Section {
 pub struct GitServerSettings {
     pub port: u16,
     pub repo_root: String,
+    pub log_root: String,
     pub seed_root: String,
     pub repos: String,
     pub admins: Vec<String>,
@@ -126,6 +136,7 @@ impl GitServerSettings {
         Ok(Self {
             port: config.read(&PORT)?,
             repo_root: config.read(&REPO_ROOT)?,
+            log_root: config.read(&LOG_ROOT)?,
             seed_root: config.read(&SEED_ROOT)?,
             repos: config.read(&REPOS)?,
             admins: config.read(&ADMINS)?.unwrap_or_default(),
