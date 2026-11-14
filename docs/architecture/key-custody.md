@@ -1711,6 +1711,35 @@ properties (a record's signature verifies under the slot's certificate; no hands
 outside the certificate's is); issuance and the ledger; `polar-init` and the custodian; the infrastructure's signer and
 its handle; verification as of the commit; then the attestation agent's records (`polar-eden.md`, bite B).
 
+## Revocations as evidence (2026-11-14; the key as docs/plans/crypto-actor.md places new keys; for review)
+
+The credentials agent records every certificate a `Revoke` revokes as a `revocation` evidence record in
+`polar-evidence`, so a reader can hold a revoked certificate's records to the time it was revoked. A supersession is
+routine, the system's and never an administrator's, and is recorded as none. The record's subject is the certificate's
+serial; it says the reason, whether it was a compromise, who revoked it, when (seconds), and the identity the
+certificate named when the ledger knew it (`credentials-agent-consumer`, `revocation_evidence`).
+
+- *Sent* by the builder's recorder (`polar_agent_builder::recorder`) on `polar-git-evidence-requests`, answered on
+  `polar-git-evidence-replies.credentials-agent`, both declared on both sides; the credentials agent is a writer of
+  `polar-evidence` (`git-server.nuon`). `revocation` is the agent's record type as a build fact (`PolarAgent::RECORDS`),
+  as the attestation agent's are.
+- *Once across restarts:* the ledger notes each record the git server holds (`credentials.revocation-recorded`, not
+  critical, the encoding the other line of work wrote, so its entries read); at start and at each revocation what is not
+  noted is sent, once per run.
+- *Signed by the agent's record signer, never the authority key* (decided 2026-11-14 by the design principles, one key,
+  one purpose, and docs/plans/crypto-actor.md, new keys behind the crypto actor from the start). The credentials agent
+  is a bootstrap service, so its pod's custodian could fetch it no signing key from the agent it comes up before; it
+  declares `record-key` instead, and its crypto actor holds a record key as the store's holds its checkpoint key: made
+  once on the workload's volume (`POLAR_RECORD_KEY`), never replaced, a file now and custody later. The agent's
+  certifier has cert-issuer certify it as the agent's own documentSigning certificate naming
+  `c:record-evidence:revocation` alone, the CSR made by and the certificate handed to the crypto actor
+  (`RecordKeyHandle`). The domain signs through the builder's `RecordSigner` handle and holds no key; until the key is
+  certified a record cannot be signed, and the recorder keeps it and tries again. *For review:* the credentials agent's
+  other own keys (authority, escrow, ledger) are still held in its process, a gap the crypto-actor plan records; this
+  key does not join them.
+- *A reader* judges a revocation by who signed it: the credentials agent's workload identity, under a document-signing
+  certificate that may record `revocation`.
+
 ## Build order, each tests first
 
 1. The daemon: key generation (process keyring or memory), the CSR, taking the certificate and judging it, signing,

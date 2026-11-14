@@ -1814,6 +1814,7 @@ dependencies = [
  "polar",
  "polar-agent-builder",
  "polar-env",
+ "polar-git-server-common",
  "polar-log",
  "polar-permissions",
  "polar-policy",

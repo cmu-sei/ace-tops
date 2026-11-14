@@ -58,6 +58,11 @@ impl PolarAgent for GitServer {
         )
         .because(&[Cause::Topic(polar_git_server_common::EVIDENCE_REQUESTS_TOPIC)]),
         TopicDecl::publish(
+            polar_git_server_common::CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC,
+            "what became of the credentials agent's revocation record, on its own topic",
+        )
+        .because(&[Cause::Topic(polar_git_server_common::EVIDENCE_REQUESTS_TOPIC)]),
+        TopicDecl::publish(
             attestation_common::witness::WITNESS_REQUESTS_TOPIC,
             "each log's checkpoint, signed, for the attestation agent's witness to co-sign (record-store.md, \"Bite 5\")",
         )
@@ -170,6 +175,10 @@ mod tests {
         assert!(has(EVIDENCE_REQUESTS_TOPIC, Access::Subscribe));
         assert!(has(
             ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC,
+            Access::Publish
+        ));
+        assert!(has(
+            polar_git_server_common::CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC,
             Access::Publish
         ));
         assert!(has(POLAR_GIT_REPO_CHANGED_TOPIC, Access::Publish));

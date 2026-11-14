@@ -69,6 +69,7 @@ pub mod renewal;
 pub mod request_gate;
 pub mod retrieve_secret;
 pub mod retrieve_secret_actor;
+pub mod revocation_evidence;
 pub mod sessions;
 pub mod settings;
 pub mod state;

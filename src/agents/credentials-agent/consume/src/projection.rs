@@ -325,6 +325,7 @@ fn graph_ops_for_event(event: &CredentialsEvent, grant_existed: bool) -> Vec<Gra
         CredentialsEvent::AuthorityPublished { .. } => vec![],
         // A refused document changes nothing; the ledger keeps the record of it.
         CredentialsEvent::AuthorityRefused { .. } => vec![],
+        CredentialsEvent::RevocationRecorded { .. } => vec![],
         // The ledger's, for what follows; the graph holds what was issued.
         CredentialsEvent::InstanceRefused { .. }
         | CredentialsEvent::IssuedUnattested { .. }
@@ -600,6 +601,7 @@ fn event_timestamp(event: &CredentialsEvent) -> i64 {
         | CredentialsEvent::AccountCertificateIssued { timestamp, .. }
         | CredentialsEvent::AuthorityPublished { timestamp, .. }
         | CredentialsEvent::AuthorityRefused { timestamp, .. }
+        | CredentialsEvent::RevocationRecorded { timestamp, .. }
         | CredentialsEvent::InstanceRefused { timestamp, .. }
         | CredentialsEvent::IssuedUnattested { timestamp, .. }
         | CredentialsEvent::AttestationReported { timestamp, .. }

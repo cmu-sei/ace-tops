@@ -201,6 +201,11 @@ pub enum ConsumerSupervisorMessage {
     },
     /// Time to poll cert-issuer's held requests over mTLS, if the Cassini session is lost.
     PollHeld,
+    /// The git server's answer about a revocation record, published (the broker says) by `published_by`.
+    EvidenceAnswered {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
 }
 
 /// How often the consumer says how many requests it has seen.
@@ -226,6 +231,7 @@ pub(crate) fn drain_topics() -> Vec<&'static str> {
             cert_issuer_common::held::HELD_REQUESTS_TOPIC,
             attestation_common::CREDENTIALS_AGENT_REPLIES_TOPIC,
             attestation_common::REPORTS_TOPIC,
+            polar_git_server_common::CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC,
         ])
         .collect()
 }
@@ -244,6 +250,7 @@ pub(crate) fn dropped_while_draining(message: &ConsumerSupervisorMessage) -> boo
             | M::HeldOffered { .. }
             | M::PollHeld
             | M::RuntimeChanged { .. }
+            | M::EvidenceAnswered { .. }
     )
 }
 
@@ -277,6 +284,8 @@ pub struct ConsumerSupervisorState {
     held_voucher: Option<ActorRef<crate::held_voucher::HeldVoucherMessage>>,
     /// Judges every request before its handler sees it (docs/architecture/authority-model.md, slice 9).
     request_gate: ActorRef<crate::request_gate::RequestGateMessage>,
+    /// Records each revocation in polar-evidence, and takes the git server's answers about them.
+    revocation_evidence: ActorRef<crate::revocation_evidence::RevocationEvidenceMessage>,
     /// Asks the attestation agent about a pod, told when there is a session to ask over.
     instance_asker: ActorRef<InstanceAskerMessage>,
     /// The attestation agent's identity, from this agent's own; none if its own names no workload, and then nothing is asked.
@@ -742,6 +751,27 @@ impl ConsumerSupervisor {
         )
     }
 
+    /// The git server's answers about this agent's revocation records, each with who the broker says published it: the
+    /// recorder takes one only from the git server.
+    fn evidence_reply_subscription(
+        supervisor: &ActorRef<ConsumerSupervisorMessage>,
+    ) -> Subscription {
+        let supervisor = supervisor.clone();
+        Subscription::new(
+            polar_git_server_common::CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC,
+            move |incoming| {
+                if let Err(e) =
+                    supervisor.send_message(ConsumerSupervisorMessage::EvidenceAnswered {
+                        payload: incoming.payload,
+                        published_by: incoming.published_by,
+                    })
+                {
+                    warn!("could not pass on the git server's answer about a record: {e}");
+                }
+            },
+        )
+    }
+
     /// cert-issuer's held requests, each with who the broker says published it: the voucher takes one only from
     /// cert-issuer.
     fn held_offer_subscription(supervisor: &ActorRef<ConsumerSupervisorMessage>) -> Subscription {
@@ -962,6 +992,7 @@ impl Actor for ConsumerSupervisor {
         builder = builder.with_subscription(Self::attestation_report_subscription(&myself));
         builder = builder.with_subscription(Self::record_reply_subscription(&myself));
         builder = builder.with_subscription(Self::held_offer_subscription(&myself));
+        builder = builder.with_subscription(Self::evidence_reply_subscription(&myself));
         for subscription in Self::request_subscriptions(&myself) {
             builder = builder.with_subscription(subscription);
         }
@@ -1491,6 +1522,46 @@ impl Actor for ConsumerSupervisor {
             .await
             .map_err(ActorProcessingErr::from)?;
         }
+        // Each revocation as a record in polar-evidence (docs/architecture/key-custody.md, "Revocations as evidence"),
+        // signed by the record signer the builder hands this agent for its `record-key` capability: the key is its crypto
+        // actor's, never this domain's, and never the authority key. Until the key is certified a record waits, kept by
+        // the recorder. The git server is in this agent's namespace and domain.
+        let signer = resources
+            .signer
+            .clone()
+            .ok_or("the builder handed no record signer, though the agent declares `record-key`")?;
+        let server = polar_agent_builder::recorder::server_identity(&own_cert_identity)
+            .ok_or_else(|| {
+                ActorProcessingErr::from(format!(
+                    "this agent's identity `{own_cert_identity}` names no workload"
+                ))
+            })?;
+        let broker = BROKER_CLIENT_NAME.to_string();
+        let (revocation_evidence, _) =
+            crate::revocation_evidence::RevocationEvidence::spawn_linked(
+                Some(format!("{SERVICE_NAME}.revocation-evidence")),
+                crate::revocation_evidence::RevocationEvidence,
+                crate::revocation_evidence::RevocationEvidenceArgs {
+                    ledger: ledger.clone(),
+                    signer: std::sync::Arc::new(signer),
+                    publish: std::sync::Arc::new(move |payload| match where_is(broker.clone()) {
+                        Some(client) => client
+                            .send_message(cassini_client::TcpClientMessage::publish(
+                                polar_git_server_common::EVIDENCE_REQUESTS_TOPIC.to_string(),
+                                payload,
+                                None,
+                            ))
+                            .map_err(|e| e.to_string()),
+                        None => Err("no broker client".to_string()),
+                    }),
+                    server,
+                    prefix: format!("{SERVICE_NAME}-{}", polar::time::now_millis()),
+                    clock: || polar::time::now_millis().div_euclid(1000),
+                },
+                myself.get_cell(),
+            )
+            .await
+            .map_err(ActorProcessingErr::from)?;
         match ractor::call!(ledger, LedgerMessage::RevocationChanges) {
             Ok(port) => port.subscribe(publisher.clone(), |_| {
                 Some(PublisherMessage::RevocationsChanged)
@@ -1619,6 +1690,7 @@ impl Actor for ConsumerSupervisor {
             record_asker,
             held_voucher,
             request_gate,
+            revocation_evidence,
             instance_asker,
             attestation_agent: agent_identity(&own_cert_identity),
             rejuvenating: false,
@@ -1696,6 +1768,17 @@ impl Actor for ConsumerSupervisor {
                         published_by,
                     });
                 }
+            }
+            ConsumerSupervisorMessage::EvidenceAnswered {
+                payload,
+                published_by,
+            } => {
+                let _ = state.revocation_evidence.send_message(
+                    crate::revocation_evidence::RevocationEvidenceMessage::Answer {
+                        payload,
+                        published_by,
+                    },
+                );
             }
             ConsumerSupervisorMessage::HeldOffered {
                 payload,

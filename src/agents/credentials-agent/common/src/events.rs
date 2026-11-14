@@ -440,6 +440,14 @@ pub enum CredentialsEvent {
         reasons: Vec<String>,
         timestamp: i64,
     },
+    /// The git server holds the credentials agent's signed record of a revocation (`Revoke`), at `path` in
+    /// polar-evidence (docs/architecture/key-custody.md, "The credentials agent's keys, P-256", K3): what is not yet
+    /// recorded is sent again after a restart, and what is is never sent twice.
+    RevocationRecorded {
+        serial: String,
+        path: String,
+        timestamp: i64,
+    },
     /// One accepted, signature-verified admin action -- the only way an
     /// admin's provision/grant/revoke reaches the ledger. Carries the
     /// whole signed action, so anyone holding the ledger can re-verify

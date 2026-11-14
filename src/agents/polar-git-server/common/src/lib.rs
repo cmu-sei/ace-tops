@@ -65,6 +65,11 @@ pub const EVIDENCE_REQUESTS_TOPIC: &str = "polar-git-evidence-requests";
 pub const ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC: &str =
     "polar-git-evidence-replies.attestation-agent";
 
+/// The credentials agent's reply topic: it adds its revocations (docs/architecture/key-custody.md, "Revocations as
+/// evidence").
+pub const CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC: &str =
+    "polar-git-evidence-replies.credentials-agent";
+
 /// The reply topic of the workload `workload`.
 pub fn evidence_replies_topic(workload: &str) -> String {
     format!("polar-git-evidence-replies.{workload}")
@@ -406,6 +411,57 @@ pub fn decode_witnessed(payload: &[u8]) -> Result<LogWitnessed, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_senders_topic_is_the_one_it_is_answered_on() {
+        assert_eq!(
+            evidence_replies_topic("attestation-agent"),
+            ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC
+        );
+        assert_eq!(
+            evidence_replies_topic("credentials-agent"),
+            CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC
+        );
+    }
+
+    #[test]
+    fn a_record_and_each_answer_survive_the_wire_and_garbage_is_refused() {
+        let add = Envelope {
+            correlation_id: "c1".into(),
+            payload: AddRecord {
+                record: "{\"payload\":{}}".into(),
+            },
+        };
+        let back = decode_add(&encode_add(&add)).unwrap();
+        assert_eq!(
+            (back.correlation_id, back.payload),
+            (add.correlation_id, add.payload)
+        );
+        for answer in [
+            RecordAdded::Committed {
+                path: "attestation/u7c/ab.json".into(),
+                commit: "c".repeat(40),
+            },
+            RecordAdded::AlreadyThere {
+                path: "attestation/u7c/ab.json".into(),
+            },
+            RecordAdded::Refused { why: "no".into() },
+            RecordAdded::NotNow {
+                why: "later".into(),
+            },
+        ] {
+            let envelope = Envelope {
+                correlation_id: "c2".into(),
+                payload: answer.clone(),
+            };
+            assert_eq!(
+                decode_added(&encode_added(&envelope)).unwrap().payload,
+                answer
+            );
+        }
+        assert!(decode_add(b"not rkyv at all").is_err());
+        assert!(decode_added(b"").is_err());
+    }
 
     #[test]
     fn the_event_survives_the_wire() {

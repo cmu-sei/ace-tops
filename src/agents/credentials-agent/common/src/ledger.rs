@@ -84,6 +84,7 @@ pub fn mark_of(event: &CredentialsEvent) -> Mark {
         IssuedUnattested { .. } => mark("credentials.issued-unattested", 1, false),
         // They fold only "already done": one passed over may be reported or recorded again, a duplicate.
         AttestationReported { .. } => mark("credentials.attestation-reported", 1, false),
+        RevocationRecorded { .. } => mark("credentials.revocation-recorded", 1, false),
     }
 }
 
@@ -379,6 +380,17 @@ mod v1 {
 
     #[derive(minicbor::Encode, minicbor::Decode)]
     #[cbor(map)]
+    struct RevocationRecorded {
+        #[n(0)]
+        serial: String,
+        #[n(1)]
+        path: String,
+        #[n(2)]
+        timestamp: i64,
+    }
+
+    #[derive(minicbor::Encode, minicbor::Decode)]
+    #[cbor(map)]
     struct AdminActionRecorded {
         #[n(0)]
         payload_hash: String,
@@ -593,6 +605,15 @@ mod v1 {
                 reasons,
                 timestamp,
             }),
+            E::RevocationRecorded {
+                serial,
+                path,
+                timestamp,
+            } => cbor(&RevocationRecorded {
+                serial,
+                path,
+                timestamp,
+            }),
             E::AdminActionRecorded {
                 payload_hash,
                 signed,
@@ -746,6 +767,13 @@ mod v1 {
                     version: v.version,
                     signer: v.signer,
                     reasons: v.reasons,
+                    timestamp: v.timestamp,
+                })
+            }
+            "credentials.revocation-recorded" => {
+                from::<RevocationRecorded>(bytes).map(|v| E::RevocationRecorded {
+                    serial: v.serial,
+                    path: v.path,
                     timestamp: v.timestamp,
                 })
             }

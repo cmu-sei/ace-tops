@@ -59,12 +59,13 @@ fn variant(event: &CredentialsEvent) -> usize {
         IssuedUnattested { .. } => 8,
         AuthorityPublished { .. } => 9,
         AuthorityRefused { .. } => 10,
-        AdminActionRecorded { .. } => 11,
-        CertificatesReported { .. } => 12,
-        AttestationReported { .. } => 13,
+        RevocationRecorded { .. } => 11,
+        AdminActionRecorded { .. } => 12,
+        CertificatesReported { .. } => 13,
+        AttestationReported { .. } => 14,
     }
 }
-const VARIANTS: usize = 14;
+const VARIANTS: usize = 15;
 
 /// A secret as the JSON ledger held one: its fields are the escrow crate's own, and encrypting would make it new each time.
 fn secret() -> EscrowedSecret {
@@ -181,6 +182,11 @@ fn examples() -> Vec<CredentialsEvent> {
             signer: "someone".into(),
             reasons: vec!["not an administrator".into()],
             timestamp: 1_762_900_010,
+        },
+        E::RevocationRecorded {
+            serial: "0a1b".into(),
+            path: "revocations/0a1b.json".into(),
+            timestamp: 1_762_900_011,
         },
         E::AdminActionRecorded {
             payload_hash: "ab".repeat(32),
@@ -350,26 +356,6 @@ fn every_sample_of_every_version_is_read_and_the_writer_writes_its_own() {
         read_samples += 1;
     }
     assert!(read_samples >= VARIANTS);
-}
-
-/// agentic-control-plane writes `credentials.revocation-recorded` (its K3), a kind main does not have: not critical, so a
-/// main agent given such a ledger passes over it, and the two branches' agents can read one ledger.
-#[test]
-fn the_other_branch_s_revocation_record_is_unknown_and_not_critical() {
-    let entry = polar_log::entry::Entry {
-        kind: "credentials.revocation-recorded".into(),
-        version: 1,
-        critical: false,
-        writer: WRITER.into(),
-        // That branch's recorded sample of it: {0: "0a1b", 1: "revocations/0a1b.json", 2: 1762900011}.
-        event: vec![
-            0xa3, 0x00, 0x64, 0x30, 0x61, 0x31, 0x62, 0x01, 0x75, 0x72, 0x65, 0x76, 0x6f, 0x63,
-            0x61, 0x74, 0x69, 0x6f, 0x6e, 0x73, 0x2f, 0x30, 0x61, 0x31, 0x62, 0x2e, 0x6a, 0x73,
-            0x6f, 0x6e, 0x02, 0x1a, 0x69, 0x13, 0xb8, 0x2b,
-        ],
-    };
-    assert_eq!(read(&entry), Read::Unknown);
-    assert!(!entry.critical);
 }
 
 #[test]

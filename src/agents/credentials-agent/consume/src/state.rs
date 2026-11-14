@@ -237,6 +237,24 @@ pub struct CredentialsState {
 
     /// The highest sequence number published to the agents (`AuthorityPublished`).
     last_authority_sequence: u64,
+
+    /// Every revocation by a `Revoke`, by serial, the first for each: what the credentials agent records as evidence.
+    /// A supersession is not among them (docs/architecture/key-custody.md, "The credentials agent's keys, P-256", K3).
+    revocations: BTreeMap<String, Revocation>,
+    /// The serials whose revocation the git server holds as a record (`RevocationRecorded`).
+    recorded_revocations: BTreeSet<String>,
+}
+
+/// A certificate revoked by a `Revoke`: what its record says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocation {
+    pub serial: String,
+    pub reason: RevocationReason,
+    pub revoked_by: String,
+    /// Milliseconds.
+    pub revoked_at: i64,
+    /// The identity the certificate names, when the ledger knew the certificate.
+    pub identity: Option<String>,
 }
 
 impl CredentialsState {
@@ -639,6 +657,23 @@ impl CredentialsState {
                 revoked_by,
                 timestamp,
             } => {
+                // A supersession is routine, and recorded as none (it is the system's, never an administrator's).
+                if *reason != RevocationReason::Superseded && !self.revocations.contains_key(serial)
+                {
+                    let identity = self.certificate_of(serial).and_then(|pem| {
+                        cert_issuer_common::permission::extract_own_identity(&pem).ok()
+                    });
+                    self.revocations.insert(
+                        serial.clone(),
+                        Revocation {
+                            serial: serial.clone(),
+                            reason: *reason,
+                            revoked_by: revoked_by.clone(),
+                            revoked_at: *timestamp,
+                            identity,
+                        },
+                    );
+                }
                 self.revoked_serials.insert(serial.clone());
                 if reason.is_compromise() {
                     self.compromised_serials.insert(serial.clone());
@@ -671,6 +706,9 @@ impl CredentialsState {
             }
             // A refused document changes nothing the state holds.
             CredentialsEvent::AuthorityRefused { .. } => {}
+            CredentialsEvent::RevocationRecorded { serial, .. } => {
+                self.recorded_revocations.insert(serial.clone());
+            }
             CredentialsEvent::InstanceRefused { .. }
             | CredentialsEvent::IssuedUnattested { .. } => {}
             CredentialsEvent::AttestationReported {
@@ -964,6 +1002,20 @@ impl CredentialsState {
             }
             Some(_) => Ok(()),
         }
+    }
+
+    /// How many certificates a `Revoke` has revoked.
+    pub fn revocation_count(&self) -> usize {
+        self.revocations.len()
+    }
+
+    /// The revocations whose record the git server does not hold yet, by serial.
+    pub fn unrecorded_revocations(&self) -> Vec<Revocation> {
+        self.revocations
+            .values()
+            .filter(|r| !self.recorded_revocations.contains(&r.serial))
+            .cloned()
+            .collect()
     }
 
     pub fn secret_for(&self, name: &str) -> Option<&StoredSecret> {

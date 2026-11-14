@@ -440,6 +440,7 @@ pub struct LedgerActorState {
     projection_actor: ActorRef<ProjectionMessage>,
     /// Told when an event adds a revoked serial, for whoever publishes the set to the agents.
     revocation_changes: Arc<OutputPort<RevokedChanged>>,
+    revocations: Arc<OutputPort<crate::state::Revocation>>,
     /// The renewal rule's admissions not yet recorded (docs/architecture/deployments.md, "The renewal rule").
     admissions: crate::renewal::Admissions,
 }
@@ -503,6 +504,10 @@ pub enum LedgerMessage {
     },
     /// The port on which a newly revoked serial is announced.
     RevocationChanges(RpcReplyPort<Arc<OutputPort<RevokedChanged>>>),
+    /// The port told of each certificate a `Revoke` revokes: for its record (`revocation_evidence`).
+    Revocations(RpcReplyPort<Arc<OutputPort<crate::state::Revocation>>>),
+    /// The revocations whose record the git server does not hold yet.
+    UnrecordedRevocations(RpcReplyPort<Vec<crate::state::Revocation>>),
     /// The active grant for `identity`, if any.
     CheckGrant {
         identity: String,
@@ -728,6 +733,7 @@ impl Actor for LedgerActor {
             credentials_state,
             projection_actor: args.projection_actor,
             revocation_changes: Arc::new(OutputPort::default()),
+            revocations: Arc::new(OutputPort::default()),
             admissions: crate::renewal::Admissions::default(),
         })
     }
@@ -820,6 +826,12 @@ impl Actor for LedgerActor {
             }
             LedgerMessage::RevocationChanges(reply) => {
                 let _ = reply.send(state.revocation_changes.clone());
+            }
+            LedgerMessage::Revocations(reply) => {
+                let _ = reply.send(state.revocations.clone());
+            }
+            LedgerMessage::UnrecordedRevocations(reply) => {
+                let _ = reply.send(state.credentials_state.unrecorded_revocations());
             }
             LedgerMessage::RecordAdminAction { event, reply } => {
                 let CredentialsEvent::AdminActionRecorded { payload_hash, .. } = &event else {
@@ -1038,8 +1050,20 @@ fn append_and_project(
         .append(&leaf_of(event, &state.writer, now_ms()))
         .map_err(|e| e.to_string())?;
     let revoked_before = state.credentials_state.revoked_serials().len();
+    let revocations_before = state.credentials_state.revocation_count();
     let superseded_serials = state.credentials_state.apply(event);
     let revoked_after = state.credentials_state.revoked_serials().len();
+    if state.credentials_state.revocation_count() > revocations_before
+        && let Some(CredentialsEvent::Revoke { serial, .. }) =
+            event.admin_effect().as_ref().or(Some(event))
+        && let Some(revocation) = state
+            .credentials_state
+            .unrecorded_revocations()
+            .into_iter()
+            .find(|r| &r.serial == serial)
+    {
+        state.revocations.send(revocation);
+    }
     if revoked_after > revoked_before {
         state.revocation_changes.send(RevokedChanged {
             count: revoked_after,

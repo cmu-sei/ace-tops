@@ -43,14 +43,15 @@
     }
     # The repositories it creates (and seeds, once) at start, and who may read and write each. polar-evidence holds
     # evidence records, each signed by the collector that made it (docs/architecture/http-observers.md, "Evidence"); the
-    # attestation agent adds its own over Cassini (docs/architecture/record-store.md, "Bite 3"), and people theirs with
-    # git, as the administrators grant.
+    # attestation agent adds its own over Cassini (docs/architecture/record-store.md, "Bite 3"), the credentials agent its
+    # revocations (docs/architecture/key-custody.md, "Revocations as evidence"), and people theirs with git, as the
+    # administrators grant.
     # Identities are the DNS SANs of the callers' certificates; a workload's is
     # <serviceaccount>.<namespace>.serviceaccount.<cluster domain> (cert-issuer's normalisation).
     env: [
       {
         name: "POLAR_GIT_SERVER_REPOS"
-        value: '{"admins":[],"repos":[{"name":"polar-schedules","readers":["polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"seed":"polar-schedules"},{"name":"polar-evidence","readers":[],"writers":["attestation-agent.polar.serviceaccount.cluster.local"],"seed":"polar-evidence"},{"name":"deployment","readers":["deployment:flux","polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"signed_by":{"ca":"/etc/polar-deploy-ca/ca.pem","signer":"pipeline"}}]}'
+        value: '{"admins":[],"repos":[{"name":"polar-schedules","readers":["polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"seed":"polar-schedules"},{"name":"polar-evidence","readers":[],"writers":["attestation-agent.polar.serviceaccount.cluster.local","credentials-agent.polar.serviceaccount.cluster.local"],"seed":"polar-evidence"},{"name":"deployment","readers":["deployment:flux","polar-scheduler-observer.polar.serviceaccount.cluster.local"],"writers":[],"signed_by":{"ca":"/etc/polar-deploy-ca/ca.pem","signer":"pipeline"}}]}'
       }
     ]
   }

@@ -284,6 +284,18 @@ impl PolarAgent for CredentialsConsumer {
             Cause::Registered,
             Cause::Timer("republish"),
         ]),
+        TopicDecl::publish(
+            polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+            "its signed record of each revocation, for the git server to add to polar-evidence",
+        )
+        .because(&[
+            Cause::Topic(credentials_agent_common::CREDENTIALS_ADMIN_ACTION_REQUESTS_TOPIC),
+            Cause::Registered,
+        ]),
+        TopicDecl::subscribe(
+            polar_git_server_common::CREDENTIALS_AGENT_EVIDENCE_REPLIES_TOPIC,
+            "what the git server did with each of its revocation records",
+        ),
     ];
     const SECTIONS: &'static [&'static Section] = &[
         &polar::graph::environment::SECTION,
