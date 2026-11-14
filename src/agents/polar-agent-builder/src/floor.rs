@@ -76,6 +76,9 @@ impl Floor {
             None if cert_issuer_common::custody::custodian_of(&identity).is_some() => {
                 custodian_topics()
             }
+            // A person: the store's requests, and the answers on their own topics (docs/architecture/record-store.md,
+            // "People's tools over Cassini"), the same for every person; Cedar decides the rest, as for anyone.
+            None if polar_git_server_common::is_person(&identity) => person_topics(&identity),
             None => BTreeSet::new(),
         };
         let declared = if cert_issuer_common::custody::custodian_of(&identity).is_some() {
@@ -129,6 +132,16 @@ impl Floor {
             implied,
         }
     }
+}
+
+/// What every person may publish and subscribe to: the store's requests, and their answers on topics named for them.
+fn person_topics(identity: &str) -> BTreeSet<(String, Access)> {
+    let (publish, subscribe) = polar_git_server_common::person_topics(identity);
+    publish
+        .into_iter()
+        .map(|t| (t, Access::Publish))
+        .chain(subscribe.into_iter().map(|t| (t, Access::Subscribe)))
+        .collect()
 }
 
 /// What every custodian may publish and subscribe to: its own requests and their replies, and the authority.
@@ -236,18 +249,59 @@ mod tests {
         assert!(!floor.allows("agent.kube-observer.configuration", Access::Subscribe));
     }
 
+    /// A person's groups imply no workload's topics: only the store's requests, and the answers on topics named for
+    /// them, which nobody else's floor admits.
     #[test]
-    fn a_person_s_certificate_implies_nothing_whatever_groups_it_names() {
+    fn a_person_s_certificate_implies_the_store_s_requests_and_their_own_answers_only() {
+        const ALICE: &str = "0a11ce00-0000-4000-8000-000000000001";
         let floor = Floor::from_certificate_pem(&certificate_with(&[
-            "alice",
+            ALICE,
             "g:cassini-client",
             "p:sub:news",
         ]))
         .unwrap();
-        assert_eq!(floor.identity(), "alice");
+        assert_eq!(floor.identity(), ALICE);
         assert!(floor.allows("news", Access::Subscribe));
-        assert!(!floor.allows("agent.alice.configuration", Access::Subscribe));
+        assert!(!floor.allows(&format!("agent.{ALICE}.configuration"), Access::Subscribe));
         assert!(!floor.allows("polar-authority-updates", Access::Subscribe));
+        for request in [
+            polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+            polar_git_server_common::LOG_READ_REQUESTS_TOPIC,
+            polar_git_server_common::SCHEDULES_REQUESTS_TOPIC,
+        ] {
+            assert!(floor.allows(request, Access::Publish), "{request}");
+            assert!(!floor.allows(request, Access::Subscribe), "{request}");
+        }
+        assert!(floor.allows(
+            &format!("polar-log-read-replies.{ALICE}"),
+            Access::Subscribe
+        ));
+        assert!(!floor.allows("polar-log-read-replies.bob", Access::Subscribe));
+        assert!(!floor.allows(&format!("polar-log-read-replies.{ALICE}"), Access::Publish));
+        assert_eq!(
+            floor.facts(
+                &format!("polar-git-evidence-replies.{ALICE}"),
+                Access::Subscribe
+            ),
+            polar_policy::TopicFacts {
+                declared: false,
+                implied: true
+            }
+        );
+    }
+
+    /// A certificate that names a workload's name bare is neither the workload nor a person: it hears nobody's answers.
+    #[test]
+    fn a_name_that_is_not_an_account_s_hears_no_answers() {
+        let floor = Floor::from_certificate_pem(&certificate_with(&["attestation-agent"])).unwrap();
+        assert!(!floor.allows(
+            "polar-git-evidence-replies.attestation-agent",
+            Access::Subscribe
+        ));
+        assert!(!floor.allows(
+            polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+            Access::Publish
+        ));
     }
 
     #[test]

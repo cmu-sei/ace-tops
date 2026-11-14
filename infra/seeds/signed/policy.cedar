@@ -38,3 +38,11 @@ permit (principal in Group::"config-readers", action == Action::"publish", resou
 permit (principal in Group::"config-readers", action == Action::"subscribe", resource == Topic::"polar-running-configuration-answers");
 permit (principal in Group::"config-readers", action == Action::"read-configuration", resource);
 permit (principal in Group::"config-writers", action == Action::"update-configuration", resource);
+
+// People on Cassini (docs/architecture/record-store.md, "People's tools over Cassini"): a topic whose name ends with a
+// person's identity is addressed to them (`context.addressed`, which the broker computes from the name). They may hear
+// it, and nobody else may; the store, which answers people's requests, may publish it.
+permit (principal, action == Action::"subscribe", resource)
+when { context has addressed && context.addressed == principal };
+permit (principal, action == Action::"publish", resource)
+when { context has addressed && principal has workload && principal.workload == "polar-git-server" };

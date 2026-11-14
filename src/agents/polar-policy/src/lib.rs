@@ -248,6 +248,11 @@ pub struct Facts {
     /// the credentials agent (`request`): whether the requester publishes the request's topic, and how. For a read of
     /// soft state (`read-state`): whether the asker's floor declares the read (`implied` is false).
     pub topic: Option<TopicFacts>,
+    /// For a topic (`publish`, `subscribe`): the person it is addressed to, when its name ends with a person's
+    /// identity (docs/architecture/record-store.md, "People's tools over Cassini"), as `Identity::"<it>"` in
+    /// `context.addressed`, so `context.addressed == principal` says "addressed to the requester". The asker computes it
+    /// from the topic's name, and no document can set it.
+    pub addressed: Option<String>,
 }
 
 /// Whether a topic is in the requester's own set, and how (docs/architecture/topics.md): `context.declared` (family
@@ -680,6 +685,10 @@ fn respond_with(
     if let Some(topic) = facts.topic {
         context["declared"] = serde_json::Value::Bool(topic.declared);
         context["implied"] = serde_json::Value::Bool(topic.implied);
+    }
+    if let Some(addressed) = &facts.addressed {
+        context["addressed"] =
+            serde_json::json!({ "__entity": { "type": "Identity", "id": addressed } });
     }
     let context = Context::from_json_value(context, Some((schema, &action_uid)))
         .map_err(|e| PolicyError::RequestConstruction(format!("context: {e}")))?;

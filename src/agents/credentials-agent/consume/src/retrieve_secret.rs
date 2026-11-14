@@ -117,6 +117,7 @@ impl RetrieveSecretHandler {
                 .map(|s| s.labels.clone())
                 .unwrap_or_default(),
             topic: None,
+            addressed: None,
         };
 
         // No decision (the policy is not running yet, or failed) is never a grant.

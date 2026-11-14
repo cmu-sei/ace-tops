@@ -65,6 +65,7 @@ pub async fn ask(
             &resource,
             polar_policy::Facts {
                 topic: Some(facts),
+                addressed: addressed_to(topic).map(str::to_string),
                 ..Default::default()
             },
         )
@@ -74,6 +75,16 @@ pub async fn ask(
         Err(LookupError::NoPolicyLoaded) => PolicySaid::NoPolicyLoaded,
         Err(LookupError::Unavailable(why)) => PolicySaid::Unavailable(why),
     }
+}
+
+/// The person `topic` is addressed to: its last segment, when that is a person's identity (an account's UUID,
+/// `polar_git_server_common::is_person`); none for any other topic (docs/architecture/record-store.md, "People's tools
+/// over Cassini").
+pub fn addressed_to(topic: &str) -> Option<&str> {
+    topic
+        .rsplit_once('.')
+        .map(|(_, last)| last)
+        .filter(|last| polar_git_server_common::is_person(last))
 }
 
 /// The gate for an agent named `service`, whose certificate's identity is `identity` and whose topics are `set`.
@@ -231,6 +242,74 @@ mod tests {
             uses(&seeded, TopicUse::Publish, "somebody.elses.topic")
                 .await
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_topic_is_addressed_to_the_person_its_name_ends_with_and_no_other_is() {
+        let alice = "0a11ce00-0000-4000-8000-000000000001";
+        assert_eq!(
+            addressed_to(&format!("polar-log-read-replies.{alice}")),
+            Some(alice)
+        );
+        for not_addressed in [
+            "polar-log-read-replies.polar-scheduler-observer",
+            "polar-log-read-replies",
+            alice,
+            "agent.kube-observer.configuration",
+        ] {
+            assert_eq!(addressed_to(not_addressed), None, "{not_addressed}");
+        }
+    }
+
+    /// record-store.md, "People's tools over Cassini": under the first policy, a person hears what is addressed to
+    /// them and nobody else does, and the store publishes it; another workload may not.
+    #[tokio::test]
+    async fn under_the_first_policy_a_person_hears_what_is_addressed_to_them_and_the_store_says_it()
+    {
+        let alice = "0a11ce00-0000-4000-8000-000000000001";
+        let bob = "0b0b0000-0000-4000-8000-000000000002";
+        let topic = format!("polar-log-read-replies.{alice}");
+        let service = format!("gate-addressed-{}", rand::random::<u64>());
+        policy_for(
+            &service,
+            include_str!("../../../../infra/seeds/signed/policy.cedar"),
+        )
+        .await;
+        let lookup = PolicyLookup::for_service(&service);
+        let said = |identity: &'static str, access: Access| {
+            let (lookup, topic) = (lookup.clone(), topic.clone());
+            async move {
+                ask(
+                    &lookup,
+                    identity,
+                    None,
+                    &topic,
+                    access,
+                    polar_policy::TopicFacts::default(),
+                )
+                .await
+            }
+        };
+        let allowed = PolicySaid::Decided(Decision::Allow);
+        assert_eq!(said(alice, Access::Subscribe).await, allowed);
+        assert_ne!(said(bob, Access::Subscribe).await, allowed);
+        assert_ne!(said(alice, Access::Publish).await, allowed);
+        assert_eq!(
+            said(
+                "polar-git-server.polar.serviceaccount.cluster.local",
+                Access::Publish
+            )
+            .await,
+            allowed
+        );
+        assert_ne!(
+            said(
+                "kube-observer.polar.serviceaccount.cluster.local",
+                Access::Publish
+            )
+            .await,
+            allowed
         );
     }
 

@@ -129,6 +129,7 @@ impl StoreSecretHandler {
             namespace: namespace_of(&request.name).map(str::to_string),
             labels: request.labels.clone(),
             topic: None,
+            addressed: None,
         };
         let decision = self
             .policy
