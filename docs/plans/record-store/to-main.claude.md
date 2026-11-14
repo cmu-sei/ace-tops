@@ -27,7 +27,8 @@ PAIR: `to-main.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../record-store.claude.md`. Branch store-to-main, rebased on ace-remote/main 7e43bb92 (2026-11-13); taken by
 polar-89 (current session name polar-f1) after review against main, then to the maintainer to clear.
-STATUS: PROPOSAL 2026-11-13, reviewed ready by polar-f1 2026-11-13; for the maintainer to clear. Behind it: maintainer "Bring the store to main" (2026-11-13).
+STATUS: DONE 2026-11-14. Cleared by the maintainer 2026-11-13 ("Cleared; build it"); B1–B5 on main ffabeec5, live on u7c
+(polar-f1 2026-11-14: 25 pods Running, no agent refuses its configuration). Was: PROPOSAL 2026-11-13, reviewed ready by polar-f1.
 FLOW per bite: polar-cc prepares, polar-f1 (polar-89's current session) takes. On a branch from main (≥ 7e43bb92; tests pass there, capped: systemd-run
 MemoryMax=24G) → polar-89 takes onto main → deploys u7c (up.nu sandbox-local --dev, no --under-test gitlab) → next.
 
@@ -207,6 +208,22 @@ B5 (store-bite-5, 2026-11-14, on store-bite-4 f06c4022), from acp f79af58d + 2cf
   its claim polar-git-data (pvc-e8e267d3, 2d11h) is still Bound; main's render names the same claim
   (persistent-data, `<workload>-data`), so its repositories open as found. Policy v3+/groups v2 with repo-developers
   are already in force on u7c, so the seed writes nothing.
+
+## MET (2026-11-14, main ffabeec5, u7c live per polar-f1)
+- B1 871739eb ca14b6d4 d77874e1 a85157e4 (+0ab01c5f resolve.nu test): logs opened as found, key kept + certified, catch-up
+  current, attestation records through the intake.
+- B2 1381df26 (S2, polar-f1) bc9880f3 7e900ea8 bfffd2c9 8a6b8eff (+7a6363de WITNESS_ROOT Required::path WriteDir, found at
+  u7c render step 4): witness-key.pem kept, witnessed.json converted to {key, origins}, both pins taken.
+- B3 de708eb8 c1592391 4f9ea4ef 908f4710: schedules log opened as found + caught up; observer reads the log, both pins.
+- B4 aee96e78 799513d7 23f90586 a3cdf719: person floor, addressed, section intake, polar-sign over Cassini.
+- RACE f06c4022 (polar-f1's B4 review): RepoStore::writing; stale push refused before logging; log put back on a failed
+  ref update.
+- B5 e63282ca a3fd337b ffabeec5: polar-git + git-remote-polar; polar-f1 checked push, clone, owner force-push, and
+  bootstrap-admin refused 403 "may not git-read". Test repo f1-bite5-check LEFT on polar-git-data on u7c.
+LEFT (none blocking): checkpoint key → named custody key when trusted-remotes step 3 lands (D3); witness holding lost
+with key kept starts empty (B2 GAP); large records as blobs (> MAX_ENTRY 65,535; polar-eden run record 237 KB); evidence
+intake's add_file takes no writer lock, by design (evidence log ⊇ repo).
+NEXT: acp merges main (ffabeec5+), taking main's version of everything ported.
 
 ## RISKS
 size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching

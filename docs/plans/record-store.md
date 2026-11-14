@@ -99,26 +99,29 @@ Its features, each a plan of its own as it is reached:
 
 ## 6. How much of the need is met now
 
-On `main`:
+On `main`, and running on the shared cluster:
 
 - **The format crate** and **the credentials ledger on it**, with signed checkpoints.
-- **Evidence and schedules in git repositories** on the git server, with a push window on the server's clock, and
-  without the add-only, proof or witness properties.
+- **The logs in the git server**, appended by the evidence intake and by every push and signed section to the schedules
+  repository, each checkpoint signed by the git server's crypto actor with a key the credentials agent certifies, and
+  read over Cassini.
+- **The attestation agent witnessing every checkpoint**, co-signing through its crypto actor, and readers requiring its
+  co-signature.
+- **The scheduler observer reading schedules from the log**, held to the store's key and the witness's.
+- **People's tools reading and writing over Cassini**, the store answering each person on a topic only they may hear.
+- **The source-code git server and its git client**, every operation judged by policy and reported.
 
-Built, but not on `main`:
-
-- the logs in the git server, appended by the evidence intake and the schedules intake, read over Cassini;
-- the attestation agent witnessing every checkpoint, and readers requiring its co-signature;
-- the scheduler observer reading schedules from the log;
-- people's tools reading and writing over Cassini.
+The repositories are still git repositories beside the logs, and git is still how the deployment is read.
 
 Not met anywhere yet: the deployment on the log, the repositories moved in, git turned off, and records too large for an
 entry.
 
 ## 7. What is left before this is a capability
 
-- **The store on `main`,** the feature planned next.
 - **The features that wait:** the deployment on the log (with the deployer), the repositories moved in and git off,
   the ledger's checkpoints in the store, and large records as blobs.
+- **The keys into custody:** the checkpoint key as a named key that outlives its pod, once custody can hold one.
+- **The witness's memory:** a witness that loses what it holds but keeps its key starts again empty, and nothing can
+  tell; the crypto actor would have to make the key and the record together.
 - **A capability document** saying what the store is, why it exists and how it is used, once it is on `main` and the
   git face is the exception.

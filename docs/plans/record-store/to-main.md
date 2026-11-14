@@ -28,8 +28,8 @@
 >
 > A **feature-level plan**, part of [the record store](../record-store.md).
 
-**Status: a proposal, not decided.** Everything it brings is built and has run on a development cluster, but from
-another line of work, not from `main`.
+**Status: done.** All five steps are on `main` and running on the shared cluster (section 6); what is left is for
+later (section 7).
 
 ## 1. The need
 
@@ -157,24 +157,48 @@ The steps, with what each changes in signed or kept state, and what the running 
 
 ## 6. How much of the need is met now
 
-- **On `main`:** the log format and the credentials ledger's signed checkpoints; the git server's git face over the
-  crypto actor's TLS; the policy schema that lets a person's answer topic be judged.
-- **Not on `main`:** the logs in the git server, the evidence intake's appends, reads over Cassini, the witness,
-  schedules on the log, a person's floor, the tools' asking side, and the source-code git server.
-- **On the cluster:** the logs exist on the git server's volume, written by the other line of work. `main`'s git server
-  ignores them today.
+**All five steps are built on `main` and running on the shared cluster**, deployed from the cluster's existing state with
+nothing wiped. Every pod is running, and no agent refuses its configuration.
+
+1. **The logs, their reads and the evidence intake** (`871739eb`, `ca14b6d4`, `d77874e1`, `a85157e4`, with `0ab01c5f`).
+   The logs on the git server's volume opened as they were; the checkpoint key was kept, and the credentials agent
+   certifies it; the evidence log caught up with the repository; the attestation agent's records go through the
+   intake.
+2. **The witness** (`1381df26`, `bc9880f3`, `7e900ea8`, `bfffd2c9`, `8a6b8eff`, with `7a6363de`). The witness's key and
+   what it had co-signed were kept; the record of what it holds now names the key it was made under; the two agents
+   took the pins already in their signed settings.
+3. **Schedules on the log** (`de708eb8`, `c1592391`, `4f9ea4ef`, `908f4710`). The schedules log opened as it was and
+   caught up with the repository; the scheduler observer reads the log, held to both keys, and took its pins.
+4. **People's tools over Cassini** (`aee96e78`, `799513d7`, `23f90586`, `a3cdf719`). A person's floor, Cedar told whom
+   a topic is addressed to, the store answering a person and taking their signed sections, and `polar-sign`'s pushes
+   over Cassini.
+5. **The source-code git server and its git client** (`e63282ca`, `a3fd337b`, `ffabeec5`). polar-git's repositories
+   opened as they were on its volume. Plain git through the client pushed, cloned and force-pushed as a repository's
+   owner, and someone policy says nothing of was refused.
+
+**A fix found in review** (`f06c4022`): a push and a section sent over Cassini both write the schedules repository and
+its log, and nothing kept them apart, so the log could part from the repository. Now one writer holds a repository at a
+time, a push from an older clone is refused before anything is logged, and if a change was logged and the repository
+then did not move, the log is put back to what the repository holds.
+
+Every key is used through the agent's crypto actor, and nothing brought over talks to custody itself or builds TLS of
+its own.
+
+A test repository, `f1-bite5-check`, made while checking the fifth step, is left on polar-git's volume on the shared
+cluster.
 
 ## 7. What is left before this is met
 
-- **The five steps,** each taken onto `main` and deployed.
-- **The design document brought up to date on `main`.** `main`'s copy of it is behind.
-- **The crypto actor's two new signatures and the checkpoint key's certification,** each added to `main` before the
-  step that needs it.
-- **Person's tools on the crypto actor, and the command-line Cassini client in its own package,** before the fourth
-  step.
-- **The keys into custody,** once custody can hold a named key that outlives its pod.
-- **The size:** about fifteen thousand lines across the git server, the attestation agent, the scheduler observer and
-  the tools, most of them tests. Each step is reviewed on its own.
+The need as stated is met. Left, each for later and none blocking:
+
+- **The checkpoint key into custody,** as a named key that outlives its pod, once custody can hold one. Until then it
+  is a key file on the git server's volume, made and held by the crypto actor.
+- **The witness's memory without its key:** if the record of what the witness holds is lost while its key survives,
+  the witness starts again empty under the same key, and nothing can tell that from a first start. Closing it needs
+  the crypto actor to make the key and the record together.
+- **Large records as blobs:** a record larger than a log entry carries still has no place in the log.
+- **The evidence intake does not wait for the repository's writer,** by design: a record logged by a push that then
+  fails stays in the evidence log only, and that log is meant to hold at least what the repository does.
 
 It is met when `main`, deployed to the shared cluster, runs the store with its logs, its witness and schedules on the
 log, from the cluster's existing state, and no agent refuses its configuration.

@@ -26,8 +26,8 @@
 PAIR: `record-store.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 LEVEL: capability. Features: `record-store/<feature>.{md,claude.md}`.
-AS-OF: main b998a245 (K3b) 2026-11-13; acp agentic-control-plane (merge base a4c1c984). Re-verify `file:line`.
-DESIGN: docs/architecture/record-store.md (on main, ~76 lines behind acp's; acp's is current: bites 1–6, L1–L2, witness).
+AS-OF: main ffabeec5 2026-11-14 (store on main, B1–B5 live on u7c); acp merges main next. Re-verify `file:line`.
+DESIGN: docs/architecture/record-store.md, current on main (each bite's "On main" status; how main differs from acp).
 OWNER: polar-cc (acp) designs/prepares; polar-89 (main) takes onto main and deploys u7c.
 
 ## DECISIONS (maintainer, dated)
@@ -49,7 +49,7 @@ OWNER: polar-cc (acp) designs/prepares; polar-89 (main) takes onto main and depl
 |---|---|---|
 | polar-log format crate | main (src/agents/polar-log) | on main |
 | ledger L1–L2 (CBOR events, signed checkpoints, checkpoint cert) | main 130fe680, 2e06f8f7, 402e7958… | on main |
-| store to main | record-store/to-main.* | PROPOSED 2026-11-13, not cleared |
+| store to main (B1–B5 + race fix f06c4022) | record-store/to-main.* | DONE 2026-11-14, main ffabeec5, live on u7c |
 | deployment log (bite 7) | — | waits for deployer |
 | repos moved in, git off (bites 8–9) | — | not started |
 | ledger checkpoints into store (bite 10 / L3) | record-store.md "plan for L3" | planned on acp |
@@ -60,4 +60,8 @@ OWNER: polar-cc (acp) designs/prepares; polar-89 (main) takes onto main and depl
   step 3 lands); polar-89's 3 conditions (base ≥ 7e43bb92; every key use via CryptoActor; per-bite state).
 
 ## OPEN
-- record-store.md: move acp's current text to main with bite 1 (main's copy is stale).
+- checkpoint key → named escrowed custody key when trusted-remotes step 3 lands (D3).
+- witness holding lost with key kept starts empty under the same key (to-main.claude.md B2 GAP).
+- large records as blobs (feature row above).
+- evidence intake takes no writer lock, by design (evidence log ⊇ repo); schedules writers do (f06c4022).
+- u7c: test repo f1-bite5-check left on polar-git-data.
