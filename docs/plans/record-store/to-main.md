@@ -68,18 +68,31 @@ builds TLS of its own. Where a step needs the crypto actor to sign something new
 before that step, and the actor checks what it is asked to sign, as it already does for evidence records:
 
 - **A checkpoint signature,** for the store. The actor is given a checkpoint's text, and signs it only if it is
-  exactly a checkpoint of one of this store's logs: three lines, the log's origin (the store's own name, then the log's),
-  its size in decimal and its root in base64, with no extension lines. It returns the signed note's signature line.
-- **A co-signature,** for the witness. The actor is given the checkpoint text and the time, and signs only if the
-  text is a checkpoint whose origin is the store the witness was pinned to. It builds the co-signed message itself
-  (`cosignature/v1`, the time, then the text) and returns the co-signature line. Whether the checkpoint is consistent
+  exactly a checkpoint of one of this store's own logs: three lines, the log's origin, its size in decimal and its root
+  in base64, with no extension lines. The origin must be the actor's own identity, read from its certificate, then the
+  log's name. This is how the store names its logs today, so no setting is needed and none is trusted from the caller.
+  The actor returns the signed note's signature line.
+- **A co-signature,** for the witness. The actor is given only the checkpoint text. It signs only if the text is a
+  checkpoint whose origin is the store the witness was pinned to, and it stamps the time from its own clock, so no
+  caller can choose a time and backdate a co-signature. It builds the co-signed message itself (`cosignature/v1`, the
+  time, then the text) and returns the co-signature line and the time it stamped. Whether the checkpoint is consistent
   with the last one co-signed stays the witness's own check, before it asks.
 
-**The keys stay where they are.** For now, the store's checkpoint key and the witness's key are each a key file on
-the agent's own volume, as they are today. The store's is certified by the credentials agent. Both are read by the
-crypto actor, through a path variable of its own for each, which defaults to where the file is now. So the keys on
-the cluster are kept, and so are the pins that name them. When custody can hold a named key that outlives its pod,
-both move there.
+**The keys stay where they are.** For now, the store's checkpoint key and the witness's co-signing key are each a key
+file on the agent's own volume, as they are today. The crypto actor reads each through a variable of its own, declared
+once with the actor's other key files and set by the deployment for its one workload, at today's path. So the keys on
+the cluster are kept, and so are the pins that name them. The actor makes a key if its file is absent, readable by the
+agent alone, and never replaces one, since a new key would break every pin that names the old one. When custody can hold
+a named key that outlives its pod, both move there.
+
+**The store's key is certified by the credentials agent, through the crypto actor.** Today it is not certified at all:
+the store makes its key and the pins carry its public half, because no way existed to certify a workload's own lasting
+key. In the first step, the crypto actor asks the credentials agent to certify the checkpoint key for checkpoints alone,
+over request and answer topics of their own, and asks again before the certificate expires. The store's own code never
+asks. The witness's key stays pinned by its public half, as it is now.
+
+**Before the fourth step:** person's tools on `main` take their TLS from a crypto actor over the person's key files, and
+the command-line Cassini client moves to a package of its own. The fourth and fifth steps build on both.
 
 The steps, with what each changes in signed or kept state, and what the running cluster needs to take it:
 
@@ -89,7 +102,8 @@ The steps, with what each changes in signed or kept state, and what the running 
    Cassini. The attestation agent's verdicts go to the intake as records.
    - *State:* the log files and the checkpoint key on the git server's volume are already there and are kept; the
      evidence log gains the records it was missing. Nothing in the schedules repository changes.
-   - *To take it:* the crypto actor's checkpoint signature on `main`; an ordinary deployment, with no data wiped.
+   - *To take it:* the crypto actor's checkpoint signature and its certification request on `main`, with the credentials
+     agent's side; an ordinary deployment, with no data wiped.
 2. **The witness.** The attestation agent co-signs each checkpoint, and the store serves the latest co-signed one.
    - *State:* the witness's key and what it last co-signed are already on the attestation agent's volume and are
      kept. The pins, each agent's copy of the other's key, are already in the two agents' signed settings, so the seed
@@ -104,7 +118,8 @@ The steps, with what each changes in signed or kept state, and what the running 
    alone, which policy lets nobody else hear. Then the asking side the tools share, and `polar-sign`'s pushes over
    Cassini when no git repository is named.
    - *State:* the policy that lets a person hear their own answers is already in force on the cluster. Nothing
-     persisted changes. The floor is part of every agent, so every agent is rebuilt.
+     persisted changes. The floor is part of every agent, so every agent is rebuilt. The tools add no new signing with a
+     key read from a file: the person's signing they do is the signing those tools already did.
    - *To take it:* an ordinary deployment; people's tools updated on their machines.
 5. **The source-code git server, and its git client.** A second service holds source code. It takes direct
    connections, as git needs, with Polar certificates saying who and Cedar deciding each operation, and it reports
@@ -149,7 +164,10 @@ The steps, with what each changes in signed or kept state, and what the running 
 
 - **The five steps,** each taken onto `main` and deployed.
 - **The design document brought up to date on `main`.** `main`'s copy of it is behind.
-- **The crypto actor's two new signatures,** each added to `main` before the step that needs it.
+- **The crypto actor's two new signatures and the checkpoint key's certification,** each added to `main` before the
+  step that needs it.
+- **Person's tools on the crypto actor, and the command-line Cassini client in its own package,** before the fourth
+  step.
 - **The keys into custody,** once custody can hold a named key that outlives its pod.
 - **The size:** about fifteen thousand lines across the git server, the attestation agent, the scheduler observer and
   the tools, most of them tests. Each step is reviewed on its own.

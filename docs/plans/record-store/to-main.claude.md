@@ -26,9 +26,9 @@
 PAIR: `to-main.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../record-store.claude.md`. Branch store-to-main, rebased on ace-remote/main 7e43bb92 (2026-11-13); taken by
-polar-89 after review against main, then to the maintainer to clear.
+polar-89 (current session name polar-f1) after review against main, then to the maintainer to clear.
 STATUS: PROPOSAL 2026-11-13, not cleared. Behind it: maintainer "Bring the store to main" (2026-11-13).
-FLOW per bite: polar-cc prepares on a branch from main (≥ 7e43bb92; tests pass there, capped: systemd-run
+FLOW per bite: polar-cc prepares, polar-f1 (polar-89's current session) takes. On a branch from main (≥ 7e43bb92; tests pass there, capped: systemd-run
 MemoryMax=24G) → polar-89 takes onto main → deploys u7c (up.nu sandbox-local --dev, no --under-test gitlab) → next.
 
 ## DECIDED (maintainer, 2026-11-13, via the coordinator)
@@ -42,26 +42,45 @@ MemoryMax=24G) → polar-89 takes onto main → deploys u7c (up.nu sandbox-local
   polar-crypto, polar-init, polar-health, the daemon (K4 dep test); new CryptoMessages named per bite, added by polar-89
   on main ahead of it; (3) per bite: signed/persisted state changed + what a running u7c needs.
 
-## NEW CRYPTOMESSAGES (polar-89 adds on main ahead of the bite; names proposed)
+## NEW CRYPTOMESSAGES (polar-f1 adds on main ahead of the bite; names proposed). Review: polar-f1 2026-11-13, 7 points, settled here.
 Main today: CryptoMessage {Connect, ClientTls, ServerTls, SignRecord, StoreSecret, EncryptForRecipient, RegisterSecret,
 LoadSecret, ReplaceSection, UseCredential, RetrieveSecret, RoutedReply}; KeyFiles = TLS client/server pairs only.
-- B1 `SignCheckpoint { text: String, reply }` (store). Checks: `polar_log::checkpoint::Checkpoint::parse(text)` ok
-  (exactly 3 lines: origin, decimal size, base64 root, trailing \n, no extension lines; polar-log/src/checkpoint.rs
-  :83-131) AND origin == `<store origin>/<log>` for this store (acp logs.rs:144-146 `Logs::open(root, origin)`,
-  checkpoints name `origin/<log>`). Signs via `NoteSigner` (signed-note type 0x02, ECDSA P-256, DER over SHA-256 of
-  the text). Returns the signature line.
-- B2 `Cosign { text: String, time: u64, reply }` (attestation agent). Checks: Checkpoint::parse ok AND origin's store
-  prefix == the pinned store (POLAR_ATTESTATION_WITNESSED_STORE). Builds `cosignature/v1\ntime <T>\n<text>` itself
-  (checkpoint.rs:164) and signs as `Cosigner::cosign_line` (type COSIGNATURE_TYPE = b"\xffpolar.dev/cosignature/p256/v1"
-  :54; key id cosigner_key_id :152). Consistency with the last co-signed checkpoint stays in the witness actor
-  (domain), before it asks.
-- Records: `SignRecord` already on main (K1 9a2cc593); B1's attestation evidence.rs uses it.
-KEY FILES (new KeyFiles entries in polar_crypto::environment; names proposed, defaults = today's paths so u7c keys
-and pins survive): `POLAR_STORE_CHECKPOINT_KEY` default `/var/lib/polar-git-server/logs/checkpoint-key.pem` (acp:
-LOG_ROOT settings.rs:44-50 + logs.rs:48 KEY_FILE); `POLAR_WITNESS_KEY` default `<POLAR_ATTESTATION_WITNESS_ROOT>/
-witness-key.pem` (acp: attestation settings.rs:43-46 WITNESS_ROOT + witness.rs:251 KEY_FILE). Today the store makes
-its key once if absent (logs.rs test `the_checkpoint_key_is_made_once_kept_private_and_pinned`); the CryptoActor must
-keep that: make-once 0600 if absent, never replace (a new key breaks the pins).
+- B1 `SignCheckpoint { text: String, reply } -> sig line`. Checks: `polar_log::checkpoint::Checkpoint::parse(text)` ok
+  (exactly 3 lines: origin, decimal size, base64 root, trailing \n, no extensions; polar-log/src/checkpoint.rs
+  :83-131) AND origin == `<own_identity>/<log>`. ORIGIN SOURCE (point 2): the actor's own identity from its
+  certificate (own_identity). acp does the same today: supervisor.rs:266-269 `extract_own_identity(cert pem)`, with
+  fallback SERVICE_NAME (drop the fallback in the actor: no identity → refuse). Not a git-server setting. Note name
+  `<own_identity>/checkpoint` (logs.rs:50 KEY_NAME, :153). Signs via NoteSigner (type 0x02, ECDSA P-256 over SHA-256 of text).
+- B2 `Cosign { text: String, reply } -> (line, T)` (point 3). T = the actor's own clock (no caller T: backdating).
+  Checks: Checkpoint::parse ok AND origin's identity prefix == pinned store (POLAR_ATTESTATION_WITNESSED_STORE). Builds
+  `cosignature/v1\ntime <T>\n<text>` (checkpoint.rs:164); `Cosigner::cosign_line` (COSIGNATURE_TYPE :54,
+  cosigner_key_id :152). Consistency vs last co-signed stays in the witness actor (domain), before asking.
+- Records: `SignRecord` on main (K1 9a2cc593); B1 attestation evidence.rs uses it.
+KEY FILES (point 1; main: `_KEY` = a private-key PATH; acp's pins are public keys under _KEY names, unchanged):
+`POLAR_STORE_CHECKPOINT_KEY` and `POLAR_WITNESS_COSIGNING_KEY`, declared ONCE in polar-crypto's `keys` section,
+Optional, NO default there; the render sets each for its one workload in capabilities.nuon at today's path:
+polar-git-server → /var/lib/polar-git-server/logs/checkpoint-key.pem (acp LOG_ROOT settings.rs:44-50 + logs.rs:48
+KEY_FILE); attestation-agent → <POLAR_ATTESTATION_WITNESS_ROOT>/witness-key.pem (attestation settings.rs:43-46 +
+witness.rs:251). u7c keys + pins survive.
+MAKE-ONCE + CERTIFICATION (point 4).
+- acp TODAY: LogsActor::open (logs.rs:146-153) makes the key once beside the logs, owner-only, never replaced (test
+  `the_checkpoint_key_is_made_once_kept_private_and_pinned` :1318); NOT certified (logs.rs:27-28: "Its certificate
+  from the internal CA is not yet asked for: no issuance path exists for a workload's own stable key"). Witness:
+  witness.rs:284-320 `open(dir)` makes its key + holding, Damage if one without the other; pinned only.
+- PROPOSED: the CryptoActor makes each key if its file is absent (0600, never replaced), not the domain. For the
+  checkpoint key, the CryptoActor (not the domain) asks the credentials agent to certify it, for checkpoints alone
+  (cert type: cert-issuer's checkpoint certificate, main 402e7958, used today for the ledger's own key), over NEW
+  topics, names proposed `credentials.key-certification.requests` / `credentials.key-certification.replies.<identity>`
+  (constants CREDENTIALS_KEY_CERTIFICATION_{REQUESTS,REPLIES}_TOPIC), message `CertifyKey { csr_pem, purpose:
+  Checkpoint }` → `Certified { chain_pem }` | refusal; asks again before expiry. Credentials agent side + topic
+  policy added on main with B1 (polar-f1). This is NEW (acp never certified), and the maintainer's D3 "certified by
+  the credentials agent" is met by it. Witness key: stays pinned by verifier key (decision 5 names only the store key).
+
+## PREREQUISITES
+- K2b (crypto-actor.md): person CLIs get TLS from a CryptoActor over their key files; the cassini-client CLI moves to
+  its own package. Before B4 and B5 (point 5).
+- B4 adds NO new direct key-PEM signing (point 6). polar-sign / polar-running-config signing with identity.key_pem is
+  a pre-existing gap, recorded by polar-f1 in crypto-actor.md.
 
 ## ACP CODE (since merge base a4c1c984)
 polar-git-server +6967/−92 (new: logs, log_read, reply, evidence, schedules, witness .rs); attestation +2788/−41
@@ -99,4 +118,4 @@ size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 op
 polar-eden must be split out; the make-once key rule must move into the CryptoActor intact.
 
 ## OPEN
-key-file variable names (proposed above; polar-89 to confirm against main's naming).
+topic and message names for key certification (proposed above; polar-f1 to fit to main's credentials topics).
