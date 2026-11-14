@@ -28,6 +28,8 @@ license.workspace = true
 [dependencies]
 # The request/reply envelope every agent pairs a question and its answer with (docs/architecture/cassini-request-reply-protocol.md).
 polar.workspace = true
+# The schedules log's entries and the tree they make (src/schedules.rs), in the store's log format.
+polar-log.workspace = true
 rkyv.workspace = true
 serde.workspace = true
 

@@ -31,8 +31,10 @@
 //! that is not one is never appended; a checkpoint is the log's origin, size and root, signed. Admission beyond the
 //! envelope (signatures, policy) is the caller's, per log (bite 3).
 
+use polar_git_server_common::LogRead;
+use polar_git_server_common::schedules::Tree;
 use polar_log::checkpoint::{Checkpoint, NoteVerifier, open, open_signed};
-use polar_log::entry::{Entry, Leaf};
+use polar_log::entry::{Continuation, Entry, Leaf};
 use polar_log::file::{FileLog, LogError, Replayed};
 use polar_log::merkle::{Hash, consistency_proof, inclusion_proof, root};
 use polar_log::tiles::{Level, MAX_ENTRY, TILE_WIDTH, Tile, entry_bundle, hash_tile};
@@ -65,6 +67,8 @@ pub enum LogsError {
         "{path}: the co-signed checkpoint kept is not one of its log's ({why}): the log is not served"
     )]
     Kept { path: PathBuf, why: String },
+    #[error("{0}: its entries do not make a tree ({1})")]
+    Tree(String, String),
     #[error("{path}: the frame of leaf {seq} is malformed ({why}): the log is not served")]
     Malformed {
         path: PathBuf,
@@ -111,6 +115,15 @@ pub struct Logs {
     cosigned: BTreeMap<String, (String, u64)>,
     /// For each log, the digest of each entry it holds and where: so the same entry is appended once.
     seen: BTreeMap<String, std::collections::HashMap<Hash, u64>>,
+    /// For each log kept as a tree (the schedules log) the tree its entries make, once it has been asked for.
+    trees: BTreeMap<String, Tree>,
+}
+
+/// What [`Logs::append_tree`] did: the sequence of each entry appended, and each file left out, with why.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TreeAppended {
+    pub appended: Vec<u64>,
+    pub left_out: Vec<(String, String)>,
 }
 
 /// What [`Logs::append_missing`] did: the sequence of each entry appended, and each left out, with why.
@@ -188,6 +201,7 @@ impl Logs {
             logs,
             cosigned: BTreeMap::new(),
             seen,
+            trees: BTreeMap::new(),
         };
         // A kept checkpoint was checked under the witness's key when it was kept; here it must still be the store's
         // checkpoint of the log beside it, or the two are not one log's, and neither is served.
@@ -352,6 +366,8 @@ impl Logs {
         }
         let log = self.logs.get_mut(name).expect("made above");
         let seq = log.append(&leaf)?;
+        // A log kept as a tree is worked out again when next asked, whatever was appended.
+        self.trees.remove(name);
         self.seen
             .entry(name.to_string())
             .or_default()
@@ -420,6 +436,133 @@ impl Logs {
             }
         }
         Ok(done)
+    }
+
+    /// The tree the log's entries make (docs/architecture/record-store.md, "Bite 6"): empty for a log not made yet.
+    pub fn tree(&mut self, name: &str) -> Result<&Tree, LogsError> {
+        if !self.trees.contains_key(name) {
+            let mut tree = Tree::default();
+            if let Some(log) = self.logs.get(name) {
+                for seq in 0..log.size() {
+                    let leaf = log.leaf(seq)?.ok_or_else(|| {
+                        LogsError::Range(format!("{name} has no leaf {seq} below its size"))
+                    })?;
+                    tree.apply(seq, &leaf.entry)
+                        .map_err(|stop| LogsError::Tree(name.to_string(), stop.to_string()))?;
+                }
+            }
+            self.trees.insert(name.to_string(), tree);
+        }
+        Ok(&self.trees[name])
+    }
+
+    /// Appends what makes the log's tree `to`, as admitted at `now_ms` from `submitter`; nothing when it is `to` already,
+    /// so the same tree sent again appends nothing. A log with no entries yet that carries on an older one is given
+    /// `continues` first. A change that would be a leaf longer than the log carries is left out and said when `strict`
+    /// is not set (the store's start), and refuses everything, with nothing appended, when it is (a push).
+    pub fn append_tree(
+        &mut self,
+        name: &str,
+        to: &BTreeMap<String, Vec<u8>>,
+        continues: Option<&Continuation>,
+        submitter: &str,
+        now_ms: u64,
+        strict: bool,
+    ) -> Result<TreeAppended, LogsError> {
+        let mut tree = self.tree(name)?.clone();
+        let mut done = TreeAppended::default();
+        let writer = writer();
+        let mut entries = Vec::new();
+        for change in tree.changes_to(to) {
+            let entry = change.entry(&writer).encode();
+            let length = Leaf {
+                entry: entry.clone(),
+                admitted_at_ms: now_ms,
+                submitter: submitter.to_string(),
+            }
+            .encode()
+            .len();
+            if length > MAX_ENTRY {
+                if strict {
+                    return Err(LogsError::Tree(
+                        change.path().to_string(),
+                        LogsError::TooLong(length).to_string(),
+                    ));
+                }
+                done.left_out.push((
+                    change.path().to_string(),
+                    LogsError::TooLong(length).to_string(),
+                ));
+                continue;
+            }
+            entries.push((change, entry));
+        }
+        if entries.is_empty() {
+            return Ok(done);
+        }
+        if let Some(continues) = continues
+            && self.logs.get(name).is_none_or(|log| log.size() == 0)
+        {
+            done.appended.push(self.append(
+                name,
+                &continues.entry(&writer).encode(),
+                submitter,
+                now_ms,
+            )?);
+        }
+        for (change, entry) in entries {
+            done.appended
+                .push(self.append(name, &entry, submitter, now_ms)?);
+            tree.change(&change);
+        }
+        self.trees.insert(name.to_string(), tree);
+        Ok(done)
+    }
+
+    /// What a reader of the log is answered from `from`: the latest co-signed checkpoint and the leaves from there up to
+    /// its size, as many as `limit` bytes carry (one at least), never a leaf past it. A log the witness has never
+    /// co-signed is answered with `own`, its checkpoint now as the crypto actor signed it for the store alone
+    /// ([`LogsMessage::ReadFrom`]), marked so; with none, not now.
+    pub fn read_from(&self, name: &str, from: u64, limit: usize, own: Option<String>) -> LogRead {
+        let (checkpoint, size, witnessed) = match (self.cosigned.get(name), own) {
+            (Some((note, size)), _) => (note.clone(), *size, true),
+            (None, Some(note)) => (note, self.logs.get(name).map_or(0, FileLog::size), false),
+            (None, None) => {
+                return LogRead::NotNow {
+                    why: format!(
+                        "{name} is not witnessed yet, and the store's own checkpoint is not signed"
+                    ),
+                };
+            }
+        };
+        if from > size {
+            return LogRead::Refused {
+                why: format!("{name} is answered to {size} leaves, and {from} is past them"),
+            };
+        }
+        let mut leaves = Vec::new();
+        let mut carried = checkpoint.len();
+        for seq in from..size {
+            let leaf = match self.leaf(name, seq) {
+                Ok(Some(leaf)) => leaf.encode(),
+                Ok(None) => {
+                    return LogRead::NotNow {
+                        why: format!("{name} has no leaf {seq} below its checkpoint's size"),
+                    };
+                }
+                Err(e) => return LogRead::NotNow { why: e.to_string() },
+            };
+            carried = carried.saturating_add(leaf.len());
+            if carried > limit && !leaves.is_empty() {
+                break;
+            }
+            leaves.push(leaf);
+        }
+        LogRead::Entries {
+            checkpoint,
+            leaves,
+            witnessed,
+        }
     }
 
     /// How many leaves the log holds.
@@ -532,8 +675,29 @@ pub fn origin_of(verifier_key: &str) -> Option<String> {
     (!identity.is_empty()).then(|| identity.to_string())
 }
 
+/// The writer the store names in the entries it makes: its platform version.
+pub fn writer() -> String {
+    format!("{} {}", polar_version::PLATFORM, polar_version::TARGET)
+}
+
 /// What the logs are asked: the one owner of the store's logs, so nothing else writes them.
 pub enum LogsMessage {
+    /// Appends what makes the log's tree `to`, as admitted now, as [`Logs::append_tree`] does.
+    AppendTree {
+        log: String,
+        to: BTreeMap<String, Vec<u8>>,
+        continues: Option<Continuation>,
+        submitter: String,
+        strict: bool,
+        reply: ractor::RpcReplyPort<Result<TreeAppended, String>>,
+    },
+    /// What a reader is answered from a sequence, as [`Logs::read_from`] gives it.
+    ReadFrom {
+        log: String,
+        from: u64,
+        limit: usize,
+        reply: ractor::RpcReplyPort<LogRead>,
+    },
     /// Appends an entry to a log unless it holds it already, as admitted now: its sequence, and whether it is new.
     AppendOnce {
         log: String,
@@ -590,6 +754,9 @@ pub enum LogsMessage {
 pub fn governing_repo(log: &str) -> Option<&'static str> {
     match log {
         crate::evidence::EVIDENCE_LOG => Some(polar_git_server_common::EVIDENCE_REPO),
+        polar_git_server_common::schedules::SCHEDULES_LOG => {
+            Some(polar_git_server_common::SCHEDULES_REPO)
+        }
         _ => None,
     }
 }
@@ -664,6 +831,45 @@ impl ractor::Actor for LogsActor {
                     logs.append_missing(&log, &entries, &submitter, now_ms())
                         .map_err(|e| e.to_string()),
                 );
+            }
+            LogsMessage::AppendTree {
+                log,
+                to,
+                continues,
+                submitter,
+                strict,
+                reply,
+            } => {
+                let _ = reply.send(
+                    logs.append_tree(&log, &to, continues.as_ref(), &submitter, now_ms(), strict)
+                        .map_err(|e| e.to_string()),
+                );
+            }
+            LogsMessage::ReadFrom {
+                log,
+                from,
+                limit,
+                reply,
+            } => {
+                // Until the witness has co-signed the log, the store's own checkpoint, which the crypto actor signs.
+                let own = if logs.cosigned(&log).is_some() {
+                    None
+                } else {
+                    match logs.checkpoint_text(&log) {
+                        Ok(text) => match state.signer.sign_line(text.clone()).await {
+                            Ok(line) => Some(format!("{text}\n{line}")),
+                            Err(e) => {
+                                tracing::warn!(%log, "the store's own checkpoint was not signed: {e}");
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            let _ = reply.send(LogRead::Refused { why: e.to_string() });
+                            return Ok(());
+                        }
+                    }
+                };
+                let _ = reply.send(logs.read_from(&log, from, limit, own));
             }
             LogsMessage::Cosigned { log, reply } => {
                 let _ = reply.send(logs.cosigned(&log).map(str::to_string));
@@ -918,7 +1124,248 @@ mod tests {
             governing_repo(crate::evidence::EVIDENCE_LOG),
             Some(polar_git_server_common::EVIDENCE_REPO)
         );
-        assert_eq!(governing_repo("schedules"), None);
+        assert_eq!(
+            governing_repo(polar_git_server_common::schedules::SCHEDULES_LOG),
+            Some(polar_git_server_common::SCHEDULES_REPO)
+        );
+        assert_eq!(governing_repo("deployment"), None);
+    }
+
+    fn files(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        pairs
+            .iter()
+            .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn moved_in() -> Continuation {
+        Continuation {
+            old_kind: "git".into(),
+            alg: "sha1".into(),
+            digest: vec![1; 20],
+            count: 4,
+        }
+    }
+
+    const ALICE: &str = "alice";
+
+    /// docs/architecture/record-store.md, "Bite 6": a tree is appended as the changes that make the log's tree it, after
+    /// the continuation when the log is new; the same tree again appends nothing; a file removed and pushed again is a
+    /// new entry; and the tree outlives the store's restart.
+    #[test]
+    fn a_tree_is_appended_as_its_changes_once_and_a_file_removed_then_added_again_is_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        let first = files(&[("permanent/a/configuration.dhall", "1"), ("README.md", "r")]);
+        let done = logs
+            .append_tree("schedules", &first, Some(&moved_in()), ORIGIN, 1, false)
+            .unwrap();
+        assert_eq!(done.appended, vec![0, 1, 2]);
+        let continuation =
+            Entry::decode(&logs.leaf("schedules", 0).unwrap().unwrap().entry).unwrap();
+        assert_eq!(continuation.kind, polar_log::entry::CONTINUATION);
+        assert_eq!(logs.tree("schedules").unwrap().files(), &first);
+
+        let again = logs
+            .append_tree("schedules", &first, Some(&moved_in()), ALICE, 2, true)
+            .unwrap();
+        assert_eq!(
+            again,
+            TreeAppended::default(),
+            "the same tree appends nothing"
+        );
+
+        let without = files(&[("README.md", "r")]);
+        assert_eq!(
+            logs.append_tree("schedules", &without, None, ALICE, 3, true)
+                .unwrap()
+                .appended,
+            vec![3]
+        );
+        assert_eq!(
+            logs.append_tree("schedules", &first, Some(&moved_in()), ALICE, 4, true)
+                .unwrap()
+                .appended,
+            vec![4],
+            "the file again is a new entry, and a log with entries is not continued again"
+        );
+        let leaf = logs.leaf("schedules", 4).unwrap().unwrap();
+        assert_eq!(leaf.submitter, ALICE);
+        drop(logs);
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        assert_eq!(logs.tree("schedules").unwrap().files(), &first);
+        assert_eq!(logs.size("schedules").unwrap(), 5);
+    }
+
+    /// A file too long for a leaf refuses a push whole, with nothing appended; at the store's start it is left out and
+    /// said, and the rest is appended.
+    #[test]
+    fn a_file_too_long_refuses_a_push_whole_and_is_left_out_at_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        let mut tree = files(&[("a", "1")]);
+        tree.insert("big".into(), vec![0; MAX_ENTRY]);
+        assert!(matches!(
+            logs.append_tree("schedules", &tree, None, ALICE, 1, true),
+            Err(LogsError::Tree(path, _)) if path == "big"
+        ));
+        assert!(logs.size("schedules").is_err(), "nothing was appended");
+        let done = logs
+            .append_tree("schedules", &tree, None, ORIGIN, 1, false)
+            .unwrap();
+        assert_eq!(done.appended, vec![0]);
+        assert_eq!(done.left_out.len(), 1);
+        assert_eq!(done.left_out[0].0, "big");
+        assert_eq!(
+            logs.tree("schedules").unwrap().files(),
+            &files(&[("a", "1")])
+        );
+    }
+
+    /// A file whose leaf is exactly as long as the log carries is taken.
+    #[test]
+    fn a_file_whose_leaf_is_exactly_the_longest_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        let length = |n: usize| {
+            Leaf {
+                entry: polar_git_server_common::schedules::Change::File {
+                    path: "big".into(),
+                    bytes: vec![0; n],
+                }
+                .entry(&writer())
+                .encode(),
+                admitted_at_ms: 1,
+                submitter: ALICE.to_string(),
+            }
+            .encode()
+            .len()
+        };
+        let n = (MAX_ENTRY - 512..MAX_ENTRY)
+            .find(|n| length(*n) == MAX_ENTRY)
+            .unwrap();
+        let tree = BTreeMap::from([("big".to_string(), vec![0; n])]);
+        assert_eq!(
+            logs.append_tree("schedules", &tree, None, ALICE, 1, true)
+                .unwrap()
+                .appended,
+            vec![0]
+        );
+    }
+
+    /// An entry appended some other way is in the tree when it is next asked for, and a log whose entries do not make
+    /// a tree says so rather than giving one.
+    #[test]
+    fn the_tree_follows_every_append_and_a_log_that_makes_none_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        logs.append_tree("schedules", &files(&[("a", "1")]), None, ALICE, 1, true)
+            .unwrap();
+        let change = polar_git_server_common::schedules::Change::File {
+            path: "b".into(),
+            bytes: b"2".to_vec(),
+        };
+        logs.append("schedules", &change.entry("w").encode(), ALICE, 2)
+            .unwrap();
+        assert_eq!(
+            logs.tree("schedules").unwrap().files(),
+            &files(&[("a", "1"), ("b", "2")])
+        );
+        logs.append("other", &entry(0), ALICE, 1).unwrap();
+        assert!(matches!(logs.tree("other"), Err(LogsError::Tree(..))));
+    }
+
+    /// docs/architecture/record-store.md, "Bite 6": a reader is given the leaves up to the witnessed checkpoint and none
+    /// past it, as many as its message carries, at least one; before the witness ever co-signed, the store's own
+    /// checkpoint, marked so; and asking from past the checkpoint is refused.
+    #[test]
+    fn a_reader_is_given_the_leaves_up_to_the_witnessed_checkpoint_paged_and_none_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut logs = Logs::open(dir.path(), ORIGIN, &signer().verifier_key()).unwrap();
+        let (cosigner, pinned) = witness();
+        for n in 0..3 {
+            logs.append("schedules", &entry(n), AGENT, 1).unwrap();
+        }
+        let LogRead::Entries {
+            checkpoint,
+            leaves,
+            witnessed: false,
+        } = logs.read_from("schedules", 0, usize::MAX, Some(signed(&logs, "schedules")))
+        else {
+            panic!("a log never co-signed is answered with the store's own checkpoint");
+        };
+        assert_eq!(leaves.len(), 3);
+        let store = NoteVerifier::parse(&signer().verifier_key()).unwrap();
+        let (text, _) = open(&checkpoint, std::slice::from_ref(&store)).unwrap();
+        assert_eq!(Checkpoint::parse(&text).unwrap().size, 3);
+        assert!(
+            matches!(
+                logs.read_from("schedules", 0, usize::MAX, None),
+                LogRead::NotNow { .. }
+            ),
+            "the store's own checkpoint is the crypto actor's to sign"
+        );
+        let submitted = submit(&logs, "schedules", 0);
+        let line = cosign(&cosigner, &submitted.checkpoint, 100);
+        logs.keep_cosigned("schedules", &submitted.checkpoint, &line, &pinned)
+            .unwrap();
+        logs.append("schedules", &entry(3), AGENT, 1).unwrap();
+        let served = logs.cosigned("schedules").unwrap().to_string();
+        let all: Vec<Vec<u8>> = (0..3)
+            .map(|seq| logs.leaf("schedules", seq).unwrap().unwrap().encode())
+            .collect();
+        assert_eq!(
+            logs.read_from("schedules", 0, usize::MAX, None),
+            LogRead::Entries {
+                checkpoint: served.clone(),
+                leaves: all.clone(),
+                witnessed: true
+            },
+            "the fourth leaf is not witnessed yet"
+        );
+        assert_eq!(
+            logs.read_from("schedules", 1, served.len() + all[1].len(), None),
+            LogRead::Entries {
+                checkpoint: served.clone(),
+                leaves: vec![all[1].clone()],
+                witnessed: true
+            }
+        );
+        assert_eq!(
+            logs.read_from(
+                "schedules",
+                1,
+                served.len() + all[1].len() + all[2].len(),
+                None
+            ),
+            LogRead::Entries {
+                checkpoint: served.clone(),
+                leaves: all[1..].to_vec(),
+                witnessed: true
+            },
+            "a limit met exactly carries the leaf that meets it"
+        );
+        assert_eq!(
+            logs.read_from("schedules", 1, 0, None),
+            LogRead::Entries {
+                checkpoint: served.clone(),
+                leaves: vec![all[1].clone()],
+                witnessed: true
+            },
+            "one leaf at least"
+        );
+        assert_eq!(
+            logs.read_from("schedules", 3, usize::MAX, None),
+            LogRead::Entries {
+                checkpoint: served,
+                leaves: vec![],
+                witnessed: true
+            }
+        );
+        assert!(matches!(
+            logs.read_from("schedules", 4, usize::MAX, None),
+            LogRead::Refused { .. }
+        ));
     }
 
     #[test]

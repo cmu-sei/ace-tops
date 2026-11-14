@@ -203,12 +203,16 @@ impl Witnessing {
         })
     }
 
-    /// Records that `log`'s co-signed checkpoint of `size` leaves is kept.
-    pub fn kept(&mut self, log: &str, size: u64) {
-        self.believed.insert(log.to_string(), size);
+    /// Records that `log`'s co-signed checkpoint of `size` leaves is kept: whether it covers more than the one before.
+    pub fn kept(&mut self, log: &str, size: u64) -> bool {
+        let grew = self
+            .believed
+            .insert(log.to_string(), size)
+            .is_none_or(|was| was < size);
         if self.away.insert(log.to_string(), false) == Some(true) {
             info!(log, size, "the witness co-signs again");
         }
+        grew
     }
 
     /// What an answer published by `published_by` asks: the log it is about and the step, or nothing (it is not the
@@ -337,6 +341,24 @@ pub struct WitnessState {
 }
 
 impl WitnessState {
+    /// Says that `log` is witnessed to `size` leaves, so its readers read what they may now see.
+    fn announce(&self, log: &str, size: u64) {
+        let event = polar_git_server_common::LogWitnessed {
+            log: log.to_string(),
+            size,
+        };
+        if let Err(e) = self
+            .client
+            .send_message(cassini_client::TcpClientMessage::publish(
+                polar_git_server_common::LOG_WITNESSED_TOPIC.to_string(),
+                polar_git_server_common::encode_witnessed(&event),
+                None,
+            ))
+        {
+            warn!(log, size, error = %e, "cannot say the log is witnessed");
+        }
+    }
+
     /// Signs `log`'s checkpoint now and brings it to the witness, from `old`.
     async fn submit(&mut self, log: &str, old: u64, retried: bool) {
         let submission = match ractor::call!(self.logs, |reply| LogsMessage::Submission {
@@ -447,7 +469,11 @@ impl ractor::Actor for WitnessActor {
                             witness,
                             reply
                         }) {
-                            Ok(Ok(size)) => state.witnessing.kept(&log, size),
+                            Ok(Ok(size)) => {
+                                if state.witnessing.kept(&log, size) {
+                                    state.announce(&log, size);
+                                }
+                            }
                             Ok(Err(why)) => {
                                 error!(log, %why, "the witness's co-signature is not kept")
                             }
@@ -571,6 +597,88 @@ mod tests {
         );
         w.kept("evidence", 6);
         assert!(!w.away("evidence"), "co-signed again, it is back");
+    }
+
+    /// What a Cassini client is asked to publish, kept by topic.
+    struct Published;
+
+    #[ractor::async_trait]
+    impl ractor::Actor for Published {
+        type Msg = cassini_client::TcpClientMessage;
+        type State = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>>;
+        type Arguments = Self::State;
+        async fn pre_start(
+            &self,
+            _: ractor::ActorRef<Self::Msg>,
+            kept: Self::State,
+        ) -> Result<Self::State, ractor::ActorProcessingErr> {
+            Ok(kept)
+        }
+        async fn handle(
+            &self,
+            _: ractor::ActorRef<Self::Msg>,
+            message: Self::Msg,
+            kept: &mut Self::State,
+        ) -> Result<(), ractor::ActorProcessingErr> {
+            if let cassini_client::TcpClientMessage::Publish { topic, payload, .. } = message {
+                kept.lock().unwrap().push((topic, payload));
+            }
+            Ok(())
+        }
+    }
+
+    /// The announcement that a log is witnessed further names the log and its size, on the topic readers hear.
+    #[tokio::test]
+    async fn a_log_witnessed_further_is_announced_with_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (client, _) = ractor::Actor::spawn(None, Published, kept.clone())
+            .await
+            .unwrap();
+        let (logs, _) = ractor::Actor::spawn(
+            None,
+            crate::logs::LogsActor,
+            crate::logs::LogsArgs {
+                root: dir.path().to_path_buf(),
+                origin: ORIGIN.into(),
+                signer: std::sync::Arc::new(crate::logs::testing::KeySigner::new(ORIGIN)),
+            },
+        )
+        .await
+        .unwrap();
+        let state = WitnessState {
+            witnessing: pinned(),
+            logs,
+            client,
+        };
+        state.announce("schedules", 21);
+        for _ in 0..100 {
+            if !kept.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let kept = kept.lock().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0, polar_git_server_common::LOG_WITNESSED_TOPIC);
+        assert_eq!(
+            polar_git_server_common::decode_witnessed(&kept[0].1).unwrap(),
+            polar_git_server_common::LogWitnessed {
+                log: "schedules".into(),
+                size: 21
+            }
+        );
+    }
+
+    /// A kept co-signature is announced only when it covers more than the one before, so readers are told once per
+    /// growth (docs/architecture/record-store.md, "Bite 6").
+    #[test]
+    fn a_kept_co_signature_is_news_only_when_it_covers_more() {
+        let mut w = pinned();
+        assert!(w.kept("evidence", 5));
+        assert!(!w.kept("evidence", 5));
+        assert!(w.kept("evidence", 6));
+        assert!(w.kept("schedules", 1), "each log is its own");
     }
 
     /// A co-signature is kept only when it answers the submission in flight, about the checkpoint submitted, from the

@@ -7496,6 +7496,7 @@ name = "polar-git-server-common"
 version = "1.0.0"
 dependencies = [
  "polar",
+ "polar-log",
  "proptest",
  "rkyv",
  "serde",
@@ -7788,10 +7789,12 @@ dependencies = [
  "cassini-client",
  "cassini-types",
  "notify",
+ "p256 0.14.0",
  "polar",
  "polar-agent-builder",
  "polar-env",
  "polar-git-server-common",
+ "polar-log",
  "polar-router",
  "polar-scheduler-common",
  "polar-scudo",

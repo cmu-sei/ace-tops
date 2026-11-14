@@ -203,6 +203,10 @@ impl Harness {
         )
         .await
         .unwrap();
+        // As the supervisor does before it serves: the schedules log holds what polar-schedules' main holds.
+        polar_git_server::schedules::catch_up(&store, &logs, "polar-git-server.test")
+            .await
+            .unwrap();
         let app = router(ServerState {
             store,
             authorizer: acl.clone(),
@@ -1026,10 +1030,15 @@ async fn a_polar_certificate_cannot_pose_as_the_deployment_pki() {
 impl Harness {
     /// Every leaf of the store's evidence log, in order; none when nothing was appended.
     async fn logged(&self) -> Vec<polar_log::entry::Leaf> {
+        self.logged_in("evidence").await
+    }
+
+    /// Every leaf of the store's log `log`, in order; none when nothing was appended.
+    async fn logged_in(&self, log: &str) -> Vec<polar_log::entry::Leaf> {
         let mut leaves = Vec::new();
         loop {
             match ractor::call!(self.logs, |reply| LogsMessage::Leaf {
-                log: "evidence".to_string(),
+                log: log.to_string(),
                 seq: leaves.len() as u64,
                 reply,
             })
@@ -1169,10 +1178,12 @@ async fn a_reader_of_the_evidence_repository_reads_the_evidence_log_as_tiles() {
     for absent in [
         "/logs/evidence/tile/0/1",
         "/logs/evidence/tile/entries/001.p/45",
-        "/logs/schedules/checkpoint",
+        "/logs/deployment/checkpoint",
     ] {
         assert_eq!(h.get(&eve, absent).await.0, 404, "{absent}");
     }
+    // The schedules log is polar-schedules' readers' (record-store.md, "Bite 6"), and eve is not one.
+    assert_eq!(h.get(&eve, "/logs/schedules/checkpoint").await.0, 403);
 
     let mallory = client(&h.ca, h.dir.path(), "mallory");
     assert_eq!(h.get(&mallory, "/logs/evidence/checkpoint").await.0, 403);
@@ -1230,4 +1241,78 @@ fn submission_signer(note: &str) -> String {
         .next()
         .unwrap()
         .to_string()
+}
+
+/// docs/architecture/record-store.md, "Bite 6": the store's start fills the schedules log with polar-schedules' main; a
+/// push appends what it changes, as the pusher's, before `main` moves, a file removed among it; and a push that brings a
+/// link is refused, with nothing appended and `main` where it was.
+#[tokio::test]
+async fn a_push_to_the_schedules_repository_appends_what_it_changes_to_the_schedules_log() {
+    use polar_git_server_common::schedules::{Change, replay};
+    let h = Harness::start().await;
+    let change = |leaf: &polar_log::entry::Leaf| {
+        Change::of(&polar_log::entry::Entry::decode(&leaf.entry).unwrap())
+            .unwrap()
+            .unwrap()
+    };
+    let started = h.logged_in("schedules").await;
+    assert_eq!(started.len(), 2, "the continuation, and the seeded file");
+    assert_eq!(
+        change(&started[1]),
+        Change::File {
+            path: "credentials.dhall".into(),
+            bytes: b"{ seeded = True }".to_vec()
+        }
+    );
+
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "a").await;
+    assert!(ok, "{text}");
+    h.commit(&repo, "new.dhall", "1").await;
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+        .await;
+    assert!(ok, "{text}");
+    let pushed = h.logged_in("schedules").await;
+    assert_eq!(pushed.len(), 3);
+    assert_eq!(pushed[2].submitter, "alice");
+
+    std::fs::remove_file(repo.join("credentials.dhall")).unwrap();
+    h.commit(&repo, "new.dhall", "2").await;
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+        .await;
+    assert!(ok, "{text}");
+    let pushed = h.logged_in("schedules").await;
+    assert_eq!(
+        pushed[3..].iter().map(change).collect::<Vec<_>>(),
+        vec![
+            Change::Removal {
+                path: "credentials.dhall".into()
+            },
+            Change::File {
+                path: "new.dhall".into(),
+                bytes: b"2".to_vec()
+            }
+        ]
+    );
+    let (tree, stop) = replay(&pushed.iter().map(|l| l.encode()).collect::<Vec<_>>());
+    assert_eq!(stop, None);
+    assert_eq!(
+        tree.files(),
+        &[("new.dhall".to_string(), b"2".to_vec())].into()
+    );
+
+    std::os::unix::fs::symlink("new.dhall", repo.join("l.dhall")).unwrap();
+    h.commit(&repo, "other.dhall", "3").await;
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+        .await;
+    assert!(!ok, "a link is refused: {text}");
+    assert!(text.contains("link"), "{text}");
+    assert_eq!(h.logged_in("schedules").await.len(), 5, "nothing appended");
+    let obs = client(&h.ca, h.dir.path(), "polar-scheduler-observer");
+    let (ok, dest, text) = h.clone_as(Some(&obs), "obs").await;
+    assert!(ok, "{text}");
+    assert!(!dest.join("other.dhall").exists(), "main did not move");
 }

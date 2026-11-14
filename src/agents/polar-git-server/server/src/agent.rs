@@ -75,6 +75,20 @@ impl PolarAgent for GitServer {
             "what a repository's main holds, for the scheduler observer, on its own topic",
         )
         .because(&[Cause::Topic(polar_git_server_common::READ_REQUESTS_TOPIC)]),
+        TopicDecl::subscribe(
+            polar_git_server_common::LOG_READ_REQUESTS_TOPIC,
+            "a request for a log's leaves from a sequence, from an agent that may read its repository (record-store.md, \"Bite 6\")",
+        ),
+        TopicDecl::publish(
+            polar_git_server_common::SCHEDULER_OBSERVER_LOG_READ_REPLIES_TOPIC,
+            "the schedules log's witnessed checkpoint and leaves, for the scheduler observer, on its own topic",
+        )
+        .because(&[Cause::Topic(polar_git_server_common::LOG_READ_REQUESTS_TOPIC)]),
+        TopicDecl::publish(
+            polar_git_server_common::LOG_WITNESSED_TOPIC,
+            "that a log's co-signed checkpoint grew (log, size), so its readers read what they may now see",
+        )
+        .because(&[Cause::Topic(attestation_common::witness::STORE_WITNESS_REPLIES_TOPIC)]),
     ];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
@@ -85,10 +99,10 @@ impl PolarAgent for GitServer {
          repositories, each checkpoint signed by its crypto actor, and serves them to people as C2SP tiles. In a cluster \
          it also takes signed evidence records on polar-git-evidence-requests from workloads that may write \
          polar-evidence, verifies each, appends it to the evidence log, commits it there itself and answers on the \
-         sender's own topic, so no agent pushes with git; and it answers requests on \
-         polar-git-read-requests for what a repository's main holds, from agents that may read it, on each reader's own \
-         topic, so no agent reads with git. Repositories are created and seeded from the configuration the first time, and \
-         never overwritten after that.",
+         sender's own topic, so no agent pushes with git; it answers requests on polar-git-read-requests for what a \
+         repository's main holds, from agents that may read it, on each reader's own topic, so no agent reads with git; \
+         and it answers requests on polar-log-read-requests for a log's witnessed leaves, on each reader's own topic. \
+         Repositories are created and seeded from the configuration the first time, and never overwritten after that.",
     );
 
     async fn start(configured: Configured) -> Result<(), StartError> {

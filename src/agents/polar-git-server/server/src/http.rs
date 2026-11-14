@@ -398,6 +398,35 @@ async fn receive_pack(
                 }
             }
         }
+        // So too what a push makes `main` of polar-schedules: the changes that make the schedules log's tree its tree
+        // are appended as the pusher's, before any ref moves, and a tree the log does not take refuses the push
+        // (docs/architecture/record-store.md, "Bite 6").
+        if name == polar_git_server_common::SCHEDULES_REPO
+            && let Some(logs) = &logs
+            && let Some(tree) = crate::schedules::pushed_tree(quarantined, &updates)?
+        {
+            let appended = runtime.block_on(async {
+                ractor::call!(logs, |reply| crate::logs::LogsMessage::AppendTree {
+                    log: polar_git_server_common::schedules::SCHEDULES_LOG.to_string(),
+                    to: tree,
+                    continues: None,
+                    submitter: pusher.clone(),
+                    strict: true,
+                    reply,
+                })
+            });
+            match appended {
+                Ok(Ok(_)) => {}
+                Ok(Err(why)) => {
+                    warn!(who = %pusher, repo = %name, %why, "push refused: the schedules log did not take it");
+                    return Err(format!("the store's schedules log did not take it: {why}"));
+                }
+                Err(e) => {
+                    warn!(who = %pusher, repo = %name, error = %e, "push refused: the store's logs did not answer");
+                    return Err("the store's schedules log did not answer; push again".to_string());
+                }
+            }
+        }
         Ok(())
     };
     let (out, made) = match state.runner.receive_pack(&path, body, judge).await {

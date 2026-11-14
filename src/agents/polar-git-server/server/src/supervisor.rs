@@ -89,6 +89,11 @@ pub enum GitServerSupervisorMessage {
         payload: Vec<u8>,
         published_by: Option<String>,
     },
+    /// A read of a log sent on Cassini, for the log reader.
+    LogRead {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
     /// The witness's answer to a checkpoint the store submitted.
     WitnessAnswer {
         payload: Vec<u8>,
@@ -112,6 +117,8 @@ pub struct GitServerSupervisorState {
     intake: Option<ractor::ActorRef<IntakeMessage>>,
     /// Answers reads; only with Cassini.
     reader: Option<ractor::ActorRef<ReadMessage>>,
+    /// Answers reads of a log; only with Cassini.
+    log_reader: Option<ractor::ActorRef<crate::log_read::LogReadMessage>>,
     /// Brings each log's checkpoints to the witness; only with Cassini.
     witness: Option<ractor::ActorRef<crate::witness::WitnessMessage>>,
 }
@@ -161,6 +168,18 @@ impl Actor for GitServerSupervisor {
                     },
                 );
                 let deliver_to = myself.clone();
+                let log_reads = Subscription::new(
+                    polar_git_server_common::LOG_READ_REQUESTS_TOPIC,
+                    move |incoming| {
+                        if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::LogRead {
+                            payload: incoming.payload,
+                            published_by: incoming.published_by,
+                        }) {
+                            warn!("failed to hand a log read to the supervisor: {e}");
+                        }
+                    },
+                );
+                let deliver_to = myself.clone();
                 let witnessed = Subscription::new(
                     attestation_common::witness::STORE_WITNESS_REPLIES_TOPIC,
                     move |incoming| {
@@ -178,6 +197,7 @@ impl Actor for GitServerSupervisor {
                     })
                     .with_subscription(records)
                     .with_subscription(reads)
+                    .with_subscription(log_reads)
                     .with_subscription(witnessed)
                     .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
                     .into_configured(configured)
@@ -253,6 +273,10 @@ impl Actor for GitServerSupervisor {
         // The evidence log holds every record polar-evidence holds: what a push took while the server kept no log is
         // brought in now, as the store's.
         crate::evidence::catch_up(&store, &logs, &origin).await?;
+        // Before anything is served or pushed: the schedules log holds what polar-schedules' main holds.
+        crate::schedules::catch_up(&store, &logs, &origin)
+            .await
+            .map_err(|e| format!("the schedules log cannot be brought to polar-schedules: {e}"))?;
         let mut notifiers: Vec<Arc<dyn Notifier>> =
             vec![Arc::new(PushLog::new(root.join("push-log.jsonl")))];
         if let Some(client) = &tcp_client {
@@ -309,6 +333,27 @@ impl Actor for GitServerSupervisor {
                 .await
                 .map_err(|e| format!("the reader did not start: {e}"))?;
                 Some(reader)
+            }
+            None => None,
+        };
+        let log_reader = match &tcp_client {
+            Some(client) => {
+                let (log_reader, _) = Actor::spawn_linked(
+                    Some(format!("{SERVICE_NAME}.log-read")),
+                    crate::log_read::LogReadActor,
+                    crate::log_read::LogReadState {
+                        reader: crate::log_read::LogReader {
+                            logs: logs.clone(),
+                            authorizer: acl.clone(),
+                            limit: READ_LIMIT,
+                        },
+                        client: client.as_actor_ref().clone(),
+                    },
+                    myself.get_cell(),
+                )
+                .await
+                .map_err(|e| format!("the log reader did not start: {e}"))?;
+                Some(log_reader)
             }
             None => None,
         };
@@ -373,6 +418,7 @@ impl Actor for GitServerSupervisor {
             listener: Some(Listener { stop, active, task }),
             intake,
             reader,
+            log_reader,
             witness,
         })
     }
@@ -443,6 +489,20 @@ impl Actor for GitServerSupervisor {
                     }
                 }
                 None => warn!("a read arrived with no reader to answer it"),
+            },
+            GitServerSupervisorMessage::LogRead {
+                payload,
+                published_by,
+            } => match &state.log_reader {
+                Some(reader) => {
+                    if let Err(e) = reader.cast(crate::log_read::LogReadMessage::Take {
+                        payload,
+                        published_by,
+                    }) {
+                        warn!("failed to hand a log read to the log reader: {e}");
+                    }
+                }
+                None => warn!("a log read arrived with no reader to answer it"),
             },
             GitServerSupervisorMessage::WitnessAnswer {
                 payload,
