@@ -164,6 +164,27 @@ B4 (store-bite-4, 2026-11-14), from acp 3c6938fa + b1e7f270:
 - Finding: cassini-broker's a_client_that_publishes_and_never_acknowledges_is_spared_once_and_then_ended failed once
   under the full workspace run ("the stopped broker still holds 1 names") and passed 3/3 alone; timing under load,
   not B4's code (B4 touches only topic_gate::ask's facts). Reported, not changed.
+RACE (polar-f1's bite-4 review, 2026-11-14), fixed on store-bite-4 (covers B3's push hook, on main, and B4's intake):
+- Two writers of polar-schedules + its log, unserialized: SectionIntake::add (read main T0, append T0+section,
+  put_file) and receive_pack's hook (append tree(P) in the judge, then gix-serve moves the ref). (1) push between the
+  intake's read and append → log reverts P while git keeps P+section; (2) section before a push from an older clone →
+  the hook logged P' (dropping the section) and the ref CAS then failed, log ahead; (3) any ref update failing after
+  the hook's append (non-ff race, ref lock) → log ahead of git.
+- Fix: RepoStore::writing(name) (per-repo tokio Mutex, FIFO, shared by every clone of the one store; writers_waiting
+  for tests/diagnostics). Held by receive_pack (every repo) from before the judge until refs moved or the log is put
+  back, and by SectionIntake::add from reading main through put_file. Under it the intake's `to` is the main it commits
+  on. The hook re-checks `main` == the client's old before appending (http.rs main_is), so a stale push is refused
+  before anything is logged. If the hook appended and the push then did not move main (Err or no commands made), or
+  put_file fails after the intake's append, schedules::catch_up puts the log back to git main (appends the reverting
+  changes, as the writer's): a log cannot drop a leaf, so this is the only way back; it never stays ahead.
+- Tests (e2e.rs): push in flight then section; section then a push from before it (refused, section kept); push with
+  main.lock present (log put back); 6 concurrent rounds. First three fail on the old writers; the rounds test did not
+  reproduce the race on the old code (timing), kept as a regression guard.
+- Evidence repo: receive_pack now holds the same lock for it; the evidence intake's add_file does not take it. A record
+  logged by a push whose ref then fails stays in the log only (log ⊇ repo is that log's stated invariant; catch_up
+  covers the other direction). Left as is.
+- acp has the same race (its schedules.rs/http.rs are the source of this port); acp's merge of main resolves it by
+  taking main's version of these files.
 
 ## RISKS
 size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching

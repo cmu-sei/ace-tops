@@ -108,6 +108,9 @@ struct Harness {
     notes: Arc<Recorder>,
     stop: Arc<Notify>,
     logs: ractor::ActorRef<LogsMessage>,
+    /// The store the server writes, shared with the section intake: one writer of a repository at a time.
+    store: RepoStore,
+    intake: Arc<polar_git_server::schedules::SectionIntake>,
 }
 
 /// The pipeline's certificate, and another's under its own CA. An RSA key is slow to make, so each is made once.
@@ -207,8 +210,14 @@ impl Harness {
         polar_git_server::schedules::catch_up(&store, &logs, "polar-git-server.test")
             .await
             .unwrap();
+        let intake = Arc::new(polar_git_server::schedules::SectionIntake {
+            store: store.clone(),
+            authorizer: acl.clone(),
+            logs: logs.clone(),
+            notifier: notes.clone(),
+        });
         let app = router(ServerState {
-            store,
+            store: store.clone(),
             authorizer: acl.clone(),
             runtime: acl,
             runner: GitRunner::default(),
@@ -254,6 +263,8 @@ impl Harness {
             notes,
             stop,
             logs,
+            store,
+            intake,
         }
     }
 
@@ -1315,4 +1326,208 @@ async fn a_push_to_the_schedules_repository_appends_what_it_changes_to_the_sched
     let (ok, dest, text) = h.clone_as(Some(&obs), "obs").await;
     assert!(ok, "{text}");
     assert!(!dest.join("other.dhall").exists(), "main did not move");
+}
+
+impl Harness {
+    /// The tree the schedules log's leaves make, and the tree polar-schedules' `main` holds: the two writers of the
+    /// repository (a push, a section over Cassini) must leave them the same.
+    async fn log_and_main(
+        &self,
+    ) -> (
+        std::collections::BTreeMap<String, Vec<u8>>,
+        std::collections::BTreeMap<String, Vec<u8>>,
+    ) {
+        let leaves = self.logged_in("schedules").await;
+        let (tree, stop) = polar_git_server_common::schedules::replay(
+            &leaves.iter().map(|l| l.encode()).collect::<Vec<_>>(),
+        );
+        assert_eq!(stop, None);
+        let main = match self.store.main_tree(REPO).await.unwrap() {
+            Some((_, _, files)) => polar_git_server::schedules::tree_of(files).0,
+            None => Default::default(),
+        };
+        (tree.files().clone(), main)
+    }
+
+    /// Sends `path` as a signed section from alice, as people's tools do over Cassini.
+    async fn send_section(&self, path: &str, text: &str) -> polar_git_server_common::SectionAdded {
+        self.intake
+            .add(
+                "alice",
+                &polar_git_server_common::AddSection {
+                    path: path.into(),
+                    content: text.as_bytes().to_vec(),
+                },
+            )
+            .await
+    }
+
+    /// Waits until `n` writers wait for polar-schedules.
+    async fn until_waiting(&self, n: usize) {
+        for _ in 0..1000 {
+            if self.store.writers_waiting(REPO) >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("{n} writers never waited for {REPO}");
+    }
+}
+
+/// A push and a section over Cassini both write polar-schedules and its log. A section that waits while a push is in
+/// flight is put on what the push made: the log does not revert the push, and git and the log end alike.
+#[tokio::test]
+async fn a_section_sent_while_a_push_is_in_flight_is_put_on_what_the_push_made() {
+    let h = Arc::new(Harness::start().await);
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "a").await;
+    assert!(ok, "{text}");
+    h.commit(&repo, "pushed.dhall", "p").await;
+
+    let held = h.store.writing(REPO).await;
+    let push = {
+        let (h, creds, repo) = (h.clone(), creds.clone(), repo.clone());
+        tokio::spawn(async move {
+            h.git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+                .await
+        })
+    };
+    h.until_waiting(1).await;
+    let section = {
+        let h = h.clone();
+        tokio::spawn(async move { h.send_section("sent.dhall", "s").await })
+    };
+    h.until_waiting(2).await;
+    drop(held);
+    let (ok, text) = push.await.unwrap();
+    assert!(ok, "{text}");
+    assert!(matches!(
+        section.await.unwrap(),
+        polar_git_server_common::SectionAdded::Committed { .. }
+    ));
+
+    let (log, main) = h.log_and_main().await;
+    assert_eq!(log, main);
+    assert!(
+        main.contains_key("pushed.dhall") && main.contains_key("sent.dhall"),
+        "{main:?}"
+    );
+}
+
+/// The other way: a section is taken first, and a push from a clone made before it then names a `main` that is no
+/// longer the repository's. It is refused before anything is logged, so the log keeps the section, as git does.
+#[tokio::test]
+async fn a_push_from_before_a_section_is_refused_and_the_log_keeps_the_section() {
+    let h = Arc::new(Harness::start().await);
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "a").await;
+    assert!(ok, "{text}");
+    h.commit(&repo, "pushed.dhall", "p").await;
+    let before = h.logged_in("schedules").await.len();
+
+    let held = h.store.writing(REPO).await;
+    let section = {
+        let h = h.clone();
+        tokio::spawn(async move { h.send_section("sent.dhall", "s").await })
+    };
+    h.until_waiting(1).await;
+    let push = {
+        let (h, creds, repo) = (h.clone(), creds.clone(), repo.clone());
+        tokio::spawn(async move {
+            h.git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+                .await
+        })
+    };
+    h.until_waiting(2).await;
+    drop(held);
+    assert!(matches!(
+        section.await.unwrap(),
+        polar_git_server_common::SectionAdded::Committed { .. }
+    ));
+    let (ok, text) = push.await.unwrap();
+    assert!(!ok, "a push from before the section is refused: {text}");
+
+    let (log, main) = h.log_and_main().await;
+    assert_eq!(log, main);
+    assert!(
+        main.contains_key("sent.dhall") && !main.contains_key("pushed.dhall"),
+        "{main:?}"
+    );
+    assert_eq!(
+        h.logged_in("schedules").await.len(),
+        before + 1,
+        "the section alone was logged"
+    );
+}
+
+/// A push whose reference cannot move after its changes were logged (here `main` is locked by another) is refused,
+/// and the log is brought back to what `main` holds: a log cannot drop a leaf, so it says the change again the other
+/// way, and never stays ahead of git.
+#[tokio::test]
+async fn a_push_whose_main_cannot_move_leaves_the_log_as_git_is() {
+    let h = Harness::start().await;
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "a").await;
+    assert!(ok, "{text}");
+    h.commit(&repo, "pushed.dhall", "p").await;
+    let lock = h.store.path(REPO).unwrap().join("refs/heads/main.lock");
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::fs::write(&lock, "").unwrap();
+    let (ok, text) = h
+        .git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+        .await;
+    std::fs::remove_file(&lock).unwrap();
+    assert!(!ok, "main could not move: {text}");
+
+    let (log, main) = h.log_and_main().await;
+    assert_eq!(log, main);
+    assert!(!main.contains_key("pushed.dhall"), "{main:?}");
+}
+
+/// Pushes and sections sent together, in rounds, in whatever order they reach the store: after each, the log's tree is
+/// `main`'s. A push from a clone that a section overtook is refused, and that is all a round may refuse.
+#[tokio::test]
+async fn pushes_and_sections_together_leave_the_log_as_git_is() {
+    let h = Arc::new(Harness::start().await);
+    let creds = client(&h.ca, h.dir.path(), "alice");
+    let (ok, repo, text) = h.clone_as(Some(&creds), "a").await;
+    assert!(ok, "{text}");
+    for round in 0..6 {
+        let (ok, text) = h
+            .git(&repo, Some(&creds), &["pull", "--rebase", "origin", "main"])
+            .await;
+        assert!(ok, "{text}");
+        h.commit(&repo, &format!("pushed-{round}.dhall"), "p").await;
+        let push = {
+            let (h, creds, repo) = (h.clone(), creds.clone(), repo.clone());
+            async move {
+                h.git(&repo, Some(&creds), &["push", "origin", "HEAD:main"])
+                    .await
+            }
+        };
+        let section = {
+            let h = h.clone();
+            async move { h.send_section(&format!("sent-{round}.dhall"), "s").await }
+        };
+        let ((pushed, text), sent) = if round % 2 == 0 {
+            tokio::join!(push, section)
+        } else {
+            let (sent, pushed) = tokio::join!(section, push);
+            (pushed, sent)
+        };
+        assert!(
+            matches!(
+                sent,
+                polar_git_server_common::SectionAdded::Committed { .. }
+            ),
+            "{sent:?}"
+        );
+        let (log, main) = h.log_and_main().await;
+        assert_eq!(log, main, "round {round}");
+        assert_eq!(
+            main.contains_key(&format!("pushed-{round}.dhall")),
+            pushed,
+            "round {round}: {text}"
+        );
+    }
 }

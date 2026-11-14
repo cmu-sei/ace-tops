@@ -40,7 +40,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 /// The identity the TLS listener took from the client certificate.
 #[derive(Debug, Clone)]
@@ -344,6 +344,11 @@ async fn receive_pack(
     let (name, pusher) = (repo.to_string(), who.0.clone());
     let logs = state.logs.clone();
     let runtime = tokio::runtime::Handle::current();
+    // The one writer of the repository until its refs have moved, or have not and its log is put back: the store's own
+    // writes to it (a section over Cassini) wait, so a log follows `main` exactly (store.rs, `writing`).
+    let writing = state.store.writing(repo).await;
+    let logged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let logged_by_judge = Arc::clone(&logged);
     let judge = move |quarantined: &gix::Repository,
                       commands: &[gix_serve::receive_pack::Command]| {
         // What is taken is what was authorized: gix-serve read the same commands from the body.
@@ -405,6 +410,9 @@ async fn receive_pack(
             && let Some(logs) = &logs
             && let Some(tree) = crate::schedules::pushed_tree(quarantined, &updates)?
         {
+            // `main` moves only from what the client says it holds: one that is no longer the repository's (a section
+            // was taken since the clone) is refused here, before anything is logged, as git would refuse it after.
+            main_is(quarantined, &updates)?;
             let appended = runtime.block_on(async {
                 ractor::call!(logs, |reply| crate::logs::LogsMessage::AppendTree {
                     log: polar_git_server_common::schedules::SCHEDULES_LOG.to_string(),
@@ -416,7 +424,7 @@ async fn receive_pack(
                 })
             });
             match appended {
-                Ok(Ok(_)) => {}
+                Ok(Ok(_)) => logged_by_judge.store(true, std::sync::atomic::Ordering::SeqCst),
                 Ok(Err(why)) => {
                     warn!(who = %pusher, repo = %name, %why, "push refused: the schedules log did not take it");
                     return Err(format!("the store's schedules log did not take it: {why}"));
@@ -429,7 +437,25 @@ async fn receive_pack(
         }
         Ok(())
     };
-    let (out, made) = match state.runner.receive_pack(&path, body, judge).await {
+    let served = state.runner.receive_pack(&path, body, judge).await;
+    // Logged, and `main` did not move (its reference could not be updated): the log says it again the other way, so it
+    // never stays ahead of git. A log cannot drop a leaf.
+    let moved = matches!(&served, Ok((_, made)) if !made.is_empty());
+    if logged.load(std::sync::atomic::Ordering::SeqCst)
+        && !moved
+        && let Some(logs) = &state.logs
+    {
+        match crate::schedules::catch_up(&state.store, logs, &who.0).await {
+            Ok(done) => {
+                warn!(who = %who.0, repo, put_back = done.appended.len(), "the push was logged and main did not move; the schedules log is put back to main")
+            }
+            Err(why) => {
+                error!(who = %who.0, repo, %why, "the push was logged and main did not move, and the schedules log could not be put back")
+            }
+        }
+    }
+    drop(writing);
+    let (out, made) = match served {
         Ok(served) => served,
         Err(e) => return git_failure(e),
     };
@@ -448,6 +474,28 @@ async fn receive_pack(
             .await;
     }
     git_response(Service::ReceivePack.content_type(), out)
+}
+
+/// That `main`, if the updates move it, is now what the client says it held, so the reference will move once logged.
+fn main_is(repo: &gix::Repository, updates: &[RefUpdate]) -> Result<(), String> {
+    let Some(update) = updates.iter().find(|u| u.refname == crate::schedules::MAIN) else {
+        return Ok(());
+    };
+    let now = repo
+        .try_find_reference(update.refname.as_str())
+        .map_err(|e| format!("{} cannot be read: {e}", update.refname))?
+        .map(|mut reference| reference.peel_to_id().map(|id| id.detach().to_string()))
+        .transpose()
+        .map_err(|e| format!("{} cannot be read: {e}", update.refname))?
+        .unwrap_or_else(|| "0".repeat(40));
+    if now.eq_ignore_ascii_case(&update.old) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} is at {now}, not {}: fetch, then push again",
+            update.refname, update.old
+        ))
+    }
 }
 
 /// Whether gix-serve's commands are the ones authorized: the same updates in the same order.

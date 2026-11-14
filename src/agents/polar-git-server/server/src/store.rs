@@ -30,6 +30,7 @@ use gix::object::tree::EntryKind;
 use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 use gix::refs::{FullName, Target};
 use polar_git_server_common::{FileAt, FileKind};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -113,7 +114,19 @@ pub fn plain_path(path: &str) -> bool {
 #[derive(Debug, Clone)]
 pub struct RepoStore {
     root: PathBuf,
+    /// One writer of a repository at a time, shared by every clone of the store ([`RepoStore::writing`]).
+    writers: std::sync::Arc<std::sync::Mutex<HashMap<String, std::sync::Arc<Writer>>>>,
 }
+
+/// A repository's writer lock, and how many writers wait for it.
+#[derive(Debug, Default)]
+struct Writer {
+    lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+/// A repository held by one writer, until it is dropped.
+pub type Writing = tokio::sync::OwnedMutexGuard<()>;
 
 /// Lower-case letters, digits, '-', '_' and '.', not starting with '.', no ".." and at most 64
 /// characters. Keeps a name from escaping the root or colliding with git's own files.
@@ -129,7 +142,44 @@ pub fn valid_name(name: &str) -> bool {
 
 impl RepoStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            writers: Default::default(),
+        }
+    }
+
+    /// Waits to be the one writer of `name`: a repository whose `main` a log follows is written by a push and by the
+    /// store itself (a section over Cassini), and each reads `main`, appends to the log and moves `main` as one step, so
+    /// the log and the repository never part (docs/architecture/record-store.md, "People's tools over Cassini"). Every
+    /// writer of such a repository holds it from reading `main` until `main` has moved, or has not and the log is put
+    /// back to what it holds. Taken in the order asked.
+    pub async fn writing(&self, name: &str) -> Writing {
+        let writer = self
+            .writers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(name.to_string())
+            .or_default()
+            .clone();
+        writer
+            .waiting
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let held = writer.lock.clone().lock_owned().await;
+        writer
+            .waiting
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        held
+    }
+
+    /// How many writers wait for `name` ([`RepoStore::writing`]): for tests, and to say when writers queue.
+    pub fn writers_waiting(&self, name: &str) -> usize {
+        self.writers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(name)
+            .map_or(0, |writer| {
+                writer.waiting.load(std::sync::atomic::Ordering::SeqCst)
+            })
     }
 
     /// Where the repository lives; its existence is not checked.

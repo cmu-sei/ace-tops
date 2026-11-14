@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 use tracing::{info, warn};
 
 /// The branch the scheduler observer reads, and the log holds.
-const MAIN: &str = "refs/heads/main";
+pub const MAIN: &str = "refs/heads/main";
 
 /// The files of a tree as the log holds them, by path, and the path of each link left out.
 pub fn tree_of(files: Vec<FileAt>) -> (BTreeMap<String, Vec<u8>>, Vec<String>) {
@@ -80,8 +80,9 @@ pub fn pushed_tree(
     Ok(Some(tree))
 }
 
-/// Appends what makes the schedules log's tree `main`'s, as `origin`'s, at the store's start: nothing when they agree
-/// or the repository has no `main`. What was appended, or why the logs could not take it, which refuses the start.
+/// Appends what makes the schedules log's tree `main`'s, as `origin`'s: at the store's start, and after a writer logged
+/// a change and `main` then did not move. Nothing when they agree or the repository has no `main`. What was appended,
+/// or why the logs could not take it, which refuses the start.
 pub async fn catch_up(
     store: &RepoStore,
     logs: &ractor::ActorRef<LogsMessage>,
@@ -207,6 +208,9 @@ impl SectionIntake {
                 why: format!("`{}` is not a place in {SCHEDULES_REPO}", request.path),
             };
         }
+        // The one writer of the repository from reading `main` until `main` has moved: a push is not taken meanwhile, so
+        // what is logged is `main` and this section, and it is committed on that same `main`.
+        let _writing = self.store.writing(SCHEDULES_REPO).await;
         let mut tree = match self.store.main_tree(SCHEDULES_REPO).await {
             Ok(Some((_, _, files))) => tree_of(files).0,
             Ok(None) => BTreeMap::new(),
@@ -262,10 +266,18 @@ impl SectionIntake {
                 SectionAdded::Committed { commit: new }
             }
             Ok(FileAdded::AlreadyThere) => SectionAdded::AlreadyThere,
-            Err(e @ (StoreError::BadPath(_) | StoreError::BadName(_))) => {
-                SectionAdded::Refused { why: e.to_string() }
+            Err(e) => {
+                // Logged, and `main` did not move: the log says it again the other way, so it never stays ahead of git.
+                if let Err(why) = catch_up(&self.store, &self.logs, sender).await {
+                    warn!(%why, "the schedules log could not be put back to {SCHEDULES_REPO}'s main");
+                }
+                match e {
+                    StoreError::BadPath(_) | StoreError::BadName(_) => {
+                        SectionAdded::Refused { why: e.to_string() }
+                    }
+                    e => SectionAdded::NotNow { why: e.to_string() },
+                }
             }
-            Err(e) => SectionAdded::NotNow { why: e.to_string() },
         }
     }
 }
