@@ -460,15 +460,15 @@ mod tests {
     #[test]
     fn an_ssh_repository_is_read_for_its_host_a_name_or_a_plain_ipv4_address() {
         assert_eq!(
-            ssh_host("ssh://52.235.181.217/SEI/ACE.git").unwrap(),
-            "52.235.181.217"
+            ssh_host("ssh://192.0.2.10/SEI/ACE.git").unwrap(),
+            "192.0.2.10"
         );
         assert_eq!(
             ssh_host("ssh://Git.Example.org:2222/o/r.git").unwrap(),
             "git.example.org"
         );
         for refused in [
-            "ssh://git@52.235.181.217/SEI/ACE.git",
+            "ssh://git@192.0.2.10/SEI/ACE.git",
             "ssh://u:p@git.example.org/o/r",
             "ssh://git.example.org:/o/r",
             "ssh://git%2eexample.org/o/r",
@@ -483,13 +483,13 @@ mod tests {
 
     #[test]
     fn a_repository_over_ssh_is_taken_only_with_a_credential_and_https_either_way() {
-        let ssh = "ssh://52.235.181.217/SEI/ACE.git";
+        let ssh = "ssh://192.0.2.10/SEI/ACE.git";
         assert!(
             repository_host(ssh, false)
                 .unwrap_err()
                 .contains("credential")
         );
-        assert_eq!(repository_host(ssh, true).unwrap(), "52.235.181.217");
+        assert_eq!(repository_host(ssh, true).unwrap(), "192.0.2.10");
         for with_credential in [false, true] {
             assert_eq!(
                 repository_host("https://github.com/o/r", with_credential).unwrap(),
@@ -506,17 +506,14 @@ mod tests {
     #[test]
     fn an_ssh_repository_has_one_canonical_form() {
         let c = |raw: &str| canonical_repository(raw).unwrap();
-        let gitea = c("SSH://52.235.181.217/SEI/ACE.git");
-        assert_eq!(gitea.url, "ssh://52.235.181.217/SEI/ACE.git");
-        assert_eq!(gitea.host, "52.235.181.217");
+        let gitea = c("SSH://192.0.2.10/SEI/ACE.git");
+        assert_eq!(gitea.url, "ssh://192.0.2.10/SEI/ACE.git");
+        assert_eq!(gitea.host, "192.0.2.10");
         assert_eq!(gitea.path, vec!["SEI".to_string(), "ACE.git".to_string()]);
-        assert_eq!(
-            gitea.repo_id(),
-            c("ssh://52.235.181.217/SEI/ACE/").repo_id()
-        );
+        assert_eq!(gitea.repo_id(), c("ssh://192.0.2.10/SEI/ACE/").repo_id());
         assert_ne!(gitea.repo_id(), c("https://github.com/SEI/ACE").repo_id());
         assert!(
-            canonical_repository("ssh://git@52.235.181.217/SEI/ACE.git")
+            canonical_repository("ssh://git@192.0.2.10/SEI/ACE.git")
                 .unwrap_err()
                 .contains("login")
         );

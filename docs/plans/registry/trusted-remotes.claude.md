@@ -259,7 +259,7 @@ multi_ack_detailed, side-band-64k, include-tag (gix fetches with no less; real s
 negotiation round with NAK, frames the pack in band 1 when asked (ssh stand-in shares it). CA and silent-host child tests
 run for both clients (gix, libgit2). Test protocol's FakeSource now gives an ssh key (the only kind handed out).
 Pre-existing flake seen once: `the_probe_says_a_port_that_refuses_is_unreachable` (a freed port reused by another test's
-server → Tls), not changed. Mutants: the first, uncapped run OOM-killed whitey (fill_buf → endless stream; see memory
+server → Tls), not changed. Mutants: the first, uncapped run OOM-killed the maintainer's machine (fill_buf → endless stream; see memory
 cap-mutation-runs); rerun in `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0`. Capped run: 35 caught, 7 caught by hanging (the silent-host
 test's cleanup waits out the 120 s read bound; `perform -> Ok(())` hangs because an ask waits for its reply, older than
 this), 3 missed: MAX_POST's value twice (a value to review, 64 MiB) and `configure -> Ok(Default::default())` (equivalent).

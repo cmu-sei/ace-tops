@@ -59,6 +59,19 @@ direct container usage.
 
 ## Installation
 
+> **To install Polar, install the latest release, 3.0.1, not this branch.** `main` is where the next release is being
+> built, and this section describes `main` as it is today, for development. The release has its own instructions, for its
+> own images:
+>
+> ```bash
+> git clone --branch v3.0.1 https://github.com/cmu-sei/ace-tops.git
+> ```
+>
+> Then follow the **Installation** section of that checkout's `README.md`. Its known issues and their workarounds are in
+> [docs/operations/3.0.1-known-issues.md](docs/operations/3.0.1-known-issues.md). With the dev container in the cluster,
+> set `POLAR_DEV_BRANCH=v3.0.1` before `bin/polar-dev up`, so that the checkout it clones is the release's. Fixes for the
+> 3.0 line go to the `release/3.0.x` branch.
+
 ACE runs on Polar, which you deploy to a Kubernetes cluster you bring: one on your own machine or one somewhere else. This
 section is the whole path, in the order you do it, from a cluster to a running deployment you can use and develop. Each
 step says what it does, what you should see, and where you have a choice. The commands are the ones for the setup the
@@ -631,8 +644,8 @@ for help putting Windows' first on your PATH.
 **Step G. Get Polar's files.** In PowerShell (as yourself), from the folder you want them in (your home folder is fine):
 
 ```powershell
-git clone --config core.autocrlf=false git@52.235.181.217:SEI/ACE.git
-cd ACE
+git clone --config core.autocrlf=false https://github.com/cmu-sei/ace-tops.git
+cd ace-tops
 ```
 
 The `--config core.autocrlf=false` part keeps the files exactly as they are, which the Linux side needs.

@@ -785,7 +785,7 @@ mod tests {
     #[tokio::test]
     async fn an_ssh_key_for_an_address_is_registered_with_the_host_key_it_pins() {
         let entries = parse(
-            &json!({"credentials": [ssh_entry("52.235.181.217", Some(PIN))]}),
+            &json!({"credentials": [ssh_entry("192.0.2.10", Some(PIN))]}),
             1,
         )
         .unwrap();
@@ -801,7 +801,7 @@ mod tests {
                 binding.kind,
                 binding.host_key.as_deref()
             ),
-            ("52.235.181.217", SecretKind::SshKey, Some(PIN))
+            ("192.0.2.10", SecretKind::SshKey, Some(PIN))
         );
     }
 
@@ -812,13 +812,13 @@ mod tests {
                 .unwrap_err()
                 .join(" | ")
         };
-        assert!(refused(ssh_entry("52.235.181.217", None)).contains("host key"));
-        assert!(refused(ssh_entry("52.235.181.217", Some("SHA256:short"))).contains("host key"));
+        assert!(refused(ssh_entry("192.0.2.10", None)).contains("host key"));
+        assert!(refused(ssh_entry("192.0.2.10", Some("SHA256:short"))).contains("host key"));
         let mut pinned_token = token_entry("a-site");
         pinned_token["host_key"] = json!(PIN);
         assert!(refused(pinned_token).contains("host key"));
         let mut token_to_an_address = token_entry("a-site");
-        token_to_an_address["host_pattern"] = json!("52.235.181.217");
+        token_to_an_address["host_pattern"] = json!("192.0.2.10");
         assert!(refused(token_to_an_address).contains("host_pattern"));
         // A name pattern is as good for an ssh key as for any other.
         assert!(
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn an_ssh_key_and_a_token_in_one_signed_version_read_back_as_they_were_written() {
         let body =
-            json!({"credentials": [token_entry("a-site"), ssh_entry("52.235.181.217", Some(PIN))]});
+            json!({"credentials": [token_entry("a-site"), ssh_entry("192.0.2.10", Some(PIN))]});
         let signed = polar_sign::dhall(&body).expect("one list");
         let read = polar_sign::evaluate(&signed).unwrap();
         let entries = parse(&read, 2).unwrap();

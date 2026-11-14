@@ -1699,7 +1699,7 @@ mod tests {
     #[test]
     fn an_ssh_address_is_read_for_its_host_and_is_encrypted_and_carries_no_login() {
         for (address, host) in [
-            ("ssh://52.235.181.217/SEI/ACE.git", "52.235.181.217"),
+            ("ssh://192.0.2.10/SEI/ACE.git", "192.0.2.10"),
             ("ssh://Git.Example.org:2222/o/r.git", "git.example.org"),
             ("SSH://git.example.org/o/r.git", "git.example.org"),
         ] {
@@ -1711,7 +1711,7 @@ mod tests {
             );
         }
         for address in [
-            "ssh://git@52.235.181.217/SEI/ACE.git",
+            "ssh://git@192.0.2.10/SEI/ACE.git",
             "ssh://u:p@git.example.org/o/r.git",
             "ssh://git.example.org:/o/r.git",
             "ssh://git%2eexample.org/o/r.git",

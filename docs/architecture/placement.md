@@ -153,7 +153,7 @@ cluster-kubeconfig` in nix-usernetes), which wipes it: done only when the mainta
 the agents registered and the custodians fetched as before. The result goes to the nix-usernetes session.
 
 *Done (2026-10-28), on the five-node `u7c`* (nix-usernetes `d26c6e7`: reset, up, init, kubeconfig; then `up.nu
-sandbox-local --dev` at `34be7533`, stopped at the browser step, Mullvad connected throughout):
+sandbox-local --dev` at `34be7533`, stopped at the browser step, the VPN connected throughout):
 - *Every pod on its pool's node:* core has cassini, cert-issuer, the credentials agent, git-repo-controller and the git
   server; observers the four observers and the credentials agent's; writers the four graph writers and Neo4j; services
   ace, Jaeger, Keycloak, Postgres, Flux, the registry, the deployment git server, local-path and CoreDNS. Nothing

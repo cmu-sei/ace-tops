@@ -896,8 +896,8 @@ I write Rust code"):
     still goes only to a host name, which a certificate vouches for. **E2** the git agents read an ssh URL when a credential
     is named (`git/common/src/remote.rs`), and the controller's `repositories` and the orchestrator's `mappings` say so; the
     git dependencies a lock names stay https. **E3** live: a read-only deploy key on `SEI/ACE` (the maintainer's to add),
-    sealed and signed into the credentials sections, and the mapping and repositories naming
-    `ssh://52.235.181.217/SEI/ACE.git`; then the watched build. Decided by standing rules, for review: the pin in the
+    sealed and signed into the credentials sections, and the mapping and repositories naming the internal git server's
+    `SEI/ACE` over ssh; then the watched build. Decided by standing rules, for review: the pin in the
     signed credential, not a render-time known-hosts setting; tested against an ssh server in the test (`russh`, a
     dev-dependency) running `git upload-pack`.
     *E1 and E2 DONE 2026-11-08*. `polar-crypto/src/registry.rs`: `SecretKind::SshKey` (`ssh-key`) and

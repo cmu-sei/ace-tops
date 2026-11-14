@@ -321,9 +321,9 @@ mod tests {
     /// source"): taken with a credential, which is an ssh key pinning the server; refused without one.
     #[test]
     fn a_repository_over_ssh_is_taken_with_a_credential_and_refused_without_one() {
-        let gitea = json!({"url": "ssh://52.235.181.217/SEI/ACE.git", "refs": ["refs/heads/main"], "credential": "gitea"});
+        let gitea = json!({"url": "ssh://192.0.2.10/SEI/ACE.git", "refs": ["refs/heads/main"], "credential": "gitea"});
         let config = one(gitea.clone()).unwrap();
-        assert_eq!(config.repo_url, "ssh://52.235.181.217/SEI/ACE.git");
+        assert_eq!(config.repo_url, "ssh://192.0.2.10/SEI/ACE.git");
         assert_eq!(config.credential.as_deref(), Some("gitea"));
         let mut bare = gitea;
         bare.as_object_mut().unwrap().remove("credential");
@@ -333,8 +333,7 @@ mod tests {
             "{problems}"
         );
         assert!(
-            one(json!({"url": "ssh://git@52.235.181.217/SEI/ACE.git", "credential": "gitea"}))
-                .is_err()
+            one(json!({"url": "ssh://git@192.0.2.10/SEI/ACE.git", "credential": "gitea"})).is_err()
         );
     }
 

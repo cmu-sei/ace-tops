@@ -978,9 +978,8 @@ mod tests {
     #[test]
     fn an_ssh_key_is_given_to_git_with_the_servers_pin_and_the_user_git_unless_the_binding_names_one()
      {
-        let b = ssh_binding("52.235.181.217", Some(PIN), None);
-        let got =
-            git_credential(&b, b"-----BEGIN OPENSSH PRIVATE KEY-----", "52.235.181.217").unwrap();
+        let b = ssh_binding("192.0.2.10", Some(PIN), None);
+        let got = git_credential(&b, b"-----BEGIN OPENSSH PRIVATE KEY-----", "192.0.2.10").unwrap();
         assert_eq!(got.kind, SecretKind::SshKey);
         assert_eq!(got.username, "git");
         assert_eq!(got.host_keys, vec![PIN.to_string()]);
@@ -1006,12 +1005,12 @@ mod tests {
 
     #[test]
     fn an_ssh_key_bound_to_an_address_is_given_for_that_address_and_no_other() {
-        let b = ssh_binding("52.235.181.217", Some(PIN), None);
+        let b = ssh_binding("192.0.2.10", Some(PIN), None);
         for host in [
-            "52.235.181.218",
-            "52.235.181.217.example.org",
+            "192.0.2.11",
+            "192.0.2.10.example.org",
             "example.org",
-            "::ffff:52.235.181.217",
+            "::ffff:192.0.2.10",
             "",
         ] {
             assert_eq!(
@@ -1056,9 +1055,9 @@ mod tests {
     #[test]
     fn an_ssh_key_may_pin_each_of_its_servers_keys() {
         const OTHER: &str = "SHA256:C+my1p42LhQCfEkpg/LnFvSSI2NK+p/vU4O6maXD3jo";
-        let both = ssh_binding("52.235.181.217", Some(&format!("{PIN},{OTHER}")), None);
+        let both = ssh_binding("192.0.2.10", Some(&format!("{PIN},{OTHER}")), None);
         assert_eq!(both.check(), Ok(()));
-        let got = git_credential(&both, b"k", "52.235.181.217").unwrap();
+        let got = git_credential(&both, b"k", "192.0.2.10").unwrap();
         assert_eq!(got.host_keys, vec![PIN.to_string(), OTHER.to_string()]);
         for pins in [
             format!("{PIN},"),
@@ -1069,7 +1068,7 @@ mod tests {
             [PIN; 9].join(","),
         ] {
             assert!(
-                ssh_binding("52.235.181.217", Some(&pins), None)
+                ssh_binding("192.0.2.10", Some(&pins), None)
                     .check()
                     .is_err(),
                 "{pins:?}"
@@ -1086,15 +1085,15 @@ mod tests {
             };
             assert!(pinned.check().is_err(), "{kind:?} with a pin");
             assert!(
-                binding("52.235.181.217", kind, Some("u")).check().is_err(),
+                binding("192.0.2.10", kind, Some("u")).check().is_err(),
                 "{kind:?} for an address"
             );
         }
         // An address is one address: not a list, a wildcard, a port or brackets.
         for pattern in [
-            "52.235.181.217,github.com",
-            "*.52.235.181.217",
-            "52.235.181.217:22",
+            "192.0.2.10,github.com",
+            "*.192.0.2.10",
+            "192.0.2.10:22",
             "[2001:db8::1]",
             "0x7f.0.0.1",
         ] {
@@ -1125,7 +1124,7 @@ mod tests {
 
     #[test]
     fn an_ssh_key_is_escrowed_with_its_pin_and_an_older_record_still_reads() {
-        let b = ssh_binding("52.235.181.217", Some(PIN), Some("git"));
+        let b = ssh_binding("192.0.2.10", Some(PIN), Some("git"));
         let bytes = escrow_form(&b, b"key").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
@@ -1149,8 +1148,8 @@ mod tests {
 
     fn an_address() -> impl proptest::strategy::Strategy<Value = String> {
         proptest::prop_oneof![
-            proptest::strategy::Just("52.235.181.217".to_string()),
-            proptest::strategy::Just("52.235.181.218".to_string()),
+            proptest::strategy::Just("192.0.2.10".to_string()),
+            proptest::strategy::Just("192.0.2.11".to_string()),
             proptest::strategy::Just("2001:db8::1".to_string()),
             proptest::strategy::Just("2001:db8:0:0::1".to_string()),
             proptest::strategy::Just("git.example.org".to_string()),

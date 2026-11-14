@@ -27,7 +27,7 @@ PAIR: `network-enforcement.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../runtime-attestation.claude.md` (C4-net). Old names: C4 Canal, N1 policy, N2 canary, N3 engine
 (build-orchestrator.md:963-992). AS-OF main 355a8a22 + nix-usernetes 10f3bcd (2026-11-02). Re-verify lines.
-STATUS: u7c ENFORCES (nix-usernetes main 8ef1747, 2026-11-12); Polar side (N1/N2) not built. Spike done 2026-11-12 on u7n: Calico can't run on whitey. Q-engine DECIDED 2026-11-12:
+STATUS: u7c ENFORCES (nix-usernetes main 8ef1747, 2026-11-12); Polar side (N1/N2) not built. Spike done 2026-11-12 on u7n: Calico can't run on the maintainer's machine. Q-engine DECIDED 2026-11-12:
 Polar's own enforcer (maintainer picked it over patch-Felix, my recommendation, and kernel-with-IPv6).
 
 ## FOUND (people part 2, dated)
@@ -65,7 +65,7 @@ until proved: no mapping names a repo Polar doesn't control; no registry archive
   NetworkPolicy, admission only NodeRestriction (flake.nix:254).
 - u7c: cluster.dhall:419-435; 5 containers (cp no kubelet + core/observers/writers tainted + services); bridge br0
   10.77.0.1/24 in hub, nodes 10.77.0.(11+i), pod CIDR 10.244.i.0/24, static routes to other nodes' CIDRs
-  (cluster.sh:94-123). NO overlay, NO VXLAN. All inside podman unshare. One host kernel (whitey 7.3, no IPv6, xt
+  (cluster.sh:94-123). NO overlay, NO VXLAN. All inside podman unshare. One host kernel (the maintainer's machine, 7.3, no IPv6, xt
   limited to addrtype/conntrack/mark/policy/state; commit 561a5ee).
 - u7s: single node, slirp4netns (Justfile:50-53).
 - flannel only in an inherit list (flake.nix:69), unused; upstream flannel removed (commit 51976ce).
@@ -125,7 +125,7 @@ LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolatio
 
 ## Q-flannel — DECIDED 2026-11-12 "Calico alone first" → spike run, superseded by Q-engine
 
-## SPIKE (2026-11-12, throwaway cluster u7n on whitey; topology + manifests in session scratchpad, not in any repo)
+## SPIKE (2026-11-12, throwaway cluster u7n on the maintainer's machine; topology + manifests in session scratchpad, not in any repo)
 - u7n = cluster.sh with TOPOLOGY=<scratch>/u7n.dhall: name u7n, apiserverPort 7444, cp + workers a, b (no taints).
   Own hub/bridge/netns (all per-cluster: hub netns holds br0 10.77.0.0/24; netns dir $XDG_RUNTIME_DIR/nix-usernetes/u7n).
   Nodes have NO spec.podCIDR (controller-manager allocates none) → host-local usePodCidr impossible.
@@ -148,7 +148,7 @@ LATER: sensor egress → Cassini only; cert-issuer layer 4 (cert-issuer-isolatio
 ## Q-engine — DECIDED (maintainer, 2026-11-12): "Polar's own enforcer"
 options were: patch Felix (recommended), kernel with IPv6, own enforcer. Chosen: own enforcer.
 stance (maintainer, same day): IPv6 has been half-adopted for two decades and may never be; no IPv6 dependency is a
-design stance for Polar, not a workaround for whitey's kernel.
+design stance for Polar, not a workaround for the maintainer's machine's kernel.
 also attack surface: many serious upstream kernel vulns in recent years centre on poorly tested IPv6 code (maintainer).
 
 ## ENFORCER = kube-nftpolicy — DECIDED (maintainer, 2026-11-12, after my Polar-agent design)
@@ -173,7 +173,7 @@ agent: no Polar identity, no Cassini, not attested — node infra in the trust b
   rule dropped), run (reflectors, settle 200ms, apply via `nft -f -`, MAX_FAILURES 5 → exit), main (--node-name/NODE_NAME,
   --kubeconfig, --table, --nft, --once, --print). Warns on IPv6 pod IPs (dual-stack not enforced).
 - tests: 22 unit; props (2000 cases): nodes' rules AND == spec::allows; order independence; block ranges; disjoint
-  cover+no overlap. Mutations (ignore except; ignore egress) caught. kernel.rs: unshare -rn nft -f, whitey kernel OK
+  cover+no overlap. Mutations (ignore except; ignore egress) caught. kernel.rs: unshare -rn nft -f, the maintainer's machine's kernel OK
   (pipapo concat interval sets fine without ip6/inet).
 - flake: rustPlatform.buildRustPackage, wrapProgram PATH nftables; packages default/image (buildLayeredImage); checks.
 - nix-usernetes main 8ef1747 (pushed; was branch feat/kube-nftpolicy 91bafdc + 8ef1747 pod-cidr): flake input

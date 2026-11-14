@@ -286,7 +286,7 @@ turning ECDSA back on would not change that:
 - *Why, in the 7.3 source.* The PKCS#8 parser takes RSA alone (`crypto/asymmetric_keys/pkcs8_parser.c`,
   `pkcs8_note_algo`: anything but `OID_rsaEncryption` is `-ENOPKG`). The kernel's ECDSA verifies only
   (`crypto/ecdsa.c`: `.verify` and `.set_pub_key`, no `.sign`, and no private key in its context).
-- *The ECDSA option is off,* and harmless here. Whitey's hand-curated 7.0.3 configuration turned off
+- *The ECDSA option is off,* and harmless here. The maintainer's machine's hand-curated 7.0.3 configuration turned off
   `CONFIG_CRYPTO_ECDSA`, with DH and ECDH, and recorded no reason (`/etc/nixos` `440f29c`). precisionws's 7.3
   configuration descends from it; the booted kernel has `ecc` and `ecdh_generic` and no ECDSA module. With the option
   on, the kernel could verify P-256 signatures and still neither hold nor sign with a P-256 key.
@@ -1086,7 +1086,7 @@ that session.
    `KUBECONFIG=~/Documents/projects/nix-usernetes/kubeconfig-u7c`. Its apiserver is on host port 7443, so `u7s` is left
    alone, and the `:1.37.1` node image tag is not moved.
 2. *Polar.* `nu infra/up.nu sandbox-local --dev`, the tree clean and left alone until it has passed its publish step.
-   Mullvad: asked before it is disconnected for the run, and reconnected after. The browser import of the user's
+   The VPN: asked before it is disconnected for the run, and reconnected after. The browser import of the user's
    certificate is the maintainer's, asked for when a test needs it.
 3. *What is seen, each recorded with the command that shows it:*
    - *No key file:* no `key.pem` in any pod but cert-issuer's, Neo4j's and the `ace` job's, and every daemon holding
@@ -1110,7 +1110,7 @@ that session.
 6. *Not in it:* the Cassini load harness with the daemons (`remaining-work.md` at `f03666c4`, later), a run with custody off (the
    render tests show it byte for byte), the pinning and the watcher cap (planned, to do).
 
-*Cleared (the maintainer, 2026-10-27), kube-observer the one revoked; Mullvad disconnected for the run; the browser
+*Cleared (the maintainer, 2026-10-27), kube-observer the one revoked; the VPN disconnected for the run; the browser
 step not waited at.* *Done (2026-10-27), on `u7c` (nodes `cp` and `core`), from `d0df015c`:*
 - *The bring-up:* `up.nu sandbox-local --dev` brought all six layers Ready, signed and published the policy, and stopped
   at the browser step, as asked. Its first run stopped at step 8 (below, finding 1).
@@ -1379,7 +1379,7 @@ another agent stays in the workload: it needs no key the daemon holds, and the c
 7. The bootstrap pods: in 1, 2 and 5 (their custodian from cert-issuer, held and vouched for as the service is).
 
 **Step 8, on a fresh u7c (2026-10-28, `up.nu sandbox-local --dev` at `44766117`, stopped at the browser step as
-asked; Mullvad off for the run):** what was checked, how, and what was not.
+asked; the VPN off for the run):** what was checked, how, and what was not.
 - *Every pod with a daemon bought only its custodian's certificate, and its custodian fetched the rest:* each
   polar-init logged the custodian's certificate installed and its plan; each daemon logged its session up and "the
   custodian has fetched everything". Plans: an empty one for Cassini, the credentials agent and its observer
@@ -1467,7 +1467,7 @@ asked; Mullvad off for the run):** what was checked, how, and what was not.
   why. A target with custody off leaves out its encryption agents (kube-consumer and git-repo-observer today), or its
   render names them.
 - *On the cluster* (2026-10-28, `up.nu sandbox-local --dev` over `u7c` at `3dc73a6b`, stopped at the browser step;
-  Mullvad off for the run): every pod running but jira-observer (the placeholder Jira, as before); every workload and
+  the VPN off for the run): every pod running but jira-observer (the placeholder Jira, as before); every workload and
   every daemon registered once, none refused, no decode error on either side; every custodian "has fetched
   everything", and kube-consumer's and git-repo-observer's the escrow key.
   - *The mismatch, once, as expected:* the old pods' daemons (the step-9 image) were refused as revoked about once a

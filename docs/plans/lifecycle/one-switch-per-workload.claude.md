@@ -31,7 +31,7 @@ AS-OF main a488c9db (2026-11-13). STATUS: proposed; maintainer: "write it up as 
 work" (with lifecycle/catalog), "For now, let's just turn some shit off".
 
 ## ORIGIN (2026-11-13)
-whitey at ~21 GB idle. Found: 3 leaked testcontainers neo4j:5 (started 2026-11-12 06:31-07:24, ~1.2 GB RSS + ~1.6 GB
+the maintainer's machine at ~21 GB idle. Found: 3 leaked testcontainers neo4j:5 (started 2026-11-12 06:31-07:24, ~1.2 GB RSS + ~1.6 GB
 swap; removed with 5 stopped ones; one netavark nft cleanup error "Device or resource busy"), u7c: GitLab ~3.4 GB,
 Neo4j ~3 GB, Keycloak 1.9 GB + Postgres 0.6 GB, k8s control plane, clamd 1.7 GB (host). Maintainer: remove Keycloak
 (+Postgres) and GitLab from the target. Then: "We need a simple and efficient way to enable/disable a workload from a

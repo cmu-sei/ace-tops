@@ -406,7 +406,7 @@ and polar-scheduler-observer run `git`.
 **When a node cannot give a protection (decided, the maintainer, 2026-11-10: "run, report, policy may require").** Nothing
 here is assumed of a node: each protection is probed where it is used, an agent runs with what its node gives, says exactly what
 it lacks, and attestation records that per pod, so a gap is visible and never pretended. A cluster's signed policy may require a
-protection, and then a pod without it is refused its certificate. Probed on whitey, 2026-11-10: kernel 7.3, Landlock ABI 11
+protection, and then a pod without it is refused its certificate. Probed on the maintainer's machine, 2026-11-10: kernel 7.3, Landlock ABI 11
 (`lsm=landlock,yama,bpf`), seccomp available; u7c's nodes share that kernel.
 
 | Bite | Needs of the node | How its absence is found | Then |

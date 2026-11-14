@@ -719,7 +719,7 @@ mod tests {
     /// mapping keyed on its URL as written and the observer reporting its normalised id).
     #[test]
     fn an_update_as_the_observer_reports_it_is_a_build_of_the_mapping_for_that_url() {
-        let url = "ssh://52.235.181.217/SEI/ACE.git";
+        let url = "ssh://192.0.2.10/SEI/ACE.git";
         let mappings = crate::mappings::parse(&serde_json::json!({"repositories": [
             {"url": url, "credential": "gitea",
              "pipeline_image": format!("registry.polar/ci@sha256:{}", "c".repeat(64))}

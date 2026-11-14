@@ -42,8 +42,7 @@ are fixed and in the "after" figures, which are the baseline.
 In this order. The records are kept outside the repository (they hold for this machine only); the summaries are below.
 
 1. The host: at least 20% of `/home` free (the kubelet taints the node at 15%: on 2026-10-21 a 135 GB Cargo `target`
-   directory did it, and every pod was evicted); no VPN (with Mullvad up the node resolves nothing: its only working
-   nameserver is the fourth, and resolvers use the first three).
+   directory did it, and every pod was evicted); no VPN (with it up, the node resolves nothing).
 2. A fresh cluster, from `~/Documents/projects/nix-usernetes`: `just reset && just up && just init && just kubeconfig`,
    then `export KUBECONFIG=~/Documents/projects/nix-usernetes/kubeconfig`.
 3. From the repository root, with the dev shell's SOPS settings (`SOPS_AGE_BINARY` is `rage`,
@@ -146,7 +145,7 @@ Read plainly:
 The local load test of slice 2 agrees: four publishers deciding every publish took 12.5 s, against 1 s before the broker
 decided and 1.5 s with the cache.
 
-## A second machine: whitey (2026-10-25)
+## A second machine (2026-10-25)
 
 The same plans on another workstation and a newer node, three days later, as a reference for that machine. The broker
 now always decides (stage 5b), so there is no broker that decides nothing to measure: `baseline.nuon` measures it as
@@ -158,7 +157,7 @@ baseline and "cache" columns below are therefore the same settings measured twic
 - Node: nix-usernetes `f7a3c49` (one node), Kubernetes 1.37.1, containerd 2.4.1, kube-proxy in nftables mode.
 - Target: `sandbox-local`, brought up fresh from `5a62a813` by `up.nu --dev` from the dev container in the cluster;
   every catalog workload of it running (the Jira observer failing, as it has no Jira site), the load harness enabled.
-- Procedure as above, run from the dev container's clean checkout (`dirty: false`), with tracing off. Mullvad was
+- Procedure as above, run from the dev container's clean checkout (`dirty: false`), with tracing off. The VPN was
   connected; the harness's traffic stays in the cluster.
 - Records: `~/.cache/polar/harness/baseline-20261025T213412.nuon` and `enforcement-20261025T214002.nuon`, broker
   `cassini@sha256:fec1df50…`. Every pod reported, on one node; nothing was lost, refused or failed, in any run.
@@ -288,7 +287,7 @@ V4 and V5 are in (the maintainer, 2026-10-28).
   for p99; *acceptable* when it is no worse on every row, and its CPU per message and memory are no worse by the same
   rule.
 - A variant is *better* where it is beyond the spread: the saturated rows ("max", and 10,000 a second), CPU per message.
-- Nothing is decided from one machine: the chosen variant is measured again on whitey, and arm64 is seen only where an
+- Nothing is decided from one machine: the chosen variant is measured again on the second machine, and arm64 is seen only where an
   arm64 node runs it (the tester's MacBook, as a smoke test, not a measurement).
 
 *Then:* the figures here, a recommendation, and the maintainer's decision; the agents follow the broker only after it.

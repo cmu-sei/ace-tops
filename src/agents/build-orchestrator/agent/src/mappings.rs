@@ -435,13 +435,13 @@ mod tests {
     #[test]
     fn a_repository_over_ssh_is_mapped_with_a_credential_and_refused_without_one() {
         let parsed = parse(&json!({"repositories": [
-            {"url": "ssh://52.235.181.217/SEI/ACE.git", "pipeline_image": image(), "credential": "gitea"}
+            {"url": "ssh://192.0.2.10/SEI/ACE.git", "pipeline_image": image(), "credential": "gitea"}
         ]}))
         .unwrap();
-        assert_eq!(parsed[0].url, "ssh://52.235.181.217/SEI/ACE.git");
+        assert_eq!(parsed[0].url, "ssh://192.0.2.10/SEI/ACE.git");
         assert_eq!(parsed[0].credential.as_deref(), Some("gitea"));
         let problems = parse(&json!({"repositories": [
-            {"url": "ssh://52.235.181.217/SEI/ACE.git", "pipeline_image": image()}
+            {"url": "ssh://192.0.2.10/SEI/ACE.git", "pipeline_image": image()}
         ]}))
         .unwrap_err()
         .join(" | ");
