@@ -126,9 +126,11 @@ fn altered_against_its_owner(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
 
 /// `pod`, altered in the ways only the record can tell.
 fn altered_against_the_record(pod: &PodFacts) -> Vec<(&'static str, PodFacts)> {
+    // Another owner by a name before its own: a Job's pods carry a name that extends its workload's, so one added to after it would still
+    // match (seen live on u7c, 2026-11-10).
     let mut another_owner = pod.clone();
     another_owner.owner = another_owner.owner.take().map(|owner| Owner {
-        name: format!("{}-altered", owner.name),
+        name: format!("altered-{}", owner.name),
         ..owner
     });
     let mut another_account = pod.clone();

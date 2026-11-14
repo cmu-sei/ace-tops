@@ -32,7 +32,7 @@ use attestation_common::{
 };
 use attestation_common::{
     ObservedPod, Report, Reporting, Termination, accepted_report, crash_signal, decode_report,
-    encode_report, findings,
+    encode_report, findings, panicked,
 };
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -518,6 +518,8 @@ proptest! {
                 let due = now - at >= GRACE;
                 prop_assert_eq!(open.contains(&as_drift(*n)), due, "reported exactly once it has lasted");
             }
+            // What is lasting now is what was reported and has not gone.
+            prop_assert_eq!(watch.lasting().cloned().collect::<std::collections::BTreeSet<_>>(), open.clone());
         }
     }
 }
@@ -596,6 +598,37 @@ fn it_believes_nothing_until_it_has_listed_what_it_watches() {
 }
 
 // In a rollout there can be no record for over a minute, just as most pods are asking. Holding a pod to its owner needs none.
+// Seen live on u7c (2026-11-10, docs/architecture/record-store.md, "Attestation verdicts as records"): a Job's pods carry a name that extends its workload's
+// (`build-runner-<uuid>`), so a pod altered to another owner by adding to its owner's name still matched, and the agent doubted itself
+// with every completed build runner. Altered to another owner, a Job's pod must come back not genuine, as a Deployment's does.
+#[test]
+fn a_job_s_pod_altered_to_another_owner_is_said_no_to_and_the_agent_proves_itself() {
+    let (mut record, mut pods) = deployment(2);
+    record.workloads[1].owner_kind = OwnerKind::Job;
+    let owner = pods[1].facts.owner.as_mut().unwrap();
+    owner.kind = OwnerKind::Job;
+    owner.name = format!("{}-1a0f2fb9", owner.name);
+    assert_eq!(
+        judge(
+            record.facts_of(&record.workloads[1].identity).as_ref(),
+            Some(&pods[1].facts)
+        ),
+        Verdict::Genuine,
+        "the Job's pod holds up"
+    );
+    assert!(
+        matches!(
+            prove(judge, true, Some(&record), &pods),
+            Ok(Proved {
+                with_record: true,
+                ..
+            })
+        ),
+        "{:?}",
+        prove(judge, true, Some(&record), &pods)
+    );
+}
+
 #[test]
 fn with_no_record_it_proves_what_it_can_against_each_pods_owner() {
     let (_, pods) = deployment(5);
@@ -742,7 +775,7 @@ fn a_rule_blind_to_any_one_alteration_cannot_say_no() {
         ("another owner", |p| {
             p.owner
                 .as_ref()
-                .is_some_and(|o| o.name.ends_with("-altered"))
+                .is_some_and(|o| o.name.starts_with("altered-"))
         }),
     ];
     for (how, is_it) in blind_to {
@@ -833,6 +866,7 @@ fn ending() -> impl Strategy<Value = Termination> {
             Just(134),
             Just(139),
             Just(159),
+            Just(101),
             0i32..256
         ],
         prop::option::of(prop_oneof![Just(0), Just(9), Just(11), Just(31), 0i32..65]),
@@ -877,7 +911,10 @@ fn observed() -> impl Strategy<Value = Vec<ObservedPod>> {
 }
 
 fn is_crash(report: &Report) -> bool {
-    matches!(report.finding, attestation_common::Finding::Crashed { .. })
+    matches!(
+        report.finding,
+        attestation_common::Finding::Crashed { .. } | attestation_common::Finding::Panicked { .. }
+    )
 }
 
 proptest! {
@@ -889,7 +926,8 @@ proptest! {
         for pod in &pods {
             for e in &pod.terminations {
                 let key = (pod.uid.clone(), e.container.clone(), e.exit_code, e.finished_at.clone());
-                if crash_signal(e.exit_code, e.signal).is_some() && !expected.contains(&key) {
+                let ended_badly = crash_signal(e.exit_code, e.signal).is_some() || panicked(e.exit_code, e.signal);
+                if ended_badly && !expected.contains(&key) {
                     expected.push(key);
                 }
             }

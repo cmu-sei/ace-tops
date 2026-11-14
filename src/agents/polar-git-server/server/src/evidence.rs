@@ -22,7 +22,7 @@
 */
 
 //! Evidence records sent over Cassini, added to `polar-evidence` by the server itself (docs/architecture/git-server.md,
-//! "Inside the boundary"; docs/architecture/polar-eden.md, "Attestation verdicts as records"): a collector that is a
+//! "Inside the boundary"; docs/architecture/record-store.md, "Attestation verdicts as records"): a collector that is a
 //! workload never pushes with `git`. A record is taken only from a sender the broker stamped, who may write the
 //! repository, and only when it verifies in the evidence domain against the CA the server trusts and is the sender's own:
 //! signed by the sender, under its signing certificate, of a type it may record (policy first, its certificate where
@@ -76,7 +76,7 @@ pub fn check_pushed_times(
 }
 
 /// The records a push to the evidence repository adds, with their bytes, in path order: each `*.json` file outside a
-/// hidden folder (as polar-eden reads a checkout) that a ref's new tip holds and its old tip did not hold with those
+/// hidden folder (as a reader of a checkout does) that a ref's new tip holds and its old tip did not hold with those
 /// bytes. `repo` holds the push's objects in quarantine. What the store's evidence log takes from a push
 /// (docs/architecture/record-store.md, "Pushes to the log"), so the log holds every record the repository holds.
 pub fn pushed_records(
@@ -628,7 +628,7 @@ mod tests {
     }
 
     /// A record that verifies goes under its type and its subject's values, in the order of their keys, named by the
-    /// digest of exactly its bytes: as polar-eden and polar-sign place theirs.
+    /// digest of exactly its bytes: as polar-sign places its own.
     #[test]
     fn a_record_that_verifies_goes_under_its_type_and_subject_named_by_its_digest() {
         let ca = root("Polar test CA");

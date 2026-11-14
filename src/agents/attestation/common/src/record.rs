@@ -322,6 +322,10 @@ impl DriftWatch {
         self.reported.extend(lasting.iter().cloned());
         DriftChanges { lasting, gone }
     }
+    /// Every difference that has lasted and not gone: what is lasting now, said or not yet.
+    pub fn lasting(&self) -> impl Iterator<Item = &Drift> {
+        self.reported.iter()
+    }
 }
 
 #[cfg(test)]

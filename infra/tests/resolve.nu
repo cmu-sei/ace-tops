@@ -880,13 +880,14 @@ def main [] {
             }
         }
 
-        "the git server holds the evidence repository, seeded once, written by its administrators, each record signed by its collector": {
+        "the git server holds the evidence repository, seeded once, written by its administrators and the attestation agent, each record signed by its collector": {
             with_target (open ($INFRA | path join "targets/sandbox-local/config.nuon")) {|t|
                 let repos = (env_value (resolve_for $t "polar-git-server") "POLAR_GIT_SERVER_REPOS" $t | from json | get repos)
                 let evidence = ($repos | where name == "polar-evidence" | first)
                 assert equal $evidence.seed "polar-evidence"
                 assert equal $evidence.readers []
-                assert equal $evidence.writers []
+                # The attestation agent adds its records over Cassini (docs/architecture/record-store.md, "Attestation verdicts as records")
+                assert equal $evidence.writers ["attestation-agent.polar.serviceaccount.cluster.local"]
                 # A record is signed by whoever collected it, so no one signer is required of a commit (an open question, docs/architecture/http-observers.md)
                 assert (($evidence | get -o signed_by) == null)
                 assert ($INFRA | path join "seeds/polar-evidence/README.md" | path exists)

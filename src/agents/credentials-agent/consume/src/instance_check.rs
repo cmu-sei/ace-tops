@@ -112,6 +112,7 @@ pub async fn take_report(
     let kind = match &report.finding {
         Finding::Altered(_) => "altered",
         Finding::Crashed { .. } => "crashed",
+        Finding::Panicked { .. } => "panicked",
     };
     let finding = format!("{:?}", report.finding);
     let event = CredentialsEvent::AttestationReported {

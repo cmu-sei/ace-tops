@@ -28,6 +28,7 @@
 //! A question with no verified asker, or from an identity that names no workload, has no reply topic, and is dropped with a warning, as
 //! the state agent's are.
 
+use crate::evidence::{StandingLog, report_record, standing, standing_record};
 use crate::holdings::{Change, Holdings, Kind, Watch};
 use crate::record::{Arrival, arrival, read_record};
 use crate::settings;
@@ -41,6 +42,7 @@ use cassini_client::{OfflineBehavior, PublishRequest};
 use cassini_types::{ClientEvent, WireTraceCtx};
 use polar::cassini::{CassiniClient, TcpClient};
 use polar_agent_builder::protocol::{Delivery, Failure, ProtocolHandle, Streaming};
+use polar_agent_builder::recorder::{Recorder, RecorderArgs, RecorderMessage};
 use polar_agent_builder::{AgentBuilder, Configured, HealthClient, HealthHandle, Subscription};
 use polar_scheduler_common::DEPLOYMENT_RECORD_TOPIC;
 use polar_signing::Trust;
@@ -120,6 +122,97 @@ fn reconsider(state: &mut AttestationState) {
     state.proved = now;
 }
 
+/// What is lasting of what is deployed against the record, each said with whether it is under test; none when it cannot compare
+/// (no record held, or not everything listed).
+pub fn lasting_of(
+    record: Option<&DeploymentRecord>,
+    ready: bool,
+    drift: &DriftWatch,
+) -> Option<Vec<(attestation_common::Drift, bool)>> {
+    let record = record.filter(|_| ready)?;
+    Some(
+        drift
+            .lasting()
+            .map(|d| (d.clone(), record.under_test(d)))
+            .collect(),
+    )
+}
+
+/// The records of `new` findings at `now`, with those that waited for a target: a record names the cluster by the deployment
+/// record's target, so until one is held they wait (at most `bound`; past it, what is new is given back, dropped).
+pub fn report_records(
+    target: Option<&str>,
+    waiting: &mut Vec<(Report, i64)>,
+    new: &[Report],
+    now: i64,
+    bound: usize,
+) -> (Vec<polar_agent_builder::EvidenceRecord>, Vec<Report>) {
+    let mut dropped = Vec::new();
+    for found in new {
+        if waiting.len() < bound {
+            waiting.push((found.clone(), now));
+        } else {
+            dropped.push(found.clone());
+        }
+    }
+    let Some(target) = target else {
+        return (Vec::new(), dropped);
+    };
+    let records = waiting
+        .drain(..)
+        .map(|(found, at)| report_record(target, &found, at))
+        .collect();
+    (records, dropped)
+}
+
+/// Each new finding, and those that waited, to the recorder.
+fn record_reports(state: &mut AttestationState, new: &[Report]) {
+    let target = state.record.as_ref().map(|r| r.target.clone());
+    let (records, dropped) = report_records(
+        target.as_deref(),
+        &mut state.waiting,
+        new,
+        now_secs(),
+        polar_agent_builder::recorder::BOUND,
+    );
+    for found in dropped {
+        error!(
+            pod = found.pod,
+            "a finding was not recorded: {} wait for a deployment record already: {:?}",
+            polar_agent_builder::recorder::BOUND,
+            found.finding
+        );
+    }
+    for record in records {
+        if let Err(e) = state.recorder.cast(RecorderMessage::Keep(record)) {
+            error!("a finding's record could not be handed to the recorder: {e}");
+        }
+    }
+}
+
+/// The cluster's standing, to the recorder when it is due: on a change of what a verdict says, or a day after the last.
+fn record_standing(state: &mut AttestationState) {
+    let Some(target) = state.record.as_ref().map(|r| r.target.clone()) else {
+        return;
+    };
+    let lasting = lasting_of(state.record.as_ref(), state.held.ready(), &state.drift);
+    let verdicts = standing(
+        &state.proved,
+        state.reporting.standing(),
+        lasting.as_deref(),
+    );
+    let now = now_secs();
+    if !state.standing_log.due(&verdicts, now) {
+        return;
+    }
+    match state.recorder.cast(RecorderMessage::Keep(standing_record(
+        &target, &verdicts, now,
+    ))) {
+        Ok(()) => state.standing_log.recorded(&verdicts, now),
+        Err(e) => error!("the standing's record could not be handed to the recorder: {e}"),
+    }
+}
+
 /// Says what is new, once, and publishes what is to go out. A change says only what is new; each minute everything that stands goes again, since the credentials
 /// agent, which records it, restarts too. It keeps one of each. What it holds is not whole until it has listed everything, so nothing is said before.
 fn report(state: &mut AttestationState, regular_check: bool) {
@@ -157,6 +250,7 @@ fn report(state: &mut AttestationState, regular_check: bool) {
             );
         }
     }
+    record_reports(state, &new);
     let going: &[Report] = if regular_check {
         state.reporting.standing()
     } else {
@@ -196,6 +290,11 @@ pub enum AttestationMessage {
     },
     /// Time to hold what is deployed to the record.
     Compare,
+    /// Something arrived on its evidence reply topic: for the recorder.
+    Evidence {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
 }
 
 pub struct AttestationSupervisor;
@@ -215,6 +314,12 @@ pub struct AttestationState {
     reporting: Reporting,
     /// Whether its verdicts are to be believed.
     proved: Result<Proved, Doubt>,
+    /// Gets its evidence records into `polar-evidence`.
+    recorder: ActorRef<RecorderMessage>,
+    /// When the standing was last recorded.
+    standing_log: StandingLog,
+    /// Findings that wait for a deployment record to name the cluster by.
+    waiting: Vec<(Report, i64)>,
 }
 
 /// Asks for `watch`, whose changes come to `myself`.
@@ -294,9 +399,47 @@ impl Actor for AttestationSupervisor {
                 warn!("failed to hand a deployment record to the supervisor: {e}");
             }
         });
+        let deliver_answer = myself.clone();
+        let answers = Subscription::new(
+            polar_git_server_common::ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC,
+            move |incoming| {
+                if let Err(e) = deliver_answer.cast(AttestationMessage::Evidence {
+                    payload: incoming.payload,
+                    published_by: incoming.published_by,
+                }) {
+                    warn!("failed to hand an answer about evidence to the supervisor: {e}");
+                }
+            },
+        );
+        // The git server is in its own namespace and domain: its identity is read off this agent's certificate.
+        let own_identity = configured
+            .config()
+            .read(&cassini_client::environment::TLS_CLIENT_CERT)
+            .map_err(|e| ActorProcessingErr::from(e.to_string()))
+            .and_then(|path| {
+                std::fs::read_to_string(&path).map_err(|e| {
+                    ActorProcessingErr::from(format!(
+                        "cannot read this agent's certificate at {path}: {e}"
+                    ))
+                })
+            })
+            .and_then(|pem| {
+                cert_issuer_common::permission::extract_own_identity(&pem).map_err(|e| {
+                    ActorProcessingErr::from(format!(
+                        "this agent's certificate names no identity: {e}"
+                    ))
+                })
+            })?;
+        let server =
+            polar_agent_builder::recorder::server_identity(&own_identity).ok_or_else(|| {
+                ActorProcessingErr::from(format!(
+                    "this agent's identity `{own_identity}` names no workload"
+                ))
+            })?;
         let resources = AgentBuilder::new(myself.clone(), AGENT_NAME)
             .with_subscription(questions)
             .with_subscription(records)
+            .with_subscription(answers)
             .with_lifecycle_handler(|event| Some(AttestationMessage::ClientEvent { event }))
             .into_configured(configured)
             .build()
@@ -317,6 +460,36 @@ impl Actor for AttestationSupervisor {
             }
         }
 
+        let signer = resources
+            .signer
+            .clone()
+            .ok_or("the builder started no signer, though the agent declares `signing`")?;
+        let client = resources.tcp_client.clone();
+        let (recorder, _) = Actor::spawn_linked(
+            Some(format!("{AGENT_NAME}.recorder")),
+            Recorder,
+            RecorderArgs {
+                signer: std::sync::Arc::new(signer),
+                publish: std::sync::Arc::new(move |payload| {
+                    client
+                        .publish(PublishRequest {
+                            topic: polar_git_server_common::EVIDENCE_REQUESTS_TOPIC.to_string(),
+                            payload,
+                            trace_ctx: WireTraceCtx::from_current_span(),
+                            offline_behavior: OfflineBehavior::default(),
+                            share_identity: true,
+                        })
+                        .map_err(|e| format!("{e:?}"))
+                }),
+                server,
+                prefix: format!("{AGENT_NAME}-{}", now_secs()),
+                clock: now_secs,
+                taken: None,
+            },
+            myself.get_cell(),
+        )
+        .await?;
+
         myself.send_interval(COMPARE_EVERY, || AttestationMessage::Compare);
 
         Ok(AttestationState {
@@ -331,6 +504,9 @@ impl Actor for AttestationSupervisor {
             drift: DriftWatch::new(DRIFT_GRACE_SECS),
             reporting: Reporting::default(),
             proved: Err(Doubt::NotYet),
+            recorder,
+            standing_log: StandingLog::default(),
+            waiting: Vec::new(),
         })
     }
 
@@ -392,6 +568,8 @@ impl Actor for AttestationSupervisor {
                         );
                         state.record = Some(record);
                         reconsider(state);
+                        // What was found before the cluster could be named is recorded now.
+                        record_reports(state, &[]);
                     }
                 }
             }
@@ -400,30 +578,42 @@ impl Actor for AttestationSupervisor {
                 reconsider(state);
                 report(state, true);
                 // What it does not hold yet is not missing, so nothing is compared until it has listed everything.
-                let Some(record) = state.record.as_ref().filter(|_| state.held.ready()) else {
-                    return Ok(());
-                };
-                let current = drift(record, &state.held.deployed(), &state.namespaces);
-                let changes = state.drift.observe(now_secs() as u64, &current);
-                for difference in &changes.lasting {
-                    if record.under_test(difference) {
-                        warn!(
-                            version = record.version,
-                            under_test = true,
-                            "what is deployed under test is not what the signed record says: {difference:?}"
-                        );
-                    } else {
-                        error!(
-                            version = record.version,
-                            "what is deployed is not what the signed record says: {difference:?}"
+                if let Some(record) = state.record.as_ref().filter(|_| state.held.ready()) {
+                    let current = drift(record, &state.held.deployed(), &state.namespaces);
+                    let changes = state.drift.observe(now_secs() as u64, &current);
+                    for difference in &changes.lasting {
+                        if record.under_test(difference) {
+                            warn!(
+                                version = record.version,
+                                under_test = true,
+                                "what is deployed under test is not what the signed record says: {difference:?}"
+                            );
+                        } else {
+                            error!(
+                                version = record.version,
+                                "what is deployed is not what the signed record says: {difference:?}"
+                            );
+                        }
+                    }
+                    for difference in &changes.gone {
+                        info!(
+                            under_test = record.under_test(difference),
+                            "what is deployed is again what the signed record says: {difference:?}"
                         );
                     }
                 }
-                for difference in &changes.gone {
-                    info!(
-                        under_test = record.under_test(difference),
-                        "what is deployed is again what the signed record says: {difference:?}"
-                    );
+                // Each minute, whatever it could compare: a standing it cannot say is a standing too.
+                record_standing(state);
+            }
+            AttestationMessage::Evidence {
+                payload,
+                published_by,
+            } => {
+                if let Err(e) = state.recorder.cast(RecorderMessage::Answer {
+                    payload,
+                    published_by,
+                }) {
+                    error!("an answer about evidence could not be handed to the recorder: {e}");
                 }
             }
             AttestationMessage::Question {
@@ -601,6 +791,79 @@ mod tests {
         };
         answer(&listed_holdings(), &PROVED, record, &question());
         assert_eq!(*asked.borrow(), question().identity);
+    }
+
+    fn crash(pod: &str) -> Report {
+        Report {
+            namespace: "polar".into(),
+            pod: pod.into(),
+            pod_uid: format!("uid-{pod}"),
+            finding: attestation_common::Finding::Panicked {
+                container: "agent".into(),
+                exit_code: 101,
+                finished_at: "2026-11-10T12:00:00Z".into(),
+                image_id: "registry/agent@sha256:0".into(),
+            },
+            under_test: false,
+        }
+    }
+
+    // docs/architecture/polar-eden.md, "Attestation verdicts as records": a record names the cluster by the deployment record's target, so
+    // what is found before one is held waits, in order and within the bound, and is recorded with the time it was found once one is.
+    #[test]
+    fn a_finding_waits_for_the_cluster_s_name_and_is_recorded_when_it_comes() {
+        let mut waiting = Vec::new();
+        let (records, dropped) =
+            report_records(None, &mut waiting, &[crash("a"), crash("b")], 10, 3);
+        assert!(records.is_empty() && dropped.is_empty());
+        let (records, dropped) =
+            report_records(None, &mut waiting, &[crash("c"), crash("d")], 20, 3);
+        assert!(records.is_empty());
+        assert_eq!(dropped, [crash("d")], "past the bound, what is new");
+        let (records, dropped) = report_records(Some("u7c"), &mut waiting, &[], 30, 3);
+        assert!(dropped.is_empty() && waiting.is_empty());
+        let said: Vec<(String, i64)> = records
+            .iter()
+            .map(|r| {
+                (
+                    r.payload()["subject"]["pod"].as_str().unwrap().to_string(),
+                    r.payload()["found_at_unix_secs"].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(said, [("a".into(), 10), ("b".into(), 10), ("c".into(), 20)]);
+        assert!(
+            records
+                .iter()
+                .all(|r| r.payload()["subject"]["target"] == "u7c")
+        );
+        let (records, _) = report_records(Some("u7c"), &mut waiting, &[crash("e")], 40, 3);
+        assert_eq!(records.len(), 1, "with a name, at once");
+    }
+
+    #[test]
+    fn what_is_lasting_is_said_only_once_it_can_compare_and_with_whether_it_is_under_test() {
+        let record = DeploymentRecord::from_payload(&serde_json::json!({
+            "schema": 1, "target": "u7c", "version": 1,
+            "workloads": [{
+                "identity": "the-app.polar.serviceaccount.cluster.local",
+                "owner_kind": "Deployment", "owner_name": "the-app", "namespace": "polar",
+                "service_account": "the-app",
+                "containers": [{ "name": "the-app", "image": "r/app@sha256:aa" }]
+            }]
+        }))
+        .unwrap();
+        let mut watch = DriftWatch::new(0);
+        let gone = attestation_common::Drift::NotDeployed {
+            workload: "the-app".into(),
+        };
+        watch.observe(0, &[gone.clone()].into());
+        assert_eq!(lasting_of(None, true, &watch), None, "no record");
+        assert_eq!(lasting_of(Some(&record), false, &watch), None, "not listed");
+        assert_eq!(
+            lasting_of(Some(&record), true, &watch),
+            Some(vec![(gone, false)])
+        );
     }
 
     #[test]

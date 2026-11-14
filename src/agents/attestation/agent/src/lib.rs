@@ -31,6 +31,7 @@
 #![deny(clippy::disallowed_methods)]
 
 pub mod agent;
+pub mod evidence;
 pub mod holdings;
 pub mod record;
 pub mod settings;

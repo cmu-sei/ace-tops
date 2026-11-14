@@ -45,7 +45,7 @@ pub use record::{
 };
 pub use report::{
     CrashSignal, Finding, ObservedPod, REPORTS_TOPIC, Report, Reporting, Termination,
-    accepted_report, crash_signal, decode_report, encode_report, findings,
+    accepted_report, crash_signal, decode_report, encode_report, findings, panicked,
 };
 pub use verdict::{
     ContainerFacts, Hardening, NotGenuine, Owner, OwnerKind, PodFacts, Verdict, WorkloadFacts,

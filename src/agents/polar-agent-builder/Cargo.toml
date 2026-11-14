@@ -50,6 +50,8 @@ polar-topics.workspace = true
 # The state agent's questions and answers, which the state actor asks and hears (state.rs).
 soft-state-common.workspace = true
 polar-signing.workspace = true
+# The evidence records an agent sends the git server, and its answers (src/recorder.rs).
+polar-git-server-common.workspace = true
 # The signer asks the custody daemon to sign the agent's evidence records with the pod's signing key (signer.rs).
 polar-custody.workspace = true
 # The signer puts a record's signature, which the custody daemon gives as DER, in the fixed form polar-signing reads.

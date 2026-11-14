@@ -78,6 +78,7 @@ pub mod message;
 pub use message::{Encrypted, Outbound, Plaintext};
 pub mod policy_authority;
 pub mod protocol;
+pub mod recorder;
 pub mod role;
 pub use role::Role;
 pub mod running;

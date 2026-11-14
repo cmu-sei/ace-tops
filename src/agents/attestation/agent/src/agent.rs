@@ -41,7 +41,9 @@ impl PolarAgent for AttestationAgent {
     const ROLE: Role = Role::Service;
     const PURPOSE: &'static str =
         "Answers whether an instance is what the deployment made, from what it sees of the cluster";
-    const NEEDS: &'static [Capability] = &[Capability::PodRead];
+    // It signs its evidence records with a key of its own (docs/architecture/key-custody.md, "Workload signing keys").
+    const NEEDS: &'static [Capability] = &[Capability::PodRead, Capability::Signing];
+    const RECORDS: &'static [&'static str] = crate::evidence::RECORDS;
     const OPERATIONS: &'static [OperationDecl] = &[crate::watch::WATCH];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
@@ -71,6 +73,18 @@ impl PolarAgent for AttestationAgent {
             Cause::Outside("the pods it watches"),
             Cause::Timer("each minute, what still stands"),
         ]),
+        TopicDecl::publish(
+            polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+            "its signed evidence records, for the git server to add to polar-evidence",
+        )
+        .because(&[
+            Cause::Outside("the pods it watches"),
+            Cause::Timer("each minute, the cluster's standing when it changes, and once a day"),
+        ]),
+        TopicDecl::subscribe(
+            polar_git_server_common::ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC,
+            "what the git server did with each of its records",
+        ),
     ];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
@@ -110,11 +124,34 @@ mod tests {
     #[test]
     fn it_asks_for_the_narrow_read_and_writes_no_graph() {
         let scaffold = polar_agent_builder::agent::scaffold_document::<AttestationAgent>();
-        assert_eq!(scaffold.requires, ["cassini", "pod-read"]);
+        assert_eq!(scaffold.requires, ["cassini", "pod-read", "signing"]);
         assert!(scaffold.graph.is_empty());
         assert_eq!(scaffold.operations.len(), 1);
         assert_eq!(scaffold.operations[0].protocol, "kubernetes");
         assert_eq!(scaffold.operations[0].location, "cluster");
+    }
+
+    // docs/architecture/record-store.md, "Attestation verdicts as records": it signs its own records, of its two kinds and no others,
+    // and sends them to the git server, which answers on its own topic.
+    #[test]
+    fn it_signs_its_two_kinds_of_record_and_sends_them_to_the_git_server() {
+        let scaffold = polar_agent_builder::agent::scaffold_document::<AttestationAgent>();
+        assert!(scaffold.requires.iter().any(|r| r == "signing"));
+        assert_eq!(scaffold.records, ["attestation", "attestation-report"]);
+        let has = |name: &str, access| {
+            scaffold
+                .topics
+                .iter()
+                .any(|t| t.name == name && t.access == access)
+        };
+        assert!(has(
+            polar_git_server_common::EVIDENCE_REQUESTS_TOPIC,
+            polar_agent_builder::Access::Publish
+        ));
+        assert!(has(
+            polar_git_server_common::ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC,
+            polar_agent_builder::Access::Subscribe
+        ));
     }
 
     // docs/architecture/runtime-attestation.md: those who vouch are the only askers, so its certificate names their topics and no others.

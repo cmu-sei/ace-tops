@@ -42,6 +42,8 @@ cert-issuer-common = { path = "../../cert-issuer/common" }
 k8s-openapi.workspace = true
 polar.workspace = true
 polar-agent-builder.workspace = true
+# The evidence records it sends the git server, and its answers (src/evidence.rs; polar-agent-builder's recorder).
+polar-git-server-common.workspace = true
 polar-env.workspace = true
 polar-scheduler-common.workspace = true
 polar-signing.workspace = true

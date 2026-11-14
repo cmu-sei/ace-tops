@@ -66,6 +66,13 @@ pub fn crash_signal(exit_code: i32, signal: Option<i32>) -> Option<CrashSignal> 
         .and_then(CrashSignal::of)
 }
 
+/// Whether a container that ended with `exit_code` (and `signal`, as the runtime says it) panicked: a Rust panic that is not caught exits
+/// 101 (docs/architecture/record-store.md, "Attestation verdicts as records", bite B), and nothing of Polar's exits so on purpose. A signal the
+/// runtime names is a crash, not this.
+pub fn panicked(exit_code: i32, signal: Option<i32>) -> bool {
+    exit_code == 101 && crash_signal(exit_code, signal).is_none() && signal.unwrap_or(0) == 0
+}
+
 /// How a container ended, as the platform says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Termination {
@@ -99,6 +106,13 @@ pub enum Finding {
         finished_at: String,
         image_id: String,
     },
+    /// A container of it panicked: Polar's own code said an invariant it checks was broken.
+    Panicked {
+        container: String,
+        exit_code: i32,
+        finished_at: String,
+        image_id: String,
+    },
 }
 
 /// One thing found about one pod.
@@ -114,8 +128,12 @@ pub struct Report {
 }
 
 impl Report {
-    fn crashed(&self) -> bool {
-        matches!(self.finding, Finding::Crashed { .. })
+    /// Whether it is how a container ended, which the platform saw: said when seen, and never the agent's judgement.
+    pub fn crashed(&self) -> bool {
+        matches!(
+            self.finding,
+            Finding::Crashed { .. } | Finding::Panicked { .. }
+        )
     }
 }
 
@@ -145,16 +163,23 @@ pub fn findings(
             found.push(report(Finding::Altered(why)));
         }
         for ended in &pod.terminations {
-            let Some(signal) = crash_signal(ended.exit_code, ended.signal) else {
-                continue;
+            let finding = match crash_signal(ended.exit_code, ended.signal) {
+                Some(signal) => Finding::Crashed {
+                    container: ended.container.clone(),
+                    signal,
+                    exit_code: ended.exit_code,
+                    finished_at: ended.finished_at.clone(),
+                    image_id: ended.image_id.clone(),
+                },
+                None if panicked(ended.exit_code, ended.signal) => Finding::Panicked {
+                    container: ended.container.clone(),
+                    exit_code: ended.exit_code,
+                    finished_at: ended.finished_at.clone(),
+                    image_id: ended.image_id.clone(),
+                },
+                None => continue,
             };
-            let crash = report(Finding::Crashed {
-                container: ended.container.clone(),
-                signal,
-                exit_code: ended.exit_code,
-                finished_at: ended.finished_at.clone(),
-                image_id: ended.image_id.clone(),
-            });
+            let crash = report(finding);
             // A container that has just ended can show the same ending as its state and its last state.
             if !found.contains(&crash) {
                 found.push(crash);
@@ -302,6 +327,38 @@ mod tests {
         assert_eq!(crash_signal(139, Some(9)), None);
         // Some runtimes say 0 where there was no signal.
         assert_eq!(crash_signal(139, Some(0)), Some(CrashSignal::Segv));
+    }
+
+    // docs/architecture/record-store.md, "Attestation verdicts as records", bite B: a Rust panic that is not caught exits 101, where
+    // Polar's own code says an invariant it checks was broken. It is said as a crash is, when seen and whether or not the agent is
+    // believed; a signal the runtime names comes first.
+    #[test]
+    fn a_panic_is_an_exit_of_101_and_is_said_as_a_crash_is() {
+        assert!(panicked(101, None));
+        assert!(panicked(101, Some(0)));
+        assert!(!panicked(101, Some(11)), "a signal named comes first");
+        for exit_code in [0, 1, 100, 102, 134, 139] {
+            assert!(!panicked(exit_code, None), "{exit_code}");
+        }
+        let mut pod = genuine("a");
+        pod.terminations = vec![ended(101, None)];
+        for believed in [true, false] {
+            let found = findings(std::slice::from_ref(&pod), believed, None);
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert_eq!(
+                found[0].finding,
+                Finding::Panicked {
+                    container: "agent".into(),
+                    exit_code: 101,
+                    finished_at: "2026-11-03T12:00:00Z".into(),
+                    image_id: "registry/agent@sha256:0".into(),
+                }
+            );
+            assert!(found[0].crashed());
+        }
+        let mut reporting = Reporting::default();
+        let now = findings(&[pod], true, None);
+        assert_eq!(reporting.changed(&now), now, "said when seen");
     }
 
     #[test]
