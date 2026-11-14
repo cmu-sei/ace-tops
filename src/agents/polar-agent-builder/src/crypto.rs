@@ -219,6 +219,65 @@ impl CheckpointHandle {
     }
 }
 
+/// The agent's record key, for an agent with the `record-key` capability (docs/plans/crypto-actor.md): what its domain is
+/// given to have the key certified, in place of the key. It asks for the key's CSR and hands back its certificate, and
+/// nothing else of the actor; records are signed through the signer handle, as a pod's are.
+#[derive(Clone)]
+pub struct RecordKeyHandle {
+    actor: ActorRef<CryptoMessage>,
+}
+
+impl RecordKeyHandle {
+    pub(crate) fn new(actor: ActorRef<CryptoMessage>) -> Self {
+        Self { actor }
+    }
+
+    /// A record key at `key_path`, held by a crypto actor of its own whose identity is the certificate at
+    /// `own_certificate_path`'s, and the signer that signs with it: for an agent's tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn for_tests(
+        key_path: &str,
+        own_certificate_path: &str,
+    ) -> Result<(Self, crate::signer::SignerHandle), String> {
+        let (actor, _) = ractor::Actor::spawn(
+            None,
+            polar_crypto::CryptoActor,
+            polar_crypto::CryptoActorArgs::unconnected().with_settings(
+                polar_crypto::environment::CryptoSettings {
+                    own_certificate_path: own_certificate_path.to_string(),
+                    key_files: polar_crypto::environment::KeyFiles {
+                        record: Some(key_path.to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok((
+            Self::new(actor.clone()),
+            crate::signer::SignerHandle::new(actor),
+        ))
+    }
+
+    /// A CSR for the key, naming the agent's identity.
+    pub async fn csr(&self) -> Result<String, String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::RecordKeyCsr { reply })
+            .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+    }
+
+    /// Hands the actor the key's certificate and its CA chain (PEM): taken if it is the key's, naming the record types it
+    /// signs, and then when it expires (Unix seconds).
+    pub async fn keep(&self, chain: String) -> Result<i64, String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::KeepRecordCertificate {
+            chain,
+            reply
+        })
+        .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+    }
+}
+
 /// The store a witness co-signs for, which its domain follows to judge what the store brings it; declared once, by the
 /// `keys` section. Re-exported so that the domain needs no way to polar-crypto itself.
 pub use polar_crypto::environment::{EXAMPLE_STORE, WITNESSED_STORE};

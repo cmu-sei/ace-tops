@@ -205,6 +205,21 @@ S2 DONE 2026-11-14 (record store bite 2's crypto piece): polar_crypto::environme
    WITNESSED_STORE (declared once, in `keys`); the render sets POLAR_WITNESS_COSIGNING_KEY for attestation-agent at
    <WITNESS_ROOT>/witness-key.pem; the holding file can no longer be judged by the key's presence beside it (the actor
    makes the key): record in it the verifier key it was made under and compare (CosignHandle::key).
+R1 DONE 2026-11-14 (the credentials agent's revocation records, for the acp merge; the user confirmed): a record key
+   held by the crypto actor where custody holds no signing key (the credentials agent: polar-init refuses a bootstrap
+   service any custody signing key, main.rs:368). polar_crypto::environment::RECORD_KEY (POLAR_RECORD_KEY, WriteFile,
+   in `keys`), section RECORD_KEYS, KeyFiles.record (own certificate read for it in from_env_for). records::RecordKey
+   {open (checkpoints::load_or_make_key, chain kept beside as <stem>.chain.pem), csr, keep_certificate (this key, this
+   identity, MayRecord::Only: never the bare name), expires_at, sign}; sign_record and RecordKey share `document`.
+   CryptoMessage::RecordKeyCsr, KeepRecordCertificate; SignRecord signs with the record key when there is one, else
+   custody. Builder: Capability::RecordKey ("record-key", ALL 11; catalog: POLAR_RECORD_KEY=/var/lib/{workload}/
+   record-key.pem), wants_signer for Signing or RecordKey, signer needs CUSTODY_SOCKET or RECORD_KEY;
+   crypto::RecordKeyHandle {csr, keep; for_tests under `testing`} in AgentResources.record_key. Credentials agent:
+   NEEDS [RecordKey], RECORDS ["revocation"], agent::record_names(); authority_certificate::KeyToCertify {Held,
+   RecordKey} and Certified::RecordKey: cert-issuer's /internal/issue, CertType::Signing for its own identity naming
+   c:record-evidence:revocation only (cert-issuer allows any names on a caller's own signing certificate). polar-42's
+   port signs through resources.signer only. NOT DONE (gap, for review): the credentials agent's authority, escrow and
+   ledger keys are still held in its process; by the design they belong behind its crypto actor (a later K step).
 K4 Dependency test: cargo metadata; only polar-crypto, polar-init, polar-health, polar-custody-daemon (and polar-custody
    itself) may depend on polar-custody. Builder loses its direct dependency.
 K5 Degraded key files held by the CryptoActor (same shape).

@@ -143,4 +143,7 @@ its own, since it changes how every signed section, commit and certificate is be
 - **Record signing in the crypto actor.**
 - **The dependency test.**
 - **The key files of a cluster without custody** held by the crypto actor too, so the degraded mode has the same shape.
+- **The credentials agent's own keys** (its authority, escrow and ledger keys) behind its crypto actor. They are held in
+  its process today. Its record key, which signs its revocation records, is already the crypto actor's: a key file
+  made once on its volume, since custody can hold no signing key for the agent that comes up first.
 - **Verification in the crypto actor,** planned on its own.

@@ -176,6 +176,23 @@
     resources: {}
   }
 
+  # The agent signs evidence records, as `signing` does, with a key its crypto actor makes once on the workload's own
+  # volume (`persistent-data`, which such an agent also declares) and never replaces, where custody can hold no signing
+  # key for it: the credentials agent's, which comes up before anything could fetch it one (docs/plans/crypto-actor.md).
+  # The agent has it certified itself, for the record types it declares. A key file until custody can hold a named key
+  # that outlives its pod.
+  record-key: {
+    pod: {
+      env: [
+        { name: "POLAR_RECORD_KEY", value: "/var/lib/{workload}/record-key.pem" }
+      ]
+    }
+    identity: {}
+    dependency: {}
+    init: {}
+    resources: {}
+  }
+
   # Reads the Kubernetes API across the cluster with the workload's own ServiceAccount token (a Secret, mounted where
   # Kubernetes clients look for it): a ClusterRole holding what its cluster operations declare, which never includes
   # Secrets (polar-agent-builder/src/capability.rs, `role_of`). The Job leaves automountServiceAccountToken unset

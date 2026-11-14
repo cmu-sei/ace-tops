@@ -87,6 +87,17 @@ pub const WITNESS_COSIGNING_KEY: Optional<String> = Optional::path(
      crypto actor makes it there once if it is not there, and never replaces it",
 );
 
+/// Where a workload that has no signing key in custody keeps the key it signs its evidence records with, on its own
+/// volume: the crypto actor makes it there once if it is not there, and never replaces it (docs/plans/crypto-actor.md).
+/// The credentials agent's: it comes up before anything could fetch it a custody signing key. Only a workload with the
+/// `record-key` capability is given it.
+pub const RECORD_KEY: Optional<String> = Optional::path(
+    "POLAR_RECORD_KEY",
+    Access::WriteFile,
+    "path to the private key (PKCS#8 PEM, P-256) the agent signs its evidence records with, where no custody daemon \
+     holds a signing key for it; its crypto actor makes it there once if it is not there, and never replaces it",
+);
+
 /// A store's checkpoint verifier key, of a key no store holds: for tests and the scaffold's example.
 pub const EXAMPLE_STORE: &str = "polar-git-server.polar.serviceaccount.cluster.local/checkpoint+f857ae4e+AjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABG/wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW/AdxT9sCwx+7ni0DG/30lqW4igrmJzvccFEo=";
 
@@ -113,6 +124,7 @@ static KEY_VARIABLES: &[&dyn Described] = &[
     &STORE_CHECKPOINT_KEY,
     &WITNESS_COSIGNING_KEY,
     &WITNESSED_STORE,
+    &RECORD_KEY,
 ];
 
 /// Where the agent's keys are: the custody daemon's socket, or, where a cluster runs without the daemon, its key files.
@@ -134,6 +146,20 @@ pub static CHECKPOINTS: Section = Section {
         Ok(None) => vec![format!(
             "{} is not set: an agent that keeps a log's checkpoint key is told where it is",
             STORE_CHECKPOINT_KEY.name()
+        )],
+        Err(e) => vec![e.to_string()],
+    },
+};
+
+/// What an agent with the `record-key` capability needs of `keys`: where its record key is.
+pub static RECORD_KEYS: Section = Section {
+    name: "record-key",
+    vars: &[],
+    relations: |env| match RECORD_KEY.read(env) {
+        Ok(Some(_)) => Vec::new(),
+        Ok(None) => vec![format!(
+            "{} is not set: an agent that signs records with a key of its own is told where it is",
+            RECORD_KEY.name()
         )],
         Err(e) => vec![e.to_string()],
     },
@@ -177,6 +203,8 @@ pub struct KeyFiles {
     pub checkpoint: Option<String>,
     /// A witness's co-signing key.
     pub cosigning: Option<String>,
+    /// The key an agent signs its evidence records with where custody holds none for it.
+    pub record: Option<String>,
 }
 
 impl KeyFiles {
@@ -189,6 +217,7 @@ impl KeyFiles {
             server: pair(read(&SERVER_CERT_FILE)?, read(&SERVER_KEY_FILE)?),
             checkpoint: read(&STORE_CHECKPOINT_KEY)?,
             cosigning: read(&WITNESS_COSIGNING_KEY)?,
+            record: read(&RECORD_KEY)?,
         })
     }
 }
@@ -256,11 +285,16 @@ impl CryptoSettings {
             .map_err(|e| e.to_string())?
             .filter(|s| !s.trim().is_empty());
         let key_files = KeyFiles::from_env(env)?;
-        // A checkpoint names its log by the agent's identity, and a witness co-signs as its identity, so an agent that
-        // keeps either key reads its own certificate for it, as one that escrows does.
-        let own_certificate_path = match (&key_files.checkpoint, &key_files.cosigning) {
-            (None, None) => String::new(),
-            _ => TLS_CLIENT_CERT.read(env).unwrap_or_default(),
+        // A checkpoint names its log by the agent's identity, a witness co-signs as its identity, and a record key is
+        // certified for it, so an agent that keeps any of these keys reads its own certificate for it, as one that
+        // escrows does.
+        let keeps_a_key = key_files.checkpoint.is_some()
+            || key_files.cosigning.is_some()
+            || key_files.record.is_some();
+        let own_certificate_path = if keeps_a_key {
+            TLS_CLIENT_CERT.read(env).unwrap_or_default()
+        } else {
+            String::new()
         };
         Ok(Self {
             own_certificate_path,

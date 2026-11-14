@@ -1437,9 +1437,10 @@ impl Actor for ConsumerSupervisor {
                 .map_err(ActorProcessingErr::from)?,
         )
         .map_err(ActorProcessingErr::from)?;
-        for (key_pem, cert_type, extra_sans, certified) in [
+        use crate::authority_certificate::KeyToCertify;
+        let mut keys = vec![
             (
-                authority_key_pem,
+                KeyToCertify::Held(authority_key_pem),
                 cert_issuer_common::CertType::Signing,
                 Vec::new(),
                 crate::authority_certificate::Certified::Publisher {
@@ -1448,7 +1449,7 @@ impl Actor for ConsumerSupervisor {
                 },
             ),
             (
-                escrow_key_pem,
+                KeyToCertify::Held(escrow_key_pem),
                 cert_issuer_common::CertType::Service,
                 Vec::new(),
                 crate::authority_certificate::Certified::Publisher {
@@ -1457,19 +1458,30 @@ impl Actor for ConsumerSupervisor {
                 },
             ),
             (
-                ledger_key_pem,
+                KeyToCertify::Held(ledger_key_pem),
                 cert_issuer_common::CertType::Checkpoint,
                 Vec::new(),
                 crate::authority_certificate::Certified::Ledger(ledger.clone()),
             ),
-        ] {
+        ];
+        // The record key its revocation records are signed with, which its crypto actor holds: a signing certificate
+        // for its own identity naming the record types it writes and no other (docs/plans/crypto-actor.md).
+        if let Some(record_key) = &resources.record_key {
+            keys.push((
+                KeyToCertify::RecordKey(record_key.clone()),
+                cert_issuer_common::CertType::Signing,
+                crate::agent::record_names(),
+                crate::authority_certificate::Certified::RecordKey(record_key.clone()),
+            ));
+        }
+        for (key, cert_type, extra_sans, certified) in keys {
             crate::authority_certificate::AuthorityCertifier::spawn_linked(
                 None,
                 crate::authority_certificate::AuthorityCertifier,
                 crate::authority_certificate::AuthorityCertifierArgs {
                     cert_issuer: make_cert_issuer_client().await?,
                     identity: own_cert_identity.clone(),
-                    key_pem,
+                    key,
                     cert_type,
                     extra_sans,
                     certified,

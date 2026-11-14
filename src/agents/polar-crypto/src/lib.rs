@@ -549,6 +549,17 @@ pub enum CryptoMessage {
     CertifyCheckpointKey,
     /// What the credentials agent answered, or why it did not.
     CheckpointKeyCertified(Result<KeyCertificationReply, String>),
+    /// A CSR for the agent's record key, for its domain to have certified: for an agent with the `record-key`
+    /// capability, which custody holds no signing key for (the credentials agent, which asks cert-issuer itself).
+    RecordKeyCsr {
+        reply: RpcReplyPort<Result<String, String>>,
+    },
+    /// The record key's certificate and its CA chain (PEM), taken if it is the key's, naming the record types it signs,
+    /// and kept beside it: when it expires (Unix seconds).
+    KeepRecordCertificate {
+        chain: String,
+        reply: RpcReplyPort<Result<i64, String>>,
+    },
     /// A general secret to escrow -- e.g. an access token an observer
     /// holds and wants the Credentials Agent to store on its behalf.
     /// Not the agent's own escrow private key, which the custody
@@ -742,6 +753,8 @@ pub struct CryptoActorState {
     /// The witness's co-signing key, and the store it co-signs for (its identity), for an agent that keeps one.
     witness: Option<checkpoints::WitnessKey>,
     witnessed_store: Option<String>,
+    /// The key its records are signed with where custody holds none for it, for an agent that keeps one.
+    record_key: Option<records::RecordKey>,
     key_certification_reply_router: Arc<ReplyRouter<KeyCertificationReply>>,
     escrow_key_reply_router: Arc<ReplyRouter<credentials_agent_common::escrow_key::EscrowKeyReply>>,
     store_secret_reply_router: Arc<ReplyRouter<StoreSecretReply>>,
@@ -876,6 +889,17 @@ impl Actor for CryptoActor {
                 None
             }
         };
+        let record_key = match (&settings.key_files.record, &own_identity) {
+            (None, _) => None,
+            (Some(path), Some(identity)) => Some(
+                records::RecordKey::open(std::path::Path::new(path), identity)
+                    .map_err(ActorProcessingErr::from)?,
+            ),
+            (Some(path), None) => {
+                warn!(%path, "a record key is named, but the agent has no identity to sign as: it signs no record");
+                None
+            }
+        };
         if let Some(router) = &args.router {
             register_replies(&myself, router, checkpoint.is_some());
         }
@@ -891,6 +915,7 @@ impl Actor for CryptoActor {
             checkpoint,
             witness,
             witnessed_store: None,
+            record_key,
             key_certification_reply_router: Arc::new(ReplyRouter::new()),
             escrow_key_reply_router: Arc::new(ReplyRouter::new()),
             store_secret_reply_router: Arc::new(ReplyRouter::new()),
@@ -1067,28 +1092,55 @@ impl Actor for CryptoActor {
                     CryptoMessage::CertifyCheckpointKey
                 });
             }
-            CryptoMessage::SignRecord { record, reply } => match state.escrow_key.clone() {
-                None => {
-                    let _ = reply.send(Err(records::SignError::Unavailable(
-                        "no custody daemon: the signing key is the daemon's".to_string(),
-                    )));
+            CryptoMessage::RecordKeyCsr { reply } => {
+                let _ = reply.send(match &state.record_key {
+                    Some(key) => key.csr(),
+                    None => Err("the agent keeps no record key".to_string()),
+                });
+            }
+            CryptoMessage::KeepRecordCertificate { chain, reply } => {
+                let kept = match state.record_key.as_mut() {
+                    Some(key) => key.keep_certificate(&chain),
+                    None => Err("the agent keeps no record key".to_string()),
+                };
+                match &kept {
+                    Ok(_) => info!("the record key is certified"),
+                    Err(e) => warn!("the record key's certificate was not taken: {e}"),
                 }
-                // The client blocks on the socket: off the actor and off the runtime's workers.
-                Some(client) => {
-                    tokio::spawn(async move {
-                        let signed = tokio::task::spawn_blocking(move || {
-                            records::sign_record(&client, &record)
-                        })
-                        .await
-                        .map_err(|e| records::SignError::Unavailable(e.to_string()))
-                        .and_then(|signed| signed);
+                let _ = reply.send(kept);
+            }
+            CryptoMessage::SignRecord { record, reply } => {
+                match (&state.record_key, state.escrow_key.clone()) {
+                    // A key of the agent's own, where custody holds none for it: signed here, a local computation.
+                    (Some(key), _) => {
+                        let signed = key.sign(&record);
                         if let Err(e) = &signed {
                             warn!("a record was not signed: {e}");
                         }
                         let _ = reply.send(signed);
-                    });
+                    }
+                    (None, None) => {
+                        let _ = reply.send(Err(records::SignError::Unavailable(
+                            "no custody daemon: the signing key is the daemon's".to_string(),
+                        )));
+                    }
+                    // The client blocks on the socket: off the actor and off the runtime's workers.
+                    (None, Some(client)) => {
+                        tokio::spawn(async move {
+                            let signed = tokio::task::spawn_blocking(move || {
+                                records::sign_record(&client, &record)
+                            })
+                            .await
+                            .map_err(|e| records::SignError::Unavailable(e.to_string()))
+                            .and_then(|signed| signed);
+                            if let Err(e) = &signed {
+                                warn!("a record was not signed: {e}");
+                            }
+                            let _ = reply.send(signed);
+                        });
+                    }
                 }
-            },
+            }
             CryptoMessage::ClientTls { verifier, reply } => {
                 let source = state.key_source(polar_custody::protocol::Slot::Client);
                 // The daemon is asked for the certificate over its socket: off the actor and the runtime's workers.

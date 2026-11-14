@@ -26,10 +26,17 @@
 //! crypto actor makes the record's signing input, in the evidence domain, and signs only a record of a type the slot's
 //! certificate names (`c:record-evidence:<type>`); the daemon signs what it is given. A reader holds every record to its
 //! signer's certificate as well, so a record signed outside its types is refused where it is read.
+//!
+//! Where custody holds no signing key for the agent, it has a [`RecordKey`] instead: a key file of its own, which the
+//! crypto actor makes once and holds, certified in the same way and signing in the same way (docs/plans/crypto-actor.md;
+//! the credentials agent's, which comes up before anything could fetch it a custody signing key).
 
+use p256::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use polar_custody::client::{ClientError, CustodyClient};
 use polar_custody::protocol::Slot;
 use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// An evidence record for the agent to sign: its `type` (`[a-z0-9-]+`, what the signer's certificate must name) and
 /// what it says.
@@ -91,6 +98,20 @@ pub(crate) fn sign_record(
         other => SignError::Unavailable(other.to_string()),
     };
     let chain = client.certificate(Slot::Signer).map_err(not_signed)?;
+    document(record, chain, |input| {
+        let der = client.sign(Slot::Signer, input).map_err(not_signed)?;
+        p256::ecdsa::Signature::from_der(&der)
+            .map_err(|e| SignError::Unavailable(format!("not a signature: {e}")))
+    })
+}
+
+/// `record` as the evidence document signed by `sign` (over its signing input, in the evidence domain) under `chain`:
+/// refused unless the chain's leaf names its type.
+fn document(
+    record: &EvidenceRecord,
+    chain: Vec<String>,
+    sign: impl FnOnce(&[u8]) -> Result<p256::ecdsa::Signature, SignError>,
+) -> Result<polar_signing::Document, SignError> {
     let record_type = record
         .payload
         .get("type")
@@ -110,11 +131,7 @@ pub(crate) fn sign_record(
         &record.payload,
     )
     .map_err(|e| SignError::Unavailable(format!("the record has no canonical form: {e}")))?;
-    let der = client.sign(Slot::Signer, &input).map_err(not_signed)?;
-    let fixed = p256::ecdsa::Signature::from_der(&der)
-        .map_err(|e| SignError::Unavailable(format!("not a signature: {e}")))?
-        .to_bytes()
-        .to_vec();
+    let fixed = sign(&input)?.to_bytes().to_vec();
     Ok(polar_signing::Document {
         payload: record.payload.clone(),
         signature: polar_signing::SignatureBlock {
@@ -123,6 +140,118 @@ pub(crate) fn sign_record(
             certificate_chain: chain,
         },
     })
+}
+
+/// The agent's own record key, where custody holds no signing key for it (`environment::RECORD_KEY`): made once at its
+/// path and never replaced, as a checkpoint key is ([`crate::checkpoints::load_or_make_key`]); its certificate kept
+/// beside it. It signs nothing until it is certified, and then only the record types its certificate names.
+pub struct RecordKey {
+    path: PathBuf,
+    identity: String,
+    key: p256::ecdsa::SigningKey,
+    key_pem: Zeroizing<String>,
+    public_der: Vec<u8>,
+    /// The certificate and its CA chain, one PEM each, and when it expires (Unix seconds).
+    certificate: Option<(Vec<String>, i64)>,
+}
+
+impl RecordKey {
+    /// The key at `path` (made there if it is not), as `identity`'s, with the certificate kept beside it when it is this
+    /// key's.
+    pub fn open(path: &Path, identity: &str) -> Result<Self, String> {
+        let key = crate::checkpoints::load_or_make_key(path)?;
+        let key_pem = Zeroizing::new(
+            key.to_pkcs8_pem(LineEnding::LF)
+                .map_err(|e| format!("the record key does not encode: {e}"))?
+                .to_string(),
+        );
+        let public_der = key
+            .verifying_key()
+            .to_public_key_der()
+            .map_err(|e| format!("the record key's public half does not encode: {e}"))?
+            .as_bytes()
+            .to_vec();
+        let mut opened = Self {
+            path: path.to_path_buf(),
+            identity: identity.to_string(),
+            key,
+            key_pem,
+            public_der,
+            certificate: None,
+        };
+        if let Ok(chain) = std::fs::read_to_string(crate::checkpoints::chain_path(path)) {
+            opened.certificate = opened.certifies(&chain);
+        }
+        Ok(opened)
+    }
+
+    /// A CSR for the key, naming the agent's identity; the record types are the certificate's, as the issuer names them.
+    pub fn csr(&self) -> Result<String, String> {
+        cert_issuer_common::keypair::csr_for_private_key_pem(&self.identity, &[], &self.key_pem)
+            .map_err(|e| format!("the record key's CSR: {e}"))
+    }
+
+    /// When its certificate expires, in Unix seconds, once it has one.
+    pub fn expires_at(&self) -> Option<i64> {
+        self.certificate.as_ref().map(|(_, at)| *at)
+    }
+
+    /// Takes `chain` (the certificate, then its CA chain) as the key's certificate if it is this key's, for this agent,
+    /// naming the record types it may sign, and keeps it beside the key: when it expires. Otherwise refuses it, and
+    /// keeps what it had.
+    pub fn keep_certificate(&mut self, chain: &str) -> Result<i64, String> {
+        let Some(certified) = self.certifies(chain) else {
+            return Err(
+                "the certificate is not this record key's, for this agent, naming the record types it signs"
+                    .to_string(),
+            );
+        };
+        let path = crate::checkpoints::chain_path(&self.path);
+        let staged = path.with_extension("pem.new");
+        std::fs::write(&staged, chain)
+            .and_then(|()| std::fs::rename(&staged, &path))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let expires = certified.1;
+        self.certificate = Some(certified);
+        Ok(expires)
+    }
+
+    /// `record` signed with the key, as the evidence document it is: refused unless its certificate names the type.
+    pub fn sign(&self, record: &EvidenceRecord) -> Result<polar_signing::Document, SignError> {
+        let Some((chain, _)) = &self.certificate else {
+            return Err(SignError::Unavailable(
+                "the record key is not certified yet".to_string(),
+            ));
+        };
+        document(record, chain.clone(), |input| {
+            use p256::ecdsa::signature::Signer as _;
+            Ok(self.key.sign(input))
+        })
+    }
+
+    /// The certificates in `chain` and when the first expires, when it is a certificate of this key naming this agent
+    /// and record types, and not any record type: a workload signs its own kinds of record.
+    fn certifies(&self, chain: &str) -> Option<(Vec<String>, i64)> {
+        use cert_issuer_common::evidence::{MayRecord, may_record};
+        let certificates: Vec<String> = chain
+            .split_inclusive("-----END CERTIFICATE-----")
+            .map(str::trim_start)
+            .filter(|pem| pem.starts_with("-----BEGIN CERTIFICATE-----"))
+            .map(|pem| format!("{pem}\n"))
+            .collect();
+        let first = certificates.first()?;
+        let (_, pem) = x509_parser::pem::parse_x509_pem(first.as_bytes()).ok()?;
+        let certificate = pem.parse_x509().ok()?;
+        let named = cert_issuer_common::permission::extract_own_identity(first).ok()?;
+        let types = matches!(may_record(first).ok()?, MayRecord::Only(_));
+        (certificate.public_key().raw == self.public_der.as_slice()
+            && named == self.identity
+            && types)
+            .then(|| {
+                let expires = certificate.validity().not_after.timestamp();
+                (certificates, expires)
+            })
+    }
 }
 
 #[cfg(test)]
@@ -278,6 +407,161 @@ mod tests {
             signed(&client, other).await,
             Err(SignError::Refused(why)) if why.contains("projection-test")
         ));
+    }
+
+    /// What cert-issuer signs for the credentials agent's record key: its own identity's documentSigning certificate,
+    /// naming the record types in `names`.
+    fn certify_record_key(ca: &Ca, key: &RecordKey, names: &[&str]) -> String {
+        let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        certify(ca, &key.csr().unwrap(), &names)
+    }
+
+    /// docs/plans/crypto-actor.md: a key of the agent's own, held by the crypto actor where custody holds none for it,
+    /// signs nothing until it is certified, and then only the record types its certificate names, as a pod's does.
+    #[test]
+    fn a_record_key_signs_only_once_certified_and_only_the_types_it_is_certified_for() {
+        let ca = ca();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("record-key.pem");
+        let mut key = RecordKey::open(&path, IDENTITY).unwrap();
+        let revocation = || EvidenceRecord::new("revocation", Map::new()).unwrap();
+        assert!(matches!(
+            key.sign(&revocation()),
+            Err(SignError::Unavailable(why)) if why.contains("not certified")
+        ));
+        let chain = certify_record_key(&ca, &key, &["c:record-evidence:revocation"]);
+        let expires = key.keep_certificate(&chain).unwrap();
+        assert_eq!(key.expires_at(), Some(expires));
+        let document = key.sign(&revocation()).unwrap();
+        let trust = polar_signing::Trust::from_pem(std::slice::from_ref(&ca.pem)).unwrap();
+        let who = polar_signing::verify_in(
+            polar_signing::Domain::EVIDENCE_RECORD,
+            &document,
+            &trust,
+            now(),
+        )
+        .unwrap();
+        assert_eq!(who.identity.as_deref(), Some(IDENTITY));
+        assert!(matches!(
+            key.sign(&EvidenceRecord::new("attestation", Map::new()).unwrap()),
+            Err(SignError::Refused(why)) if why.contains("attestation")
+        ));
+        // Opened again, it is the same key, with the certificate kept beside it.
+        let again = RecordKey::open(&path, IDENTITY).unwrap();
+        assert_eq!(again.expires_at(), Some(expires));
+        let document = again.sign(&revocation()).unwrap();
+        assert!(
+            polar_signing::verify_in(
+                polar_signing::Domain::EVIDENCE_RECORD,
+                &document,
+                &trust,
+                now()
+            )
+            .is_ok()
+        );
+    }
+
+    /// A certificate is taken only when it is this key's, for this agent, naming record types it may sign and not the
+    /// bare name, which would let it sign any; what it had is kept.
+    #[test]
+    fn a_record_key_takes_only_its_own_certificate_naming_its_types() {
+        let ca = ca();
+        let dir = tempfile::tempdir().unwrap();
+        let mut key = RecordKey::open(&dir.path().join("record-key.pem"), IDENTITY).unwrap();
+        let other = RecordKey::open(&dir.path().join("other.pem"), IDENTITY).unwrap();
+        let someone_else = RecordKey::open(
+            &dir.path().join("else.pem"),
+            "x.polar.serviceaccount.cluster.local",
+        )
+        .unwrap();
+        for (refused, why) in [
+            (
+                certify_record_key(&ca, &other, &["c:record-evidence:revocation"]),
+                "another key's",
+            ),
+            (certify_record_key(&ca, &key, &[]), "no record type"),
+            (
+                certify_record_key(&ca, &key, &["c:record-evidence"]),
+                "any record type",
+            ),
+            ("not a certificate".to_string(), "not a certificate"),
+        ] {
+            assert!(key.keep_certificate(&refused).is_err(), "{why}");
+            assert_eq!(key.expires_at(), None, "{why}");
+        }
+        let mut renamed = RecordKey::open(&dir.path().join("else.pem"), IDENTITY).unwrap();
+        let theirs = certify_record_key(&ca, &someone_else, &["c:record-evidence:revocation"]);
+        assert!(
+            renamed.keep_certificate(&theirs).is_err(),
+            "another identity's"
+        );
+    }
+
+    /// The crypto actor holds the record key: the domain gets a CSR for it, hands back the certificate, and has records
+    /// signed with it, with no custody daemon at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_crypto_actor_holds_the_record_key_certifies_it_through_the_domain_and_signs_with_it()
+     {
+        let ca = ca();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state/record-key.pem");
+        let probe = RecordKey::open(&dir.path().join("probe.pem"), IDENTITY).unwrap();
+        let own = dir.path().join("cert.pem");
+        std::fs::write(&own, certify_record_key(&ca, &probe, &[])).unwrap();
+        let (router, _) = ractor::Actor::spawn(None, polar_router::RouterActor, ())
+            .await
+            .unwrap();
+        let (tcp_client, _) = ractor::Actor::spawn(None, Subscriptions(Default::default()), ())
+            .await
+            .unwrap();
+        let (actor, _) = ractor::Actor::spawn(
+            None,
+            crate::CryptoActor,
+            crate::CryptoActorArgs::new(tcp_client, router).with_settings(
+                crate::environment::CryptoSettings {
+                    own_certificate_path: own.to_string_lossy().into_owned(),
+                    key_files: crate::environment::KeyFiles {
+                        record: Some(path.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        let sign = || async {
+            ractor::call!(actor, |reply| crate::CryptoMessage::SignRecord {
+                record: EvidenceRecord::new("revocation", Map::new()).unwrap(),
+                reply
+            })
+            .unwrap()
+        };
+        assert!(matches!(sign().await, Err(SignError::Unavailable(_))));
+        let csr = ractor::call!(actor, |reply| crate::CryptoMessage::RecordKeyCsr { reply })
+            .unwrap()
+            .unwrap();
+        let names = vec!["c:record-evidence:revocation".to_string()];
+        let chain = certify(&ca, &csr, &names);
+        ractor::call!(actor, |reply| crate::CryptoMessage::KeepRecordCertificate {
+            chain,
+            reply
+        })
+        .unwrap()
+        .unwrap();
+        let document = sign().await.unwrap();
+        let trust = polar_signing::Trust::from_pem(std::slice::from_ref(&ca.pem)).unwrap();
+        assert!(
+            polar_signing::verify_in(
+                polar_signing::Domain::EVIDENCE_RECORD,
+                &document,
+                &trust,
+                now()
+            )
+            .is_ok()
+        );
+        assert!(path.exists());
+        actor.stop(None);
     }
 
     /// Stands in for the agent's Cassini client, keeping what it is asked to subscribe to.

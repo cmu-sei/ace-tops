@@ -73,6 +73,11 @@ pub enum Capability {
     /// and has the credentials agent certify (docs/plans/record-store/to-main.md). The deployment says where the key is
     /// (`POLAR_STORE_CHECKPOINT_KEY`).
     Checkpoints,
+    /// Signs evidence records, as `Signing` does, with a key its crypto actor makes once on the workload's volume and
+    /// holds, where custody can hold no signing key for it: the credentials agent's, which comes up before anything could
+    /// fetch it one (docs/plans/crypto-actor.md). The deployment says where the key is (`POLAR_RECORD_KEY`); the agent
+    /// has it certified itself, through its crypto actor ([`crate::crypto::RecordKeyHandle`]).
+    RecordKey,
 }
 
 /// What a capability lets an agent do to the Kubernetes API, as its RBAC rules in `capabilities.nuon` say.
@@ -216,7 +221,7 @@ pub fn role_namespaces_of(
 
 impl Capability {
     /// Every capability, in the order the catalog lists them.
-    pub const ALL: [Capability; 10] = [
+    pub const ALL: [Capability; 11] = [
         Capability::Cassini,
         Capability::GraphWrite,
         Capability::GraphRead,
@@ -227,6 +232,7 @@ impl Capability {
         Capability::SoftState,
         Capability::JobRun,
         Capability::Checkpoints,
+        Capability::RecordKey,
     ];
 
     /// The one namespace its Kubernetes role is in, by its key in the cluster's namespaces, for a capability held to one;
@@ -276,6 +282,7 @@ impl Capability {
             Capability::SoftState => "soft-state",
             Capability::JobRun => "job-run",
             Capability::Checkpoints => "checkpoints",
+            Capability::RecordKey => "record-key",
         }
     }
 }

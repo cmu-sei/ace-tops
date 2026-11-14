@@ -67,6 +67,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 attestation-common = { workspace = true, features = ["testing"] }
+# A record key held by a crypto actor of its own, for the certifier's tests (src/authority_certificate.rs).
+polar-agent-builder = { workspace = true, features = ["testing"] }
 base64.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

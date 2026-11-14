@@ -162,8 +162,11 @@ pub struct AgentResources {
     pub checkpoints: Option<crate::crypto::CheckpointHandle>,
     /// The agent's witness key, for one the deployment gives one (`POLAR_WITNESS_COSIGNING_KEY`).
     pub cosigning: Option<crate::crypto::CosignHandle>,
-    /// What the agent signs its evidence records with, for one with the `signing` capability ([`signer`]).
+    /// What the agent signs its evidence records with, for one with the `signing` or `record-key` capability
+    /// ([`signer`]).
     pub signer: Option<crate::signer::SignerHandle>,
+    /// What has its record key certified, for an agent with the `record-key` capability.
+    pub record_key: Option<crate::crypto::RecordKeyHandle>,
     /// The agent's way to the outside, for one that declares operations or credentials ([`protocol::ProtocolHandle`]).
     pub protocols: Option<protocol::ProtocolHandle>,
     /// The agent's way to its own soft state, for an agent with the `soft-state` capability (it declares a graph
@@ -638,7 +641,8 @@ impl<M: ractor::Message> ConfiguredAgent<M> {
                 config: startup.config,
                 subscriptions: this.subscriptions,
                 wants_crypto: this.wants_crypto,
-                wants_signer: this.requires.contains(&Capability::Signing),
+                wants_signer: this.requires.contains(&Capability::Signing)
+                    || this.requires.contains(&Capability::RecordKey),
                 state_agent,
                 health_writer,
                 with_client: true,

@@ -45,17 +45,36 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Asks cert-issuer to certify the key `key_pem` (PKCS#8) as `identity`'s, a certificate of `cert_type` naming
-/// `extra_sans` besides: its certificate as a chain, and how long until it is to be renewed.
+/// A key to certify: one this agent holds (PKCS#8 PEM), or its record key, which its crypto actor holds and makes the
+/// CSR for (docs/plans/crypto-actor.md).
+pub enum KeyToCertify {
+    Held(Zeroizing<String>),
+    RecordKey(polar_agent_builder::crypto::RecordKeyHandle),
+}
+
+impl KeyToCertify {
+    /// A CSR for the key, naming `identity`.
+    async fn csr(&self, identity: &str) -> Result<String, String> {
+        match self {
+            KeyToCertify::Held(key_pem) => {
+                cert_issuer_common::keypair::csr_for_private_key_pem(identity, &[], key_pem)
+                    .map_err(|e| format!("cannot make the key's CSR: {e}"))
+            }
+            KeyToCertify::RecordKey(handle) => handle.csr().await,
+        }
+    }
+}
+
+/// Asks cert-issuer to certify `key` as `identity`'s, a certificate of `cert_type` naming `extra_sans` besides: its
+/// certificate as a chain, and how long until it is to be renewed.
 pub async fn certify(
     cert_issuer: &HandshakeClient,
     identity: &str,
-    key_pem: &str,
+    key: &KeyToCertify,
     cert_type: CertType,
     extra_sans: &[String],
 ) -> Result<(Vec<String>, Duration), String> {
-    let csr = cert_issuer_common::keypair::csr_for_private_key_pem(identity, &[], key_pem)
-        .map_err(|e| format!("cannot make the key's CSR: {e}"))?;
+    let csr = key.csr(identity).await?;
     let issued = cert_issuer
         .issue_internal(InternalIssueRequest {
             instance_binding: None,
@@ -87,17 +106,21 @@ pub enum Certified {
     },
     /// The ledger, for its key.
     Ledger(ActorRef<crate::ledger::LedgerMessage>),
+    /// The crypto actor, for the record key it holds.
+    RecordKey(polar_agent_builder::crypto::RecordKeyHandle),
 }
 
 impl Certified {
-    fn tell(&self, chain: Vec<String>) -> Result<(), ActorProcessingErr> {
+    async fn tell(&self, chain: Vec<String>) -> Result<(), String> {
         match self {
-            Certified::Publisher { publisher, message } => publisher.cast(message(chain))?,
-            Certified::Ledger(ledger) => {
-                ledger.cast(crate::ledger::LedgerMessage::KeyCertified(chain))?
+            Certified::Publisher { publisher, message } => {
+                publisher.cast(message(chain)).map_err(|e| e.to_string())
             }
+            Certified::Ledger(ledger) => ledger
+                .cast(crate::ledger::LedgerMessage::KeyCertified(chain))
+                .map_err(|e| e.to_string()),
+            Certified::RecordKey(handle) => handle.keep(chain.concat()).await.map(|_| ()),
         }
-        Ok(())
     }
 }
 
@@ -105,8 +128,8 @@ pub struct AuthorityCertifierArgs {
     pub cert_issuer: HandshakeClient,
     /// This agent's identity as cert-issuer reads it off its connection: what the certificate names.
     pub identity: String,
-    /// The key to certify, PKCS#8 PEM, wiped when the certifier ends.
-    pub key_pem: Zeroizing<String>,
+    /// The key to certify: one held here is wiped when the certifier ends.
+    pub key: KeyToCertify,
     pub cert_type: CertType,
     pub extra_sans: Vec<String>,
     pub certified: Certified,
@@ -137,18 +160,21 @@ impl Actor for AuthorityCertifier {
         AuthorityCertifierMessage::Renew: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
-        let next = match certify(
+        let certified = match certify(
             &state.cert_issuer,
             &state.identity,
-            &state.key_pem,
+            &state.key,
             state.cert_type.clone(),
             &state.extra_sans,
         )
         .await
         {
-            Ok((chain, delay)) => {
+            Ok((chain, delay)) => state.certified.tell(chain).await.map(|()| delay),
+            Err(e) => Err(e),
+        };
+        let next = match certified {
+            Ok(delay) => {
                 info!(cert_type = ?state.cert_type, renewed_in = ?delay, "the key is certified");
-                state.certified.tell(chain)?;
                 delay
             }
             Err(e) => {
@@ -283,7 +309,7 @@ mod tests {
             AuthorityCertifierArgs {
                 cert_issuer: HandshakeClient::new(server.uri()),
                 identity: OWN_IDENTITY.to_string(),
-                key_pem: crate::authority_key::pkcs8_pem(&ledger_key).unwrap(),
+                key: KeyToCertify::Held(crate::authority_key::pkcs8_pem(&ledger_key).unwrap()),
                 cert_type: CertType::Checkpoint,
                 extra_sans: Vec::new(),
                 certified: Certified::Ledger(ledger.clone()),
@@ -353,7 +379,7 @@ mod tests {
         let (chain, delay) = certify(
             &HandshakeClient::new(server.uri()),
             OWN_IDENTITY,
-            &key_pem(),
+            &KeyToCertify::Held(key_pem()),
             CertType::Signing,
             &[],
         )
@@ -393,7 +419,7 @@ mod tests {
         let (chain, _) = certify(
             &HandshakeClient::new(server.uri()),
             OWN_IDENTITY,
-            &escrow_key_pem(),
+            &KeyToCertify::Held(escrow_key_pem()),
             CertType::Service,
             &[],
         )
@@ -470,7 +496,7 @@ mod tests {
             AuthorityCertifierArgs {
                 cert_issuer: HandshakeClient::new(server.uri()),
                 identity: OWN_IDENTITY.to_string(),
-                key_pem: escrow_key_pem(),
+                key: KeyToCertify::Held(escrow_key_pem()),
                 cert_type: CertType::Service,
                 extra_sans: Vec::new(),
                 certified: Certified::Publisher {
@@ -490,6 +516,120 @@ mod tests {
         let certified = certified.lock().unwrap();
         assert_eq!(certified.len(), 1, "the second try's");
         assert_eq!(certified[0].0, "escrow", "as the message it was given says");
+        certifier.stop(None);
+    }
+
+    /// A cert-issuer that signs a signing certificate on `/internal/issue` as the real one does for the caller's own
+    /// identity: documentSigning, naming the extra names asked for.
+    struct CertifiesRecordKey;
+
+    impl wiremock::Respond for CertifiesRecordKey {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let asked: InternalIssueRequest = request.body_json().unwrap();
+            let mut csr = rcgen::CertificateSigningRequestParams::from_pem(&asked.csr_pem).unwrap();
+            let now = time::OffsetDateTime::now_utc();
+            csr.params.not_before = now - time::Duration::minutes(1);
+            csr.params.not_after = now + time::Duration::hours(12);
+            for name in &asked.extra_sans {
+                csr.params
+                    .subject_alt_names
+                    .push(rcgen::SanType::URI(name.clone().try_into().unwrap()));
+            }
+            csr.params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+            csr.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::Other(
+                cert_issuer_common::OID_DOCUMENT_SIGNING.to_vec(),
+            )];
+            ResponseTemplate::new(200).set_body_json(cert_issuer_common::IssueResponse {
+                certificate_pem: csr.signed_by(&the_ca().issuer).unwrap().pem(),
+                ca_chain_pem: the_ca().pem.clone(),
+                serial_number: "record-1".to_string(),
+                session_id: "00000000-0000-0000-0000-000000000004".to_string(),
+                expires_at: now + time::Duration::hours(12),
+            })
+        }
+    }
+
+    /// docs/plans/crypto-actor.md: the record key its crypto actor holds is certified as the agent's own signing key
+    /// naming its revocation records and nothing else, and its revocation records are then signed with it, verifying
+    /// under the CA as the agent's; another type is refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_record_key_is_certified_for_the_agent_s_record_types_and_signs_its_revocations() {
+        use polar_agent_builder::signer::{EvidenceRecord, RecordSigner};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/issue"))
+            .and(body_partial_json(serde_json::json!({
+                "identity": OWN_IDENTITY,
+                "cert_type": "SIGNING",
+                "extra_sans": ["c:record-evidence:revocation"],
+            })))
+            .respond_with(CertifiesRecordKey)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("cert.pem");
+        let params = rcgen::CertificateParams::new(vec![OWN_IDENTITY.to_string()]).unwrap();
+        std::fs::write(
+            &own,
+            params
+                .self_signed(&rcgen::KeyPair::generate().unwrap())
+                .unwrap()
+                .pem(),
+        )
+        .unwrap();
+        let key_path = dir.path().join("record-key.pem");
+        let (record_key, signer) = polar_agent_builder::crypto::RecordKeyHandle::for_tests(
+            &key_path.to_string_lossy(),
+            &own.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            crate::agent::record_names(),
+            ["c:record-evidence:revocation"]
+        );
+        let (certifier, _) = Actor::spawn(
+            None,
+            AuthorityCertifier,
+            AuthorityCertifierArgs {
+                cert_issuer: HandshakeClient::new(server.uri()),
+                identity: OWN_IDENTITY.to_string(),
+                key: KeyToCertify::RecordKey(record_key.clone()),
+                cert_type: CertType::Signing,
+                extra_sans: crate::agent::record_names(),
+                certified: Certified::RecordKey(record_key),
+            },
+        )
+        .await
+        .unwrap();
+        let revocation = || {
+            EvidenceRecord::new(crate::agent::REVOCATION_RECORD, serde_json::Map::new()).unwrap()
+        };
+        let mut signed = signer.sign(revocation()).await;
+        for _ in 0..50 {
+            if signed.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            signed = signer.sign(revocation()).await;
+        }
+        let document = signed.unwrap();
+        let trust = polar_signing::Trust::from_pem(std::slice::from_ref(&the_ca().pem)).unwrap();
+        let who = polar_signing::verify_in(
+            polar_signing::Domain::EVIDENCE_RECORD,
+            &document,
+            &trust,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )
+        .unwrap();
+        assert_eq!(who.identity.as_deref(), Some(OWN_IDENTITY));
+        assert!(
+            signer
+                .sign(EvidenceRecord::new("attestation", serde_json::Map::new()).unwrap())
+                .await
+                .is_err()
+        );
         certifier.stop(None);
     }
 }

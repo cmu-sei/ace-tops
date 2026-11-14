@@ -223,6 +223,19 @@ fn checkpoint_handle(
     .then(|| crate::crypto::CheckpointHandle::new(crypto.actor()))
 }
 
+/// The record key's handle, for an agent its deployment gives one (`POLAR_RECORD_KEY`, which the `record-key`
+/// capability requires); none otherwise.
+fn record_key_handle(
+    config: &polar_env::Config,
+    crypto: &CryptoHandle,
+) -> Option<crate::crypto::RecordKeyHandle> {
+    matches!(
+        config.read(&polar_crypto::environment::RECORD_KEY),
+        Ok(Some(_))
+    )
+    .then(|| crate::crypto::RecordKeyHandle::new(crypto.actor()))
+}
+
 /// The witness key's handle, for an agent its deployment gives one (`POLAR_WITNESS_COSIGNING_KEY`); none otherwise.
 fn cosign_handle(
     config: &polar_env::Config,
@@ -755,17 +768,23 @@ impl InfrastructureSupervisor {
 
         // Records are signed by the crypto actor; the domain's handle reaches nothing else of it
         // (docs/architecture/key-custody.md, "Workload signing keys", item 4).
+        // The key is the custody daemon's, or, where custody holds none for the agent, its own record key's.
         let signer = if setup.wants_signer {
-            setup
-                .config
-                .read(&polar_custody::environment::CUSTODY_SOCKET)
-                .map_err(|e| ActorProcessingErr::from(e.to_string()))?
-                .ok_or_else(|| {
-                    ActorProcessingErr::from(format!(
-                        "{} is required to sign records: the signing key is the custody daemon's",
-                        polar_custody::environment::CUSTODY_SOCKET.name()
-                    ))
-                })?;
+            let read = |var: &polar_env::Optional<String>| {
+                setup
+                    .config
+                    .read(var)
+                    .map_err(|e| ActorProcessingErr::from(e.to_string()))
+            };
+            if read(&polar_custody::environment::CUSTODY_SOCKET)?.is_none()
+                && read(&polar_crypto::environment::RECORD_KEY)?.is_none()
+            {
+                return Err(ActorProcessingErr::from(format!(
+                    "{} or {} is required to sign records: the signing key is the custody daemon's, or the agent's own",
+                    polar_custody::environment::CUSTODY_SOCKET.name(),
+                    polar_crypto::environment::RECORD_KEY.name()
+                )));
+            }
             crypto
                 .as_ref()
                 .map(|crypto| crate::signer::SignerHandle::new(crypto.actor()))
@@ -1428,6 +1447,7 @@ impl Actor for InfrastructureSupervisor {
                         checkpoints: checkpoint_handle(&state.config, &state.crypto),
                         cosigning: cosign_handle(&state.config, &state.crypto),
                         signer: client.signer.clone(),
+                        record_key: record_key_handle(&state.config, &state.crypto),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
                         workers: state.workers.clone(),
@@ -1772,6 +1792,25 @@ mod tests {
             .await
         }
 
+        /// A rig whose agent signs evidence records with a record key of its own, custody holding none for it.
+        async fn with_record_key(service: &str) -> Self {
+            Self::build_with(
+                service,
+                Duration::from_secs(20),
+                &[("POLAR_RECORD_KEY", "")],
+                false,
+                false,
+                None,
+                vec![],
+                &[],
+                None,
+                None,
+                Told::AndWaitedFor,
+                true,
+            )
+            .await
+        }
+
         /// A rig whose agent reads its own soft state: the builder starts a state actor for it.
         async fn with_state(service: &str) -> Self {
             Self::build_with(
@@ -1918,8 +1957,19 @@ mod tests {
             if state_agent.is_some() {
                 required.push(crate::Capability::SoftState);
             }
+            // An agent that signs with a key of its own (its record key, which `with_record_key` names): custody holds
+            // none for it, and the key is made in the rig's directory.
+            if signing && vars.contains_key("POLAR_RECORD_KEY") {
+                vars.insert(
+                    "POLAR_RECORD_KEY".to_string(),
+                    dir.path()
+                        .join("record-key.pem")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                required.push(crate::Capability::RecordKey);
             // An agent that signs: its keys are the custody daemon's, so it names the daemon's socket and no key file.
-            if signing {
+            } else if signing {
                 vars.remove("TLS_CLIENT_KEY");
                 vars.insert(
                     "POLAR_CUSTODY_SOCKET".to_string(),
@@ -3818,6 +3868,55 @@ mod tests {
         signer.actor().kill();
         rig.settle().await;
         assert_eq!(rig.events(), ["prepare_shutdown"]);
+    }
+
+    // docs/plans/crypto-actor.md: an agent with the `record-key` capability, which custody holds no signing key for, is
+    // given a signer and a record-key handle that reach its crypto actor; it signs nothing until the key is certified
+    // through the handle, and then the record types its certificate names. One that signs with custody has no handle.
+    #[tokio::test]
+    async fn an_agent_with_a_record_key_has_it_certified_and_signs_with_it_through_its_crypto_actor()
+     {
+        use crate::signer::{EvidenceRecord, RecordSigner, SignError};
+        let custody = Rig::with_signer("infra-signer-custody").await;
+        assert!(custody.resources.record_key.is_none());
+        let rig = Rig::with_record_key("infra-record-key").await;
+        let signer = rig
+            .resources
+            .signer
+            .clone()
+            .expect("a signing agent has one");
+        let key = rig
+            .resources
+            .record_key
+            .clone()
+            .expect("an agent with a record key has its handle");
+        let revocation = || EvidenceRecord::new("revocation", serde_json::Map::new()).unwrap();
+        assert!(matches!(
+            signer.sign(revocation()).await,
+            Err(SignError::Unavailable(_))
+        ));
+        let mut ca = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let issuer = rcgen::Issuer::new(ca, ca_key);
+        let mut csr =
+            rcgen::CertificateSigningRequestParams::from_pem(&key.csr().await.unwrap()).unwrap();
+        csr.params.subject_alt_names.push(rcgen::SanType::URI(
+            "c:record-evidence:revocation".try_into().unwrap(),
+        ));
+        csr.params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::Other(
+            cert_issuer_common::OID_DOCUMENT_SIGNING.to_vec(),
+        )];
+        let chain = csr.signed_by(&issuer).unwrap().pem();
+        key.keep(chain).await.unwrap();
+        let document = signer.sign(revocation()).await.unwrap();
+        assert_eq!(document.payload["type"], "revocation");
+        assert!(matches!(
+            signer
+                .sign(EvidenceRecord::new("attestation", serde_json::Map::new()).unwrap())
+                .await,
+            Err(SignError::Refused(_))
+        ));
     }
 
     // -- the graph controller -----------------------------------------------------------------

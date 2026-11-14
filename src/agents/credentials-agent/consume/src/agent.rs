@@ -39,6 +39,21 @@ use std::time::Duration;
 /// not subscribe to, so this cannot drift from `agent.<name>.configuration` unseen.
 const CONFIGURATION_TOPIC: &str = "agent.credentials-agent.configuration";
 
+/// The evidence record type of a revocation the ledger recorded, which the agent's record key is certified for.
+pub const REVOCATION_RECORD: &str = "revocation";
+
+/// The names its record key's certificate carries: `c:record-evidence:<type>` for each record type it writes, and no
+/// other, so the key signs its own kinds of record.
+pub fn record_names() -> Vec<String> {
+    <CredentialsConsumer as PolarAgent>::RECORDS
+        .iter()
+        .map(|record_type| {
+            cert_issuer_common::evidence::EvidenceCapability::Type(record_type.to_string())
+                .to_san_string()
+        })
+        .collect()
+}
+
 pub struct CredentialsConsumer;
 
 impl PolarAgent for CredentialsConsumer {
@@ -48,7 +63,10 @@ impl PolarAgent for CredentialsConsumer {
     // The graph is declared as a section of its own, not required as a capability: this agent
     // projects to the graph but its health must not depend on Neo4j (the ledger is its source of
     // truth and the graph only a projection).
-    const NEEDS: &'static [Capability] = &[];
+    // Its revocation records are signed with a record key its crypto actor holds: custody holds no signing key for it,
+    // since it comes up before anything could fetch it one (docs/plans/crypto-actor.md).
+    const NEEDS: &'static [Capability] = &[Capability::RecordKey];
+    const RECORDS: &'static [&'static str] = &[REVOCATION_RECORD];
     const SHUTDOWN_BUDGET: Duration = SHUTDOWN_BUDGET;
     const TOPICS: &'static [TopicDecl] = &[
         TopicDecl::subscribe(
