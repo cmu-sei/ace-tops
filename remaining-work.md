@@ -339,6 +339,19 @@ only.
 
 ## Credentials, custody and the authority model
 
+- [ ] A CUSTODIAN REVOKED AS IT REGISTERS, AND POLAR-INIT HUNG AFTER (found on u7c 2026-11-14, main 5079ad7d, once in
+  24 pods): in the bring-up's rollout, kube-consumer's new pod got its custodian's certificate at 04:08:38.438; the
+  credentials agent published a `revoked` authority update 12 ms later, and at 04:08:39.084 the broker refused the
+  custodian's registration as revoked (serial `376c6a42…`), so the daemon destroyed its keys and exited
+  (`polar-custody/daemon/src/watch.rs`). Only one issuance for `custody.kube-consumer` was logged in the window, so
+  it is not a retry superseding its own answer; which serial update 33931 revoked is not yet known. A new pod came up
+  at once. Two things to fix, whatever the race: (1) find what that update revoked (the ledger's events for the
+  workload around then, `IssuanceCompleted` and the renewal rule's supersede, key-custody.md:459), and whether a pod
+  of the old ReplicaSet asking in the same rollout can supersede the new pod's custodian; (2) polar-init then waited
+  on the restarted, empty daemon ("cannot reach the custody daemon to say whether it is ready: Broken pipe ...
+  retrying") with no further line for 4 minutes, where it should end and let the pod restart. Not caused by the
+  crypto-actor steps (none of issuance, revocation or the watcher changed); possibly older and not seen.
+
 - [ ] ERROR PATHS TO EXERCISE ON PURPOSE (merged 2026-11-02): each is built and tested, and no run has triggered it, so
   each is forced on u7c, in a few minutes, with what should be seen:
   - **No schema yet** (soft-state.md, "Revised"; `ask_until_available`): scale soft-state-observer to 0, restart
