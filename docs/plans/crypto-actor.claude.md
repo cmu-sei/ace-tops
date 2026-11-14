@@ -144,9 +144,16 @@ K2b-1 DONE 2026-11-13 (main): TCPClientConfig {broker_endpoint, server_name, rec
    client_config/files_config and cert-issuer's restart test build TLS with polar_crypto::tls::client_config, the
    function the actor uses; the CLI's IPC/output tests moved with it (cassini/cli/tests). polar-init, polar-health and
    cert-issuer do not build Cassini TLS (found: polar-init only named the socket; cert-issuer is a builder agent).
-K2b-2 custody's daemon drops is_tls13_certificate_verify from its Sign arm (and Refusal::NotTls13Handshake), and
-   polar_custody::client's own rustls signers/configs (client_config, server_config, ClientKey, ServerKey) go; the
-   broker's read_server_key uses one_key directly; own.rs (the daemon's own session, in process) stays.
+K2b-2 DONE 2026-11-13 (main): the daemon's workload Sign arm signs what the workload asks with any of its slots
+   once certified (TLS slots and the signer slot one arm); custody's client lost CustodySigningKey, certified_key,
+   CustodyClientCert/ServerCert, ClientKey/ServerKey, client_config/server_config. polar_custody::tls stays (the rule,
+   used by Custody::sign_own for the daemon's own key, and by polar-crypto's SlotSigner); Refusal::NotTls13Handshake
+   stays for sign_own. Tests moved, not dropped: TLS 1.3 alone with the daemon's keys (client and server), TLS 1.2 still
+   with key files, a missing key file named -> polar-crypto tls; "nothing but a handshake is ever signed" proptest ->
+   polar-crypto (SlotSigner, no daemon to ask); custody's tests now say the workload's key signs what it asks. Broker:
+   its key rule calls one_key directly; its orphaned SERVER_CERT_CHAIN static removed. key-custody.md records the
+   revision and what it gives up (a compromised workload process can have its TLS keys sign other bytes, which carry
+   only TLS EKUs and stand for nothing in Polar).
 GAP (recorded 2026-11-13, store-to-main review point 6): polar-sign and polar-running-config sign a person's documents
    with identity.key_pem directly (polar_signing::sign_in), not through a CryptoActor. Theirs to move with the passkey
    work (people sign with WebAuthn); no new direct key-PEM signing meanwhile.

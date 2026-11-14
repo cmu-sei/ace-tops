@@ -52,8 +52,8 @@ pub async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
 pub struct Pki {
     dir: tempfile::TempDir,
     issuer: Issuer<'static, KeyPair>,
-    /// The broker's key: its key file, unless [`Pki::use_custody`] gave it the custody daemon's server slot.
-    server_key: Option<polar_custody::client::ServerKey>,
+    /// The custody daemon's socket, when [`Pki::use_custody`] gave the broker its server slot; its key file otherwise.
+    custody_socket: Option<String>,
 }
 
 impl Pki {
@@ -70,7 +70,7 @@ impl Pki {
         let pki = Self {
             dir,
             issuer,
-            server_key: None,
+            custody_socket: None,
         };
         pki.issue("server", "localhost", ExtendedKeyUsagePurpose::ServerAuth);
         pki
@@ -113,18 +113,14 @@ impl Pki {
             .expect("installed");
         std::fs::write(self.path("server.pem"), certificate).unwrap();
         std::fs::remove_file(self.path("server.key")).unwrap();
-        self.server_key = Some(polar_custody::client::ServerKey::Custody(
-            socket.display().to_string(),
-        ));
+        self.custody_socket = Some(socket.display().to_string());
     }
 
     /// Where the broker's key is, as its pod says it, for its crypto actor (docs/plans/crypto-actor.md): the
     /// certificate and key files, or the custody daemon's socket.
     fn key_env(&self) -> Vec<(String, String)> {
-        match self.server_key.clone() {
-            Some(polar_custody::client::ServerKey::Custody(socket)) => {
-                vec![("POLAR_CUSTODY_SOCKET".to_string(), socket)]
-            }
+        match self.custody_socket.clone() {
+            Some(socket) => vec![("POLAR_CUSTODY_SOCKET".to_string(), socket)],
             _ => vec![
                 (
                     "TLS_SERVER_CERT_CHAIN".to_string(),

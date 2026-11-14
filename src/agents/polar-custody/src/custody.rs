@@ -246,29 +246,17 @@ impl Custody {
                 slot: Slot::Custodian,
                 ..
             } => Reply::Refused(Refusal::NotPermitted),
-            // The signer key signs what the workload's signer gives it; its certificate is one no TLS stack takes
+            // A workload's key signs what the workload asks, once it has its certificate: custody judges who may use which
+            // key, never what a key signs (docs/plans/crypto-actor.md). What is signed is the workload's crypto actor's to
+            // judge: its TLS signer signs only a TLS 1.3 CertificateVerify input (polar-crypto's `tls`), and its record
+            // signer only a record (polar-crypto's `records`); the signer key's certificate is one no TLS stack takes
             // (`judge_signer`), so nothing it signs passes as a handshake.
-            Request::Sign {
-                slot: Slot::Signer,
-                message,
-            } if roles.workload => {
-                let Some(held) = self.slots.get(&Slot::Signer) else {
-                    return Reply::Refused(Refusal::NoKey);
-                };
-                if held.chain.is_none() {
-                    return Reply::Refused(Refusal::NoCertificate);
-                }
-                Reply::Signature(held.key.sign(&message))
-            }
             Request::Sign { slot, message } if roles.workload => {
                 let Some(held) = self.slots.get(&slot) else {
                     return Reply::Refused(Refusal::NoKey);
                 };
                 if held.chain.is_none() {
                     return Reply::Refused(Refusal::NoCertificate);
-                }
-                if !is_tls13_certificate_verify(&message) {
-                    return Reply::Refused(Refusal::NotTls13Handshake);
                 }
                 Reply::Signature(held.key.sign(&message))
             }
@@ -718,18 +706,25 @@ pub(crate) mod tests {
         );
     }
 
+    /// Custody judges who asks, never what: the workload's key signs whatever the workload asks of it. What a TLS key
+    /// may sign is the crypto actor's signer's to judge (docs/plans/crypto-actor.md).
     #[test]
-    fn only_a_tls13_handshake_is_signed() {
+    fn the_workload_s_key_signs_what_the_workload_asks() {
         let ca = test_ca();
-        let (custody, _) = installed(&ca);
+        let (custody, certificate) = installed(&ca);
         for message in [
             b"anything in the agent's name".to_vec(),
             vec![b' '; 64],
             Vec::new(),
         ] {
-            assert_eq!(
-                sign(&custody, WORKLOAD, message),
-                Reply::Refused(Refusal::NotTls13Handshake)
+            let Reply::Signature(der) = sign(&custody, WORKLOAD, message.clone()) else {
+                panic!("not signed: {message:?}");
+            };
+            let signature = Signature::from_der(&der).unwrap();
+            assert!(
+                verifying_key_of(&certificate)
+                    .verify(&message, &signature)
+                    .is_ok()
             );
         }
     }
@@ -1103,11 +1098,17 @@ pub(crate) mod tests {
                 prop_assert!(verifying_key_of(&certificate).verify(&message, &signature).is_ok());
             }
 
+            /// Whatever the workload asks its key to sign is signed by that key: custody judges the caller, and the
+            /// crypto actor's signer what is signed (polar-crypto's `tls`, where the property that nothing but a
+            /// handshake is signed now holds).
             #[test]
-            fn anything_that_is_not_a_tls13_handshake_is_never_signed(message in prop::collection::vec(any::<u8>(), 0..200)) {
-                prop_assume!(!is_tls13_certificate_verify(&message));
-                let (custody, _) = installed(ca());
-                prop_assert_eq!(sign(&custody, WORKLOAD, message), Reply::Refused(Refusal::NotTls13Handshake));
+            fn whatever_the_workload_asks_is_signed_by_its_key(message in prop::collection::vec(any::<u8>(), 0..200)) {
+                let (custody, certificate) = installed(ca());
+                let Reply::Signature(der) = sign(&custody, WORKLOAD, message.clone()) else {
+                    return Err(TestCaseError::fail("not signed"));
+                };
+                let signature = Signature::from_der(&der).unwrap();
+                prop_assert!(verifying_key_of(&certificate).verify(&message, &signature).is_ok());
             }
 
             /// Once a slot is installed, nothing any caller asks changes its key or its certificate.

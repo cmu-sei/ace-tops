@@ -24,13 +24,14 @@
 //! The custody daemon (docs/architecture/key-custody.md): one in every pod, holding the pod's mTLS keys and doing every
 //! signature with them, so the workload holds a certificate and a socket and never the key.
 //!
-//! - [`tls`]: the one kind of message it signs, a TLS 1.3 CertificateVerify input.
+//! - [`tls`]: what a TLS 1.3 CertificateVerify input is, the one kind of message its own key signs and what the crypto
+//!   actor's TLS signer judges by.
 //! - [`key`]: a slot's key, made here and never given out.
 //! - [`escrow`]: the pod's escrow key, which only unwraps.
 //! - [`custody`]: the slots and what each caller may ask of them, without the socket.
 //! - [`protocol`]: the requests and replies, and how they are framed.
 //! - [`server`]: the socket, the caller check, and requests in flight at once.
-//! - [`client`]: the blocking client a workload uses, and a rustls signing key over it.
+//! - [`client`]: the blocking client the crypto actor uses (and polar-init and polar-health).
 //! - [`own`]: the daemon's own handshake, its custodian's session's, signed in process.
 
 pub mod client;

@@ -162,6 +162,14 @@ dropped session. What that asks of the design:
   64 spaces, `TLS 1.3, client CertificateVerify` or `TLS 1.3, server CertificateVerify`, a zero byte, and a transcript
   hash of 32 or 48 bytes. A compromised workload can have it sign handshakes and nothing else, nothing in the agent's
   name; the rustls configurations that use it offer TLS 1.3 alone.
+  - *Revised (2026-11-13, the crypto actor, docs/plans/crypto-actor.md, cleared by the maintainer):* custody judges who
+    may use which key, never what it signs, so the daemon now signs what the workload asks with its TLS keys. The rule
+    above is the crypto actor's: its TLS signer (`polar-crypto/src/tls.rs`, `SlotSigner`) refuses anything but a
+    CertificateVerify input before the daemon is asked, and its configurations offer TLS 1.3 alone with the daemon's
+    keys. The daemon keeps the rule for its own key (`Custody::sign_own`). What this gives up: a compromised workload
+    process, which can reach the socket without its crypto actor, can have its TLS keys sign other bytes. Those keys'
+    certificates carry only client or server authentication, which no Polar document check accepts (a record needs the
+    signer slot's document-signing usage, `judge_signer`), so such a signature stands for nothing in Polar.
 - *Hardening at start:* not dumpable (`PR_SET_DUMPABLE`), its memory locked, both logged where they cannot be had.
 - *The workload side:* a blocking client with a few connections, and a rustls `SigningKey` that signs through it;
   wiring the Cassini client to it is step 2.

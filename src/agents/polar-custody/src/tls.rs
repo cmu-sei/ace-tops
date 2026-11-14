@@ -21,9 +21,11 @@
    DM26-0670
 */
 
-//! The one kind of message the daemon signs (the maintainer, 2026-10-27): the input to a TLS 1.3 CertificateVerify
-//! (RFC 8446, section 4.4.3), which is 64 spaces, a context string, a zero byte and the transcript hash. A key that signs
-//! only these can be used for handshakes and nothing else: nothing can be signed in the agent's name.
+//! The input to a TLS 1.3 CertificateVerify (RFC 8446, section 4.4.3): 64 spaces, a context string, a zero byte and the
+//! transcript hash. A TLS key that signs only these can be used for handshakes and nothing else: nothing can be signed
+//! in the agent's name. The daemon holds its own key to it (`Custody::sign_own`); a workload's TLS keys are held to it
+//! by the crypto actor's signer (polar-crypto's `tls`), since custody judges who may use a key, never what it signs
+//! (docs/plans/crypto-actor.md).
 
 /// The context of a client's CertificateVerify.
 pub const CLIENT_CONTEXT: &[u8] = b"TLS 1.3, client CertificateVerify";

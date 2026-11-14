@@ -435,6 +435,124 @@ mod tests {
         assert_eq!(agreed.unwrap(), None);
     }
 
+    /// A key file and its certificate for `names` beside the identity, for `eku`, under `ca`, in `dir`: the source, and
+    /// the certificate and key as rustls takes them.
+    fn key_files(
+        ca: &Ca,
+        dir: &std::path::Path,
+        name: &str,
+        names: &[&str],
+        eku: rcgen::ExtendedKeyUsagePurpose,
+    ) -> (
+        KeySource,
+        Vec<CertificateDer<'static>>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = std::iter::once(IDENTITY)
+            .chain(names.iter().copied())
+            .map(|n| rcgen::SanType::DnsName(n.try_into().unwrap()))
+            .collect();
+        params.extended_key_usages = vec![eku];
+        let certificate = params.signed_by(&key, &ca.issuer).unwrap().pem();
+        let (c, k) = (
+            dir.join(format!("{name}.pem")),
+            dir.join(format!("{name}.key")),
+        );
+        std::fs::write(&c, &certificate).unwrap();
+        std::fs::write(&k, key.serialize_pem()).unwrap();
+        (
+            KeySource::Files {
+                certificate: c.to_string_lossy().into_owned(),
+                key: k.to_string_lossy().into_owned(),
+            },
+            vec![CertificateDer::from_pem_slice(certificate.as_bytes()).unwrap()],
+            rustls::pki_types::PrivateKeyDer::from_pem_slice(key.serialize_pem().as_bytes())
+                .unwrap(),
+        )
+    }
+
+    /// With the daemon's key, TLS 1.3 alone is offered, client and server: a peer held to TLS 1.2 is refused because
+    /// TLS 1.2 was never offered, so the daemon is never asked to sign one. With key files, rustls' defaults stand, TLS
+    /// 1.2 among them; and a key file that is not there is named.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_the_daemon_s_key_tls13_alone_is_offered_and_with_key_files_as_before() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let ca = ca();
+        let (custody, _socket) = daemon(&ca).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (client_files, client_chain, client_key) = key_files(
+            &ca,
+            dir.path(),
+            "client",
+            &[],
+            rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+        );
+        let (_, server_chain, server_key) = key_files(
+            &ca,
+            dir.path(),
+            "server",
+            &[SERVER_NAME],
+            rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+        );
+        let tls12 =
+            || rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12]);
+        let (to_server, to_client) = verifiers(&ca);
+        let refused = tokio::task::spawn_blocking(move || {
+            let daemon_client = client_config(
+                to_server.clone(),
+                &KeySource::Custody {
+                    client: custody.clone(),
+                    slot: Slot::Client,
+                },
+            )
+            .unwrap();
+            let tls12_server =
+                rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+                    .with_client_cert_verifier(to_client.clone())
+                    .with_single_cert(server_chain.clone(), server_key.clone_key())
+                    .unwrap();
+            let daemon_server = server_config(
+                to_client.clone(),
+                vec![],
+                &KeySource::Custody {
+                    client: custody,
+                    slot: Slot::Server,
+                },
+            )
+            .unwrap();
+            let tls12_client = tls12()
+                .with_webpki_verifier(to_server.clone())
+                .with_client_auth_cert(client_chain.clone(), client_key.clone_key())
+                .unwrap();
+            let files_client = client_config(to_server, &client_files).unwrap();
+            (
+                handshake(daemon_client, tls12_server.clone()),
+                handshake(tls12_client, daemon_server),
+                handshake(files_client, tls12_server),
+            )
+        })
+        .await
+        .unwrap();
+        let (client_side, server_side, with_files) = refused;
+        for (what, outcome) in [("client", client_side), ("server", server_side)] {
+            let why = format!("{:?}", outcome.expect_err(what));
+            assert!(
+                why.contains("NoCommonProtocolVersion") || why.contains("Tls12NotOffered"),
+                "the {what} keyed by the daemon offered TLS 1.2: {why}"
+            );
+        }
+        with_files.expect("with key files, TLS 1.2 as before");
+        let missing = KeySource::Files {
+            certificate: dir.path().join("client.pem").to_string_lossy().into_owned(),
+            key: dir.path().join("none.key").to_string_lossy().into_owned(),
+        };
+        let (to_server, _) = verifiers(&ca);
+        let error = client_config(to_server, &missing).unwrap_err();
+        assert!(error.contains("none.key"), "names the file: {error}");
+    }
+
     /// The daemon's key signs a TLS 1.3 CertificateVerify input through this signer, and nothing else: anything else is
     /// refused before the daemon is asked.
     #[tokio::test(flavor = "multi_thread")]
@@ -457,6 +575,24 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    proptest::proptest! {
+        /// Nothing but a TLS 1.3 CertificateVerify input is ever signed by a TLS key: the signer refuses anything else
+        /// itself, before the daemon is asked (here there is none to ask, so a refusal can only be the signer's). The
+        /// daemon signs what the workload asks; this is where what a TLS key signs is judged (docs/plans/crypto-actor.md).
+        #[test]
+        fn nothing_but_a_tls13_handshake_input_is_ever_signed(
+            message in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..200),
+        ) {
+            proptest::prop_assume!(!polar_custody::tls::is_tls13_certificate_verify(&message));
+            let signer = SlotSigner {
+                client: Arc::new(CustodyClient::new("/nonexistent/custody.sock")),
+                slot: Slot::Client,
+            };
+            let refused = format!("{:?}", Signer::sign(&signer, &message).unwrap_err());
+            proptest::prop_assert!(refused.contains("signs only a TLS 1.3 CertificateVerify"), "{}", refused);
+        }
     }
 
     async fn crypto_actor(

@@ -21,15 +21,15 @@
    DM26-0670
 */
 
-//! The daemon through its socket: the whole flow polar-init and the workload go through, who may connect, many
-//! signatures at once, and a real TLS 1.3 handshake signed by it.
+//! The daemon through its socket: the whole flow polar-init and the workload go through, who may connect, and many
+//! signatures at once. A real TLS 1.3 handshake signed by it is the crypto actor's, tested there (polar-crypto's `tls`).
 
 mod common;
 
 use common::*;
 use p256::ecdsa::signature::Verifier as _;
 use p256::ecdsa::{Signature, VerifyingKey};
-use polar_custody::client::{ClientError, CustodyClient, CustodyClientCert, certified_key};
+use polar_custody::client::{ClientError, CustodyClient};
 use polar_custody::protocol::{Refusal, Slot};
 use polar_custody::server::Callers;
 use polar_custody::tls::{CLIENT_CONTEXT, certificate_verify_input};
@@ -71,10 +71,12 @@ async fn polar_init_installs_and_the_workload_signs_through_the_socket() {
                 .verify(&message, &signature)
                 .is_ok()
         );
-        assert!(matches!(
-            client.sign(Slot::Client, b"a document in the agent's name"),
-            Err(ClientError::Refused(Refusal::NotTls13Handshake))
-        ));
+        // What it signs is the workload's crypto actor's to judge, not the daemon's (docs/plans/crypto-actor.md).
+        assert!(
+            client
+                .sign(Slot::Client, b"a document in the agent's name")
+                .is_ok()
+        );
     })
     .await
     .unwrap();
@@ -216,87 +218,6 @@ async fn many_signatures_at_once_each_answered_and_each_good() {
     assert_eq!(signed, 400);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_tls13_handshake_with_client_authentication_is_signed_by_the_daemon() {
-    use rustls::pki_types::pem::PemObject as _;
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let ca = test_ca();
-    let daemon = daemon(&ca, both()).await;
-    let client = Arc::new(CustodyClient::new(daemon.socket.clone()));
-    let setup = client.clone();
-    let ca_pem = ca.pem.clone();
-    // The server: its own key in a file, as Cassini's is today, demanding a client certificate from the same CA.
-    let server_key = rcgen::KeyPair::generate().unwrap();
-    let mut server_params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-    server_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-    let server_cert = server_params.signed_by(&server_key, &ca.issuer).unwrap();
-    let certified = tokio::task::spawn_blocking(move || {
-        installed(&setup, &ca);
-        certified_key(setup, Slot::Client).unwrap()
-    })
-    .await
-    .unwrap();
-
-    let mut roots = rustls::RootCertStore::empty();
-    roots
-        .add(CertificateDer::from_pem_slice(ca_pem.as_bytes()).unwrap())
-        .unwrap();
-    let roots = Arc::new(roots);
-    let server_config =
-        rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-            .with_client_cert_verifier(
-                rustls::server::WebPkiClientVerifier::builder(roots.clone())
-                    .build()
-                    .unwrap(),
-            )
-            .with_single_cert(
-                vec![server_cert.der().clone()],
-                PrivateKeyDer::from_pem_slice(server_key.serialize_pem().as_bytes()).unwrap(),
-            )
-            .unwrap();
-    let client_config =
-        rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
-            .with_root_certificates(roots)
-            .with_client_cert_resolver(Arc::new(CustodyClientCert(Arc::new(certified))));
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-    let served = tokio::spawn(async move {
-        let (tcp, _) = listener.accept().await.unwrap();
-        let tls = acceptor.accept(tcp).await.unwrap();
-        let (_, connection) = tls.get_ref();
-        let peer = connection.peer_certificates().unwrap()[0].clone();
-        let (_, cert) = X509Certificate::from_der(peer.as_ref()).unwrap();
-        cert.subject_alternative_name()
-            .unwrap()
-            .unwrap()
-            .value
-            .general_names
-            .iter()
-            .find_map(|n| match n {
-                GeneralName::DNSName(d) => Some(d.to_string()),
-                _ => None,
-            })
-            .unwrap()
-    });
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
-    let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
-    connector
-        .connect(ServerName::try_from("localhost").unwrap(), tcp)
-        .await
-        .expect("the handshake, signed through the daemon");
-    assert_eq!(
-        served.await.unwrap(),
-        IDENTITY,
-        "the server saw the daemon's certificate"
-    );
-}
-
-/// The custodian's part, through the socket (docs/architecture/key-custody.md, "Part A's bootstrap: the custodian"):
-/// polar-init installs the custodian's certificate and gives the plan, asks until it is ready; the workload unwraps
-/// through the escrow key the custodian holds, and never signs with the custodian's key.
 #[tokio::test(flavor = "multi_thread")]
 async fn polar_init_gives_the_plan_waits_for_ready_and_the_workload_unwraps_through_the_escrow_key()
 {

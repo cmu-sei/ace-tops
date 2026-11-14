@@ -28,17 +28,10 @@
 //! scaffold and judged with everything else (the builder's, the health actor's, how it logs). The broker is
 //! not a Cassini client, so none of the client's variables are asked of it.
 
-use polar_custody::client::ServerKey;
-use polar_custody::environment::{KeyGiven, one_key};
-use polar_env::{Config, ConfigError, Defaulted, Described, Env, Optional, Required, Section};
+use polar_custody::environment::one_key;
+use polar_env::{Config, ConfigError, Defaulted, Described, Optional, Required, Section};
 
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
-
-pub static SERVER_CERT_CHAIN: Required<String> = Required::path(
-    "TLS_SERVER_CERT_CHAIN",
-    polar_env::Access::ReadFile,
-    "path to the broker's own certificate (PEM), which it presents to every client",
-);
 
 const SERVER_KEY_DOC: &str = "path to the private key for the broker's certificate; this or POLAR_CUSTODY_SOCKET, the custody daemon holding it, not both";
 
@@ -132,7 +125,8 @@ pub static SECTION: Section = Section {
     name: "cassini-broker",
     vars: VARIABLES,
     relations: |env| {
-        let mut problems: Vec<String> = read_server_key(env)
+        // The broker has its key: a file, or the custody daemon's server slot (docs/architecture/key-custody.md, step 4).
+        let mut problems: Vec<String> = one_key(env, &SERVER_KEY, SERVER_KEY_DOC)
             .err()
             .map(|e| e.to_string())
             .into_iter()
@@ -169,15 +163,6 @@ pub static SECTION: Section = Section {
         problems
     },
 };
-
-/// The broker's key: a file, or the custody daemon's server slot (docs/architecture/key-custody.md, step 4). Exactly
-/// one is given.
-pub fn read_server_key(env: &dyn Env) -> Result<ServerKey, polar_env::EnvError> {
-    Ok(match one_key(env, &SERVER_KEY, SERVER_KEY_DOC)? {
-        KeyGiven::File(path) => ServerKey::File(path),
-        KeyGiven::Socket(socket) => ServerKey::Custody(socket),
-    })
-}
 
 pub struct BrokerSettings {
     pub ca_cert_file: String,

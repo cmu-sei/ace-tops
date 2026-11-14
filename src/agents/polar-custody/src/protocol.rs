@@ -56,8 +56,8 @@ pub enum Request {
     Install { slot: Slot, chain_pem: Vec<String> },
     /// The certificate chain installed for `slot`.
     Certificate { slot: Slot },
-    /// A signature with `slot`'s key over `message`: the workload's. On a TLS slot, a TLS 1.3 CertificateVerify input;
-    /// on the signer slot, what the workload's signer gives.
+    /// A signature with `slot`'s key over `message`, for the workload: what it is, is the workload's crypto actor's to
+    /// judge (a TLS 1.3 CertificateVerify input for a TLS slot, a record for the signer slot; docs/plans/crypto-actor.md).
     Sign { slot: Slot, message: Vec<u8> },
     /// What the custodian is to fetch for `identity`, the workload, once its own certificate is installed: its client
     /// certificate, its server certificate with these names, its escrow key, its pod's signing key (made in the signer
@@ -99,6 +99,7 @@ pub enum Refusal {
     NoKey,
     #[error("the slot's key has no certificate")]
     NoCertificate,
+    /// The daemon's own key signs only a TLS 1.3 CertificateVerify input (`Custody::sign_own`).
     #[error("only a TLS 1.3 CertificateVerify input is signed")]
     NotTls13Handshake,
     #[error("the certificate is refused: {0}")]
