@@ -27,7 +27,7 @@ PAIR: `to-main.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
 PARENT: `../record-store.claude.md`. Branch store-to-main, rebased on ace-remote/main 7e43bb92 (2026-11-13); taken by
 polar-89 (current session name polar-f1) after review against main, then to the maintainer to clear.
-STATUS: PROPOSAL 2026-11-13, not cleared. Behind it: maintainer "Bring the store to main" (2026-11-13).
+STATUS: PROPOSAL 2026-11-13, reviewed ready by polar-f1 2026-11-13; for the maintainer to clear. Behind it: maintainer "Bring the store to main" (2026-11-13).
 FLOW per bite: polar-cc prepares, polar-f1 (polar-89's current session) takes. On a branch from main (≥ 7e43bb92; tests pass there, capped: systemd-run
 MemoryMax=24G) → polar-89 takes onto main → deploys u7c (up.nu sandbox-local --dev, no --under-test gitlab) → next.
 
@@ -70,9 +70,14 @@ MAKE-ONCE + CERTIFICATION (point 4).
 - PROPOSED: the CryptoActor makes each key if its file is absent (0600, never replaced), not the domain. For the
   checkpoint key, the CryptoActor (not the domain) asks the credentials agent to certify it, for checkpoints alone
   (cert type: cert-issuer's checkpoint certificate, main 402e7958, used today for the ledger's own key), over NEW
-  topics, names proposed `credentials.key-certification.requests` / `credentials.key-certification.replies.<identity>`
-  (constants CREDENTIALS_KEY_CERTIFICATION_{REQUESTS,REPLIES}_TOPIC), message `CertifyKey { csr_pem, purpose:
-  Checkpoint }` → `Certified { chain_pem }` | refusal; asks again before expiry. Credentials agent side + topic
+  topics fitted to main's convention (polar-f1 2026-11-13): `credentials-key-certification-requests` and
+  `credentials-key-certification-replies` (constants CREDENTIALS_KEY_CERTIFICATION_{REQUESTS,REPLIES}_TOPIC in
+  credentials-agent/common/src/lib.rs); ONE reply topic, no per-identity suffix: each answer names its requester
+  inside and is answered only to the identity that asked. Message `CertifyKey { csr_pem, purpose: Checkpoint }` →
+  `Certified { chain_pem }` | refusal; asks again before expiry. (a) The credentials agent certifies a checkpoint key
+  only for a requester whose workload the catalog gives that capability (the git server), judged by the
+  broker-stamped identity. (b) The git server's floor gains exactly those two topics, computed from its build (the
+  builder's implied topics), never hand-declared. Credentials agent side + topic
   policy added on main with B1 (polar-f1). This is NEW (acp never certified), and the maintainer's D3 "certified by
   the credentials agent" is met by it. Witness key: stays pinned by verifier key (decision 5 names only the store key).
 
@@ -117,5 +122,6 @@ B5 polar-git + git-remote-polar.
 size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching
 polar-eden must be split out; the make-once key rule must move into the CryptoActor intact.
 
-## OPEN
-topic and message names for key certification (proposed above; polar-f1 to fit to main's credentials topics).
+## REVIEW
+polar-f1 (polar-89) read the plan against main 2026-11-13 (7 points, then topic names) and found it READY for the
+maintainer.

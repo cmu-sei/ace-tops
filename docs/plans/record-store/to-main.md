@@ -88,8 +88,12 @@ a named key that outlives its pod, both move there.
 **The store's key is certified by the credentials agent, through the crypto actor.** Today it is not certified at all:
 the store makes its key and the pins carry its public half, because no way existed to certify a workload's own lasting
 key. In the first step, the crypto actor asks the credentials agent to certify the checkpoint key for checkpoints alone,
-over request and answer topics of their own, and asks again before the certificate expires. The store's own code never
-asks. The witness's key stays pinned by its public half, as it is now.
+over a request topic and an answer topic of their own, and asks again before the certificate expires. The store's own
+code never asks. The credentials agent certifies such a key only for a workload the catalog gives that capability (the
+git server), judged by the identity the broker stamped on the request, and each answer names who asked and goes to
+them alone. The git server can use exactly those two topics because its build says it certifies a checkpoint key, as
+every agent's topics follow from how it is built, never declared by hand. The witness's key stays pinned by its public
+half, as it is now.
 
 **Before the fourth step:** person's tools on `main` take their TLS from a crypto actor over the person's key files, and
 the command-line Cassini client moves to a package of its own. The fourth and fifth steps build on both.
