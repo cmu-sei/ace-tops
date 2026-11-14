@@ -57,4 +57,5 @@ pub use sign::{SignError, sign, sign_in};
 pub use verify::{
     SignerInfo, Trust, VerifyError, verify, verify_authority_certificate,
     verify_checkpoint_certificate, verify_escrow_certificate, verify_in,
+    workload_certificate_refusal,
 };

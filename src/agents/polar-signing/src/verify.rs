@@ -221,23 +221,7 @@ pub fn verify_authority_certificate(
             Ok(Some(usage)) if usage.value.digital_signature() => {}
             _ => return Err(VerifyError::KeyUsage),
         }
-        let document_signing =
-            x509_parser::der_parser::oid::Oid::from(cert_issuer_common::OID_DOCUMENT_SIGNING)
-                .map_err(|_| VerifyError::NotASigningCertificate("the document-signing OID"))?;
-        match leaf.extended_key_usage() {
-            Ok(Some(eku)) if eku.value.any || eku.value.client_auth || eku.value.server_auth => {
-                Err(VerifyError::NotASigningCertificate(
-                    "it may be used for TLS",
-                ))
-            }
-            Ok(Some(eku)) if eku.value.other.contains(&document_signing) => Ok(()),
-            Ok(Some(_)) => Err(VerifyError::NotASigningCertificate(
-                "it is not for signing documents",
-            )),
-            _ => Err(VerifyError::NotASigningCertificate(
-                "it has no extended key usage, so it is taken for any use",
-            )),
-        }
+        for_signing_documents(leaf).map_err(VerifyError::NotASigningCertificate)
     })
     .and_then(|leaf| {
         cert_issuer_common::public_key::extract_p256_or_rsa_public_key_pem(&leaf)
@@ -307,6 +291,45 @@ fn for_log_checkpoints(leaf: &X509Certificate<'_>) -> Result<(), &'static str> {
         Ok(Some(_)) => Err("it is not for log checkpoints"),
         _ => Err("it has no extended key usage, so it is taken for any use"),
     }
+}
+
+/// Whether `leaf` is a signing certificate by its extended key usage: `id-kp-documentSigning`, and no TLS purpose (a
+/// certificate a TLS stack would take signs handshakes, never documents); why not, if it is not.
+fn for_signing_documents(leaf: &X509Certificate<'_>) -> Result<(), &'static str> {
+    let document_signing =
+        x509_parser::der_parser::oid::Oid::from(cert_issuer_common::OID_DOCUMENT_SIGNING)
+            .map_err(|_| "the document-signing OID")?;
+    match leaf.extended_key_usage() {
+        Ok(Some(eku)) if eku.value.any || eku.value.client_auth || eku.value.server_auth => {
+            Err("it may be used for TLS")
+        }
+        Ok(Some(eku)) if eku.value.other.contains(&document_signing) => Ok(()),
+        Ok(Some(_)) => Err("it is not for signing documents"),
+        _ => Err("it has no extended key usage, so it is taken for any use"),
+    }
+}
+
+/// Why `document`, a record a workload signed, is not signed as a workload's must be, or none
+/// (docs/architecture/key-custody.md, "Workload signing keys"): under a signing certificate ([`for_signing_documents`]),
+/// never the pod's mTLS certificate. To be asked of a record that verifies in the evidence domain ([`verify_in`]). What a
+/// signer may record is not this rule's: it is policy first, the certificate's names where policy is silent
+/// (`polar_policy::evidence`), and every reader asks it. A person's record is signed with their account certificate, and
+/// is not held to this.
+pub fn workload_certificate_refusal(document: &Document) -> Option<String> {
+    let Some(leaf_pem) = document.signature.certificate_chain.first() else {
+        return Some("it carries no certificate".to_string());
+    };
+    let der = match cert::der_from_pem(leaf_pem) {
+        Ok(der) => der,
+        Err(e) => return Some(format!("its certificate does not read: {e}")),
+    };
+    let leaf = match cert::parse(&der) {
+        Ok(leaf) => leaf,
+        Err(e) => return Some(format!("its certificate does not parse: {e}")),
+    };
+    for_signing_documents(&leaf)
+        .err()
+        .map(|why| format!("its signer's certificate is not a signing certificate: {why}"))
 }
 
 /// The public key of the leaf of `chain_pem` if it chains to `trust`, is valid at `now`, is no CA, passes `purpose`, and
