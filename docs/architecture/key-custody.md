@@ -115,6 +115,33 @@ zeroed). Two things make it whole:
 | Root on the node | reads the file | reads the daemon's memory; with lockdown, not a key in the kernel keyring |
 | Revoking a certificate | nothing stops a copy before it expires | the key is destroyed and the broker ends its sessions |
 
+### The layers, and the hardware under them (the maintainer, 2026-11-14)
+
+Each layer answers one threat, and nothing claims more than it covers. The claim is that the model is honest about where
+it stops, not that keys are safe from everything.
+
+| Threat | What answers it | What it does not answer |
+|---|---|---|
+| Physical capture of memory: a cold-boot attack, a pulled DIMM, the memory bus snooped | memory encrypted by the CPU (AMD SME/TSME, Intel TME), where a deployment's hardware has it and turns it on | anything the CPU itself executes, which sees plaintext |
+| A read of an agent's memory without running code in it: a disclosure bug, swap, a core dump, a container checkpoint or a node snapshot | keys held only in custody; credentials kept sealed except during the request that uses them, in locked pages kept out of dumps and, where the kernel has it, hidden from its own mappings (`docs/plans/crypto-actor/ephemeral-credentials.md`, planned) | the copy in the HTTP client's buffers while a request is in flight |
+| Code running inside an agent | not prevented: it can ask for what the agent may ask for. It is seen: every signature and every opening is custody's to log, each opening paired with the request that needed it, and attestation and crash evidence report what the agent did | a foothold that only does what the agent normally does |
+| A compromised kernel or node | out of scope: Kubernetes and its nodes are the accepted base (`runtime-attestation.md`) | everything |
+
+**Why not a TPM as the root.** A key is safe in a TPM only if every use of it happens inside the TPM, and a TPM performs
+tens of operations a second, not the thousands custody does. So systems built on one unseal the working key into memory,
+and use it there, which is how cold-boot and bus attacks recover it. Discrete TPMs also talk in the clear on their bus,
+and TPM firmware and key generation have both been broken in the field (TPM-Fail, 2019; faulTPM, 2023; ROCA, 2017). A
+TPM-rooted story says keys live in hardware while the key in use lives in memory. Here memory encryption protects
+memory, where keys and credentials actually are, and custody and the crypto actor keep what is in memory to what is in
+use.
+
+**What memory encryption is trusted for, and no more.** It is the CPU vendor's memory controller, trusted for its
+implementation; its encryption has no integrity, so it does not stop memory being tampered with or replayed; and
+ciphertext side channels have broken related features (CipherLeaks, on AMD's SEV). It is one layer with one job, a
+choice made per deployment, accepted and not trusted, as Kubernetes is. Whether a node has it on can be shown (the CPU's
+flags and the kernel's report at boot), so it can become evidence like any other assumption of the case rather than a
+belief about the hardware.
+
 ## Decided (the maintainer, 2026-10-27: all four as recommended)
 
 1. **A revoked pod's daemon exits** once it has destroyed the key, so the pod restarts (in place) and asks again, and the
