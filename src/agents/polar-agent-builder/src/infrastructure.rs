@@ -223,6 +223,18 @@ fn checkpoint_handle(
     .then(|| crate::crypto::CheckpointHandle::new(crypto.actor()))
 }
 
+/// The witness key's handle, for an agent its deployment gives one (`POLAR_WITNESS_COSIGNING_KEY`); none otherwise.
+fn cosign_handle(
+    config: &polar_env::Config,
+    crypto: &CryptoHandle,
+) -> Option<crate::crypto::CosignHandle> {
+    matches!(
+        config.read(&polar_crypto::environment::WITNESS_COSIGNING_KEY),
+        Ok(Some(_))
+    )
+    .then(|| crate::crypto::CosignHandle::new(crypto.actor()))
+}
+
 pub struct InfrastructureSupervisorArgs {
     pub service_name: String,
     /// The agent's crypto actor, when it was started before the infrastructure (`ConfiguredAgent::tls`): linked, not
@@ -1031,6 +1043,28 @@ impl Actor for InfrastructureSupervisor {
             }
         };
 
+        // A witness's crypto actor co-signs only for the store its signed configuration pins: it follows the pin, and
+        // holds every co-signature to the value in force.
+        if matches!(
+            args.config
+                .read(&polar_crypto::environment::WITNESS_COSIGNING_KEY),
+            Ok(Some(_))
+        ) {
+            let pinned = configuration
+                .follow(
+                    &polar_crypto::environment::WITNESSED_STORE,
+                    &crypto.handle.actor(),
+                    polar_crypto::CryptoMessage::WitnessedStore,
+                )
+                .await
+                .map_err(|e| ActorProcessingErr::from(format!("the witnessed store: {e:?}")))?;
+            crypto
+                .handle
+                .actor()
+                .send_message(polar_crypto::CryptoMessage::WitnessedStore(pinned))
+                .map_err(ActorProcessingErr::from)?;
+        }
+
         let (mut client, self_test) = if args.with_client {
             let (client, self_test) = Self::spawn_client_parts(
                 &myself,
@@ -1392,6 +1426,7 @@ impl Actor for InfrastructureSupervisor {
                         crypto: client.crypto.clone().filter(|_| client.escrow),
                         tls: crate::crypto::TlsHandle::new(state.crypto.actor()),
                         checkpoints: checkpoint_handle(&state.config, &state.crypto),
+                        cosigning: cosign_handle(&state.config, &state.crypto),
                         signer: client.signer.clone(),
                         protocols: client.protocols.clone(),
                         state: client.state.clone(),
@@ -1419,6 +1454,7 @@ impl Actor for InfrastructureSupervisor {
                     configuration: state.configuration.clone(),
                     tls: crate::crypto::TlsHandle::new(state.crypto.actor()),
                     checkpoints: checkpoint_handle(&state.config, &state.crypto),
+                    cosigning: cosign_handle(&state.config, &state.crypto),
                 });
             }
         }
@@ -2545,6 +2581,75 @@ mod tests {
                 notes: Vec::new(),
             }
         );
+    }
+
+    /// A witness's crypto actor co-signs only for the store its signed configuration pins: the infrastructure has it
+    /// follow the pin, so a signed change reaches it, and the domain's handle co-signs through it.
+    #[tokio::test]
+    async fn a_witness_co_signs_for_the_store_its_signed_configuration_pins() {
+        let dir = tempfile::tempdir().unwrap();
+        let certificate = dir.path().join("cert.pem");
+        let key = rcgen::KeyPair::generate().unwrap();
+        std::fs::write(
+            &certificate,
+            rcgen::CertificateParams::new(vec!["attestation-agent.polar".to_string()])
+                .unwrap()
+                .self_signed(&key)
+                .unwrap()
+                .pem(),
+        )
+        .unwrap();
+        let witness_key = dir.path().join("witness/witness-key.pem");
+        let rig = Rig::new(
+            "infra-witness",
+            Duration::from_secs(20),
+            &[
+                ("TLS_CLIENT_CERT", certificate.to_str().unwrap()),
+                ("POLAR_WITNESS_COSIGNING_KEY", witness_key.to_str().unwrap()),
+            ],
+            false,
+        )
+        .await;
+        let witness = rig
+            .resources
+            .cosigning
+            .clone()
+            .expect("a witness is given its handle");
+        assert!(rig.resources.checkpoints.is_none(), "and nothing else");
+        let store = polar_crypto::checkpoints::CheckpointKey::open(
+            &dir.path().join("store.pem"),
+            "polar-git-server.polar",
+        )
+        .unwrap();
+        let text = polar_log::checkpoint::Checkpoint {
+            origin: "polar-git-server.polar/evidence".to_string(),
+            size: 1,
+            root: [2; 32],
+        }
+        .text();
+        let refused = witness.cosign(text.clone()).await.unwrap_err();
+        assert!(refused.contains("no store is pinned"), "{refused}");
+
+        rig.resources
+            .configuration
+            .apply_unchecked(
+                1,
+                vec![(
+                    "POLAR_ATTESTATION_WITNESSED_STORE".to_string(),
+                    store.verifier_key(),
+                )],
+            )
+            .await
+            .unwrap();
+        rig.settle().await;
+        let (line, at) = witness.cosign(text.clone()).await.unwrap();
+        polar_log::checkpoint::open_witnessed(
+            &format!("{text}\n{}{line}", store.sign(&text).unwrap()),
+            &polar_log::checkpoint::NoteVerifier::parse(&store.verifier_key()).unwrap(),
+            &polar_log::checkpoint::NoteVerifier::parse(&witness.key().await.unwrap()).unwrap(),
+            at,
+        )
+        .expect("a reader holding both pins takes it");
     }
 
     #[tokio::test(start_paused = true)]

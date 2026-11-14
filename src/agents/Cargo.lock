@@ -7282,6 +7282,7 @@ dependencies = [
  "polar-escrow",
  "polar-git-server-common",
  "polar-health",
+ "polar-log",
  "polar-permissions",
  "polar-policy",
  "polar-router",

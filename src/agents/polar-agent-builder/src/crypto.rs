@@ -219,6 +219,35 @@ impl CheckpointHandle {
     }
 }
 
+/// The agent's witness key (docs/plans/record-store/to-main.md, bite 2): what its domain is given in place of the key. It
+/// asks to co-sign a checkpoint, and for the key's verifier key, and nothing else of the actor; the actor holds every
+/// co-signature to the store the agent's signed configuration pins, and stamps it with its own clock.
+#[derive(Clone)]
+pub struct CosignHandle {
+    actor: ActorRef<CryptoMessage>,
+}
+
+impl CosignHandle {
+    pub(crate) fn new(actor: ActorRef<CryptoMessage>) -> Self {
+        Self { actor }
+    }
+
+    /// `text`'s co-signature line and the time it states (Unix seconds), if it is a checkpoint of one of the pinned
+    /// store's logs.
+    pub async fn cosign(&self, text: String) -> Result<(String, u64), String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::Cosign { text, reply })
+            .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+            .map_err(|e| e.to_string())
+    }
+
+    /// The key's verifier key, which the store and readers pin.
+    pub async fn key(&self) -> Result<String, String> {
+        ractor::call!(self.actor, |reply| CryptoMessage::WitnessKey { reply })
+            .map_err(|e| format!("the crypto actor did not answer: {e}"))?
+            .ok_or_else(|| "the agent keeps no witness key".to_string())
+    }
+}
+
 /// Flattens ractor::call!'s own, real, outer RactorErr (a genuine
 /// messaging/mailbox failure, distinct from CryptoError itself, which
 /// only ever describes the real, remote Credentials Agent flow's own

@@ -26,15 +26,22 @@
 //! the agent alone, and never replaced, since readers and witnesses pin it. The actor signs with it only a checkpoint of
 //! one of this agent's own logs, in its one form: three lines (the origin `<identity>/<log>`, the size in decimal, the
 //! root in base64) and nothing else. Its certificate, from the credentials agent, is kept beside it.
+//!
+//! A witness's co-signing key is kept the same way by the witness's crypto actor: it co-signs only a checkpoint of the
+//! store it is pinned to, by that store's checkpoint verifier key in the agent's signed configuration, and stamps the
+//! co-signature with its own clock's time.
 
 use p256::ecdsa::SigningKey;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
-use polar_log::checkpoint::{Checkpoint, NoteSigner};
+use polar_log::checkpoint::{Checkpoint, Cosigner, NoteSigner, NoteVerifier};
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 /// The name the checkpoints are signed under, after the agent's identity: `<identity>/checkpoint`.
 pub const KEY_NAME: &str = "checkpoint";
+
+/// The name a witness co-signs under, after its identity: `<identity>/witness`.
+pub const WITNESS_NAME: &str = "witness";
 
 /// Why a checkpoint was not signed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -47,6 +54,10 @@ pub enum CheckpointRefusal {
     NotACheckpoint(String),
     #[error("its origin `{0}` is not one of this agent's logs")]
     NotItsLog(String),
+    #[error("no store is pinned for this witness to co-sign for")]
+    NoStore,
+    #[error("its origin `{0}` is not one of the pinned store's logs")]
+    NotTheStore(String),
 }
 
 /// Whether `name` is a log's name: one or more of a-z, 0-9 and -.
@@ -71,6 +82,38 @@ pub fn judge(identity: &str, text: &str) -> Result<Checkpoint, CheckpointRefusal
         Some(rest) if rest.strip_prefix('/').is_some_and(is_log_name) => Ok(checkpoint),
         _ => Err(CheckpointRefusal::NotItsLog(checkpoint.origin.clone())),
     }
+}
+
+/// The store a witness co-signs for, from its pinned verifier key: the identity its checkpoint key is named by, when the
+/// key is a store's checkpoint key (`<identity>/checkpoint`, a note signer's, not a co-signer's).
+pub fn pinned_store(verifier_key: &str) -> Result<String, String> {
+    let verifier = NoteVerifier::parse(verifier_key.trim()).map_err(|e| e.to_string())?;
+    if verifier.is_cosigner() {
+        return Err(format!(
+            "the key `{}` is a co-signer's, not a store's checkpoint key",
+            verifier.name()
+        ));
+    }
+    verifier
+        .name()
+        .strip_suffix(&format!("/{KEY_NAME}"))
+        .filter(|identity| !identity.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "the key `{}` is not a store's checkpoint key (`<identity>/{KEY_NAME}`)",
+                verifier.name()
+            )
+        })
+}
+
+/// Whether `text` is a checkpoint a witness pinned to `store` (its identity) may co-sign: one of that store's logs', in
+/// the one form a checkpoint is written in.
+pub fn judge_cosign(store: &str, text: &str) -> Result<Checkpoint, CheckpointRefusal> {
+    judge(store, text).map_err(|refusal| match refusal {
+        CheckpointRefusal::NotItsLog(origin) => CheckpointRefusal::NotTheStore(origin),
+        other => other,
+    })
 }
 
 /// Where the key's certificate is kept: beside it, `<stem>.chain.pem`.
@@ -209,6 +252,34 @@ impl CheckpointKey {
                 )
             },
         )
+    }
+}
+
+/// A witness's co-signing key: what it co-signs with, under `<identity>/witness`.
+pub struct WitnessKey {
+    cosigner: Cosigner,
+}
+
+impl WitnessKey {
+    /// The key at `path` (made there if it is not), co-signing as `identity`'s witness.
+    pub fn open(path: &Path, identity: &str) -> Result<Self, String> {
+        let key = load_or_make_key(path)?;
+        Ok(Self {
+            cosigner: Cosigner::new(&format!("{identity}/{WITNESS_NAME}"), key)
+                .map_err(|e| format!("the witness key cannot co-sign as {identity}: {e}"))?,
+        })
+    }
+
+    /// `text`'s co-signature line at `time` (Unix seconds), if it is a checkpoint of one of `store`'s logs
+    /// ([`judge_cosign`]).
+    pub fn cosign(&self, store: &str, text: &str, time: u64) -> Result<String, CheckpointRefusal> {
+        judge_cosign(store, text)?;
+        Ok(self.cosigner.cosign_line(text, time))
+    }
+
+    /// The verifier key the store and readers pin.
+    pub fn verifier_key(&self) -> String {
+        self.cosigner.verifier_key()
     }
 }
 
@@ -379,6 +450,109 @@ mod tests {
             };
             prop_assume!(bad != text);
             prop_assert!(judge(STORE, &bad).is_err(), "{bad:?}");
+        }
+    }
+
+    const WITNESS: &str = "attestation-agent.polar.serviceaccount.cluster.local";
+
+    /// The store's checkpoint key and its pin, as the witness's signed configuration carries it.
+    fn store_key() -> (CheckpointKey, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        (
+            CheckpointKey::open(&dir.path().join("k.pem"), STORE).unwrap(),
+            dir,
+        )
+    }
+
+    #[test]
+    fn a_store_is_pinned_by_its_checkpoint_key_and_by_nothing_else() {
+        let (store, _dir) = store_key();
+        assert_eq!(pinned_store(&store.verifier_key()).unwrap(), STORE);
+        assert_eq!(
+            pinned_store(crate::environment::EXAMPLE_STORE).unwrap(),
+            STORE,
+            "the scaffold's example is a store's"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let witness = WitnessKey::open(&dir.path().join("w.pem"), WITNESS).unwrap();
+        assert!(
+            pinned_store(&witness.verifier_key()).is_err(),
+            "a witness's key"
+        );
+        let not_a_checkpoint_key = NoteSigner::new(
+            &format!("{STORE}/other"),
+            SigningKey::from_slice(&[3; 32]).unwrap(),
+        )
+        .unwrap()
+        .verifier_key();
+        assert!(pinned_store(&not_a_checkpoint_key).is_err());
+        assert!(pinned_store("not a key").is_err());
+    }
+
+    /// The witness key already on the cluster (acp's, PKCS#8 PEM P-256, under `<identity>/witness`) is read as it is, so
+    /// the store's pin of it holds.
+    #[test]
+    fn a_witness_key_already_there_is_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("witness-key.pem");
+        let key = SigningKey::from_slice(&[5; 32]).unwrap();
+        std::fs::write(&path, key.to_pkcs8_pem(LineEnding::LF).unwrap()).unwrap();
+        let expected = Cosigner::new(&format!("{WITNESS}/{WITNESS_NAME}"), key).unwrap();
+        assert_eq!(
+            WitnessKey::open(&path, WITNESS).unwrap().verifier_key(),
+            expected.verifier_key()
+        );
+    }
+
+    proptest! {
+        /// A checkpoint of one of the pinned store's logs, signed by the store, is co-signed so that a reader holding
+        /// both pins takes it, at the time stated.
+        #[test]
+        fn a_checkpoint_of_the_pinned_store_is_cosigned_as_a_reader_takes_it(
+            log in log_name(),
+            size in any::<u64>(),
+            root in any::<[u8; 32]>(),
+            at in 0u64..4_000_000_000,
+        ) {
+            let (store, _store_dir) = store_key();
+            let dir = tempfile::tempdir().unwrap();
+            let witness = WitnessKey::open(&dir.path().join("w.pem"), WITNESS).unwrap();
+            let text = checkpoint(&format!("{STORE}/{log}"), size, root);
+            let note = format!(
+                "{text}\n{}{}",
+                store.sign(&text).unwrap(),
+                witness.cosign(STORE, &text, at).unwrap()
+            );
+            let opened = polar_log::checkpoint::open_witnessed(
+                &note,
+                &NoteVerifier::parse(&store.verifier_key()).unwrap(),
+                &NoteVerifier::parse(&witness.verifier_key()).unwrap(),
+                at,
+            )
+            .unwrap();
+            prop_assert_eq!(opened.text(), text);
+        }
+
+        /// Nothing but a checkpoint of the pinned store's logs is co-signed: another store's, or the right one written
+        /// any other way.
+        #[test]
+        fn nothing_but_the_pinned_store_s_checkpoint_is_cosigned(
+            log in log_name(),
+            size in any::<u64>(),
+            root in any::<[u8; 32]>(),
+            other in "[a-zA-Z0-9./ -]{0,20}",
+            change in 0usize..5,
+        ) {
+            let text = checkpoint(&format!("{STORE}/{log}"), size, root);
+            let bad = match change {
+                0 => checkpoint(&format!("{WITNESS}/{log}"), size, root),
+                1 => checkpoint(&format!("{STORE}/{log}/{other}"), size, root),
+                2 => format!("{text}{other}\n"),
+                3 => text.trim_end_matches('\n').to_string(),
+                _ => other.clone(),
+            };
+            prop_assume!(bad != text);
+            prop_assert!(judge_cosign(STORE, &bad).is_err(), "{bad:?}");
         }
     }
 }

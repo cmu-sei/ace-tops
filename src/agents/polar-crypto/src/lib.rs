@@ -533,6 +533,17 @@ pub enum CryptoMessage {
     CheckpointKey {
         reply: RpcReplyPort<Option<(String, Option<String>)>>,
     },
+    /// `text`'s co-signature line under the agent's witness key, and the time it states (the actor's own clock, Unix
+    /// seconds), if it is a checkpoint of one of the pinned store's logs ([`checkpoints::judge_cosign`]): for a witness.
+    Cosign {
+        text: String,
+        reply: RpcReplyPort<Result<(String, u64), checkpoints::CheckpointRefusal>>,
+    },
+    /// The witness key's verifier key, which the store and readers pin; `None` for an agent that keeps no witness key.
+    WitnessKey { reply: RpcReplyPort<Option<String>> },
+    /// The store the witness co-signs for (its checkpoint verifier key), as the agent's signed configuration says it
+    /// now: the builder has the actor follow `POLAR_ATTESTATION_WITNESSED_STORE`.
+    WitnessedStore(Option<String>),
     /// Ask the credentials agent to certify the checkpoint key: sent by the actor to itself once the client registers,
     /// and again at half the certificate's life, or after a try that failed.
     CertifyCheckpointKey,
@@ -728,6 +739,9 @@ pub struct CryptoActorState {
     key_files: environment::KeyFiles,
     /// The log's checkpoint key, for an agent that keeps one and has an identity to name its logs by.
     checkpoint: Option<checkpoints::CheckpointKey>,
+    /// The witness's co-signing key, and the store it co-signs for (its identity), for an agent that keeps one.
+    witness: Option<checkpoints::WitnessKey>,
+    witnessed_store: Option<String>,
     key_certification_reply_router: Arc<ReplyRouter<KeyCertificationReply>>,
     escrow_key_reply_router: Arc<ReplyRouter<credentials_agent_common::escrow_key::EscrowKeyReply>>,
     store_secret_reply_router: Arc<ReplyRouter<StoreSecretReply>>,
@@ -851,6 +865,17 @@ impl Actor for CryptoActor {
                 None
             }
         };
+        let witness = match (&settings.key_files.cosigning, &own_identity) {
+            (None, _) => None,
+            (Some(path), Some(identity)) => Some(
+                checkpoints::WitnessKey::open(std::path::Path::new(path), identity)
+                    .map_err(ActorProcessingErr::from)?,
+            ),
+            (Some(path), None) => {
+                warn!(%path, "a witness key is named, but the agent has no identity to co-sign as: it co-signs nothing");
+                None
+            }
+        };
         if let Some(router) = &args.router {
             register_replies(&myself, router, checkpoint.is_some());
         }
@@ -864,6 +889,8 @@ impl Actor for CryptoActor {
             escrow: args.escrow,
             key_files: settings.key_files.clone(),
             checkpoint,
+            witness,
+            witnessed_store: None,
             key_certification_reply_router: Arc::new(ReplyRouter::new()),
             escrow_key_reply_router: Arc::new(ReplyRouter::new()),
             store_secret_reply_router: Arc::new(ReplyRouter::new()),
@@ -934,6 +961,42 @@ impl Actor for CryptoActor {
                     warn!("a checkpoint was not signed: {e}");
                 }
                 let _ = reply.send(signed);
+            }
+            CryptoMessage::Cosign { text, reply } => {
+                let at = unix_now().max(0) as u64;
+                let cosigned = match (&state.witness, &state.witnessed_store) {
+                    (None, _) if state.key_files.cosigning.is_some() => {
+                        Err(checkpoints::CheckpointRefusal::NoIdentity)
+                    }
+                    (None, _) => Err(checkpoints::CheckpointRefusal::NoKey),
+                    (Some(_), None) => Err(checkpoints::CheckpointRefusal::NoStore),
+                    (Some(key), Some(store)) => key.cosign(store, &text, at).map(|line| (line, at)),
+                };
+                if let Err(e) = &cosigned {
+                    warn!("a checkpoint was not co-signed: {e}");
+                }
+                let _ = reply.send(cosigned);
+            }
+            CryptoMessage::WitnessKey { reply } => {
+                let _ = reply.send(
+                    state
+                        .witness
+                        .as_ref()
+                        .map(checkpoints::WitnessKey::verifier_key),
+                );
+            }
+            CryptoMessage::WitnessedStore(pinned) => {
+                state.witnessed_store = match pinned.as_deref().map(checkpoints::pinned_store) {
+                    None => None,
+                    Some(Ok(store)) => Some(store),
+                    Some(Err(e)) => {
+                        warn!(
+                            "the witnessed store's key is not a store's, so nothing is co-signed: {e}"
+                        );
+                        None
+                    }
+                };
+                info!(store = ?state.witnessed_store, "the witness co-signs for this store");
             }
             CryptoMessage::CheckpointKey { reply } => {
                 let _ = reply.send(
@@ -4872,6 +4935,96 @@ mod tests {
                 certificate
             );
             store.actor.stop(None);
+        }
+
+        /// A witness co-signs nothing until its signed configuration pins a store; then only that store's
+        /// checkpoints, stamped with its own clock, so a reader holding both pins takes them; and it follows the pin
+        /// when it changes, and co-signs nothing under one that is not a store's.
+        #[tokio::test]
+        async fn the_witness_cosigns_only_for_the_store_its_configuration_pins_at_its_own_time() {
+            const WITNESS: &str = "attestation-agent.polar.serviceaccount.cluster.local";
+            let dir = tempfile::tempdir().unwrap();
+            let identity = write_test_agent_certificate(WITNESS);
+            let (actor, _) = Actor::spawn(
+                None,
+                CryptoActor,
+                CryptoActorArgs::unconnected()
+                    .with_settings(environment::CryptoSettings {
+                        own_certificate_path: identity.path().to_string_lossy().into_owned(),
+                        key_files: environment::KeyFiles {
+                            cosigning: Some(
+                                dir.path()
+                                    .join("witness/witness-key.pem")
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            ),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .with_escrow(false),
+            )
+            .await
+            .unwrap();
+            let store =
+                checkpoints::CheckpointKey::open(&dir.path().join("store.pem"), STORE).unwrap();
+            let other =
+                checkpoints::CheckpointKey::open(&dir.path().join("other.pem"), "other-store")
+                    .unwrap();
+            let cosign = |text: String| {
+                let actor = actor.clone();
+                async move {
+                    ractor::call!(actor, |reply| CryptoMessage::Cosign { text, reply }).unwrap()
+                }
+            };
+            let text = checkpoint(&format!("{STORE}/evidence"));
+            assert_eq!(
+                cosign(text.clone()).await,
+                Err(checkpoints::CheckpointRefusal::NoStore)
+            );
+
+            actor
+                .send_message(CryptoMessage::WitnessedStore(Some(store.verifier_key())))
+                .unwrap();
+            let before = unix_now() as u64;
+            let (line, at) = cosign(text.clone()).await.unwrap();
+            assert!(
+                at >= before && at <= unix_now() as u64,
+                "its own clock's time"
+            );
+            let witness_key = ractor::call!(actor, |reply| CryptoMessage::WitnessKey { reply })
+                .unwrap()
+                .expect("it keeps a witness key");
+            polar_log::checkpoint::open_witnessed(
+                &format!("{text}\n{}{line}", store.sign(&text).unwrap()),
+                &polar_log::checkpoint::NoteVerifier::parse(&store.verifier_key()).unwrap(),
+                &polar_log::checkpoint::NoteVerifier::parse(&witness_key).unwrap(),
+                at,
+            )
+            .expect("a reader holding both pins takes it");
+            assert!(matches!(
+                cosign(checkpoint("other-store/evidence")).await,
+                Err(checkpoints::CheckpointRefusal::NotTheStore(_))
+            ));
+
+            // The pin moves: so does what it co-signs.
+            actor
+                .send_message(CryptoMessage::WitnessedStore(Some(other.verifier_key())))
+                .unwrap();
+            assert!(cosign(checkpoint("other-store/evidence")).await.is_ok());
+            assert!(matches!(
+                cosign(text.clone()).await,
+                Err(checkpoints::CheckpointRefusal::NotTheStore(_))
+            ));
+            // A pin that is not a store's key pins nothing.
+            actor
+                .send_message(CryptoMessage::WitnessedStore(Some(witness_key)))
+                .unwrap();
+            assert_eq!(
+                cosign(checkpoint("other-store/evidence")).await,
+                Err(checkpoints::CheckpointRefusal::NoStore)
+            );
+            actor.stop(None);
         }
 
         proptest::proptest! {

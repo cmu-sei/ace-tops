@@ -102,6 +102,8 @@ wiremock.workspace = true
 polar-signing = { workspace = true, features = ["testing"] }
 polar-health = { path = "../polar-health", features = ["virtual-time"] }
 proptest.workspace = true
+# A witness's co-signature, opened as a reader opens one (infrastructure.rs).
+polar-log.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

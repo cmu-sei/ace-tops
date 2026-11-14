@@ -160,6 +160,8 @@ pub struct AgentResources {
     pub tls: crate::crypto::TlsHandle,
     /// The agent's checkpoint key, for one the deployment gives one (the `checkpoints` capability).
     pub checkpoints: Option<crate::crypto::CheckpointHandle>,
+    /// The agent's witness key, for one the deployment gives one (`POLAR_WITNESS_COSIGNING_KEY`).
+    pub cosigning: Option<crate::crypto::CosignHandle>,
     /// What the agent signs its evidence records with, for one with the `signing` capability ([`signer`]).
     pub signer: Option<crate::signer::SignerHandle>,
     /// The agent's way to the outside, for one that declares operations or credentials ([`protocol::ProtocolHandle`]).
@@ -709,6 +711,8 @@ pub struct ServiceResources {
     pub tls: crate::crypto::TlsHandle,
     /// The service's checkpoint key. See [`AgentResources::checkpoints`].
     pub checkpoints: Option<crate::crypto::CheckpointHandle>,
+    /// The service's witness key. See [`AgentResources::cosigning`].
+    pub cosigning: Option<crate::crypto::CosignHandle>,
 }
 
 /// The infrastructure of a service that is not a Cassini client: the broker itself, or any

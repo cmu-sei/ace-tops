@@ -78,6 +78,31 @@ pub const STORE_CHECKPOINT_KEY: Optional<String> = Optional::path(
      there once if it is not there, and never replaces it",
 );
 
+/// Where a witness keeps its co-signing key, on its own volume: the crypto actor makes it there once if it is not there,
+/// and never replaces it, since the store and readers pin it (docs/plans/record-store/to-main.md, bite 2).
+pub const WITNESS_COSIGNING_KEY: Optional<String> = Optional::path(
+    "POLAR_WITNESS_COSIGNING_KEY",
+    Access::WriteFile,
+    "path to the private key (PKCS#8 PEM, P-256) the agent co-signs a store's checkpoints with, as its witness; its \
+     crypto actor makes it there once if it is not there, and never replaces it",
+);
+
+/// A store's checkpoint verifier key, of a key no store holds: for tests and the scaffold's example.
+pub const EXAMPLE_STORE: &str = "polar-git-server.polar.serviceaccount.cluster.local/checkpoint+f857ae4e+AjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABG/wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW/AdxT9sCwx+7ni0DG/30lqW4igrmJzvccFEo=";
+
+/// The store a witness co-signs for: its checkpoint verifier key, from the agent's signed configuration, which the
+/// crypto actor follows and holds every co-signature to. Its name is the attestation agent's, as the signed
+/// configuration already carries it (docs/architecture/runtime-attestation.md, "The witness of the store's logs").
+pub static WITNESSED_STORE: Optional<String> = Optional::new(
+    "POLAR_ATTESTATION_WITNESSED_STORE",
+    "the verifier key of the store's checkpoint key (`<identity>/checkpoint+<id>+<key>`), whose logs the witness \
+     co-signs; unset, it co-signs nothing",
+    "a store's checkpoint verifier key",
+    |raw| crate::checkpoints::pinned_store(raw).map(|_| raw.trim().to_string()),
+)
+.dynamic()
+.example(EXAMPLE_STORE);
+
 // The client certificate (TLS_CLIENT_CERT) is the Cassini client's to declare and require: it is the agent's identity
 // certificate, which every Cassini client is given; read here by its name.
 static KEY_VARIABLES: &[&dyn Described] = &[
@@ -86,6 +111,8 @@ static KEY_VARIABLES: &[&dyn Described] = &[
     &SERVER_CERT_FILE,
     &SERVER_KEY_FILE,
     &STORE_CHECKPOINT_KEY,
+    &WITNESS_COSIGNING_KEY,
+    &WITNESSED_STORE,
 ];
 
 /// Where the agent's keys are: the custody daemon's socket, or, where a cluster runs without the daemon, its key files.
@@ -148,6 +175,8 @@ pub struct KeyFiles {
     /// A log's checkpoint key, for an agent that keeps one: a key file wherever the custody daemon runs, until custody
     /// can hold a named key that outlives its pod.
     pub checkpoint: Option<String>,
+    /// A witness's co-signing key.
+    pub cosigning: Option<String>,
 }
 
 impl KeyFiles {
@@ -159,6 +188,7 @@ impl KeyFiles {
             client: pair(read(&CLIENT_CERT_FILE)?, read(&CLIENT_KEY_FILE)?),
             server: pair(read(&SERVER_CERT_FILE)?, read(&SERVER_KEY_FILE)?),
             checkpoint: read(&STORE_CHECKPOINT_KEY)?,
+            cosigning: read(&WITNESS_COSIGNING_KEY)?,
         })
     }
 }
@@ -226,11 +256,11 @@ impl CryptoSettings {
             .map_err(|e| e.to_string())?
             .filter(|s| !s.trim().is_empty());
         let key_files = KeyFiles::from_env(env)?;
-        // A checkpoint names its log by the agent's identity, so an agent that keeps a checkpoint key reads its own
-        // certificate for it, as one that escrows does.
-        let own_certificate_path = match &key_files.checkpoint {
-            Some(_) => TLS_CLIENT_CERT.read(env).unwrap_or_default(),
-            None => String::new(),
+        // A checkpoint names its log by the agent's identity, and a witness co-signs as its identity, so an agent that
+        // keeps either key reads its own certificate for it, as one that escrows does.
+        let own_certificate_path = match (&key_files.checkpoint, &key_files.cosigning) {
+            (None, None) => String::new(),
+            _ => TLS_CLIENT_CERT.read(env).unwrap_or_default(),
         };
         Ok(Self {
             own_certificate_path,

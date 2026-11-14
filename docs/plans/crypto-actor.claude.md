@@ -190,6 +190,21 @@ S1 DONE 2026-11-13 (record store bite 1's crypto pieces, docs/plans/record-store
      (15), so the request gate judges Action::"request" on it and the drain lets it go.
    - For bite 1 (polar-cc): the git server declares NEEDS Checkpoints (and persistent-data) and signs through
      resources.checkpoints; nothing on main declares Checkpoints yet.
+S2 DONE 2026-11-14 (record store bite 2's crypto piece): polar_crypto::environment::WITNESS_COSIGNING_KEY
+   (POLAR_WITNESS_COSIGNING_KEY, Optional, WriteFile, no default) and WITNESSED_STORE (POLAR_ATTESTATION_WITNESSED_STORE,
+   Optional, Dynamic, parsed by checkpoints::pinned_store, example EXAMPLE_STORE) in `keys`, declared once there: the
+   name stays the attestation agent's because u7c's signed v1 configuration carries it. KeyFiles.cosigning; the own
+   certificate is read when either key is given. checkpoints: WITNESS_NAME ("witness"), pinned_store(vkey) -> store
+   identity (a note signer's `<identity>/checkpoint`, never a co-signer's), judge_cosign(store, text) (judge's rule
+   with the store's identity), WitnessKey {open (same make-once rule; acp's key loads), cosign(store, text, time),
+   verifier_key}. CryptoMessage::Cosign{text} -> (line, T) with T the actor's clock; WitnessKey -> Option<verifier>;
+   WitnessedStore(Option<vkey>) followed: the infrastructure has the crypto actor follow WITNESSED_STORE through
+   ConfigurationHandle::follow when POLAR_WITNESS_COSIGNING_KEY is given, so the pin is the signed configuration's, never
+   the caller's. CheckpointRefusal gains NoStore and NotTheStore. polar_agent_builder::crypto::CosignHandle {cosign,
+   key} in AgentResources.cosigning / ServiceResources.cosigning. For bite 2: the attestation section drops its own
+   WITNESSED_STORE (declared once, in `keys`); the render sets POLAR_WITNESS_COSIGNING_KEY for attestation-agent at
+   <WITNESS_ROOT>/witness-key.pem; the holding file can no longer be judged by the key's presence beside it (the actor
+   makes the key): record in it the verifier key it was made under and compare (CosignHandle::key).
 K4 Dependency test: cargo metadata; only polar-crypto, polar-init, polar-health, polar-custody-daemon (and polar-custody
    itself) may depend on polar-custody. Builder loses its direct dependency.
 K5 Degraded key files held by the CryptoActor (same shape).
