@@ -55,6 +55,9 @@ OWNER: polar-cc (acp) designs/prepares; polar-89 (main) takes onto main and depl
 | ledger checkpoints into store (bite 10 / L3) | record-store.md "plan for L3" | planned on acp |
 | large records as blobs | polar-eden follow-up (237 KB run record > MAX_ENTRY 65,535) | not written |
 
+- 2026-11-13 (maintainer, via coordinator): polar-git + git-remote-polar move to main (bite B5); intents and
+  polar-eden stay on acp; checkpoint key "a file now, custody later" (named escrowed custody key when trusted-remotes
+  step 3 lands); polar-89's 3 conditions (base ≥ 7e43bb92; every key use via CryptoActor; per-bite state).
+
 ## OPEN
-- what stays on acp (user to confirm): .elide.dhall intents, polar-eden, polar-git (source server) + git-remote-polar.
 - record-store.md: move acp's current text to main with bite 1 (main's copy is stale).

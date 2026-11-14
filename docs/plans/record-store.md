@@ -74,7 +74,7 @@ Its features, each a plan of its own as it is reached:
 |---|---|---|---|
 | The log format | the entry, the Merkle tree and its proofs, signed checkpoints, and a replay that reports what it cannot read | on `main` | (in the design document) |
 | The ledger's checkpoints | the credentials ledger's history signed by a key of its own | on `main` | (in the design document) |
-| **The store on `main`** | the logs in the git server, reads over Cassini, the evidence intake, the witness, schedules on the log, and people's tools, brought to `main` | proposed | [`record-store/to-main.md`](record-store/to-main.md) |
+| **The store on `main`** | the logs in the git server, reads over Cassini, the evidence intake, the witness, schedules on the log, people's tools, and the source-code git server, brought to `main` | proposed | [`record-store/to-main.md`](record-store/to-main.md) |
 | The deployment on the log | the deployment's commits as log entries, read by the deployer | waits for the deployer | not yet written |
 | The repositories moved in, and git off | the development cluster's repositories as logs; the git face turned off where self-hosted | not started | not yet written |
 | The ledger's checkpoints in the store | the credentials ledger's checkpoints published as store entries | not started | not yet written |

@@ -25,51 +25,78 @@
 
 PAIR: `to-main.md` (people). Same plan, two forms; change together.
 SPLIT: people side has no dates, attributions, quotes, codenames or branch/process status; those live here.
-PARENT: `../record-store.claude.md`. Branch store-to-main (from ace-remote/main b998a245); taken by polar-89.
-STATUS: PROPOSAL 2026-11-13, not cleared. Decision behind it: maintainer "Bring the store to main" (2026-11-13).
-FLOW per bite: polar-cc prepares on a branch from main (tests pass there, capped: systemd-run MemoryMax=24G) →
-polar-89 takes onto main → deploys u7c (up.nu sandbox-local --dev, no --under-test gitlab) → next bite.
+PARENT: `../record-store.claude.md`. Branch store-to-main, rebased on ace-remote/main 7e43bb92 (2026-11-13); taken by
+polar-89 after review against main, then to the maintainer to clear.
+STATUS: PROPOSAL 2026-11-13, not cleared. Behind it: maintainer "Bring the store to main" (2026-11-13).
+FLOW per bite: polar-cc prepares on a branch from main (≥ 7e43bb92; tests pass there, capped: systemd-run
+MemoryMax=24G) → polar-89 takes onto main → deploys u7c (up.nu sandbox-local --dev, no --under-test gitlab) → next.
 
-## ACP CODE SINCE MERGE BASE a4c1c984 (git diff --shortstat)
-- polar-git-server: 20 files, +6967/−92. New on acp: server/src/{logs,log_read,reply,evidence,schedules,witness}.rs;
-  plus settings/supervisor/agent/lib changes, common request types. Main has none of the six files.
-- attestation: 13 files, +2788/−41: agent/src/{witness.rs 1211, evidence.rs 536}, supervisor +538, settings;
-  common/src/{witness.rs 235, report.rs, record.rs, proof.rs}.
-- polar-scheduler: 15 files, +2145/−263: observer sync_actor/reads/settings/supervisor/agent, common running.rs;
-  plus 3 .elide.dhall (STAY on acp).
-- polar-records-client: +533 (new crate). git-remote-polar: +642 (new crate; belongs with polar-git).
-- infra/seed.nu +54 (witness_pins :355-382, settings_path, key_in_logs); infra/up.nu +49/−2.
-- polar-log: no diff (main = acp). Evidence catch-up 7f02484c is acp-only (not in main).
-- builder person floor (floor.rs) for store topics: acp (check exact commits at bite 4).
-- Total ≈ 15k lines incl. tests (69 files counting polar-git, which stays).
+## DECIDED (maintainer, 2026-11-13, via the coordinator)
+- D1 polar-git (source-code server) + git-remote-polar MOVE to main: bite B5, after B4.
+- D2 .elide.dhall intents and polar-eden STAY on acp.
+- D3 checkpoint key: "a file now, custody later". Port as is (key file on the store's volume, certified by the
+  credentials agent); move to a named, escrowed custody key when main's trusted-remotes step 3 lands.
+- D4 polar-89's three conditions, all met below: (1) every bite based on main ≥ 7e43bb92 (K3b changed git-server
+  tls.rs/settings.rs/supervisor.rs; server keys TLS_SERVER_CERT_CHAIN/TLS_SERVER_KEY declared by `keys`);
+  (2) every key use through the agent's CryptoActor (docs/plans/crypto-actor.md); no polar_custody outside
+  polar-crypto, polar-init, polar-health, the daemon (K4 dep test); new CryptoMessages named per bite, added by polar-89
+  on main ahead of it; (3) per bite: signed/persisted state changed + what a running u7c needs.
 
-## ALREADY ON MAIN (don't re-port)
-polar-log; ledger L1/L2 (130fe680, 2e06f8f7, b57f7c0f, 402e7958); bite S + K1 (record signer in CryptoActor,
-9a2cc593); K2 (5594e2a9); K3a TlsHandle (d7654f65); K3b git server over CryptoActor TLS (b998a245);
-policy schema context.addressed + Repository + git-* actions (2cc50d72).
+## NEW CRYPTOMESSAGES (polar-89 adds on main ahead of the bite; names proposed)
+Main today: CryptoMessage {Connect, ClientTls, ServerTls, SignRecord, StoreSecret, EncryptForRecipient, RegisterSecret,
+LoadSecret, ReplaceSection, UseCredential, RetrieveSecret, RoutedReply}; KeyFiles = TLS client/server pairs only.
+- B1 `SignCheckpoint { text: String, reply }` (store). Checks: `polar_log::checkpoint::Checkpoint::parse(text)` ok
+  (exactly 3 lines: origin, decimal size, base64 root, trailing \n, no extension lines; polar-log/src/checkpoint.rs
+  :83-131) AND origin == `<store origin>/<log>` for this store (acp logs.rs:144-146 `Logs::open(root, origin)`,
+  checkpoints name `origin/<log>`). Signs via `NoteSigner` (signed-note type 0x02, ECDSA P-256, DER over SHA-256 of
+  the text). Returns the signature line.
+- B2 `Cosign { text: String, time: u64, reply }` (attestation agent). Checks: Checkpoint::parse ok AND origin's store
+  prefix == the pinned store (POLAR_ATTESTATION_WITNESSED_STORE). Builds `cosignature/v1\ntime <T>\n<text>` itself
+  (checkpoint.rs:164) and signs as `Cosigner::cosign_line` (type COSIGNATURE_TYPE = b"\xffpolar.dev/cosignature/p256/v1"
+  :54; key id cosigner_key_id :152). Consistency with the last co-signed checkpoint stays in the witness actor
+  (domain), before it asks.
+- Records: `SignRecord` already on main (K1 9a2cc593); B1's attestation evidence.rs uses it.
+KEY FILES (new KeyFiles entries in polar_crypto::environment; names proposed, defaults = today's paths so u7c keys
+and pins survive): `POLAR_STORE_CHECKPOINT_KEY` default `/var/lib/polar-git-server/logs/checkpoint-key.pem` (acp:
+LOG_ROOT settings.rs:44-50 + logs.rs:48 KEY_FILE); `POLAR_WITNESS_KEY` default `<POLAR_ATTESTATION_WITNESS_ROOT>/
+witness-key.pem` (acp: attestation settings.rs:43-46 WITNESS_ROOT + witness.rs:251 KEY_FILE). Today the store makes
+its key once if absent (logs.rs test `the_checkpoint_key_is_made_once_kept_private_and_pinned`); the CryptoActor must
+keep that: make-once 0600 if absent, never replace (a new key breaks the pins).
 
-## BITES (dependency order)
-B1 logs + log reads over Cassini + evidence intake appends + catch-up at start (7f02484c) + attestation evidence.rs
-   (verdicts as records) + record-store.md brought current on main. Open logs as found on polar-git-server-data PVC
-   (u7c UID 50bb1772 as of 11-12): never re-init; catch-up appended 44 missing records live 2026-11-12.
-B2 witness: attestation witness.rs/common witness.rs + git-server witness.rs + seed pins for git-server & attestation.
-B3 schedules on log: git-server schedules.rs + scheduler observer (reads log, both keys pinned) + seed pins for
-   observer. Ends the 4 refused updates.
-B4 people's tools: person floor (builder floor.rs), polar-records-client, polar-sign over Cassini (no --repo).
-   polar-eden fetch-log/collect --push stay on acp (polar-eden stays).
+## ACP CODE (since merge base a4c1c984)
+polar-git-server +6967/−92 (new: logs, log_read, reply, evidence, schedules, witness .rs); attestation +2788/−41
+(witness.rs 1211, evidence.rs 536, common witness.rs 235, report/record/proof); polar-scheduler +2145/−263
+(observer sync_actor/reads/settings; common running.rs; 3 .elide.dhall STAY); polar-records-client +533;
+git-remote-polar +642; polar-git (src: events, http, lib, main, settings, supervisor; tests e2e 426); seed.nu +54
+(witness_pins :355-382); up.nu +49/−2. polar-log: no diff. Catch-up 7f02484c acp-only. ≈15k + polar-git.
 
-## RULES APPLIED
-- K3: ported code takes TLS from TlsHandle / CryptoActor; no own rustls config; custody only via CryptoActor.
-- main-and-acp-stay-compatible: same kind+version = same bytes; u7c state carries over unwiped.
-- custody scope (maintainer 2026-11-13): keyring-like; checkpoint key placement is an OPEN decision (file on volume
-  today: settings.rs:48 "the directory the store's signed logs and its checkpoint key live in").
-
-## STAYS ON ACP (user to confirm)
-.elide.dhall intents; polar-eden; polar-git (source server, direct connections) + git-remote-polar.
+## BITES — state and what u7c needs
+B1 logs + reads + evidence intake + catch-up + attestation evidence.rs + record-store.md current on main.
+   STATE: polar-git-server-data PVC (UID 50bb1772 as of 11-12): logs dir with evidence + schedules logs and
+   checkpoint-key.pem, written by acp, KEPT (never re-init); evidence log appends missing (44 caught up live 11-12).
+   schedules repo: none. NEEDS: SignCheckpoint on main; up.nu --dev; no wipe, no re-seal.
+B2 witness (attestation witness.rs/common, git-server witness.rs, seed pins for git-server + attestation).
+   STATE: attestation-agent-data PVC (9e644997): witness dir (witness-key.pem, holding) KEPT. Schedules:
+   permanent/{polar-git-server,attestation-agent}/configuration.dhall v1 already carry the pins (acp seed);
+   witness_pins writes only when an agent has no settings → writes nothing on u7c; main now declares
+   POLAR_GIT_SERVER_WITNESS_KEY + POLAR_ATTESTATION_WITNESSED_STORE → those two v1 updates accepted.
+   NEEDS: Cosign on main; up.nu --dev.
+B3 schedules on log (git-server schedules.rs; scheduler observer reads log, both pins; seed observer pins).
+   STATE: schedules log already on PVC; observer v1 (POLAR_SCHEDULER_STORE_KEY + _WITNESS_KEY) accepted → no agent
+   refuses its configuration. NEEDS: up.nu --dev.
+B4 people's tools (builder person floor floor.rs; polar-records-client; polar-sign over Cassini, no --repo).
+   STATE: Cedar person-answer rules = policy v4 already in force on u7c (main accepted v4); context.addressed on main
+   (2cc50d72). No persisted change. Floor in every agent → all rebuilt. polar-records-client is a person CLI: K2b.
+   NEEDS: up.nu --dev; tools rebuilt on people's machines. polar-eden fetch-log/collect --push stay on acp (D2).
+B5 polar-git + git-remote-polar.
+   STATE: new workload + its own PVC (repos); TLS via TlsHandle with TLS_SERVER_CERT_CHAIN/TLS_SERVER_KEY (K3b names;
+   acp's POLAR_* key names + settings.rs:74-77 ServerKey/one_key + supervisor TlsAcceptor replaced: K3 "ACP'S OWN
+   PATHS"); Cedar git-* actions + Repository entity on main (2cc50d72); groups doc (repo-developer) in schedules.
+   NEEDS: catalog entry + PVC via render; up.nu --dev; git-remote-polar on people's machines (K2b CLI CryptoActor).
 
 ## RISKS
-size (~15k lines; each bite reviewed alone); record-store.md on main stale (acp +76 lines); u7c evidence log (44+
-records caught up 2026-11-12) and schedules log must survive; acp tests that assume acp-only crates must be split out.
+size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching
+polar-eden must be split out; the make-once key rule must move into the CryptoActor intact.
 
-## OPEN (before B1)
-1. confirm what stays on acp. 2. checkpoint key: volume file vs custody named key (crypto-actor rules).
+## OPEN
+key-file variable names (proposed above; polar-89 to confirm against main's naming).
