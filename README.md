@@ -206,7 +206,8 @@ bin/polar-dev up
 
 The first time takes several minutes: it pulls the dev container image (about 2.7 GB) and copies its Nix store to a volume
 (about 9.7 GB). It says what it is doing as it goes, then clones the sources into `/workspace` (`POLAR_DEV_REPO`, this
-project's public repository by default, and `POLAR_DEV_BRANCH`; for a private remote, with your forwarded SSH agent) and logs you in: the dev container's banner, a fish shell, `/workspace`. Inside
+project's public repository by default, and `POLAR_DEV_BRANCH`, `release/3.0.x` by default: this release's line, since the
+repository's `main` is where the next release is built; for a private remote, with your forwarded SSH agent) and logs you in: the dev container's banner, a fish shell, `/workspace`. Inside
 it, `kubectl` reaches the cluster as the pod's own account and `sops` decrypts with your key. Later logins are
 `bin/polar-dev attach`. What it makes and every setting are in **Working environments**.
 

@@ -68,7 +68,8 @@ $U = (($Login.ToLowerInvariant()) -replace '[^a-z0-9-]', '-').Trim('-')
 $NS = "polar-dev-$U"
 $Deploy = "polar-dev-$U"
 $Repo = if ($env:POLAR_DEV_REPO) { $env:POLAR_DEV_REPO } else { 'https://github.com/cmu-sei/ace-tops.git' }
-$Branch = if ($env:POLAR_DEV_BRANCH) { $env:POLAR_DEV_BRANCH } else { 'main' }
+# The 3.0 line by default: the public repository's main is where the next release is built.
+$Branch = if ($env:POLAR_DEV_BRANCH) { $env:POLAR_DEV_BRANCH } else { 'release/3.0.x' }
 $Port = if ($env:POLAR_DEV_PORT) { $env:POLAR_DEV_PORT } else { '2222' }
 $SopsKey = if ($env:POLAR_DEV_SOPS_KEY) { $env:POLAR_DEV_SOPS_KEY } elseif ($env:SOPS_AGE_SSH_PRIVATE_KEY_FILE) { $env:SOPS_AGE_SSH_PRIVATE_KEY_FILE } else { Join-Path $UserHome '.ssh\id_ed25519' }
 $RemoteHome = "/home/$U"

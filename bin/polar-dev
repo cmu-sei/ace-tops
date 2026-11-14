@@ -49,7 +49,8 @@ U=$(id -un | tr '[:upper:]_.' '[:lower:]--')
 NS=polar-dev-$U
 DEPLOY=polar-dev-$U
 REPO=${POLAR_DEV_REPO:-https://github.com/cmu-sei/ace-tops.git}
-BRANCH=${POLAR_DEV_BRANCH:-main}
+# The 3.0 line by default: the public repository's main is where the next release is built.
+BRANCH=${POLAR_DEV_BRANCH:-release/3.0.x}
 PORT=${POLAR_DEV_PORT:-2222}
 SOPS_KEY=${POLAR_DEV_SOPS_KEY:-${SOPS_AGE_SSH_PRIVATE_KEY_FILE:-$HOME/.ssh/id_ed25519}}
 REMOTE_HOME=/home/$(id -un)
