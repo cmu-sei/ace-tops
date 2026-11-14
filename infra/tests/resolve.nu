@@ -489,7 +489,7 @@ def main [] {
                 assert equal $resources.cluster_roles []
                 let namespaces = ($resources.namespaced_roles | get namespace | sort)
                 # Polar's own and the build namespace, whose pods the credentials agent issues to.
-                assert equal $namespaces ["polar" "polar-auth" "polar-builds" "polar-graph"]
+                assert equal $namespaces ["polar" "polar-builds" "polar-graph"]
                 # What it declares it watches (attestation.watch), listed first: no get, which it never asks.
                 for role in $resources.namespaced_roles {
                     let verbs = ($role.rules | get verbs | flatten | uniq | sort)
@@ -497,7 +497,7 @@ def main [] {
                     let kinds = ($role.rules | get resources | flatten | sort)
                     assert equal $kinds ["deployments" "jobs" "pods" "replicasets" "statefulsets"] $role.namespace
                 }
-                assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-auth" "polar-builds" "polar-graph"]
+                assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_ATTESTATION_NAMESPACES" $t | split row "," | sort) ["polar" "polar-builds" "polar-graph"]
                 # A Role in each attested namespace names none by its key: its operations are held to none, and it is told none.
                 assert equal (env_value (resolve_for $t "attestation-agent") "POLAR_CLUSTER_NAMESPACES" $t) null
             }
@@ -545,7 +545,7 @@ def main [] {
         # the attestation agent attests, or the credentials agent refuses its pods as not found.
         "the namespaces beyond Polar's first are made with their Pod Security, the build namespace's restricted warned and audited, nothing enforced": {
             let cluster = {
-                namespaces: { polar: "polar", graph: "polar-graph", auth: "polar-auth", builds: "polar-builds" }
+                namespaces: { polar: "polar", graph: "polar-graph", builds: "polar-builds" }
                 pod_security: { builds: { enforce: "baseline", warn: "restricted", audit: "restricted" } }
                 attest_also: ["gitlab-test"]
             }
