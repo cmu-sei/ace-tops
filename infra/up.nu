@@ -859,6 +859,41 @@ def seed_git [username: string, args: list<string>] {
     ^env -u GIT_SSL_CAINFO -u SSL_CERT_FILE git ...$config ...$args
 }
 
+# The store's and the witness's keys, each pinned in the other's settings (seed.nu, `witness_pins`), signed as `username`
+# into the clone when the agent has no settings yet. Each key is read from its owner's log, waiting while it starts; a key
+# that is not said in time is noted, and the next run pins it. Returns what it added, as the seed's other parts do.
+def seed_witness_pins [username: string, repo: string, existing: list<string>, work: string, sign: list<string>] {
+    let scaffolds = ($work | path join "scaffolds")
+    let missing = (seed pins_missing (seed witness_pins) $existing)
+    let pinned = (seed witness_pins | where {|p| $p not-in $missing })
+    for p in $pinned { note $"($p.agent) has signed settings already: its pin is left as it is" }
+    mut added = []
+    for p in $missing {
+        let deadline = ((date now) + 3min)
+        mut key: any = null
+        loop {
+            let logs = (do { ^kubectl logs -n $POLAR $"deploy/($p.key_of.deployment)" -c $p.key_of.deployment --tail=-1 } | complete)
+            $key = (seed key_in_logs ($logs.stdout | lines) $p.key_of.says)
+            if $key != null or (date now) > $deadline { break }
+            print $"  waiting for ($p.key_of.deployment) to say its key..."
+            sleep 5sec
+        }
+        if $key == null {
+            note $"($p.key_of.deployment) has not said its key: ($p.agent) is not pinned yet, and the next run pins it"
+            continue
+        }
+        let input = ($work | path join $"($p.agent)-pin.json")
+        seed pin_settings $p.agent $p.variable $key | to json | save --force $input
+        let out = ($repo | path join (seed settings_path $p.agent))
+        mkdir ($out | path dirname)
+        let r = (do { ^($sign | first) ...($sign | skip 1) sign $input --user $username --scaffold ($scaffolds | path join $"($p.agent).json") --out $out } | complete)
+        if $r.exit_code != 0 { fail $"polar-sign could not sign ($p.agent)'s pin: ($r.stderr | str trim)" }
+        note $"pinned in ($p.agent): ($p.key_of.deployment)'s key ($key | split row '+' | first)"
+        $added = ($added | append { path: (seed settings_path $p.agent), section: $"($p.agent)'s pin of ($p.key_of.deployment)'s key" })
+    }
+    $added
+}
+
 # jira-observer's credential, once, on a fresh cluster: the jira_token of the target's sops files sealed into its signed
 # `credentials` section, written to the seed's clone `repo` (whose files are `existing`) to be pushed with the rest
 # (seed.nu, "jira-observer's credential"). Returns what it added, `{ path, section }`, or nothing. The token is held in
@@ -1051,13 +1086,14 @@ def step_seed [target: string, config: record, username: string, mail: string, a
     # The agents' own scaffolds, which polar-sign judges every section by and signs nothing without (cached under each
     # image's digest by the render).
     let scaffolds = ($work | path join "scaffolds")
-    if ($todo | is-not-empty) {
+    if ($todo | is-not-empty) or (seed pins_missing (seed witness_pins) $existing | is-not-empty) {
         let collected = (do { ^$nu.current-exe ($root | path join "infra/resolve.nu") scaffolds $scaffolds --target $target } | complete)
         if $collected.exit_code != 0 { fail $"cannot collect the agents' scaffolds for the seed: ($collected.stderr | str trim | lines | last 1 | str join)" }
     }
     # Before the documents are written to the clone: the sections it finds are the ones already pushed.
     let jira = (seed_jira_credential $target $config $username $repo $existing $work $sign)
     let tested = (seed_under_test $target $username $repo $existing $work $sign)
+    let pins = (seed_witness_pins $username $repo $existing $work $sign)
     for d in $todo {
         note $"signing ($d.section) for ($d.agent), version ($d.version)"
         # A computed body is the resolver's: the state agent's first schema from the agents' scaffolds, which the render
@@ -1075,7 +1111,7 @@ def step_seed [target: string, config: record, username: string, mail: string, a
         mkdir ($target_file | path dirname)
         $signed | save --force $target_file
     }
-    let added = (($todo | select path section) ++ $jira ++ $tested.added)
+    let added = (($todo | select path section) ++ $jira ++ $tested.added ++ $pins)
     if ($added | is-empty) and ($tested.removed | is-empty) {
         ok "every seed document is already in polar-schedules"
     } else {

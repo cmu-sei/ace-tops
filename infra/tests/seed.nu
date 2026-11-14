@@ -497,6 +497,39 @@ def main [] {
                 assert (authority_published $"noise\n($said)\nmore noise" "policy")
             }
         }
+        {
+            name: "the store's and the witness's keys are read from where each logs it, colours and all, the last said"
+            body: {
+                let esc = (char --integer 27)
+                let store = "polar-git-server.polar.serviceaccount.cluster.local/checkpoint+f857ae4e+AjBZ+x/y="
+                let older = "polar-git-server.polar.serviceaccount.cluster.local/checkpoint+00000000+old="
+                let lines = [
+                    $"2026-11-11T10:00:00Z  INFO the store's logs are open root=/var/lib/polar-git-server/logs key=($older)"
+                    "noise key=not-this-one"
+                    $"($esc)[2m2026-11-11T11:00:00Z($esc)[0m ($esc)[32m INFO($esc)[0m the store's logs are open ($esc)[3mroot($esc)[0m($esc)[2m=($esc)[0m/var/lib ($esc)[3mkey($esc)[0m($esc)[2m=($esc)[0m($store)"
+                ]
+                assert equal (key_in_logs $lines "the store's logs are open") $store
+                assert equal (key_in_logs ["nothing said"] "the store's logs are open") null
+                assert equal (key_in_logs ["the store's logs are open with no key"] "the store's logs are open") null
+                # A field that only ends in key is not the key.
+                assert equal (key_in_logs ["the store's logs are open monkey=x"] "the store's logs are open") null
+            }
+        }
+        {
+            name: "each pin is the other's key in its agent's first settings, signed only when the agent has none"
+            body: {
+                let pins = (witness_pins)
+                assert equal ($pins | get agent | sort) ["attestation-agent" "polar-git-server"]
+                # Each agent's key comes from the other.
+                for p in $pins { assert ($p.key_of.deployment != $p.agent) }
+                let doc = (pin_settings "attestation-agent" "POLAR_ATTESTATION_WITNESSED_STORE" "k")
+                assert equal $doc { agent: "attestation-agent", version: 1, settings: { POLAR_ATTESTATION_WITNESSED_STORE: "k" } }
+                assert equal (pins_missing $pins [] | length) 2
+                let missing = (pins_missing $pins ["permanent/polar-git-server/configuration.dhall" "permanent/other/configuration.dhall"])
+                assert equal ($missing | get agent) ["attestation-agent"]
+                assert equal (pins_missing $pins ($pins | each {|p| settings_path $p.agent })) []
+            }
+        }
     ]
 
     let results = ($tests | each {|t|

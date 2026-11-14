@@ -351,3 +351,46 @@ export def seal_outcome [exit_code: int, stderr: string] {
     let waiting = ($stderr | str contains "has no escrow certificate") or ($stderr | str contains "cannot reach the credentials agent's gateway")
     { ok: false, final: (not $waiting), detail: ($stderr | str trim) }
 }
+
+# The store and the witness of its logs pin each other's keys (docs/architecture/runtime-attestation.md, "The witness of
+# the store's logs"; record-store.md, "Bite 5"): each key is in the other agent's settings, signed as the one who runs
+# up.nu (the maintainer, 2026-11-11). Each key is read where its owner logs it at start. A pin is signed once, when the
+# agent has no settings yet: a key that changes later (a volume lost) is a person's to pin again, since pinning on every
+# run would let a witness that lost its memory pass for the one readers trust.
+export def witness_pins [] {
+    [
+        {
+            agent: "attestation-agent"
+            variable: "POLAR_ATTESTATION_WITNESSED_STORE"
+            key_of: { deployment: "polar-git-server", says: "the store's logs are open" }
+        }
+        {
+            agent: "polar-git-server"
+            variable: "POLAR_GIT_SERVER_WITNESS_KEY"
+            key_of: { deployment: "attestation-agent", says: "the witness of the store's logs is ready" }
+        }
+    ]
+}
+
+# Where an agent's signed settings are kept in polar-schedules (polar-sign's `push::place`).
+export def settings_path [agent: string] {
+    $"permanent/($agent)/configuration.dhall"
+}
+
+# The key the last of `lines` that says `says` gives in its `key` field, colours and all; none if no line says it.
+export def key_in_logs [lines: list<string>, says: string] {
+    let said = ($lines | each {|l| $l | ansi strip } | where {|l| $l | str contains $says })
+    if ($said | is-empty) { return null }
+    let found = ($said | last | parse --regex '(?:^|\s)key=(?<key>\S+)')
+    if ($found | is-empty) { null } else { $found | first | get key }
+}
+
+# The first settings of `agent`, pinning `key` as `variable`, for `polar-sign sign`.
+export def pin_settings [agent: string, variable: string, key: string] {
+    { agent: $agent, version: 1, settings: { ($variable): $key } }
+}
+
+# The pins still to sign: each whose agent has no settings in `existing` (the files of polar-schedules).
+export def pins_missing [pins: list, existing: list<string>] {
+    $pins | where {|p| (settings_path $p.agent) not-in $existing }
+}
