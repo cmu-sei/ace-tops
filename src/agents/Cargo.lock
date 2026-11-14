@@ -3300,6 +3300,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "git-remote-polar"
+version = "1.0.0"
+dependencies = [
+ "polar-crypto",
+ "polar-git",
+ "polar-git-server",
+ "polar-permissions",
+ "polar-policy",
+ "polar-scudo",
+ "ractor",
+ "rcgen",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "git-repo-controller"
 version = "1.0.0"
 dependencies = [
@@ -7444,6 +7461,35 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 1.0.69",
  "zeroize",
+]
+
+[[package]]
+name = "polar-git"
+version = "1.0.0"
+dependencies = [
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "bytes",
+ "cassini-client",
+ "cassini-types",
+ "gix",
+ "gix-serve",
+ "polar-agent-builder",
+ "polar-crypto",
+ "polar-env",
+ "polar-git-server",
+ "polar-permissions",
+ "polar-policy",
+ "polar-scudo",
+ "ractor",
+ "rcgen",
+ "rkyv",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 {
-  "first_admin": ["config-writers", "health-readers"],
+  "first_admin": ["config-writers", "health-readers", "repo-developers"],
   "groups": {
     "config-writers": { "groups": ["config-readers"] }
   }

@@ -72,6 +72,10 @@ const NOT_THE_DOMAIN: &[(&str, &str)] = &[
     ),
     ("cassini-broker", "infrastructure, which serves"),
     ("polar-git-server", "serves git, and delivers configuration"),
+    (
+        "polar-git",
+        "serves people's source code: the one service that takes direct connections (the maintainer, 2026-11-11)",
+    ),
     ("polar-custody-daemon", "it is the custody daemon"),
 ];
 

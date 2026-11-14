@@ -46,6 +46,11 @@ use tracing::{error, info, warn};
 #[derive(Debug, Clone)]
 pub struct PeerIdentity(pub String);
 
+/// The client's leaf certificate, DER, as the TLS listener received it: what a policy actor reads the principal's
+/// groups and capabilities from (polar-git's edge).
+#[derive(Debug, Clone)]
+pub struct PeerCertificate(pub Vec<u8>);
+
 #[derive(Clone)]
 pub struct ServerState {
     pub store: RepoStore,
@@ -79,11 +84,11 @@ pub fn router(state: ServerState) -> Router {
         .with_state(state)
 }
 
-pub(crate) fn refuse(status: StatusCode, why: &str) -> Response {
+pub fn refuse(status: StatusCode, why: &str) -> Response {
     (status, format!("{why}\n")).into_response()
 }
 
-fn git_response(content_type: String, body: Vec<u8>) -> Response {
+pub fn git_response(content_type: String, body: Vec<u8>) -> Response {
     Response::builder()
         .header(header::CONTENT_TYPE, content_type)
         .header(
@@ -94,17 +99,17 @@ fn git_response(content_type: String, body: Vec<u8>) -> Response {
         .expect("a response with static headers")
 }
 
-fn git_failure(e: GitError) -> Response {
+pub fn git_failure(e: GitError) -> Response {
     warn!(error = %e, "git failed");
     refuse(StatusCode::INTERNAL_SERVER_ERROR, "git failed")
 }
 
 /// `repo.git` and `repo` name the same repository.
-fn repo_name(segment: &str) -> &str {
+pub fn repo_name(segment: &str) -> &str {
     segment.strip_suffix(".git").unwrap_or(segment)
 }
 
-fn protocol(headers: &HeaderMap) -> Option<&str> {
+pub fn protocol(headers: &HeaderMap) -> Option<&str> {
     headers.get("git-protocol").and_then(|v| v.to_str().ok())
 }
 
@@ -268,7 +273,11 @@ fn inflate(body: &[u8], limit: usize) -> Result<Vec<u8>, ()> {
     if out.len() > limit { Err(()) } else { Ok(out) }
 }
 
-fn request_body(headers: &HeaderMap, body: Bytes, limit: usize) -> Result<Vec<u8>, Box<Response>> {
+pub fn request_body(
+    headers: &HeaderMap,
+    body: Bytes,
+    limit: usize,
+) -> Result<Vec<u8>, Box<Response>> {
     let gzip = headers
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
@@ -499,7 +508,7 @@ fn main_is(repo: &gix::Repository, updates: &[RefUpdate]) -> Result<(), String> 
 }
 
 /// Whether gix-serve's commands are the ones authorized: the same updates in the same order.
-fn same_commands(authorized: &[RefUpdate], read: &[gix_serve::receive_pack::Command]) -> bool {
+pub fn same_commands(authorized: &[RefUpdate], read: &[gix_serve::receive_pack::Command]) -> bool {
     authorized.len() == read.len()
         && authorized.iter().zip(read).all(|(a, r)| {
             a.refname == r.name

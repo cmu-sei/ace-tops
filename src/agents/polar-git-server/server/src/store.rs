@@ -232,6 +232,64 @@ impl RepoStore {
         .await
     }
 
+    /// Creates an empty bare repository held to git's own rules and no more (polar-git's source code: branches may be
+    /// rewritten and deleted where policy lets a person), recording `owner`, who made it, in its configuration as
+    /// `polar.owner`. Built beside its place and moved there whole, so none is ever found without its owner. An existing
+    /// one is left as it is.
+    pub async fn create_owned(&self, name: &str, owner: &str) -> Result<Created, StoreError> {
+        let path = self.path(name)?;
+        let root = self.root.clone();
+        let name = name.to_string();
+        let owner = owner.to_string();
+        blocking(move || {
+            if path.join("HEAD").is_file() {
+                return Ok(Created::AlreadyExisted);
+            }
+            std::fs::create_dir_all(&root)?;
+            let building = root.join(format!(
+                ".{name}.creating-{}-{}",
+                std::process::id(),
+                CREATING.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let built = gix::init_bare(&building)
+                .map_err(failed("init"))
+                .and_then(|repo| {
+                    let mut file = repo
+                        .config_file_mut(repo.git_dir().join("config"))
+                        .map_err(failed("config"))?;
+                    file.set_raw_value("polar.owner", owner.as_str())
+                        .map_err(failed("config"))?;
+                    file.commit().map_err(failed("config"))
+                });
+            let moved = built.and_then(|()| match std::fs::rename(&building, &path) {
+                Ok(()) => Ok(Created::New),
+                Err(_) if path.join("HEAD").is_file() => Ok(Created::AlreadyExisted),
+                Err(e) => Err(e.into()),
+            });
+            if building.exists() {
+                let _ = std::fs::remove_dir_all(&building);
+            }
+            moved
+        })
+        .await
+    }
+
+    /// Who made the repository, as [`RepoStore::create_owned`] recorded it; none for one made otherwise.
+    pub async fn owner(&self, name: &str) -> Result<Option<String>, StoreError> {
+        if !self.exists(name) {
+            return Err(StoreError::Missing(name.to_string()));
+        }
+        let path = self.path(name)?;
+        blocking(move || {
+            let repo = open(&path)?;
+            Ok(repo
+                .config_snapshot()
+                .string("polar.owner")
+                .map(|owner| owner.to_string()))
+        })
+        .await
+    }
+
     /// Commits the contents of `tree` as the first commit on `main`, only when the repository has
     /// no refs, so a redeployment never overwrites later edits.
     pub async fn seed(&self, name: &str, tree: &Path) -> Result<Seeded, StoreError> {
@@ -782,6 +840,33 @@ mod tests {
             panic!()
         };
         assert_eq!(files[0].content, b"2");
+    }
+
+    /// A repository of source code is made with its owner and without the record rules: git's own rules alone, so a
+    /// branch may be rewritten or deleted where policy allows; made again, it is left as it is, its owner the first.
+    #[tokio::test]
+    async fn an_owned_repository_has_its_owner_and_no_record_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RepoStore::new(dir.path());
+        assert_eq!(
+            store.create_owned("tools", "alice").await.unwrap(),
+            Created::New
+        );
+        assert_eq!(
+            store.create_owned("tools", "bob").await.unwrap(),
+            Created::AlreadyExisted
+        );
+        assert_eq!(
+            store.owner("tools").await.unwrap().as_deref(),
+            Some("alice")
+        );
+        let repo = gix::open(store.path("tools").unwrap()).unwrap();
+        let config = repo.config_snapshot();
+        assert_eq!(config.boolean("receive.denyDeletes"), None);
+        assert_eq!(config.boolean("receive.denyNonFastForwards"), None);
+        store.create("records").await.unwrap();
+        assert_eq!(store.owner("records").await.unwrap(), None);
+        assert!(store.owner("missing").await.is_err());
     }
 
     /// A repository is made whole or not at all: it is built beside its place and moved there, so none is ever found

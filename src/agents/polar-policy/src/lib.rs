@@ -58,6 +58,7 @@ use cedar_policy::{Authorizer, Context, Entities, EntityUid, PolicySet, Request}
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, async_trait};
 
 pub mod evidence;
+pub mod git;
 pub mod schema;
 
 /// What the rules say about a request, which is one of three things, not two.

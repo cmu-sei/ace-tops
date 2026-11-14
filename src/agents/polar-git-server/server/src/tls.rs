@@ -201,7 +201,16 @@ pub async fn serve_tls(
                 warn!(%remote, "client certificate carries no identity; connection dropped");
                 return;
             };
-            let app = app.layer(axum::Extension(PeerIdentity(identity)));
+            let leaf = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|chain| chain.first())
+                .map(|leaf| leaf.as_ref().to_vec())
+                .unwrap_or_default();
+            let app = app
+                .layer(axum::Extension(PeerIdentity(identity)))
+                .layer(axum::Extension(crate::http::PeerCertificate(leaf)));
             let service = TowerToHyperService::new(app);
             if let Err(e) = Builder::new(TokioExecutor::new())
                 .serve_connection(TokioIo::new(tls), service)

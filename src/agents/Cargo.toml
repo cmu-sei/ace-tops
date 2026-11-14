@@ -81,6 +81,8 @@ members = [
     "polar-custody/daemon",
     "polar-signing",
     "polar-records-client",
+    "polar-git",
+    "git-remote-polar",
     "polar-sign",
     "polar-running-config",
     "polar-cypher",

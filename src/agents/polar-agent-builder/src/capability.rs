@@ -453,6 +453,7 @@ mod tests {
         "cassini-server",
         "deployment-ca",
         "git-server",
+        "source-git",
         "persistent-data",
         "pinned-ca",
         "provisioned-ca",

@@ -46,3 +46,10 @@ permit (principal, action == Action::"subscribe", resource)
 when { context has addressed && context.addressed == principal };
 permit (principal, action == Action::"publish", resource)
 when { context has addressed && principal has workload && principal.workload == "polar-git-server" };
+
+// Source code on polar-git (docs/architecture/polar-git.md). A repo developer makes repositories, and reads, pushes and
+// tags in any; the owner of a repository, who made it, may also rewrite and delete branches in it. Where policy is silent
+// polar-git refuses, since a certificate names no git rights.
+permit (principal in Group::"repo-developers", action in [Action::"git-create", Action::"git-read", Action::"git-push", Action::"git-tag"], resource);
+permit (principal, action in [Action::"git-read", Action::"git-push", Action::"git-tag", Action::"git-force-push", Action::"git-delete"], resource)
+when { resource has owner && resource.owner == principal };

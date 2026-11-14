@@ -51,8 +51,7 @@
 //!   ([`crate::evidence`]).
 //! - What a person does with source code on polar-git is one of `git-read`, `git-push`, `git-force-push`, `git-delete`,
 //!   `git-tag` and `git-create` on `Repository::"<its name>"`, the repository's owner (who made it) its attribute `owner`;
-//!   where policy is silent nothing is allowed. Main has no polar-git and asks none of these: they are here so a policy
-//!   written where it does (agentic-control-plane) speaks main's schema too.
+//!   where policy is silent nothing is allowed ([`crate::git`]).
 
 use cedar_policy::{PolicySet, Schema, ValidationMode, Validator};
 use std::sync::OnceLock;
