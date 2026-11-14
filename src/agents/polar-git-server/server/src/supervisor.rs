@@ -89,6 +89,11 @@ pub enum GitServerSupervisorMessage {
         payload: Vec<u8>,
         published_by: Option<String>,
     },
+    /// A signed section sent on Cassini, for the section intake.
+    Section {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
     /// A read of a log sent on Cassini, for the log reader.
     LogRead {
         payload: Vec<u8>,
@@ -119,6 +124,8 @@ pub struct GitServerSupervisorState {
     reader: Option<ractor::ActorRef<ReadMessage>>,
     /// Answers reads of a log; only with Cassini.
     log_reader: Option<ractor::ActorRef<crate::log_read::LogReadMessage>>,
+    /// Takes signed sections people's tools send; only with Cassini.
+    sections: Option<ractor::ActorRef<crate::schedules::SectionMessage>>,
     /// Brings each log's checkpoints to the witness; only with Cassini.
     witness: Option<ractor::ActorRef<crate::witness::WitnessMessage>>,
 }
@@ -180,6 +187,18 @@ impl Actor for GitServerSupervisor {
                     },
                 );
                 let deliver_to = myself.clone();
+                let sections = Subscription::new(
+                    polar_git_server_common::SCHEDULES_REQUESTS_TOPIC,
+                    move |incoming| {
+                        if let Err(e) = deliver_to.cast(GitServerSupervisorMessage::Section {
+                            payload: incoming.payload,
+                            published_by: incoming.published_by,
+                        }) {
+                            warn!("failed to hand a section to the supervisor: {e}");
+                        }
+                    },
+                );
+                let deliver_to = myself.clone();
                 let witnessed = Subscription::new(
                     attestation_common::witness::STORE_WITNESS_REPLIES_TOPIC,
                     move |incoming| {
@@ -198,6 +217,7 @@ impl Actor for GitServerSupervisor {
                     .with_subscription(records)
                     .with_subscription(reads)
                     .with_subscription(log_reads)
+                    .with_subscription(sections)
                     .with_subscription(witnessed)
                     .with_drain(|| GitServerSupervisorMessage::PrepareShutdown)
                     .into_configured(configured)
@@ -357,6 +377,28 @@ impl Actor for GitServerSupervisor {
             }
             None => None,
         };
+        let sections = match &tcp_client {
+            Some(client) => {
+                let (sections, _) = Actor::spawn_linked(
+                    Some(format!("{SERVICE_NAME}.sections")),
+                    crate::schedules::SectionActor,
+                    crate::schedules::SectionState {
+                        intake: crate::schedules::SectionIntake {
+                            store: store.clone(),
+                            authorizer: acl.clone(),
+                            logs: logs.clone(),
+                            notifier: notifier.clone(),
+                        },
+                        client: client.as_actor_ref().clone(),
+                    },
+                    myself.get_cell(),
+                )
+                .await
+                .map_err(|e| format!("the section intake did not start: {e}"))?;
+                Some(sections)
+            }
+            None => None,
+        };
         let witness = match (&tcp_client, configuration) {
             (Some(client), Some(configuration)) => {
                 let (witness, _) = Actor::spawn_linked(
@@ -419,6 +461,7 @@ impl Actor for GitServerSupervisor {
             intake,
             reader,
             log_reader,
+            sections,
             witness,
         })
     }
@@ -489,6 +532,20 @@ impl Actor for GitServerSupervisor {
                     }
                 }
                 None => warn!("a read arrived with no reader to answer it"),
+            },
+            GitServerSupervisorMessage::Section {
+                payload,
+                published_by,
+            } => match &state.sections {
+                Some(sections) => {
+                    if let Err(e) = sections.cast(crate::schedules::SectionMessage::Take {
+                        payload,
+                        published_by,
+                    }) {
+                        warn!("failed to hand a section to the section intake: {e}");
+                    }
+                }
+                None => warn!("a section arrived with no intake to take it"),
             },
             GitServerSupervisorMessage::LogRead {
                 payload,

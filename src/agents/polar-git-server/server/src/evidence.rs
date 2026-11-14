@@ -180,10 +180,11 @@ pub struct Placed {
 }
 
 /// Where `record` goes in the evidence repository, once it is `sender`'s own (docs/architecture/key-custody.md,
-/// "Workload signing keys", items 6 and 8): it verifies as [`place`] has it, its signer is the sender, and it is signed
-/// as a workload's record must be, under a signing certificate (`polar_signing::workload_certificate_refusal`). So a
-/// writer cannot add a record another signed, nor one its own mTLS key signed. Whether it may record that type is
-/// policy's, asked after (`Intake::add`).
+/// "Workload signing keys", items 6 and 8): it verifies as [`place`] has it, its signer is the sender, and a workload's
+/// is signed as a workload's record must be, under a signing certificate (`polar_signing::workload_certificate_refusal`),
+/// so a writer cannot add a record another signed, nor a workload one its own mTLS key signed. A person signs with their
+/// own certificate, as they sign everything (record-store.md, "People's tools over Cassini"). Whether they may record
+/// that type is policy's, asked after (`Intake::add`).
 pub fn place_senders(
     record: &str,
     sender: &str,
@@ -197,7 +198,9 @@ pub fn place_senders(
             signer.identity.as_deref().unwrap_or("no identity")
         ));
     }
-    if let Some(why) = polar_signing::workload_certificate_refusal(&document) {
+    if !polar_git_server_common::is_person(sender)
+        && let Some(why) = polar_signing::workload_certificate_refusal(&document)
+    {
         return Err(why);
     }
     Ok(Placed {
@@ -294,7 +297,7 @@ pub fn evidence_entry(record: &str) -> Vec<u8> {
 }
 
 /// Who the server's commits are by.
-const SERVER: Author<'static> = Author {
+pub(crate) const SERVER: Author<'static> = Author {
     name: "polar-git-server",
     email: "polar-git-server@localhost",
 };
@@ -313,10 +316,10 @@ impl Intake {
             warn!("dropped an evidence record with no sender the broker stamped");
             return None;
         };
-        let Some(workload) = cert_issuer_common::identity::workload_of(sender) else {
+        let Some(workload) = crate::reply::answered_as(sender) else {
             warn!(
                 sender,
-                "dropped an evidence record from an identity that names no workload"
+                "dropped an evidence record from an identity that is neither a workload nor a person"
             );
             return None;
         };
@@ -725,7 +728,11 @@ mod tests {
             EVIDENCE_REPO.to_string(),
             RepoAcl {
                 readers: ["reader.polar.serviceaccount.cluster.local".to_string()].into(),
-                writers: [SENDER.to_string()].into(),
+                writers: [
+                    SENDER.to_string(),
+                    polar_signing::testing::ALICE_ACCOUNT_ID.to_string(),
+                ]
+                .into(),
             },
         );
         let ca = root("Polar test CA");
@@ -767,6 +774,57 @@ mod tests {
                 record: record.to_string(),
             },
         })
+    }
+
+    /// record-store.md, "People's tools over Cassini": a person's own record, signed with the certificate they connected
+    /// with, is committed and answered on a topic named for them; one they did not sign is not.
+    #[tokio::test]
+    async fn a_person_s_own_record_is_taken_and_answered_on_their_own_topic() {
+        let f = fixture().await;
+        let alice = polar_signing::testing::ALICE_ACCOUNT_ID;
+        let theirs = {
+            let person = signer(
+                &f.ca,
+                Spec {
+                    capabilities: vec!["c:record-evidence:attestation"],
+                    ..Spec::default()
+                },
+            );
+            let document = polar_signing::sign_in(
+                polar_signing::Domain::EVIDENCE_RECORD,
+                record("u7c"),
+                std::slice::from_ref(&person.cert_pem),
+                &person.key_pem,
+            )
+            .unwrap();
+            serde_json::to_string_pretty(&document.to_value()).unwrap()
+        };
+        let (topic, answer) = f
+            .intake
+            .take(Some(alice), &request("p1", &theirs), now())
+            .await
+            .unwrap();
+        assert_eq!(topic, format!("polar-git-evidence-replies.{alice}"));
+        assert!(
+            matches!(answer.payload, RecordAdded::Committed { .. }),
+            "{:?}",
+            answer.payload
+        );
+        // A workload's record, sent by a person: not theirs.
+        let (_, answer) = f
+            .intake
+            .take(
+                Some(alice),
+                &request("p2", &senders(record("u7d"), &f.ca)),
+                now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(&answer.payload, RecordAdded::Refused { why } if why.contains("not by its sender")),
+            "{:?}",
+            answer.payload
+        );
     }
 
     /// A writer's record is committed at its place, answered on the writer's own topic with the request's correlation id,

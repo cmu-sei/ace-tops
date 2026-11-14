@@ -76,6 +76,13 @@ impl PolarAgent for GitServer {
         )
         .because(&[Cause::Topic(polar_git_server_common::READ_REQUESTS_TOPIC)]),
         TopicDecl::subscribe(
+            polar_git_server_common::SCHEDULES_REQUESTS_TOPIC,
+            "a signed section of polar-schedules from a person's tool, to be logged and committed at its place (record-store.md, \"People's tools over Cassini\")",
+        )
+        .waiting(
+            "people's tools publish it (polar-sign), and people are not catalog workloads: their topics are their identity's",
+        ),
+        TopicDecl::subscribe(
             polar_git_server_common::LOG_READ_REQUESTS_TOPIC,
             "a request for a log's leaves from a sequence, from an agent that may read its repository (record-store.md, \"Bite 6\")",
         ),

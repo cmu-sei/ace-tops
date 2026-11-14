@@ -103,7 +103,7 @@ const SEEDER: Author<'static> = Author {
 
 /// A relative path of plain segments: none empty, none starting with '.', no backslash or NUL. So it cannot leave the
 /// tree, name git's own files, or mean two things.
-fn plain_path(path: &str) -> bool {
+pub fn plain_path(path: &str) -> bool {
     !path.is_empty()
         && path.split('/').all(|segment| {
             !segment.is_empty() && !segment.starts_with('.') && !segment.contains(['\\', '\0'])
@@ -229,6 +229,33 @@ impl RepoStore {
         author: &Author<'_>,
         message: &str,
     ) -> Result<FileAdded, StoreError> {
+        self.write_file(name, path, content, author, message, false)
+            .await
+    }
+
+    /// Puts `content` at `path` on `main` as [`RepoStore::add_file`] adds it, over a file that is there with other
+    /// bytes: a signed section's next version, at its place. A file already there with these bytes is left as it is.
+    pub async fn put_file(
+        &self,
+        name: &str,
+        path: &str,
+        content: &[u8],
+        author: &Author<'_>,
+        message: &str,
+    ) -> Result<FileAdded, StoreError> {
+        self.write_file(name, path, content, author, message, true)
+            .await
+    }
+
+    async fn write_file(
+        &self,
+        name: &str,
+        path: &str,
+        content: &[u8],
+        author: &Author<'_>,
+        message: &str,
+        replace: bool,
+    ) -> Result<FileAdded, StoreError> {
         if !plain_path(path) {
             return Err(StoreError::BadPath(path.to_string()));
         }
@@ -257,11 +284,11 @@ impl RepoStore {
                             .find_commit(old)
                             .and_then(|commit| commit.tree())
                             .map_err(failed("read tree"))?;
-                        if tree
+                        let there = tree
                             .lookup_entry_by_path(&path)
                             .map_err(failed("read tree"))?
-                            .is_some()
-                        {
+                            .map(|entry| entry.object_id());
+                        if there.is_some_and(|id| !replace || id == blob) {
                             return Ok(FileAdded::AlreadyThere);
                         }
                         tree.id
@@ -654,6 +681,57 @@ mod tests {
             store.create("polar-schedules").await.unwrap(),
             Created::AlreadyExisted
         );
+    }
+
+    /// A file is put over one with other bytes, and left alone over one with the same bytes; added, it is never put over.
+    #[tokio::test]
+    async fn a_file_is_put_over_other_bytes_and_added_only_where_none_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RepoStore::new(dir.path());
+        store.create("s").await.unwrap();
+        let by = Author {
+            name: "alice",
+            email: "alice@example.org",
+        };
+        let put = |text: &'static str| {
+            store.put_file(
+                "s",
+                "permanent/a/configuration.dhall",
+                text.as_bytes(),
+                &by,
+                "chore: a",
+            )
+        };
+        assert!(matches!(
+            put("1").await.unwrap(),
+            FileAdded::Committed { .. }
+        ));
+        assert_eq!(put("1").await.unwrap(), FileAdded::AlreadyThere);
+        assert!(matches!(
+            put("2").await.unwrap(),
+            FileAdded::Committed { .. }
+        ));
+        assert_eq!(
+            store
+                .add_file(
+                    "s",
+                    "permanent/a/configuration.dhall",
+                    b"3",
+                    &by,
+                    "chore: a"
+                )
+                .await
+                .unwrap(),
+            FileAdded::AlreadyThere
+        );
+        let ReadOfMain::Files { files, .. } = store
+            .read_main("s", vec![], None, usize::MAX)
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(files[0].content, b"2");
     }
 
     /// A repository is made whole or not at all: it is built beside its place and moved there, so none is ever found

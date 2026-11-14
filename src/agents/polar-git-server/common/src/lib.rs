@@ -233,6 +233,93 @@ pub fn log_read_replies_topic(workload: &str) -> String {
     format!("polar-log-read-replies.{workload}")
 }
 
+/// Where a person's tool sends a signed section of polar-schedules for the store to add (docs/architecture/record-store.md,
+/// "People's tools over Cassini"), answered on the sender's own topic, [`schedules_replies_topic`].
+pub const SCHEDULES_REQUESTS_TOPIC: &str = "polar-schedules-requests";
+
+/// A signed section of polar-schedules, to be put at its place (`permanent/<agent>/<section>.dhall`, polar-sign's
+/// `push::place`): what `polar-sign` sends where it pushed with git before.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Archive)]
+pub struct AddSection {
+    pub path: String,
+    pub content: Vec<u8>,
+}
+
+/// The answer to an [`AddSection`].
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Archive)]
+pub enum SectionAdded {
+    /// In the schedules log, and committed on polar-schedules' `main` as `commit`.
+    Committed { commit: String },
+    /// polar-schedules holds those bytes at that place already.
+    AlreadyThere,
+    /// Not taken, and never will be as it is: the sender may not write polar-schedules, or the path is no place.
+    Refused { why: String },
+    /// Not taken now, through no fault of the request: the sender sends it again.
+    NotNow { why: String },
+}
+
+pub fn encode_add_section(envelope: &Envelope<AddSection>) -> Vec<u8> {
+    rkyv::to_bytes::<rkyv::rancor::Error>(envelope)
+        .expect("a request of owned data always serializes")
+        .into_vec()
+}
+
+pub fn encode_section_added(envelope: &Envelope<SectionAdded>) -> Vec<u8> {
+    rkyv::to_bytes::<rkyv::rancor::Error>(envelope)
+        .expect("an answer of owned data always serializes")
+        .into_vec()
+}
+
+pub fn decode_add_section(payload: &[u8]) -> Result<Envelope<AddSection>, String> {
+    let mut aligned = rkyv::util::AlignedVec::<16>::new();
+    aligned.extend_from_slice(payload);
+    rkyv::from_bytes::<Envelope<AddSection>, rkyv::rancor::Error>(&aligned)
+        .map_err(|e| format!("not a section to add: {e}"))
+}
+
+pub fn decode_section_added(payload: &[u8]) -> Result<Envelope<SectionAdded>, String> {
+    let mut aligned = rkyv::util::AlignedVec::<16>::new();
+    aligned.extend_from_slice(payload);
+    rkyv::from_bytes::<Envelope<SectionAdded>, rkyv::rancor::Error>(&aligned)
+        .map_err(|e| format!("not an answer to a section: {e}"))
+}
+
+/// The schedules reply topic of `who`: a workload's name, or a person's identity.
+pub fn schedules_replies_topic(who: &str) -> String {
+    format!("polar-schedules-replies.{who}")
+}
+
+/// Whether `identity` is a person's: an account's identity as cert-issuer writes it, a UUID in its lower-case form. Nothing
+/// else (a workload, a custodian, a name of any other shape) is answered as a person, so no certificate can name itself so
+/// as to hear a workload's answers.
+pub fn is_person(identity: &str) -> bool {
+    let groups: Vec<&str> = identity.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, len)| {
+            g.len() == len
+                && g.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+
+/// What every person may use on Cassini, whatever their certificate says (record-store.md, "People's tools over
+/// Cassini"): the store's requests to publish, and the answers on topics named with their own `identity` to hear, so
+/// nobody hears another's. The broker's floor for a person, as a custodian's is its identity's.
+pub fn person_topics(identity: &str) -> (Vec<String>, Vec<String>) {
+    (
+        vec![
+            EVIDENCE_REQUESTS_TOPIC.to_string(),
+            LOG_READ_REQUESTS_TOPIC.to_string(),
+            SCHEDULES_REQUESTS_TOPIC.to_string(),
+        ],
+        vec![
+            evidence_replies_topic(identity),
+            log_read_replies_topic(identity),
+            schedules_replies_topic(identity),
+        ],
+    )
+}
+
 /// Published when the witness's co-signature over a log grows, so a reader reads what it may now see.
 pub const LOG_WITNESSED_TOPIC: &str = "polar-log-witnessed";
 
@@ -350,6 +437,8 @@ mod tests {
             assert!(decode_read_log(garbage).is_err());
             assert!(decode_log_read(garbage).is_err());
             assert!(decode_witnessed(garbage).is_err());
+            assert!(decode_add_section(garbage).is_err());
+            assert!(decode_section_added(garbage).is_err());
         }
     }
 
@@ -359,6 +448,82 @@ mod tests {
             log_read_replies_topic("polar-scheduler-observer"),
             SCHEDULER_OBSERVER_LOG_READ_REPLIES_TOPIC
         );
+    }
+
+    #[test]
+    fn a_section_and_each_answer_survive_the_wire() {
+        let add = Envelope {
+            correlation_id: "s1".into(),
+            payload: AddSection {
+                path: "permanent/a/configuration.dhall".into(),
+                content: b"{ payload = {=} }".to_vec(),
+            },
+        };
+        let back = decode_add_section(&encode_add_section(&add)).unwrap();
+        assert_eq!(
+            (back.correlation_id, back.payload),
+            (add.correlation_id, add.payload)
+        );
+        for answer in [
+            SectionAdded::Committed {
+                commit: "c".repeat(40),
+            },
+            SectionAdded::AlreadyThere,
+            SectionAdded::Refused { why: "no".into() },
+            SectionAdded::NotNow {
+                why: "later".into(),
+            },
+        ] {
+            let envelope = Envelope {
+                correlation_id: "s2".into(),
+                payload: answer.clone(),
+            };
+            assert_eq!(
+                decode_section_added(&encode_section_added(&envelope))
+                    .unwrap()
+                    .payload,
+                answer
+            );
+        }
+    }
+
+    #[test]
+    fn a_person_is_an_account_s_uuid_and_nothing_else() {
+        assert!(is_person("15ab472c-cdd3-4b24-948f-30f9ca5f8cc9"));
+        for not_one in [
+            "attestation-agent",
+            "attestation-agent.polar.serviceaccount.cluster.local",
+            "15AB472C-CDD3-4B24-948F-30F9CA5F8CC9",
+            "15ab472c-cdd3-4b24-948f-30f9ca5f8cc",
+            "15ab472c-cdd3-4b24-948f30f9ca5f8cc9x",
+            "15ab472g-cdd3-4b24-948f-30f9ca5f8cc9",
+            "",
+        ] {
+            assert!(!is_person(not_one), "{not_one}");
+        }
+    }
+
+    /// A person may send each of the store's requests, and hears each answer on a topic of their own identity's.
+    #[test]
+    fn a_person_s_topics_are_the_store_s_requests_and_answers_named_for_them() {
+        let (publish, subscribe) = person_topics("alice");
+        assert_eq!(
+            publish,
+            [
+                EVIDENCE_REQUESTS_TOPIC,
+                LOG_READ_REQUESTS_TOPIC,
+                SCHEDULES_REQUESTS_TOPIC
+            ]
+        );
+        assert_eq!(
+            subscribe,
+            [
+                "polar-git-evidence-replies.alice",
+                "polar-log-read-replies.alice",
+                "polar-schedules-replies.alice"
+            ]
+        );
+        assert!(person_topics("bob").1.iter().all(|t| t.ends_with(".bob")));
     }
 
     #[test]

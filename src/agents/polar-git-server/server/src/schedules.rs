@@ -129,6 +129,205 @@ pub async fn catch_up(
     Ok(done)
 }
 
+/// What the store needs to take a signed section sent over Cassini (record-store.md, "People's tools over Cassini"):
+/// the repositories, who may write them, the logs, and where a change is announced.
+pub struct SectionIntake {
+    pub store: RepoStore,
+    pub authorizer: std::sync::Arc<dyn crate::access::Authorizer>,
+    pub logs: ractor::ActorRef<LogsMessage>,
+    pub notifier: std::sync::Arc<dyn crate::notify::Notifier>,
+}
+
+impl SectionIntake {
+    /// The answer to a section `published_by` sent, and the topic it goes to; none when there is nobody to answer (no
+    /// identity the broker stamped, or one that is neither a workload nor a person) or nothing to take, each said.
+    pub async fn take(
+        &self,
+        published_by: Option<&str>,
+        payload: &[u8],
+    ) -> Option<(
+        String,
+        polar_git_server_common::Envelope<polar_git_server_common::SectionAdded>,
+    )> {
+        let Some(sender) = published_by else {
+            warn!("dropped a section with no sender the broker stamped");
+            return None;
+        };
+        let Some(answered_as) = crate::reply::answered_as(sender) else {
+            warn!(
+                sender,
+                "dropped a section from an identity that is neither a workload nor a person"
+            );
+            return None;
+        };
+        let request = match polar_git_server_common::decode_add_section(payload) {
+            Ok(request) => request,
+            Err(why) => {
+                warn!(sender, "dropped a section: {why}");
+                return None;
+            }
+        };
+        let answer = self.add(sender, &request.payload).await;
+        if let polar_git_server_common::SectionAdded::Refused { why }
+        | polar_git_server_common::SectionAdded::NotNow { why } = &answer
+        {
+            warn!(sender, path = %request.payload.path, "a section was not added: {why}");
+        }
+        Some((
+            polar_git_server_common::schedules_replies_topic(answered_as),
+            polar_git_server_common::Envelope {
+                correlation_id: request.correlation_id,
+                payload: answer,
+            },
+        ))
+    }
+
+    /// Takes `request` from `sender`, who must be one who may write polar-schedules, as a push is judged: into the
+    /// schedules log first, as the sender's, then onto polar-schedules' `main`, then announced, so the log is never behind
+    /// the repository.
+    pub async fn add(
+        &self,
+        sender: &str,
+        request: &polar_git_server_common::AddSection,
+    ) -> polar_git_server_common::SectionAdded {
+        use crate::store::{FileAdded, StoreError};
+        use polar_git_server_common::SectionAdded;
+        if !self.authorizer.allows(
+            &crate::access::Identity(sender.to_string()),
+            SCHEDULES_REPO,
+            crate::access::Access::Write,
+        ) {
+            return SectionAdded::Refused {
+                why: format!("{sender} may not write {SCHEDULES_REPO}"),
+            };
+        }
+        // Before anything is logged: a path that is no place in the repository is never an entry.
+        if !crate::store::plain_path(&request.path) {
+            return SectionAdded::Refused {
+                why: format!("`{}` is not a place in {SCHEDULES_REPO}", request.path),
+            };
+        }
+        let mut tree = match self.store.main_tree(SCHEDULES_REPO).await {
+            Ok(Some((_, _, files))) => tree_of(files).0,
+            Ok(None) => BTreeMap::new(),
+            Err(e) => return SectionAdded::NotNow { why: e.to_string() },
+        };
+        tree.insert(request.path.clone(), request.content.clone());
+        let logged = ractor::call!(self.logs, |reply| LogsMessage::AppendTree {
+            log: SCHEDULES_LOG.to_string(),
+            to: tree,
+            continues: None,
+            submitter: sender.to_string(),
+            strict: true,
+            reply,
+        });
+        match logged {
+            Ok(Ok(_)) => {}
+            Ok(Err(why)) => {
+                return SectionAdded::Refused {
+                    why: format!("the schedules log did not take it: {why}"),
+                };
+            }
+            Err(e) => {
+                return SectionAdded::NotNow {
+                    why: format!("the store's logs did not answer: {e}"),
+                };
+            }
+        }
+        let message = format!(
+            "chore(schedules): {}, sent by {sender} over Cassini",
+            request.path
+        );
+        match self
+            .store
+            .put_file(
+                SCHEDULES_REPO,
+                &request.path,
+                &request.content,
+                &crate::evidence::SERVER,
+                &message,
+            )
+            .await
+        {
+            Ok(FileAdded::Committed { old, new }) => {
+                self.notifier
+                    .repo_changed(crate::notify::RepoChanged {
+                        repo: SCHEDULES_REPO.to_string(),
+                        refname: MAIN.to_string(),
+                        old: old.unwrap_or_else(|| "0".repeat(40)),
+                        new: new.clone(),
+                        pusher: sender.to_string(),
+                    })
+                    .await;
+                SectionAdded::Committed { commit: new }
+            }
+            Ok(FileAdded::AlreadyThere) => SectionAdded::AlreadyThere,
+            Err(e @ (StoreError::BadPath(_) | StoreError::BadName(_))) => {
+                SectionAdded::Refused { why: e.to_string() }
+            }
+            Err(e) => SectionAdded::NotNow { why: e.to_string() },
+        }
+    }
+}
+
+/// A section, as Cassini delivered it.
+pub enum SectionMessage {
+    Take {
+        payload: Vec<u8>,
+        published_by: Option<String>,
+    },
+}
+
+/// Takes sections one at a time, so additions never race each other, and answers each sender on its own topic.
+pub struct SectionActor;
+
+pub struct SectionState {
+    pub intake: SectionIntake,
+    pub client: ractor::ActorRef<cassini_client::TcpClientMessage>,
+}
+
+#[ractor::async_trait]
+impl ractor::Actor for SectionActor {
+    type Msg = SectionMessage;
+    type State = SectionState;
+    type Arguments = SectionState;
+
+    async fn pre_start(
+        &self,
+        _myself: ractor::ActorRef<Self::Msg>,
+        state: SectionState,
+    ) -> Result<Self::State, ractor::ActorProcessingErr> {
+        Ok(state)
+    }
+
+    async fn handle(
+        &self,
+        _myself: ractor::ActorRef<Self::Msg>,
+        message: Self::Msg,
+        state: &mut Self::State,
+    ) -> Result<(), ractor::ActorProcessingErr> {
+        let SectionMessage::Take {
+            payload,
+            published_by,
+        } = message;
+        let Some((topic, answer)) = state.intake.take(published_by.as_deref(), &payload).await
+        else {
+            return Ok(());
+        };
+        if let Err(e) = state
+            .client
+            .send_message(cassini_client::TcpClientMessage::publish(
+                topic.clone(),
+                polar_git_server_common::encode_section_added(&answer),
+                None,
+            ))
+        {
+            tracing::error!(error = %e, topic, "cannot answer a section");
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +523,93 @@ mod tests {
             pushed_tree(&repo, &[moved]).unwrap(),
             Some(BTreeMap::from([("a".to_string(), b"1".to_vec())]))
         );
+    }
+
+    /// record-store.md, "People's tools over Cassini": a person who may write polar-schedules sends a section; it is in
+    /// the log as theirs, committed at its place, announced, and answered on their own topic; the same again is there
+    /// already; a newer version replaces it; and someone who may not write it, or a path that is no place, is refused.
+    #[tokio::test]
+    async fn a_writer_s_section_is_logged_committed_announced_and_answered_on_their_topic() {
+        use crate::access::{RepoAcl, StaticAcl};
+        use polar_git_server_common::{AddSection, Envelope, SectionAdded, encode_add_section};
+        let dir = tempfile::tempdir().unwrap();
+        let store = repository(dir.path(), &[("README.md", "r")]).await;
+        let logs = logs(dir.path()).await;
+        catch_up(&store, &logs, ORIGIN).await.unwrap();
+        let alice = "0a11ce00-0000-4000-8000-000000000001";
+        let mut acl = StaticAcl::default();
+        acl.repos.insert(
+            SCHEDULES_REPO.to_string(),
+            RepoAcl {
+                readers: Default::default(),
+                writers: [alice.to_string()].into(),
+            },
+        );
+        let notes = std::sync::Arc::new(crate::notify::Recorder::default());
+        let intake = SectionIntake {
+            store: store.clone(),
+            authorizer: std::sync::Arc::new(acl),
+            logs: logs.clone(),
+            notifier: notes.clone(),
+        };
+        let send = |who: &'static str, path: &str, text: &str| {
+            let payload = encode_add_section(&Envelope {
+                correlation_id: "s".into(),
+                payload: AddSection {
+                    path: path.into(),
+                    content: text.into(),
+                },
+            });
+            let intake = &intake;
+            async move { intake.take(Some(who), &payload).await.unwrap() }
+        };
+        let place = "permanent/kube-observer/configuration.dhall";
+        let (topic, answer) = send(alice, place, "1").await;
+        assert_eq!(topic, format!("polar-schedules-replies.{alice}"));
+        assert!(
+            matches!(answer.payload, SectionAdded::Committed { .. }),
+            "{:?}",
+            answer.payload
+        );
+        assert_eq!(notes.0.lock().unwrap().len(), 1);
+        let held = leaves(&logs).await;
+        assert_eq!(held.last().unwrap().submitter, alice);
+        assert_eq!(
+            send(alice, place, "1").await.1.payload,
+            SectionAdded::AlreadyThere
+        );
+        assert!(matches!(
+            send(alice, place, "2").await.1.payload,
+            SectionAdded::Committed { .. }
+        ));
+        let (tree, _) = replay(
+            &leaves(&logs)
+                .await
+                .iter()
+                .map(|l| l.encode())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(tree.files()[place], b"2");
+        assert!(
+            tree.files().contains_key("README.md"),
+            "the rest of the tree stays"
+        );
+        let mallory = "0bad0000-0000-4000-8000-000000000003";
+        assert!(matches!(
+            send(mallory, place, "3").await.1.payload,
+            SectionAdded::Refused { .. }
+        ));
+        let before = leaves(&logs).await.len();
+        assert!(matches!(
+            send(alice, "../escape", "x").await.1.payload,
+            SectionAdded::Refused { .. }
+        ));
+        assert_eq!(
+            leaves(&logs).await.len(),
+            before,
+            "nothing is logged for a path that is no place"
+        );
+        assert!(intake.take(Some("not-a-person"), b"x").await.is_none());
     }
 
     fn hex(bytes: &[u8]) -> String {

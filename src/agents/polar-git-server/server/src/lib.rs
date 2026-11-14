@@ -37,6 +37,7 @@ pub mod logs;
 pub mod notify;
 pub mod pktline;
 pub mod read;
+pub mod reply;
 pub mod schedules;
 pub mod settings;
 pub mod signed;

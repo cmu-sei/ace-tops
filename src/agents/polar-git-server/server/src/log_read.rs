@@ -55,10 +55,10 @@ impl LogReader {
             warn!("dropped a log read with no sender the broker stamped");
             return None;
         };
-        let Some(workload) = cert_issuer_common::identity::workload_of(sender) else {
+        let Some(workload) = crate::reply::answered_as(sender) else {
             warn!(
                 sender,
-                "dropped a log read from an identity that names no workload"
+                "dropped a log read from an identity that is neither a workload nor a person"
             );
             return None;
         };
