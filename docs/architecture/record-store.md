@@ -35,8 +35,12 @@ signs every checkpoint and has the credentials agent certify it, so the store ho
 (2026-11-14):** bite 2, the witness (bite 5 below): the attestation agent co-signs each checkpoint through its crypto
 actor, the store keeps each co-signed checkpoint beside its log and serves only those, and up.nu's seed pins each key
 in the other's settings (`runtime-attestation.md`, "The witness of the store's logs", which says how main differs).
-**Still to come on main**, each a bite of the plan: schedules on the log (bite 6), people's tools over Cassini, and
-`polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
+**On main (2026-11-14):** bite 3, schedules on the log (bite 6 below): each push to polar-schedules is appended to the
+schedules log before any ref moves, the log is caught up with polar-schedules' `main` at the store's start, and the
+scheduler observer reads the log over Cassini, held to its two pins, which up.nu's seed signs in its settings. As on
+the other branch, but for one thing: until the witness has co-signed a log, the store answers a reader with its own
+checkpoint, and on `main` the crypto actor signs it when it is asked, since the store holds no key. **Still to come on
+main**, each a bite of the plan: people's tools over Cassini, and `polar-git`. What this page says of those, and of `polar-eden` (a tool of the agentic-control-plane
 branch), describes that branch until its bite lands. Decisions the maintainer made are dated
 and attributed; the rest are this session's, by the design principles (`AGENTS.md`), and marked *(for review)*. Owner:
 the agentic-control-plane session (the maintainer, 2026-11-10). The research on formats and Merkle logs is polar-89's,

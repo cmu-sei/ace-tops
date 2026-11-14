@@ -118,6 +118,30 @@ B5 polar-git + git-remote-polar.
    PATHS"); Cedar git-* actions + Repository entity on main (2cc50d72); groups doc (repo-developer) in schedules.
    NEEDS: catalog entry + PVC via render; up.nu --dev; git-remote-polar on people's machines (K2b CLI CryptoActor).
 
+## DECIDED WHILE PORTING (polar-cc's worker, by the plan and standing rules; for review)
+B2 (store-bite-2, 2026-11-14):
+- Holding records its key: witnessed.json = {key, origins}; a holding under another key than CosignHandle::key() is
+  Damage::AnotherKey. acp's old form (origins map alone) is taken once every line verifies under the actor's key, then
+  rewritten with the key (u7c's file converts on first start). Replaces acp's "key file without holding" check, which
+  the domain can no longer make (the actor makes the key).
+- GAP: a holding lost while the key survives starts empty under the same key; undetectable in the domain. Closing it
+  needs the actor to make key + holding together.
+- A co-sign T that goes back on the held T for that origin is neither kept nor sent (logged error).
+- attestation-agent does not depend on polar-crypto (domain_has_no_way_out): polar_agent_builder::crypto re-exports
+  WITNESSED_STORE and EXAMPLE_STORE (precedent: CryptoError, EvidenceRecord, host_matches re-exports).
+B3 (store-bite-3, 2026-11-14), from acp 535fd6d8, fee9065c, a3c999fc (polar-eden test + live-notes docs dropped),
+c43cafe2:
+- Logs::read_from(name, from, limit, own: Option<String>): before a log is ever co-signed, acp answered with the
+  store's own checkpoint signed in-domain. On main the LogsActor's ReadFrom arm asks the CheckpointHandle to sign
+  checkpoint_text and passes the note in; signing fails → NotNow. No new CryptoMessage (SignCheckpoint suffices).
+- acp's Cause::OwnConfiguration (60a68b51, a polar-topics/scheduler-common refactor) is NOT ported: the observer
+  declares OWN_CONFIGURATION_TOPIC = "agent.polar-scheduler-observer.configuration", tied to
+  configuration_topic(SERVICE_NAME) by a test, as SCHEDULER_OBSERVER_READ_REPLIES_TOPIC already is. When acp's
+  refactor reaches main, replace it.
+- polar-scheduler-common running.rs: acp's diff is test-only (answer round trip), unrelated to B3; not ported.
+- Store start: evidence catch-up, then schedules catch-up (both before serving). On u7c the schedules log (acp-written)
+  opens as found; pushes made while main ran B1/B2 (no schedules hook) are appended at the first B3 start as the store's.
+
 ## RISKS
 size; record-store.md on main stale (acp +76); u7c PVC state must survive (B1 opens as found); acp tests touching
 polar-eden must be split out; the make-once key rule must move into the CryptoActor intact.
