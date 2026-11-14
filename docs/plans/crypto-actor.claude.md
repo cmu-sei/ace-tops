@@ -226,7 +226,8 @@ K5 Degraded key files held by the CryptoActor (same shape).
 K6 Then trusted-remotes C3: custody named Ed25519 keys; CryptoActor ssh signer + Nix signer.
 E  PROPOSAL 2026-11-14 (the maintainer's idea): credentials sealed at rest in the CryptoActor, opened per request
    through custody's Unwrap and wiped; the user name sealed with them; registry tokens sealed on arrival; custody
-   records each open; the CryptoActor's process undumpable and its opened secrets in locked memory.
+   records each open; opened secrets' pages locked and kept out of dumps (MADV_DONTDUMP / memfd_secret), the agent
+   itself left dumpable for crash diagnosis.
    crypto-actor/ephemeral-credentials.{md,claude.md}.
 V  Verification into the CryptoActor: separate plan.
 OPEN: whether K3 hands rustls a config or a key handle (decide by what the five sites need; no question to the

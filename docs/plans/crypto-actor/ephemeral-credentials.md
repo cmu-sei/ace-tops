@@ -52,11 +52,14 @@ credential is registered:
 - the user name, opened the same way, as ordinary text, which is not wiped at all;
 - each token a registry returns for a login, held the same way until it is released.
 
-The process the crypto actor runs in is not hardened as custody is. Custody locks its memory, so nothing of it is
-written to swap, and makes itself undumpable, so no core file or same-user debugger can read it. An agent process does
-neither. So anything that can read an agent's memory without running code in it finds every credential the agent holds:
-a bug that discloses memory, swap, a core file, a checkpoint of the container or a snapshot of the node, or a read of the
-process's memory from beside it.
+The process the crypto actor runs in does not protect those pages. Custody locks its memory, so nothing of it is
+written to swap, and makes itself undumpable. An agent process does neither, and nothing keeps a credential out of the
+agent's core file. So anything that can read an agent's memory without running code in it finds every credential the
+agent holds: a bug that discloses memory, swap, a core file, a checkpoint of the container or a snapshot of the node.
+
+Reading it from beside the process is already closed. Every agent runs under the builder's seccomp lock, which refuses
+`ptrace`, `process_vm_readv` and `process_vm_writev` whatever their arguments, so a foothold in an agent cannot read
+another process's memory that way, and an agent shares no process namespace with the other containers of its pod.
 
 ## 3. The plan
 
@@ -79,12 +82,14 @@ is opened only here. No new key is made.
 credential opened when no request went out, or far more often than the agent's traffic explains, is evidence of
 someone in the agent asking for it.
 
-**The crypto actor is protected as custody is,** as far as an agent process allows:
+**The secrets stay out of a dump, and the dump stays whole.** An agent's crash is evidence: the attestation agent
+reports it, and diagnosing it (something the case missed, tampering, a hardware fault, or unexplained) may need the core
+file. So an agent stays dumpable, and only the pages that hold an opened credential or key are kept out:
 
-- the process is made undumpable at start, so no core file is written and no other process of the same user can read
-  its memory;
-- the memory that holds an opened credential is locked, so it is never written to swap, and kept out of any dump. Where
-  the kernel offers memory that even the kernel's own mappings cannot read, the opened credential is placed there.
+- they are marked never to be dumped, so a core file is complete for diagnosis and never holds a secret;
+- they are locked, so they are never written to swap. Only those pages are locked, not the whole agent;
+- where the kernel offers memory that is never dumped and is hidden even from the kernel's own mappings, they come from
+  there instead.
 
 **Tests first.** Properties: at rest, nothing the crypto actor holds is a credential in the clear; every request that
 carries one gets it opened once and wiped after; the opens custody records match the requests sent. A measurement of the
@@ -96,10 +101,13 @@ cost per request in a release build.
    anything that can read that memory.
 2. **A separate key in custody to wrap the credentials.** Rejected: the escrow key already seals them, for this same
    purpose. A second key would be a second thing to make, certify and rotate, for no gain.
-3. **Lock and hide the agent's memory, and nothing else.** Rejected as the whole answer: it keeps credentials out of swap
-   and dumps, but not out of a bug that discloses memory, a container checkpoint or a snapshot of the node.
-4. **Lock the whole agent's memory, as custody does.** Weighed in part 6: an agent is far larger than custody, and a
-   whole-process lock is bounded by what the pod may lock.
+3. **Lock and hide the secrets' pages, and nothing else.** Rejected as the whole answer: it keeps credentials out of
+   swap and dumps, but not out of a bug that discloses memory, a container checkpoint or a snapshot of the node.
+4. **Make the agent undumpable, as custody is.** Rejected for agents: it blinds crash diagnosis. A crash is the strongest
+   counter-evidence the case has, and the core file may be what settles it. Custody keeps it: it holds only keys, and is
+   small.
+5. **Lock the whole agent's memory, as custody does.** Rejected: an agent is far larger than custody, a whole-process
+   lock is bounded by what the pod may lock, and locking the secrets' pages alone gives the same protection for them.
 
 ## 5. Why this plan
 
@@ -111,6 +119,9 @@ cost per request in a release build.
 - **Nothing new can fail.** Custody already answers every TLS handshake the agent makes; a credentialed request depends
   on it no more than before.
 - **It adds detection.** Each open is recorded, so a credential being asked for without a reason is visible.
+- **It keeps crash evidence whole.** Polar's threat model counts a crash as evidence worth more than any run that went
+  well, so the protection is drawn around the secrets, not around the process: a core file stays complete for
+  diagnosis and holds no secret.
 - **Custody stays the keyring it was built to be.** It opens what is sealed to its key; it knows nothing of what the
   credential is for.
 
@@ -120,11 +131,11 @@ cost per request in a release build.
 - No credential reaches a protocol handler: the crypto actor puts it on the request itself. The one exception is git
   over ssh, where the ssh key is given to the git transport.
 - An opened secret is wiped when it is dropped; the user name is not.
-- Custody's memory is locked and it is undumpable; the crypto actor's process is neither.
+- Custody's memory is locked and it is undumpable. The crypto actor's secrets are neither locked nor kept out of a
+  dump.
+- Every agent's seccomp lock already refuses `ptrace` and reading or writing another process's memory.
 - What still needs checking before the hardening is built: how much memory a pod may lock (the default limit in its
-  container), whether the nodes' kernels offer memory hidden from the kernel's own mappings, and whether anything Polar
-  relies on reads an agent's core file. Polar's crash detection reads how a process ended, not its core file, so making
-  it undumpable should cost nothing there.
+  container), and whether the nodes' kernels offer memory hidden from the kernel's own mappings.
 
 ## 7. What is left before this is met
 
@@ -132,7 +143,7 @@ cost per request in a release build.
 - **The user name sealed with its credential.**
 - **Registry tokens sealed when they arrive.**
 - **Custody's record of each open,** and a way to read it.
-- **The crypto actor's process undumpable,** and the opened credential's memory locked and kept out of dumps.
+- **The opened credentials' and keys' pages locked and kept out of dumps,** the agent itself left dumpable.
 - **The measurement** of a credentialed request's cost, in a release build.
 - **The ssh key** given to the git transport: whether it can be opened per connection in the same way.
 
