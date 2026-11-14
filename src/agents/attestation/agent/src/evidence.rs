@@ -90,6 +90,20 @@ fn finding_of(finding: &Finding) -> (&'static str, Value) {
                 "image_id": image_id,
             }),
         ),
+        Finding::LogInconsistent {
+            origin,
+            held_size,
+            held_root,
+            offered_size,
+            offered_root,
+        } => (
+            "log-inconsistent",
+            json!({
+                "origin": origin,
+                "held": { "size": held_size, "root": held_root },
+                "offered": { "size": offered_size, "root": offered_root },
+            }),
+        ),
     }
 }
 

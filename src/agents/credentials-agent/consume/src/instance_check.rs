@@ -113,6 +113,7 @@ pub async fn take_report(
         Finding::Altered(_) => "altered",
         Finding::Crashed { .. } => "crashed",
         Finding::Panicked { .. } => "panicked",
+        Finding::LogInconsistent { .. } => "log-inconsistent",
     };
     let finding = format!("{:?}", report.finding);
     let event = CredentialsEvent::AttestationReported {

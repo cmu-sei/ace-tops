@@ -37,3 +37,4 @@ pub mod record;
 pub mod settings;
 pub mod supervisor;
 pub mod watch;
+pub mod witness;

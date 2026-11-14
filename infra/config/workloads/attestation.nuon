@@ -32,9 +32,14 @@
     pool: "core"
     image: "attestation-agent"
     config: "document"
-    provides: ["deployment-ca"]
+    # Its own volume holds the witness of the store's logs: the checkpoints it co-signed, kept before it answers, and
+    # the co-signing key its crypto actor makes once beside them and never replaces (docs/architecture/
+    # runtime-attestation.md, "The witness of the store's logs").
+    provides: ["deployment-ca", "persistent-data"]
     env: [
       { name: "POLAR_ATTESTATION_NAMESPACES", value: "{attested-namespaces}" }
+      { name: "POLAR_ATTESTATION_WITNESS_ROOT", value: "/var/lib/{workload}/witness" }
+      { name: "POLAR_WITNESS_COSIGNING_KEY", value: "/var/lib/{workload}/witness/witness-key.pem" }
     ]
   }
 ]

@@ -38,7 +38,18 @@ pub static DEPLOYMENT_CA: Required<String> = Required::path(
     "path to the deployment CA's certificate (PEM), which the signed record of the deployment chains to (docs/architecture/runtime-attestation.md); it has no other authority here",
 );
 
-static VARIABLES: &[&dyn Described] = &[&NAMESPACES, &DEPLOYMENT_CA];
+/// Where the witness of the store's logs keeps its key and what it holds: a directory on the agent's own volume
+/// (docs/architecture/runtime-attestation.md, "The witness of the store's logs").
+pub static WITNESS_ROOT: Required<String> = Required::text(
+    "POLAR_ATTESTATION_WITNESS_ROOT",
+    "the directory on the agent's own volume where the witness of the store's logs keeps its key and the checkpoints it co-signed (docs/architecture/runtime-attestation.md, \"The witness of the store's logs\")",
+);
+
+// The store whose logs it witnesses (POLAR_ATTESTATION_WITNESSED_STORE) and where its co-signing key is
+// (POLAR_WITNESS_COSIGNING_KEY) are the crypto actor's `keys` section's to declare, which every agent registers: a
+// variable is declared once (polar_crypto::environment, which the builder re-exports).
+
+static VARIABLES: &[&dyn Described] = &[&NAMESPACES, &DEPLOYMENT_CA, &WITNESS_ROOT];
 
 /// The section the attestation agent registers.
 pub static SECTION: Section = Section {
@@ -71,6 +82,11 @@ pub fn deployment_ca(env: &dyn Env) -> Result<String, String> {
     DEPLOYMENT_CA.read(env).map_err(|e| e.to_string())
 }
 
+/// Where the witness keeps what it holds, from the agent's snapshot.
+pub fn witness_root(env: &dyn Env) -> Result<String, String> {
+    WITNESS_ROOT.read(env).map_err(|e| e.to_string())
+}
+
 /// The namespaces, from the agent's snapshot.
 pub fn namespaces(env: &dyn Env) -> Result<Vec<String>, String> {
     NAMESPACES
@@ -95,5 +111,32 @@ mod tests {
         assert!(relations(&given(" , ")).len() == 1);
         assert!(relations(&given("polar")).is_empty());
         assert!(namespaces(&|_: &str| None).is_err());
+    }
+
+    /// The store it witnesses is pinned in its signed settings (infra/seed.nu, `witness_pins`): with the sections it
+    /// registers, an update naming the store's key is taken, and one that is not a store's key is refused.
+    #[test]
+    fn the_store_it_witnesses_is_a_settings_update_it_takes() {
+        let env: std::collections::HashMap<String, String> = [
+            ("POLAR_ATTESTATION_NAMESPACES", "polar"),
+            ("POLAR_ATTESTATION_DEPLOYMENT_CA", "/c/ca.pem"),
+            ("POLAR_ATTESTATION_WITNESS_ROOT", "/w"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let config = || {
+            polar_agent_builder::environment::base_sections()
+                .into_iter()
+                .fold(polar_env::Config::builder(&env), |builder, section| {
+                    builder.register(section)
+                })
+                .register(&SECTION)
+                .build()
+        };
+        let pin = polar_agent_builder::crypto::WITNESSED_STORE.desc().name;
+        let store = polar_agent_builder::crypto::EXAMPLE_STORE;
+        assert_eq!(config().apply_overrides(&[(pin, store)]), Ok(vec![pin]));
+        assert!(config().apply_overrides(&[(pin, "not a key")]).is_err());
     }
 }

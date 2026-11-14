@@ -113,6 +113,16 @@ pub enum Finding {
         finished_at: String,
         image_id: String,
     },
+    /// The store, whose pod this is, signed a checkpoint of one of its logs that cannot follow what the witness co-signed:
+    /// a fork or a rollback (docs/architecture/runtime-attestation.md, "The witness of the store's logs"). Roots in
+    /// base64; the held ones none when the witness had co-signed nothing of the log.
+    LogInconsistent {
+        origin: String,
+        held_size: Option<u64>,
+        held_root: Option<String>,
+        offered_size: u64,
+        offered_root: String,
+    },
 }
 
 /// One thing found about one pod.
@@ -493,5 +503,24 @@ mod tests {
         assert!(accepted_report(&bytes, Some("intruder"), "agent").is_err());
         assert!(accepted_report(&bytes, None, "agent").is_err());
         assert!(accepted_report(b"nonsense", Some("agent"), "agent").is_err());
+    }
+
+    #[test]
+    fn a_log_found_inconsistent_survives_the_wire_and_is_no_crash() {
+        let report = Report {
+            namespace: "polar".into(),
+            pod: "polar-git-server-0".into(),
+            pod_uid: "uid".into(),
+            finding: Finding::LogInconsistent {
+                origin: "polar-git-server.polar.serviceaccount.cluster.local/evidence".into(),
+                held_size: Some(4),
+                held_root: Some("aGVsZA==".into()),
+                offered_size: 3,
+                offered_root: "b2ZmZXJlZA==".into(),
+            },
+            under_test: false,
+        };
+        assert!(!report.crashed());
+        assert_eq!(decode_report(&encode_report(&report)).unwrap(), report);
     }
 }

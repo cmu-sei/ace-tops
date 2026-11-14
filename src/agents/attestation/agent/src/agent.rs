@@ -85,6 +85,15 @@ impl PolarAgent for AttestationAgent {
             polar_git_server_common::ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC,
             "what the git server did with each of its records",
         ),
+        TopicDecl::subscribe(
+            attestation_common::witness::WITNESS_REQUESTS_TOPIC,
+            "each checkpoint of the store's logs, brought to be co-signed",
+        ),
+        TopicDecl::publish(
+            attestation_common::witness::STORE_WITNESS_REPLIES_TOPIC,
+            "its co-signature of a checkpoint, or why not, on the store's own topic",
+        )
+        .because(&[Cause::Topic(attestation_common::witness::WITNESS_REQUESTS_TOPIC)]),
     ];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
@@ -96,6 +105,9 @@ impl PolarAgent for AttestationAgent {
          and a container that died by a signal. Its verdicts stand only while it has proved itself: it holds what it needs, it passes its \
          own judgement, it does not condemn most of what is running, and it says no to real pods altered. Otherwise it answers that it \
          cannot say, and says why in an ERROR. Each verdict goes to the asker's own topic, attestation-instance-replies.<workload>. \
+         It also witnesses the store's logs: it co-signs each checkpoint the store brings on attestation-witness-requests that \
+         follows what it co-signed before, keeping it on its own volume first, and answers on the store's own topic; a checkpoint \
+         the store signed that cannot follow is reported as a finding of the store's pod. \
          docs/architecture/runtime-attestation.md.",
     );
 
@@ -151,6 +163,28 @@ mod tests {
         assert!(has(
             polar_git_server_common::ATTESTATION_AGENT_EVIDENCE_REPLIES_TOPIC,
             polar_agent_builder::Access::Subscribe
+        ));
+    }
+
+    // docs/architecture/runtime-attestation.md, "The witness of the store's logs": the store alone brings checkpoints, and is
+    // answered on its own topic.
+    #[test]
+    fn it_witnesses_for_the_store_alone() {
+        use attestation_common::witness::{STORE_WITNESS_REPLIES_TOPIC, WITNESS_REQUESTS_TOPIC};
+        let scaffold = polar_agent_builder::agent::scaffold_document::<AttestationAgent>();
+        let has = |name: &str, access| {
+            scaffold
+                .topics
+                .iter()
+                .any(|t| t.name == name && t.access == access)
+        };
+        assert!(has(
+            WITNESS_REQUESTS_TOPIC,
+            polar_agent_builder::Access::Subscribe
+        ));
+        assert!(has(
+            STORE_WITNESS_REPLIES_TOPIC,
+            polar_agent_builder::Access::Publish
         ));
     }
 

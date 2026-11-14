@@ -37,6 +37,7 @@ path = "src/main.rs"
 polar-scudo.workspace = true
 attestation-common.workspace = true
 cassini-client.workspace = true
+base64.workspace = true
 cassini-types.workspace = true
 cert-issuer-common = { path = "../../cert-issuer/common" }
 k8s-openapi.workspace = true
@@ -44,12 +45,15 @@ polar.workspace = true
 polar-agent-builder.workspace = true
 # The evidence records it sends the git server, and its answers (src/evidence.rs; polar-agent-builder's recorder).
 polar-git-server-common.workspace = true
+# The witness of the store's logs: checkpoints and proofs (src/witness.rs); its key is the crypto actor's.
+polar-log.workspace = true
 polar-env.workspace = true
 polar-scheduler-common.workspace = true
 polar-signing.workspace = true
 ractor.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -57,4 +61,7 @@ tracing.workspace = true
 # The real handler and a stand-in Kubernetes API.
 polar-agent-builder = { workspace = true, features = ["testing"] }
 polar-signing = { workspace = true, features = ["testing"] }
+# The tests' own keys, standing in for the store's and the crypto actor's.
+p256.workspace = true
 proptest.workspace = true
+tempfile.workspace = true

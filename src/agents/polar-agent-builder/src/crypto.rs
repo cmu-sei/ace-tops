@@ -219,6 +219,10 @@ impl CheckpointHandle {
     }
 }
 
+/// The store a witness co-signs for, which its domain follows to judge what the store brings it; declared once, by the
+/// `keys` section. Re-exported so that the domain needs no way to polar-crypto itself.
+pub use polar_crypto::environment::{EXAMPLE_STORE, WITNESSED_STORE};
+
 /// The agent's witness key (docs/plans/record-store/to-main.md, bite 2): what its domain is given in place of the key. It
 /// asks to co-sign a checkpoint, and for the key's verifier key, and nothing else of the actor; the actor holds every
 /// co-signature to the store the agent's signed configuration pins, and stamps it with its own clock.

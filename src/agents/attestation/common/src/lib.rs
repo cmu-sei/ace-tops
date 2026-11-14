@@ -32,6 +32,7 @@ pub mod protocol;
 pub mod record;
 pub mod report;
 pub mod verdict;
+pub mod witness;
 
 pub use proof::{Doubt, HeldPodFacts, Proved, prove};
 pub use protocol::{
