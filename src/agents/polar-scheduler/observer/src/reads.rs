@@ -30,8 +30,9 @@ use cassini_client::TcpClientMessage;
 use polar::request_reply::{Envelope, ReplyRouter};
 use polar_agent_builder::Subscription;
 use polar_git_server_common::{
-    MainRead, READ_REQUESTS_TOPIC, ReadMain, SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
-    decode_main_read, encode_read,
+    LOG_READ_REQUESTS_TOPIC, LogRead, MainRead, READ_REQUESTS_TOPIC, ReadLog, ReadMain,
+    SCHEDULER_OBSERVER_LOG_READ_REPLIES_TOPIC, SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
+    decode_log_read, decode_main_read, encode_read, encode_read_log,
 };
 use ractor::ActorRef;
 use std::sync::Arc;
@@ -116,6 +117,87 @@ impl ReadsMain for ServerReads {
             })
             .await
             .map_err(|e| format!("reading {repo} from the git server: {e}"))
+    }
+}
+
+/// A log's leaves, asked of whoever answers (docs/architecture/record-store.md, "Bite 6").
+#[ractor::async_trait]
+pub trait ReadsLog: Send + Sync {
+    /// The log's checkpoint and its leaves from `from`, as the store answers; or why the asking failed.
+    async fn read_log(&self, log: &str, from: u64) -> Result<LogRead, String>;
+}
+
+/// The store, asked over Cassini for a log.
+pub struct ServerLogReads {
+    client: ActorRef<TcpClientMessage>,
+    router: Arc<ReplyRouter<LogRead>>,
+    timeout: Duration,
+}
+
+impl ServerLogReads {
+    pub fn new(
+        client: ActorRef<TcpClientMessage>,
+        router: Arc<ReplyRouter<LogRead>>,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            client,
+            router,
+            timeout,
+        }
+    }
+}
+
+#[ractor::async_trait]
+impl ReadsLog for ServerLogReads {
+    async fn read_log(&self, log: &str, from: u64) -> Result<LogRead, String> {
+        let correlation_id = format!(
+            "log-{}-{}",
+            std::process::id(),
+            ASKED.fetch_add(1, Ordering::Relaxed)
+        );
+        let request = encode_read_log(&Envelope {
+            correlation_id: correlation_id.clone(),
+            payload: ReadLog {
+                log: log.to_string(),
+                from,
+            },
+        });
+        let client = self.client.clone();
+        self.router
+            .register_with_timeout(correlation_id, self.timeout, move || {
+                client
+                    .send_message(TcpClientMessage::publish(
+                        LOG_READ_REQUESTS_TOPIC.to_string(),
+                        request,
+                        None,
+                    ))
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| format!("reading the log {log} from the store: {e}"))
+    }
+}
+
+/// The subscription to the observer's own answers to its log reads.
+pub fn log_replies_subscription(router: Arc<ReplyRouter<LogRead>>) -> Subscription {
+    Subscription::new(SCHEDULER_OBSERVER_LOG_READ_REPLIES_TOPIC, move |incoming| {
+        on_log_reply(&router, incoming.published_by.as_deref(), &incoming.payload)
+    })
+}
+
+/// Hands an answer to the log read waiting for it: only one the git server published, and only one that is an answer.
+pub fn on_log_reply(router: &ReplyRouter<LogRead>, published_by: Option<&str>, payload: &[u8]) {
+    if published_by.and_then(workload_of) != Some(GIT_SERVER) {
+        warn!(
+            published_by,
+            "dropped an answer to a log read that the git server did not publish"
+        );
+        return;
+    }
+    match decode_log_read(payload) {
+        Ok(answer) => router.deliver(&answer.correlation_id, answer.payload),
+        Err(why) => warn!("dropped an answer to a log read: {why}"),
     }
 }
 
@@ -243,6 +325,68 @@ mod tests {
                 have: Some("abc".into()),
             }
         );
+    }
+
+    /// A log read is published on the log request topic, and only the git server's answer to its correlation id is
+    /// taken.
+    #[tokio::test]
+    async fn a_log_read_is_asked_on_its_topic_and_only_the_git_servers_answer_is_taken() {
+        let router = Arc::new(ReplyRouter::<LogRead>::new());
+        let sent: Sent = Arc::new(Mutex::new(Vec::new()));
+        let (client, _) = Actor::spawn(
+            None,
+            Client,
+            ClientState {
+                sent: sent.clone(),
+                answer: None,
+            },
+        )
+        .await
+        .unwrap();
+        let reads = ServerLogReads::new(client, router.clone(), Duration::from_millis(500));
+        let asking = tokio::spawn(async move { reads.read_log("schedules", 4).await });
+        let request = loop {
+            if let Some((topic, payload)) = sent.lock().unwrap().first().cloned() {
+                break (topic, payload);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(request.0, LOG_READ_REQUESTS_TOPIC);
+        let asked = polar_git_server_common::decode_read_log(&request.1).unwrap();
+        assert_eq!(
+            asked.payload,
+            ReadLog {
+                log: "schedules".into(),
+                from: 4
+            }
+        );
+        let answer = |payload: LogRead| {
+            polar_git_server_common::encode_log_read(&Envelope {
+                correlation_id: asked.correlation_id.clone(),
+                payload,
+            })
+        };
+        let refused = LogRead::Refused { why: "no".into() };
+        on_log_reply(
+            &router,
+            Some("attestation-agent.polar.serviceaccount.cluster.local"),
+            &answer(refused.clone()),
+        );
+        on_log_reply(&router, None, &answer(refused.clone()));
+        // An identity with a part missing names no workload.
+        for unnamed in [
+            "polar-git-server..serviceaccount.cluster.local",
+            "polar-git-server.polar.serviceaccount.",
+            ".polar.serviceaccount.cluster.local",
+        ] {
+            on_log_reply(&router, Some(unnamed), &answer(refused.clone()));
+        }
+        on_log_reply(&router, Some(SERVER), b"not an answer");
+        let taken = LogRead::NotNow {
+            why: "later".into(),
+        };
+        on_log_reply(&router, Some(SERVER), &answer(taken.clone()));
+        assert_eq!(asking.await.unwrap(), Ok(taken));
     }
 
     #[tokio::test]

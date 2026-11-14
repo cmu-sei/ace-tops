@@ -31,6 +31,11 @@ use std::time::Duration;
 
 pub struct SchedulerObserver;
 
+/// The observer's own configuration topic, `polar_scheduler_common::configuration_topic(SERVICE_NAME)`, spelled out
+/// because a topic declaration is a const; a test holds the two equal. Its signed settings arriving there (its keys,
+/// changed) start a read of the schedules log.
+pub const OWN_CONFIGURATION_TOPIC: &str = "agent.polar-scheduler-observer.configuration";
+
 impl PolarAgent for SchedulerObserver {
     const NAME: &'static str = SERVICE_NAME;
     const ROLE: Role = Role::Observer;
@@ -44,24 +49,35 @@ impl PolarAgent for SchedulerObserver {
         ),
         TopicDecl::publish(
             polar_git_server_common::READ_REQUESTS_TOPIC,
-            "a read of the schedules repository's main, or of the deployment record, from Polar's git server",
+            "a read of the deployment record from Polar's git server",
         )
-        .because(&[
-            Cause::Topic(polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC),
-            Cause::Registered,
-            Cause::Timer("read"),
-            Cause::Timer("reading the deployment repository"),
-        ]),
+        .because(&[Cause::Timer("reading the deployment repository")]),
         TopicDecl::subscribe(
             polar_git_server_common::SCHEDULER_OBSERVER_READ_REPLIES_TOPIC,
             "the git server's answer to a read, on this observer's own topic",
         )
-        // A read a push announcement started answers that announcement's own entry, not a topic of its own.
-        .answers(&[
+        .answers(&[Cause::Timer("reading the deployment repository")]),
+        TopicDecl::subscribe(
+            polar_git_server_common::LOG_WITNESSED_TOPIC,
+            "that a log's co-signed checkpoint grew, which starts a read of the schedules log",
+        ),
+        TopicDecl::publish(
+            polar_git_server_common::LOG_READ_REQUESTS_TOPIC,
+            "a read of the schedules log's leaves past those held, from the store (record-store.md, \"Bite 6\")",
+        )
+        .because(&[
+            Cause::Topic(polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC),
+            Cause::Topic(polar_git_server_common::LOG_WITNESSED_TOPIC),
+            Cause::Topic(OWN_CONFIGURATION_TOPIC),
             Cause::Registered,
             Cause::Timer("read"),
-            Cause::Timer("reading the deployment repository"),
         ]),
+        TopicDecl::subscribe(
+            polar_git_server_common::SCHEDULER_OBSERVER_LOG_READ_REPLIES_TOPIC,
+            "the store's answer to a read of the schedules log, on this observer's own topic",
+        )
+        // A read an announcement or the observer's own settings started answers that one's own entry.
+        .answers(&[Cause::Registered, Cause::Timer("read")]),
         TopicDecl::subscribe(
             polar_scheduler_common::CONFIGURATION_REPLAY_TOPIC,
             "an agent asking for the documents held for it",
@@ -72,6 +88,8 @@ impl PolarAgent for SchedulerObserver {
         )
         .because(&[
             Cause::Topic(polar_git_server_common::POLAR_GIT_REPO_CHANGED_TOPIC),
+            Cause::Topic(polar_git_server_common::LOG_WITNESSED_TOPIC),
+            Cause::Topic(OWN_CONFIGURATION_TOPIC),
             Cause::Registered,
             Cause::Timer("read"),
         ]),
@@ -90,12 +108,14 @@ impl PolarAgent for SchedulerObserver {
     )])];
     const SECTIONS: &'static [&'static Section] = &[&crate::settings::SECTION];
     const HELP: Option<&'static str> = Some(
-        "The observer reads the schedules repository's main from Polar's git server over Cassini \
-         into its checkout, watches the checkout, evaluates each changed Dhall schedule and \
+        "The observer reads the schedules repository from the store's log of it over Cassini into its \
+         checkout, held to the store's checkpoint and the witness's co-signature under the keys its own \
+         signed settings pin, watches the checkout, evaluates each changed Dhall schedule and \
          publishes the change to the scheduler. It reads when it joins Cassini, when the git server \
-         announces a change to that repository, and on an interval if one is set; the server answers \
-         on this observer's own topic, judging by the identity the broker stamped whether it may \
-         read. It runs no git and holds no key file.",
+         announces a change to that repository or a further co-signature of the log, when its keys \
+         change, and on an interval if one is set; the server answers on this observer's own topic, \
+         judging by the identity the broker stamped whether it may read. It runs no git and holds no \
+         key file.",
     );
 
     async fn start(configured: Configured) -> Result<(), StartError> {
@@ -131,6 +151,14 @@ mod tests {
             }
         }
         assert_eq!(SchedulerObserver::TOPIC_FAMILIES.len(), 1);
+    }
+
+    #[test]
+    fn its_own_configuration_topic_is_the_one_the_scheduler_names_for_it() {
+        assert_eq!(
+            OWN_CONFIGURATION_TOPIC,
+            polar_scheduler_common::configuration_topic(SERVICE_NAME)
+        );
     }
 
     // runtime-attestation.md, slice C, C2, O2: it reads Polar's git server over Cassini, and is answered on its own topic,

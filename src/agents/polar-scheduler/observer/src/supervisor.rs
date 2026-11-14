@@ -42,9 +42,12 @@
 //!    so the workload is restarted with fresh certificates.
 
 use crate::deployment_record::{DeploymentRecordActor, DeploymentRecordArgs};
-use crate::reads::{READ_TIMEOUT, ReadsMain, ServerReads, replies_subscription};
+use crate::reads::{
+    READ_TIMEOUT, ReadsLog, ReadsMain, ServerLogReads, ServerReads, log_replies_subscription,
+    replies_subscription,
+};
 use crate::settings::ObserverSettings;
-use crate::sync_actor::{GitSyncActor, GitSyncArgs, SyncMessage};
+use crate::sync_actor::{GitSyncActor, GitSyncArgs, OwnConfiguration, SyncMessage};
 use crate::watcher::{GitWatcherActor, GitWatcherMsg};
 use cassini_client::TcpClientMessage;
 use cassini_types::ClientEvent;
@@ -53,7 +56,10 @@ use polar_agent_builder::{
     AgentBuilder, Configured, HealthClient, HealthHandle, InfrastructureSupervisorMessage,
     Subscription,
 };
-use polar_git_server_common::{MainRead, POLAR_GIT_REPO_CHANGED_TOPIC, RepoChangedEvent};
+use polar_git_server_common::{
+    LOG_WITNESSED_TOPIC, LogRead, LogWitnessed, MainRead, POLAR_GIT_REPO_CHANGED_TOPIC,
+    RepoChangedEvent, decode_witnessed,
+};
 use polar_scheduler_common::{CONFIGURATION_REPLAY_TOPIC, ConfigurationReplayRequest};
 use ractor::{Actor, ActorProcessingErr, ActorRef, SupervisionEvent, async_trait};
 use std::path::PathBuf;
@@ -72,6 +78,8 @@ pub enum SchedulerObserverMessage {
     },
     /// The Polar git server says a ref of one of its repositories moved.
     RepoChanged(RepoChangedEvent),
+    /// The store says a log's co-signed checkpoint grew.
+    LogWitnessed(LogWitnessed),
     /// An agent that has just registered asks for the signed configuration held for it.
     ReplayRequested(String),
     /// A read brought the checkout up to date: what changed is read and published.
@@ -96,6 +104,20 @@ pub fn repo_changed_subscription(supervisor: ActorRef<SchedulerObserverMessage>)
                 let _ = supervisor.cast(SchedulerObserverMessage::RepoChanged(event));
             }
             Err(e) => warn!("failed to deserialize a repository change: {e}"),
+        },
+    )
+}
+
+/// The subscription to the store's word that a log's co-signature grew: each is handed to the supervisor, which decides
+/// whether it is the log read.
+pub fn log_witnessed_subscription(supervisor: ActorRef<SchedulerObserverMessage>) -> Subscription {
+    Subscription::new(
+        LOG_WITNESSED_TOPIC,
+        move |incoming| match decode_witnessed(&incoming.payload) {
+            Ok(event) => {
+                let _ = supervisor.cast(SchedulerObserverMessage::LogWitnessed(event));
+            }
+            Err(e) => warn!("dropped a witnessed log: {e}"),
         },
     )
 }
@@ -147,6 +169,8 @@ pub struct SchedulerObserverSupervisorState {
     repo_path: String,
     /// The repository this checkout is of, when it has a remote.
     watched_repo: Option<String>,
+    /// The log the checkout is read from: the one the store keeps beside that repository.
+    watched_log: Option<String>,
     sync: Option<ActorRef<SyncMessage>>,
     watcher: Option<ActorRef<GitWatcherMsg>>,
     /// Agents that asked before the watcher existed; handed to it when it does.
@@ -168,11 +192,14 @@ impl Actor for SchedulerObserverSupervisor {
 
         let settings = ObserverSettings::read(configured.config())?;
         let read_router = Arc::new(ReplyRouter::<MainRead>::new());
+        let log_router = Arc::new(ReplyRouter::<LogRead>::new());
         let resources = AgentBuilder::new(myself.clone(), SERVICE_NAME)
             .with_lifecycle_handler(|event| Some(SchedulerObserverMessage::ClientEvent { event }))
             .with_subscription(repo_changed_subscription(myself.clone()))
             .with_subscription(replay_request_subscription(myself.clone()))
             .with_subscription(replies_subscription(read_router.clone()))
+            .with_subscription(log_replies_subscription(log_router.clone()))
+            .with_subscription(log_witnessed_subscription(myself.clone()))
             .with_drain(|| SchedulerObserverMessage::PrepareShutdown)
             .into_configured(configured)
             .build()
@@ -184,9 +211,26 @@ impl Actor for SchedulerObserverSupervisor {
             READ_TIMEOUT,
         ));
 
+        // The schedules are read from the store's log of the repository (docs/architecture/record-store.md, "Bite 6").
+        let log_reads: Arc<dyn ReadsLog> = Arc::new(ServerLogReads::new(
+            resources.tcp_client.as_actor_ref().clone(),
+            log_router,
+            READ_TIMEOUT,
+        ));
+
         let mut sync = None;
         let watched_repo = settings.schedules_repo.clone();
-        if let Some(repo) = &settings.schedules_repo {
+        let watched_log = match &settings.schedules_repo {
+            Some(repo) => Some(
+                polar_git_server_common::log_of_repo(repo)
+                    .ok_or_else(|| {
+                        format!("the store keeps no log of {repo} to read schedules from")
+                    })?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        if let Some(log) = &watched_log {
             // The first read is asked once the observer has joined Cassini (`Registered`), and the watcher starts once it
             // is answered, so its first scan is the repository's word.
             let interval = settings
@@ -198,14 +242,18 @@ impl Actor for SchedulerObserverSupervisor {
                 GitSyncActor,
                 GitSyncArgs {
                     repo_path: PathBuf::from(&settings.local_path),
-                    repo: repo.clone(),
-                    reads: reads.clone(),
+                    log: log.clone(),
+                    reads: log_reads,
                     interval,
                     pulled: Some({
                         let supervisor = myself.clone();
                         std::sync::Arc::new(move || {
                             let _ = supervisor.cast(SchedulerObserverMessage::Pulled);
                         })
+                    }),
+                    own: Arc::new(OwnConfiguration {
+                        agent: SERVICE_NAME.to_string(),
+                        configuration: resources.configuration.clone(),
                     }),
                 },
                 myself.get_cell(),
@@ -237,6 +285,7 @@ impl Actor for SchedulerObserverSupervisor {
             tcp_client: resources.tcp_client.as_actor_ref().clone(),
             repo_path: settings.local_path,
             watched_repo,
+            watched_log,
             sync,
             watcher: None,
             waiting_replays: Vec::new(),
@@ -274,6 +323,14 @@ impl Actor for SchedulerObserverSupervisor {
                     debug!(repo = %event.repo, "change is for another repository");
                 } else if let Some(sync) = &state.sync {
                     info!(repo = %event.repo, refname = %event.refname, pusher = %event.pusher, "repository changed; reading it");
+                    sync.cast(SyncMessage::Now)?;
+                }
+            }
+            SchedulerObserverMessage::LogWitnessed(event) => {
+                if state.watched_log.as_deref() != Some(event.log.as_str()) {
+                    debug!(log = %event.log, "witnessed is another log");
+                } else if let Some(sync) = &state.sync {
+                    info!(log = %event.log, size = event.size, "the log is witnessed further; reading it");
                     sync.cast(SyncMessage::Now)?;
                 }
             }

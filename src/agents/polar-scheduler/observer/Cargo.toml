@@ -40,6 +40,8 @@ notify.workspace = true
 polar-agent-builder.workspace = true
 polar-env.workspace = true
 polar-git-server-common.workspace = true
+# The schedules log's checkpoints and Merkle root, which the checkout is held to (src/sync_actor.rs).
+polar-log.workspace = true
 # The request/reply correlation its reads of the git server over Cassini wait on (src/reads.rs).
 polar.workspace = true
 polar-router.workspace = true
@@ -53,6 +55,8 @@ tracing.workspace = true
 walkdir = "2"
 
 [dev-dependencies]
+# The scripted store's checkpoint key and the witness's, in the sync actor's tests.
+p256 = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

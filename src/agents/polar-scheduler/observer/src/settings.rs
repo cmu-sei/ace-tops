@@ -58,6 +58,24 @@ pub static DEPLOYMENT_RECORD_SECS: Defaulted<u64> = Defaulted::seconds(
 )
 .dynamic();
 
+/// The store's checkpoint key, which the schedules log is held to (docs/architecture/record-store.md, "Bite 6").
+pub static STORE_KEY: Optional<String> = Optional::text(
+    "POLAR_SCHEDULER_STORE_KEY",
+    "the store's checkpoint key (`<identity>/checkpoint+<id>+<key>`), as the git server logs it when its logs open; the \
+     schedules log is delivered only as a checkpoint signed by it and co-signed by POLAR_SCHEDULER_WITNESS_KEY shows \
+     it (docs/architecture/record-store.md, \"Bite 6\"). Signed at run time, in the observer's own settings, which it \
+     takes from the log it reads",
+)
+.dynamic();
+
+/// The witness's key, whose co-signature the schedules log is held to.
+pub static WITNESS_KEY: Optional<String> = Optional::text(
+    "POLAR_SCHEDULER_WITNESS_KEY",
+    "the witness's verifier key (`<identity>/witness+<id>+<key>`), as the attestation agent logs it at its start; with \
+     POLAR_SCHEDULER_STORE_KEY, what the schedules log is held to. Signed at run time",
+)
+.dynamic();
+
 /// A number of seconds in force, as the timer it sets: at least one.
 pub fn seconds<V>(config: &Config, variable: &V) -> Result<std::time::Duration, String>
 where
@@ -74,7 +92,9 @@ static VARIABLES: &[&dyn Described] = &[
     &DEPLOYMENT_RECORD_SECS,
     &LOCAL_PATH,
     &SCHEDULES_REPO,
+    &STORE_KEY,
     &SYNC_INTERVAL,
+    &WITNESS_KEY,
 ];
 
 pub static SECTION: Section = Section {
