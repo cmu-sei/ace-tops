@@ -142,7 +142,7 @@ release notes as an aggregator reports them, so check minikube's own release pag
 you can spare: the deployment is twenty-odd pods (Neo4j, Keycloak and Postgres among them).
 
 ```bash
-minikube start --cpus <n> --memory <MiB> --extra-config=kubelet.registry-pull-qps=0
+minikube start --cpus <n> --memory <MiB> --extra-config=kubelet.registry-qps=0
 kubectl version                    # Server Version v1.36 or later
 ```
 
@@ -173,9 +173,10 @@ What Polar asks of the cluster:
   (its connect attempt is 5 seconds) before the answer comes. Remove the search domain from the node's resolver.
 - **A kubelet that does not throttle registry requests, or one you can live with.** Polar pulls an image named by a tag
   that moves (`latest`) with `imagePullPolicy: Always`, which asks your registry for every container that starts. The
-  kubelet limits that to 5 a second with a burst of 10 (`registryPullQPS`), so a burst of pods (a bring-up) sees
-  `ErrImagePull: pull QPS exceeded`, backs off and retries: slower, not broken. If you can, raise it on the nodes
-  (minikube: `minikube start --extra-config=kubelet.registry-pull-qps=0`).
+  kubelet limits that to 5 a second with a burst of 10 (`registryPullQPS`, the flag `--registry-qps`), so a burst of
+  pods (a bring-up) sees `ErrImagePull: pull QPS exceeded`, backs off and retries: slower, not broken. If you can, raise
+  it on the nodes (minikube: `minikube start --extra-config=kubelet.registry-qps=0`; the kubelet has no
+  `registry-pull-qps`, and a name it does not know keeps it from starting).
 
 ### 2. Access to the target's secrets
 
@@ -460,7 +461,25 @@ and a 20 GiB volume. So, for the cluster:
 
 That memory is given to Docker Desktop's virtual machine, out of the Mac's own, so a Mac with 32 GB or more is the one to
 use. On your Mac: Docker Desktop, minikube **v1.39.0 or later** (`brew install minikube`), `kubectl`, `git`, `ssh` with
-your key in its agent (`ssh-add`), and a browser (Safari, Chrome or Edge, which use the macOS Keychain; Firefox works too).
+your key in its agent (`ssh-add`), and a browser (Firefox is the simplest, step 5; Safari, Chrome and Edge use the macOS
+Keychain).
+
+**From nothing** (seen on macOS 26 Tahoe, Apple silicon, 2026-11-17): Apple's command-line tools (`xcode-select
+--install`: `git`, `ssh`, `openssl`), then [Homebrew](https://brew.sh), then `brew install --cask docker` and `brew install
+minikube kubectl`. Run Homebrew as the Mac's own user, an administrator, not as root: it refuses root, and asks for the
+user's password once, to make `/opt/homebrew` theirs. Setting a Mac up for someone whose password you do not have, from a
+root shell: give their account sudo without a password for the installs, run them as that user, and take it away again
+(`<user>` is their short name; write it in, without the angle brackets):
+
+```bash
+echo "<user> ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/zz-setup && chmod 440 /etc/sudoers.d/zz-setup && visudo -c
+su - <user> -c 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+su - <user> -c 'eval "$(/opt/homebrew/bin/brew shellenv)"; brew install --cask docker; brew install minikube kubectl'
+/Applications/Docker.app/Contents/MacOS/install --accept-license --user=<user>   # Docker Desktop's privileged setup
+rm /etc/sudoers.d/zz-setup
+```
+
+Everything after that (Docker Desktop, minikube, `bin/polar-dev`, the browser) runs in that user's own session.
 
 **Docker Desktop.** In Settings, Resources, Advanced, give its virtual machine the CPUs, memory and disk above (a little more
 memory than you will give minikube), then Apply and restart. Leave Docker Desktop's own Kubernetes off: minikube is the
@@ -471,7 +490,7 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
 1. **The cluster** (step 1). `--memory` must be under what Docker Desktop has:
 
    ```bash
-   minikube start --driver=docker --cpus 6 --memory 20g --disk-size 60g --extra-config=kubelet.registry-pull-qps=0
+   minikube start --driver=docker --cpus 6 --memory 20g --disk-size 60g --extra-config=kubelet.registry-qps=0
    kubectl version              # Server Version v1.36 or later (minikube v1.39.0 starts v1.37 by default)
    kubectl get storageclass     # standard (default)
    ```
@@ -496,7 +515,8 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    It copies the `arm64` images into the cluster, then deploys. Run the same command again after a failure or a pause.
 
 5. **Your certificate in the browser** (step 5), by hand: `bin/polar-dev cert` installs it into Librewolf alone. When `up.nu`
-   pauses at the browser step, on your Mac:
+   pauses at the browser step, on your Mac (the file chooser hides `~/.config`: press Cmd+Shift+. to show it, or Cmd+Shift+G
+   and type the path):
 
    ```bash
    bin/polar-dev sync           # copies ~/.config/polar-admin out of the dev container: <name>.crt, <name>.key, ca.pem
@@ -510,9 +530,12 @@ cluster. (General Docker Desktop guidance, not tried on a Mac for this guide.)
    ```
 
    Then quit and reopen the browser, and press Enter in the dev container. Safari, Chrome and Edge read the Keychain; when
-   Neo4j's page asks which certificate to use, choose "Polar `<name>`". **Firefox** keeps its own store instead: in its
+   Neo4j's page asks which certificate to use, choose "Polar `<name>`". The first time a browser uses the key, macOS asks
+   for the **login Keychain's password**, which is the account's login password, not the `.p12` one: without it (a Mac you
+   set up for someone else), use Firefox. **Firefox** keeps its own store instead, and needs neither password: in its
    Settings, Privacy & Security, Certificates, View Certificates, import `<name>.p12` under Your Certificates and `ca.pem`
-   under Authorities, trusting it to identify websites. A rebuilt cluster has a new CA: remove the old "Polar Internal CA"
+   under Authorities, trusting it to identify websites. (From a root shell, the CA can be trusted for the whole Mac with no
+   password: `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem`.) A rebuilt cluster has a new CA: remove the old "Polar Internal CA"
    from Keychain Access (or Firefox) and do this again. (Standard macOS commands, not run on a Mac for this guide.)
 
 6. **Open it** (step 6):
@@ -674,7 +697,7 @@ run on Windows for this guide.)
 1. **The cluster** (step 1):
 
    ```powershell
-   minikube start --driver=docker --cpus 6 --memory 20g --disk-size 60g --extra-config=kubelet.registry-pull-qps=0
+   minikube start --driver=docker --cpus 6 --memory 20g --disk-size 60g --extra-config=kubelet.registry-qps=0
    kubectl version              # Server Version v1.36 or later
    kubectl get storageclass     # standard (default)
    ```
@@ -1229,12 +1252,28 @@ shell is fish, so type `bash` first; these lines were run there):
 cd infra/targets/local-minimal
 KEY=${SOPS_AGE_SSH_PRIVATE_KEY_FILE:-$HOME/.ssh/id_ed25519}   # your private key; the dev container has this set
 read -r TYPE BLOB _ < <(ssh-keygen -y -f "$KEY")
-printf 'creation_rules:\n  - path_regex: secrets\\.sops\\.yaml$\n    age: >-\n      %s %s\n' "$TYPE" "$BLOB" > .sops.yaml
+cat > .sops.yaml <<EOF
+creation_rules:
+  - path_regex: secrets\.sops\.yaml$
+    age: "$TYPE $BLOB"
+EOF
 PW=$(openssl rand -hex 16)
-printf 'neo4j_auth: "neo4j/%s"\ngraph_password: "%s"\nkeycloak_admin_password: "%s"\nkeycloak_db_password: "%s"\n' \
-  "$PW" "$PW" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" > secrets.sops.yaml
+cat > secrets.sops.yaml <<EOF
+neo4j_auth: "neo4j/$PW"
+graph_password: "$PW"
+keycloak_admin_password: "$(openssl rand -hex 16)"
+keycloak_db_password: "$(openssl rand -hex 16)"
+EOF
 SOPS_CONFIG=.sops.yaml sops --encrypt --in-place secrets.sops.yaml
+sops --decrypt secrets.sops.yaml      # your four lines again: it worked
 ```
+
+`cat .sops.yaml` before the encryption should show three lines, the last `age: "ssh-ed25519 AAAA..."`: the key's type is
+`ssh-ed25519` exactly, and sops says `failed to parse input` for anything else there. An error loading the config
+(`did not find expected '-' indicator`) means `.sops.yaml` came out mangled: write it again. Neo4j's user is `neo4j`, and
+its password is the random value after `neo4j/` (`sops --decrypt secrets.sops.yaml | grep graph_password`). Neo4j takes
+it from this file only the first time it starts on an empty volume: on a fresh install, if it was started before the file
+was right, delete Neo4j's volume and pod and run `up.nu` again.
 
 That replaces the encrypted file that came with the checkout, which you could
 not read. Do not commit it: `git update-index --skip-worktree
