@@ -394,7 +394,6 @@ def prepare_figure_data(
         f"{figure_df['Dates'].min()} → {figure_df['Dates'].max()}"
     )
 
-    figure_df.write_csv("figure_df.csv")
     return figure_df
 
 
